@@ -12,6 +12,7 @@
 - [x] Phase 5: Added Android Rust bridge/JNI integration and build script.
 - Note: Android Rust artifact build still requires local Android NDK + toolchain setup (`cargo-ndk`, clang, OpenSSL cross env).
 - [x] Phase 6: Split CI lanes for iOS, Android, and shared Rust bridge.
+- [x] Phase 7: Added platform quickstarts and release checklists.
 
 ## Goals
 1. Keep iOS shipping while introducing Android native app support.
@@ -182,4 +183,4 @@ Exit criteria:
 7. `docs: refresh build and release guides`
 
 ## Immediate Next Execution Step
-- Execute Phase 7: finalize docs and release workflows for both platforms.
+- Stabilize Android Rust cross-compilation environment in CI (NDK + OpenSSL cross setup) and enable JNI artifact build in pipeline.

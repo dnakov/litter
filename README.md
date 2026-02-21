@@ -1,10 +1,17 @@
-# litter (codex-ios)
+# litter
 
 <p align="center">
   <img src="apps/ios/Sources/Litter/Resources/brand_logo.png" alt="litter logo" width="180" />
 </p>
 
-`litter` is an iOS client for Codex. It supports:
+`litter` is a native iOS + Android client for Codex.
+
+Platform apps:
+
+- `apps/ios`: iOS app (`LitterRemote` and `Litter` schemes)
+- `apps/android`: Android app/module scaffold (`app`, `core/*`, `feature/*`)
+
+iOS supports:
 
 - `LitterRemote`: remote-only mode (default scheme; no bundled on-device Rust server)
 - `Litter`: includes the on-device Rust bridge (`codex_bridge.xcframework`)
@@ -74,6 +81,26 @@ CLI build example:
 xcodebuild -project apps/ios/Litter.xcodeproj -scheme LitterRemote -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
 
+## Build and run Android app
+
+Prerequisites:
+
+- Java 17
+- Android SDK + build tools for API 35
+- Gradle 8.x (or wrapper, once added)
+
+Build debug APK:
+
+```bash
+gradle -p apps/android :app:assembleDebug
+```
+
+Build Android Rust JNI libs (optional bridge runtime step):
+
+```bash
+./tools/scripts/build-android-rust.sh
+```
+
 ## Important paths
 
 - `apps/ios/project.yml`: source of truth for Xcode project/schemes
@@ -81,6 +108,8 @@ xcodebuild -project apps/ios/Litter.xcodeproj -scheme LitterRemote -configuratio
 - `shared/third_party/codex/`: upstream Codex source (submodule)
 - `patches/codex/ios-exec-hook.patch`: iOS-specific hook patch applied to submodule
 - `apps/ios/Sources/Litter/Bridge/`: Swift bridge + JSON-RPC client
+- `apps/android/core/bridge/`: Android JNI/native bridge surface
+- `tools/scripts/build-android-rust.sh`: builds Android JNI Rust artifacts into `jniLibs`
 - `apps/ios/Sources/Litter/Resources/brand_logo.svg`: source logo (SVG)
 - `apps/ios/Sources/Litter/Resources/brand_logo.png`: in-app logo image used by `BrandLogo`
 - `apps/ios/Sources/Litter/Assets.xcassets/AppIcon.appiconset/`: generated app icon set
