@@ -2,6 +2,9 @@ import Foundation
 
 @MainActor
 final class ServerConnection: ObservableObject, Identifiable {
+    private static let defaultSandboxMode = "workspace-write"
+    private static let fallbackSandboxMode = "danger-full-access"
+
     let id: String
     let server: DiscoveredServer
     let target: ConnectionTarget
@@ -96,19 +99,46 @@ final class ServerConnection: ObservableObject, Identifiable {
     }
 
     func startThread(cwd: String, model: String? = nil) async throws -> ThreadStartResponse {
+        do {
+            return try await startThread(cwd: cwd, model: model, sandbox: Self.defaultSandboxMode)
+        } catch {
+            guard shouldRetryWithoutLinuxSandbox(error) else { throw error }
+            return try await startThread(cwd: cwd, model: model, sandbox: Self.fallbackSandboxMode)
+        }
+    }
+
+    func resumeThread(threadId: String, cwd: String) async throws -> ThreadResumeResponse {
+        do {
+            return try await resumeThread(threadId: threadId, cwd: cwd, sandbox: Self.defaultSandboxMode)
+        } catch {
+            guard shouldRetryWithoutLinuxSandbox(error) else { throw error }
+            return try await resumeThread(threadId: threadId, cwd: cwd, sandbox: Self.fallbackSandboxMode)
+        }
+    }
+
+    private func startThread(cwd: String, model: String?, sandbox: String) async throws -> ThreadStartResponse {
         try await client.sendRequest(
             method: "thread/start",
-            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: "never", sandbox: "workspace-write"),
+            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: "never", sandbox: sandbox),
             responseType: ThreadStartResponse.self
         )
     }
 
-    func resumeThread(threadId: String, cwd: String) async throws -> ThreadResumeResponse {
+    private func resumeThread(threadId: String, cwd: String, sandbox: String) async throws -> ThreadResumeResponse {
         try await client.sendRequest(
             method: "thread/resume",
-            params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: "never", sandbox: "workspace-write"),
+            params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: "never", sandbox: sandbox),
             responseType: ThreadResumeResponse.self
         )
+    }
+
+    private func shouldRetryWithoutLinuxSandbox(_ error: Error) -> Bool {
+        guard case let JSONRPCClientError.serverError(_, message) = error else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("codex-linux-sandbox was required but not provided") ||
+            lower.contains("missing codex-linux-sandbox executable path")
     }
 
     func sendTurn(threadId: String, text: String, model: String? = nil, effort: String? = nil) async throws {
