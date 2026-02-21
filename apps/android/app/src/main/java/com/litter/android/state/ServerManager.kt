@@ -7,6 +7,7 @@ import com.litter.android.core.bridge.CodexRpcClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
+import java.io.File
 import java.util.LinkedHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
@@ -302,6 +303,7 @@ class ServerManager(
         text: String,
         cwd: String? = null,
         modelSelection: ModelSelection? = null,
+        localImagePath: String? = null,
         onComplete: ((Result<Unit>) -> Unit)? = null,
     ) {
         submit {
@@ -310,6 +312,7 @@ class ServerManager(
                     text = text,
                     cwd = cwd ?: state.currentCwd,
                     modelSelection = modelSelection ?: state.selectedModel,
+                    localImagePath = localImagePath,
                 )
             }
             deliver(onComplete, result)
@@ -970,9 +973,14 @@ class ServerManager(
         text: String,
         cwd: String,
         modelSelection: ModelSelection,
+        localImagePath: String? = null,
     ) {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) {
+        val (cleanedText, embeddedLocalImagePath) = extractLocalImageMarker(text)
+        val normalizedLocalImagePath =
+            localImagePath?.trim()?.takeIf { it.isNotEmpty() }
+                ?: embeddedLocalImagePath?.trim()?.takeIf { it.isNotEmpty() }
+        val trimmed = cleanedText.trim()
+        if (trimmed.isEmpty() && normalizedLocalImagePath == null) {
             return
         }
 
@@ -984,11 +992,24 @@ class ServerManager(
         val serverId = key.serverId
         val existing = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve active thread")
         val now = System.currentTimeMillis()
+        val localImageName = normalizedLocalImagePath?.let { File(it).name }.orEmpty()
+        val userVisibleText =
+            when {
+                trimmed.isNotEmpty() && normalizedLocalImagePath != null ->
+                    "$trimmed\n[Image] ${if (localImageName.isNotEmpty()) localImageName else normalizedLocalImagePath}"
+
+                trimmed.isNotEmpty() -> trimmed
+                normalizedLocalImagePath != null ->
+                    "[Image] ${if (localImageName.isNotEmpty()) localImageName else normalizedLocalImagePath}"
+
+                else -> ""
+            }
+
         val withUserMessage =
             existing.copy(
                 status = ThreadStatus.THINKING,
-                messages = existing.messages + ChatMessage(role = MessageRole.USER, text = trimmed),
-                preview = trimmed.take(120),
+                messages = existing.messages + ChatMessage(role = MessageRole.USER, text = userVisibleText),
+                preview = userVisibleText.take(120),
                 cwd = cwd,
                 updatedAtEpochMillis = now,
                 lastError = null,
@@ -1003,17 +1024,26 @@ class ServerManager(
             )
         }
 
+        val input = JSONArray()
+        if (trimmed.isNotEmpty()) {
+            input.put(
+                JSONObject()
+                    .put("type", "text")
+                    .put("text", trimmed),
+            )
+        }
+        if (normalizedLocalImagePath != null) {
+            input.put(
+                JSONObject()
+                    .put("type", "localImage")
+                    .put("path", normalizedLocalImagePath),
+            )
+        }
+
         val params =
             JSONObject()
                 .put("threadId", key.threadId)
-                .put(
-                    "input",
-                    JSONArray().put(
-                        JSONObject()
-                            .put("type", "text")
-                            .put("text", trimmed),
-                    ),
-                )
+                .put("input", input)
                 .put("model", modelSelection.modelId ?: JSONObject.NULL)
                 .put("effort", modelSelection.reasoningEffort ?: JSONObject.NULL)
 
@@ -1058,6 +1088,18 @@ class ServerManager(
                 messages = finalizeStreaming(existing.messages),
             )
         updateState { it }
+    }
+
+    private fun extractLocalImageMarker(text: String): Pair<String, String?> {
+        var markerPath: String? = null
+        val withoutMarkers =
+            LOCAL_IMAGE_MARKER_REGEX.replace(text) { matchResult ->
+                if (markerPath == null) {
+                    markerPath = matchResult.groupValues.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+                }
+                ""
+            }
+        return withoutMarkers.trim() to markerPath
     }
 
     private fun handleNotification(
@@ -1456,6 +1498,23 @@ class ServerManager(
                     }
                 }
 
+                "image" -> {
+                    val url = piece.optString("url").trim()
+                    if (url.startsWith("data:image/", ignoreCase = true)) {
+                        parts += "[Image] inline"
+                    } else if (url.isNotEmpty()) {
+                        parts += "[Image] $url"
+                    }
+                }
+
+                "localImage" -> {
+                    val path = piece.optString("path").trim()
+                    if (path.isNotEmpty()) {
+                        val name = File(path).name.ifEmpty { path }
+                        parts += "[Image] $name"
+                    }
+                }
+
                 "skill" -> {
                     val name = piece.optString("name").trim()
                     val path = piece.optString("path").trim()
@@ -1782,6 +1841,8 @@ class ServerManager(
         return out
     }
 }
+
+private val LOCAL_IMAGE_MARKER_REGEX = Regex("\\[\\[litter_local_image:([^\\]]+)]]")
 
 private fun Any?.asLongOrNull(): Long? {
     return when (this) {

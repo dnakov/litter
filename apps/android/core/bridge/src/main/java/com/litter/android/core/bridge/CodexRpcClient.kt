@@ -3,8 +3,11 @@ package com.litter.android.core.bridge
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
+// This client exists for on-device bridge bootstrap and legacy callsites.
+// App runtime message/session flows use app/state/BridgeRpcTransport.
 class CodexRpcClient {
     private var activePort: Int? = null
     private var serverUrl: String? = null
@@ -424,7 +427,19 @@ class CodexRpcClient {
     private fun request(
         method: String,
         params: JSONObject? = null,
-    ): JSONObject = rpc().request(method = method, params = params)
+    ): JSONObject {
+        return runCatching {
+            rpc().request(method = method, params = params)
+        }.getOrElse { error ->
+            if (!isRecoverableTransportFailure(error)) {
+                throw error
+            }
+            synchronized(this) {
+                recoverTransportAfterFailure(error)
+            }
+            rpc().request(method = method, params = params)
+        }
+    }
 
     @Synchronized
     private fun rpc(): JsonRpcWebSocketClient {
@@ -441,39 +456,30 @@ class CodexRpcClient {
 
     @Synchronized
     private fun connectBlocking(timeoutSeconds: Long = 15): Int {
-        val port =
-            activePort ?: run {
-                val startResult = NativeCodexBridge.startServerPort()
-                if (startResult <= 0) {
-                    throw IllegalStateException("Failed to start Codex bridge server (status=$startResult)")
-                }
-                activePort = startResult
-                serverUrl = "ws://127.0.0.1:$startResult"
-                startResult
-            }
-
-        val url = serverUrl ?: "ws://127.0.0.1:$port"
+        val port = activePort ?: startLocalBridgeServer()
+        val url = serverUrl ?: "$LOCAL_BRIDGE_URL_PREFIX$port"
         val currentClient = rpcClient
         if (currentClient == null) {
-            val connectedClient = connectWithRetry(url = url, timeoutSeconds = timeoutSeconds)
+            val connectedClient = connectWithRestartFallback(url = url, timeoutSeconds = timeoutSeconds)
             rpcClient = connectedClient
-            initialized = false
-            initializeResponse = null
+            resetInitializeState()
             attachNotificationListeners(connectedClient)
             return port
         }
 
         try {
-            currentClient.connect(timeoutSeconds = timeoutSeconds)
-        } catch (_: Throwable) {
+            val reconnected = currentClient.connect(timeoutSeconds = timeoutSeconds)
+            if (reconnected) {
+                resetInitializeState()
+            }
+        } catch (error: Throwable) {
             currentClient.close()
-            val connectedClient = connectWithRetry(url = url, timeoutSeconds = timeoutSeconds)
+            val connectedClient = connectWithRestartFallback(url = url, timeoutSeconds = timeoutSeconds)
             rpcClient = connectedClient
-            initialized = false
-            initializeResponse = null
+            resetInitializeState()
             attachNotificationListeners(connectedClient)
         }
-        return port
+        return activePort ?: port
     }
 
     @Synchronized
@@ -482,17 +488,42 @@ class CodexRpcClient {
             return initializeResponse ?: InitializeResponse()
         }
         val client = rpcClient ?: throw IllegalStateException("Codex bridge RPC client unavailable")
-        val result = client.request(
-            method = "initialize",
-            params =
-                JSONObject().put(
-                    "clientInfo",
-                    JSONObject()
-                        .put("name", "Litter")
-                        .put("version", "1.0")
-                        .put("title", JSONObject.NULL)
-                )
-        )
+        val result = runCatching {
+            client.request(
+                method = "initialize",
+                params =
+                    JSONObject().put(
+                        "clientInfo",
+                        JSONObject()
+                            .put("name", "Litter")
+                            .put("version", "1.0")
+                            .put("title", JSONObject.NULL)
+                    )
+            )
+        }.getOrElse { error ->
+            if (!isRecoverableTransportFailure(error)) {
+                throw error
+            }
+            recoverTransportAfterFailure(error)
+            val recoveredClient = rpcClient ?: connectWithRestartFallback(
+                url = serverUrl ?: "$LOCAL_BRIDGE_URL_PREFIX${startLocalBridgeServer()}",
+                timeoutSeconds = 15,
+            ).also { connectedClient ->
+                rpcClient = connectedClient
+                attachNotificationListeners(connectedClient)
+            }
+            recoveredClient.request(
+                method = "initialize",
+                params =
+                    JSONObject().put(
+                        "clientInfo",
+                        JSONObject()
+                            .put("name", "Litter")
+                            .put("version", "1.0")
+                            .put("title", JSONObject.NULL)
+                    )
+            )
+        }
         val response = InitializeResponse(userAgent = result.stringOrNull("userAgent"))
         initialized = true
         initializeResponse = response
@@ -511,6 +542,56 @@ class CodexRpcClient {
         val lower = error.message?.lowercase().orEmpty()
         return lower.contains("codex-linux-sandbox was required but not provided") ||
             lower.contains("missing codex-linux-sandbox executable path")
+    }
+
+    private fun isRecoverableTransportFailure(error: Throwable): Boolean {
+        if (error is IOException) {
+            return true
+        }
+        val lower = error.message?.lowercase().orEmpty()
+        if (lower.contains("websocket") || lower.contains("codex bridge request failed")) {
+            return true
+        }
+        return error.cause?.let(::isRecoverableTransportFailure) ?: false
+    }
+
+    @Synchronized
+    private fun recoverTransportAfterFailure(_cause: Throwable) {
+        rpcClient?.close()
+        rpcClient = null
+        websocketListenerIds.clear()
+        resetInitializeState()
+
+        if (activePort != null && shouldStartOnDeviceBridge()) {
+            runCatching { NativeCodexBridge.stopServer() }
+            activePort = null
+            serverUrl = null
+        }
+    }
+
+    @Synchronized
+    private fun resetInitializeState() {
+        initialized = false
+        initializeResponse = null
+    }
+
+    private fun shouldStartOnDeviceBridge(): Boolean = CodexRuntimeStartupPolicy.onDeviceBridgeEnabled()
+
+    @Synchronized
+    private fun startLocalBridgeServer(): Int {
+        if (!shouldStartOnDeviceBridge()) {
+            throw IllegalStateException(
+                "On-device Codex bridge startup is disabled (mode=${CodexRuntimeStartupPolicy.runtimeMode()}). " +
+                    "Connect to a remote server in this build flavor.",
+            )
+        }
+        val startResult = NativeCodexBridge.startServerPort()
+        if (startResult <= 0) {
+            throw IllegalStateException("Failed to start Codex bridge server (status=$startResult)")
+        }
+        activePort = startResult
+        serverUrl = "$LOCAL_BRIDGE_URL_PREFIX$startResult"
+        return startResult
     }
 
     private fun connectWithRetry(
@@ -534,9 +615,76 @@ class CodexRpcClient {
         throw IllegalStateException("Failed to connect to Codex bridge at $url", lastError)
     }
 
+    @Synchronized
+    private fun connectWithRestartFallback(
+        url: String,
+        timeoutSeconds: Long,
+    ): JsonRpcWebSocketClient {
+        return runCatching {
+            connectWithRetry(url = url, timeoutSeconds = timeoutSeconds)
+        }.getOrElse { firstError ->
+            if (!url.startsWith(LOCAL_BRIDGE_URL_PREFIX) || !shouldStartOnDeviceBridge()) {
+                throw firstError
+            }
+            recoverTransportAfterFailure(firstError)
+            val restartedPort = startLocalBridgeServer()
+            connectWithRetry(
+                url = "$LOCAL_BRIDGE_URL_PREFIX$restartedPort",
+                timeoutSeconds = timeoutSeconds,
+            )
+        }
+    }
+
     companion object {
         private const val DEFAULT_SANDBOX_MODE = "workspace-write"
         private const val FALLBACK_SANDBOX_MODE = "danger-full-access"
+        private const val LOCAL_BRIDGE_URL_PREFIX = "ws://127.0.0.1:"
+    }
+}
+
+object CodexRuntimeStartupPolicy {
+    private const val APP_BUILD_CONFIG_CLASS = "com.sigkitten.litter.android.BuildConfig"
+    private const val BUILD_CONFIG_FLAG = "ENABLE_ON_DEVICE_BRIDGE"
+    private const val SYSTEM_PROPERTY = "litter.android.on_device_bridge.enabled"
+    private const val ENV_VARIABLE = "LITTER_ANDROID_ON_DEVICE_BRIDGE_ENABLED"
+
+    fun onDeviceBridgeEnabled(
+        buildConfigValue: Boolean? = readBuildConfigFlag(),
+        systemPropertyValue: String? = System.getProperty(SYSTEM_PROPERTY),
+        environmentValue: String? = System.getenv(ENV_VARIABLE),
+    ): Boolean {
+        val fromSystemProperty = parseBooleanFlag(systemPropertyValue)
+        if (fromSystemProperty != null) {
+            return fromSystemProperty
+        }
+        val fromEnvironment = parseBooleanFlag(environmentValue)
+        if (fromEnvironment != null) {
+            return fromEnvironment
+        }
+        return buildConfigValue ?: true
+    }
+
+    fun runtimeMode(): String = if (onDeviceBridgeEnabled()) "hybrid" else "remote_only"
+
+    fun parseBooleanFlag(raw: String?): Boolean? {
+        val normalized = raw?.trim()?.lowercase() ?: return null
+        return when (normalized) {
+            "1", "true", "yes", "on" -> true
+            "0", "false", "no", "off" -> false
+            else -> null
+        }
+    }
+
+    fun readBuildConfigFlag(
+        className: String = APP_BUILD_CONFIG_CLASS,
+        fieldName: String = BUILD_CONFIG_FLAG,
+    ): Boolean? {
+        return runCatching {
+            val clazz = Class.forName(className)
+            val field = clazz.getDeclaredField(fieldName)
+            val value = field.get(null)
+            value as? Boolean
+        }.getOrNull()
     }
 }
 

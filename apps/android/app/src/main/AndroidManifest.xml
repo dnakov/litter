@@ -10,6 +10,12 @@
         android:label="Litter"
         android:supportsRtl="true"
         android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
+        <meta-data
+            android:name="com.litter.android.runtime.STARTUP_MODE"
+            android:value="${runtimeStartupMode}" />
+        <meta-data
+            android:name="com.litter.android.runtime.ENABLE_ON_DEVICE_BRIDGE"
+            android:value="${enableOnDeviceBridge}" />
         <activity
             android:name="com.litter.android.MainActivity"
             android:exported="true">

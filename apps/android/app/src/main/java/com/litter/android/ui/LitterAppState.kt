@@ -7,6 +7,7 @@ import com.litter.android.core.network.DiscoverySource
 import com.litter.android.core.network.ServerDiscoveryService
 import com.litter.android.state.AccountState
 import com.litter.android.state.AppState
+import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ModelSelection
@@ -82,6 +83,7 @@ data class UiShellState(
     val connectionStatus: ServerConnectionStatus = ServerConnectionStatus.DISCONNECTED,
     val connectionError: String? = null,
     val connectedServers: List<ServerConfig> = emptyList(),
+    val activeServerId: String? = null,
     val serverCount: Int = 0,
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
@@ -96,6 +98,7 @@ data class UiShellState(
     val discovery: DiscoveryUiState = DiscoveryUiState(),
     val showSettings: Boolean = false,
     val showAccount: Boolean = false,
+    val accountOpenedFromSettings: Boolean = false,
     val accountState: AccountState = AccountState(),
     val apiKeyDraft: String = "",
     val isAuthWorking: Boolean = false,
@@ -199,6 +202,7 @@ class DefaultLitterAppState(
     override val uiState: StateFlow<UiShellState> = _uiState.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lastObservedAuthStatusByServerId = mutableMapOf<String, AuthStatus>()
 
     private val observerHandle: Closeable =
         serverManager.observe { backend ->
@@ -389,17 +393,18 @@ class DefaultLitterAppState(
             it.copy(
                 showSettings = true,
                 showAccount = false,
+                accountOpenedFromSettings = false,
                 discovery = it.discovery.copy(isVisible = false),
             )
         }
     }
 
     override fun dismissSettings() {
-        _uiState.update { it.copy(showSettings = false) }
+        _uiState.update { it.copy(showSettings = false, accountOpenedFromSettings = false) }
     }
 
     override fun openAccount() {
-        _uiState.update { it.copy(showSettings = false, showAccount = true) }
+        _uiState.update { it.copy(showSettings = false, showAccount = true, accountOpenedFromSettings = true) }
         serverManager.refreshAccountState { result ->
             result.onFailure { error ->
                 setUiError(error.message ?: "Failed to refresh account")
@@ -408,7 +413,13 @@ class DefaultLitterAppState(
     }
 
     override fun dismissAccount() {
-        _uiState.update { it.copy(showAccount = false, showSettings = true) }
+        _uiState.update { current ->
+            current.copy(
+                showAccount = false,
+                showSettings = current.accountOpenedFromSettings,
+                accountOpenedFromSettings = false,
+            )
+        }
     }
 
     override fun updateApiKeyDraft(value: String) {
@@ -467,6 +478,7 @@ class DefaultLitterAppState(
                 isSidebarOpen = false,
                 showSettings = false,
                 showAccount = false,
+                accountOpenedFromSettings = false,
                 sshLogin = it.sshLogin.copy(isVisible = false, isConnecting = false, errorMessage = null),
             )
         }
@@ -952,11 +964,21 @@ class DefaultLitterAppState(
 
     private fun mergeBackendState(backend: AppState) {
         val activeThread = backend.activeThread
+        val activeServerId = backend.activeServerId ?: backend.activeThreadKey?.serverId ?: backend.servers.firstOrNull()?.id
+        val accountState = backend.activeAccount
         _uiState.update { current ->
+            val shouldAutoOpenAccount =
+                shouldAutoOpenAccountSheet(
+                    activeServerId = activeServerId,
+                    accountState = accountState,
+                    connectionStatus = backend.connectionStatus,
+                    previousConnectionStatus = current.connectionStatus,
+                )
             current.copy(
                 connectionStatus = backend.connectionStatus,
                 connectionError = backend.connectionError,
                 connectedServers = backend.servers,
+                activeServerId = activeServerId,
                 serverCount = backend.servers.size,
                 models = backend.availableModels,
                 selectedModelId = backend.selectedModel.modelId,
@@ -966,9 +988,29 @@ class DefaultLitterAppState(
                 messages = activeThread?.messages ?: emptyList(),
                 isSending = activeThread?.status == ThreadStatus.THINKING,
                 currentCwd = backend.currentCwd,
-                accountState = backend.activeAccount,
+                accountState = accountState,
+                showSettings = if (shouldAutoOpenAccount) false else current.showSettings,
+                showAccount = current.showAccount || shouldAutoOpenAccount,
+                accountOpenedFromSettings = if (shouldAutoOpenAccount) false else current.accountOpenedFromSettings,
             )
         }
+    }
+
+    private fun shouldAutoOpenAccountSheet(
+        activeServerId: String?,
+        accountState: AccountState,
+        connectionStatus: ServerConnectionStatus,
+        previousConnectionStatus: ServerConnectionStatus,
+    ): Boolean {
+        val serverId = activeServerId ?: return false
+        val previous = lastObservedAuthStatusByServerId[serverId]
+        lastObservedAuthStatusByServerId[serverId] = accountState.status
+        val justConnected =
+            previousConnectionStatus != ServerConnectionStatus.READY &&
+                connectionStatus == ServerConnectionStatus.READY
+        return connectionStatus == ServerConnectionStatus.READY &&
+            accountState.status == AuthStatus.NOT_LOGGED_IN &&
+            (previous != AuthStatus.NOT_LOGGED_IN || justConnected)
     }
 
     private fun setUiError(message: String) {

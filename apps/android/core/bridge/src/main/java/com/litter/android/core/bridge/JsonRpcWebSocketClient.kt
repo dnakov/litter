@@ -17,14 +17,18 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+// Core bootstrap websocket client used by CodexRpcClient for on-device bridge access.
+// App runtime RPC flows use app/state/BridgeRpcTransport.
 internal class JsonRpcWebSocketClient(
     private val url: String,
 ) {
     private val requestCounter = AtomicInteger(1)
     private val listenerCounter = AtomicInteger(1)
+    private val connectionEpochCounter = AtomicInteger(0)
     private val pending = ConcurrentHashMap<String, PendingRequest>()
     private val notificationListeners = ConcurrentHashMap<Int, (String, JSONObject) -> Unit>()
     private val outputLock = Any()
+    private val lifecycleLock = Any()
     private val random = SecureRandom()
 
     @Volatile
@@ -40,46 +44,59 @@ internal class JsonRpcWebSocketClient(
     private var connected = false
 
     @Volatile
+    private var connectedEpoch = 0
+
+    @Volatile
     private var readerThread: Thread? = null
 
-    fun connect(timeoutSeconds: Long = 8) {
-        if (connected && socket?.isConnected == true && socket?.isClosed == false) {
-            return
-        }
-
-        val uri = URI(url)
-        val host = uri.host ?: throw IllegalStateException("Invalid websocket URL host: $url")
-        val port = if (uri.port > 0) uri.port else 80
-        val path = buildPath(uri)
-
-        val sock = Socket()
-        try {
-            sock.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
-            sock.soTimeout = (timeoutSeconds * 1000L).toInt()
-            val inStream = sock.getInputStream()
-            val outStream = sock.getOutputStream()
-
-            performHandshake(
-                socket = sock,
-                input = inStream,
-                output = outStream,
-                host = host,
-                port = port,
-                path = path,
-            )
-
-            sock.soTimeout = 0
-            socket = sock
-            input = inStream
-            output = outStream
-            connected = true
-            startReader()
-        } catch (error: Throwable) {
-            try {
-                sock.close()
-            } catch (_: Throwable) {
+    fun connect(timeoutSeconds: Long = 8): Boolean {
+        synchronized(lifecycleLock) {
+            if (!JsonRpcTransportReliabilityPolicy.shouldReconnect(
+                    connected = connected,
+                    socketConnected = socket?.isConnected == true,
+                    socketClosed = socket?.isClosed ?: true,
+                    hasInput = input != null,
+                    hasOutput = output != null,
+                    readerAlive = readerThread?.isAlive == true,
+                )
+            ) {
+                return false
             }
-            throw IllegalStateException("Failed websocket connect/handshake at $url", error)
+
+            closeSocketLocked()
+
+            val uri = URI(url)
+            val host = uri.host ?: throw IllegalStateException("Invalid websocket URL host: $url")
+            val port = if (uri.port > 0) uri.port else 80
+            val path = buildPath(uri)
+
+            val sock = Socket()
+            try {
+                sock.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
+                sock.soTimeout = (timeoutSeconds * 1000L).toInt()
+                val inStream = sock.getInputStream()
+                val outStream = sock.getOutputStream()
+
+                performHandshake(
+                    input = inStream,
+                    output = outStream,
+                    host = host,
+                    port = port,
+                    path = path,
+                )
+
+                sock.soTimeout = 0
+                socket = sock
+                input = inStream
+                output = outStream
+                connected = true
+                connectedEpoch = connectionEpochCounter.incrementAndGet()
+                startReaderLocked(connectedEpoch)
+                return true
+            } catch (error: Throwable) {
+                runCatching { sock.close() }
+                throw IllegalStateException("Failed websocket connect/handshake at $url", error)
+            }
         }
     }
 
@@ -129,53 +146,40 @@ internal class JsonRpcWebSocketClient(
     }
 
     fun close() {
-        connected = false
-        readerThread?.interrupt()
-        readerThread = null
-        try {
-            sendFrame(opcode = 0x8, payload = ByteArray(0))
-        } catch (_: Throwable) {
-        }
-        try {
-            socket?.close()
-        } catch (_: Throwable) {
-        }
-        socket = null
-        input = null
-        output = null
-        failPending(IOException("WebSocket disconnected"))
+        runCatching { sendFrame(opcode = 0x8, payload = ByteArray(0)) }
+        markDisconnected(IOException("WebSocket disconnected"), expectedEpoch = null)
     }
 
-    private fun startReader() {
+    private fun startReaderLocked(expectedEpoch: Int) {
         val inStream = input ?: throw IllegalStateException("Input stream unavailable")
         readerThread = Thread {
+            var disconnectCause: Throwable? = null
             try {
-                while (connected) {
+                while (connected && connectedEpoch == expectedEpoch) {
                     val frame = readFrame(inStream)
                     when (frame.opcode) {
                         0x1 -> {
                             val text = String(frame.payload, StandardCharsets.UTF_8)
                             handleMessage(text)
                         }
+
                         0x8 -> {
-                            connected = false
+                            disconnectCause = IOException("WebSocket closed by peer")
                             break
                         }
+
                         0x9 -> sendFrame(opcode = 0xA, payload = frame.payload)
                         0xA -> {
                         }
                     }
                 }
             } catch (error: Throwable) {
-                if (connected) {
-                    failPending(error)
-                }
+                disconnectCause = error
             } finally {
-                connected = false
-                try {
-                    socket?.close()
-                } catch (_: Throwable) {
-                }
+                markDisconnected(
+                    cause = disconnectCause ?: IOException("WebSocket disconnected"),
+                    expectedEpoch = expectedEpoch,
+                )
             }
         }.apply {
             name = "Litter-JsonRpcWebSocketReader"
@@ -184,8 +188,45 @@ internal class JsonRpcWebSocketClient(
         }
     }
 
+    private fun markDisconnected(
+        cause: Throwable,
+        expectedEpoch: Int?,
+    ) {
+        var shouldFailPending = false
+        var socketToClose: Socket? = null
+
+        synchronized(lifecycleLock) {
+            if (expectedEpoch != null && connectedEpoch != expectedEpoch) {
+                return
+            }
+
+            shouldFailPending = connected || socket != null || input != null || output != null
+            connected = false
+            readerThread = null
+
+            socketToClose = socket
+            socket = null
+            input = null
+            output = null
+        }
+
+        runCatching { socketToClose?.close() }
+        if (shouldFailPending) {
+            failPending(cause)
+        }
+    }
+
+    private fun closeSocketLocked() {
+        connected = false
+        readerThread = null
+        val sock = socket
+        socket = null
+        input = null
+        output = null
+        runCatching { sock?.close() }
+    }
+
     private fun performHandshake(
-        socket: Socket,
         input: InputStream,
         output: OutputStream,
         host: String,
@@ -269,41 +310,51 @@ internal class JsonRpcWebSocketClient(
 
     private fun sendFrame(opcode: Int, payload: ByteArray) {
         val out = output ?: throw IllegalStateException("WebSocket output unavailable")
+        val epoch = connectedEpoch
         synchronized(outputLock) {
-            val frame = ByteArrayOutputStream()
-            frame.write(0x80 or (opcode and 0x0F))
+            try {
+                val frame = ByteArrayOutputStream()
+                frame.write(0x80 or (opcode and 0x0F))
 
-            val maskBit = 0x80
-            val len = payload.size
-            when {
-                len < 126 -> frame.write(maskBit or len)
-                len <= 0xFFFF -> {
-                    frame.write(maskBit or 126)
-                    frame.write((len ushr 8) and 0xFF)
-                    frame.write(len and 0xFF)
-                }
-                else -> {
-                    frame.write(maskBit or 127)
-                    var value = len.toLong()
-                    val bytes = ByteArray(8)
-                    for (idx in 7 downTo 0) {
-                        bytes[idx] = (value and 0xFF).toByte()
-                        value = value ushr 8
+                val maskBit = 0x80
+                val len = payload.size
+                when {
+                    len < 126 -> frame.write(maskBit or len)
+                    len <= 0xFFFF -> {
+                        frame.write(maskBit or 126)
+                        frame.write((len ushr 8) and 0xFF)
+                        frame.write(len and 0xFF)
                     }
-                    frame.write(bytes)
+
+                    else -> {
+                        frame.write(maskBit or 127)
+                        var value = len.toLong()
+                        val bytes = ByteArray(8)
+                        for (idx in 7 downTo 0) {
+                            bytes[idx] = (value and 0xFF).toByte()
+                            value = value ushr 8
+                        }
+                        frame.write(bytes)
+                    }
                 }
+
+                val mask = ByteArray(4)
+                random.nextBytes(mask)
+                frame.write(mask)
+
+                for (idx in payload.indices) {
+                    frame.write(payload[idx].toInt() xor mask[idx % 4].toInt())
+                }
+
+                out.write(frame.toByteArray())
+                out.flush()
+            } catch (error: Throwable) {
+                markDisconnected(
+                    cause = IOException("WebSocket send failed", error),
+                    expectedEpoch = epoch,
+                )
+                throw error
             }
-
-            val mask = ByteArray(4)
-            random.nextBytes(mask)
-            frame.write(mask)
-
-            for (idx in payload.indices) {
-                frame.write(payload[idx].toInt() xor mask[idx % 4].toInt())
-            }
-
-            out.write(frame.toByteArray())
-            out.flush()
         }
     }
 
@@ -468,4 +519,31 @@ internal class JsonRpcWebSocketClient(
         var result: JSONObject? = null
         var error: IllegalStateException? = null
     }
+}
+
+internal object JsonRpcTransportReliabilityPolicy {
+    fun shouldReconnect(
+        connected: Boolean,
+        socketConnected: Boolean,
+        socketClosed: Boolean,
+        hasInput: Boolean,
+        hasOutput: Boolean,
+        readerAlive: Boolean,
+    ): Boolean = !isHealthy(
+        connected = connected,
+        socketConnected = socketConnected,
+        socketClosed = socketClosed,
+        hasInput = hasInput,
+        hasOutput = hasOutput,
+        readerAlive = readerAlive,
+    )
+
+    fun isHealthy(
+        connected: Boolean,
+        socketConnected: Boolean,
+        socketClosed: Boolean,
+        hasInput: Boolean,
+        hasOutput: Boolean,
+        readerAlive: Boolean,
+    ): Boolean = connected && socketConnected && !socketClosed && hasInput && hasOutput && readerAlive
 }

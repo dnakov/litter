@@ -18,13 +18,17 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+// Canonical app-runtime websocket transport used by ServerManager for user-facing RPC flows.
+// The core bridge module has a separate websocket client for on-device bridge bootstrap only.
 internal class BridgeRpcTransport(
     private val url: String,
     private val onNotification: (method: String, params: JSONObject?) -> Unit,
 ) : Closeable {
     private val requestCounter = AtomicInteger(1)
+    private val connectionEpochCounter = AtomicInteger(0)
     private val pending = ConcurrentHashMap<String, PendingRequest>()
     private val outputLock = Any()
+    private val lifecycleLock = Any()
     private val random = SecureRandom()
 
     @Volatile
@@ -40,43 +44,64 @@ internal class BridgeRpcTransport(
     private var connected = false
 
     @Volatile
+    private var connectedEpoch = 0
+
+    @Volatile
+    private var initializedEpoch = 0
+
+    @Volatile
     private var readerThread: Thread? = null
 
-    fun connect(timeoutSeconds: Long = 8) {
-        if (connected && socket?.isConnected == true && socket?.isClosed == false) {
-            return
-        }
+    fun connect(timeoutSeconds: Long = 8): Boolean {
+        synchronized(lifecycleLock) {
+            if (!BridgeTransportReliabilityPolicy.shouldReconnect(
+                    connected = connected,
+                    socketConnected = socket?.isConnected == true,
+                    socketClosed = socket?.isClosed ?: true,
+                    hasInput = input != null,
+                    hasOutput = output != null,
+                    readerAlive = readerThread?.isAlive == true,
+                )
+            ) {
+                return false
+            }
 
-        val uri = URI(url)
-        val host = uri.host ?: throw IllegalStateException("Invalid websocket host for URL: $url")
-        val port = if (uri.port > 0) uri.port else 80
-        val path = buildPath(uri)
+            closeSocketLocked()
 
-        val sock = Socket()
-        try {
-            sock.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
-            sock.soTimeout = (timeoutSeconds * 1000L).toInt()
-            val inStream = sock.getInputStream()
-            val outStream = sock.getOutputStream()
+            val uri = URI(url)
+            val host = uri.host ?: throw IllegalStateException("Invalid websocket host for URL: $url")
+            val port = if (uri.port > 0) uri.port else 80
+            val path = buildPath(uri)
 
-            performHandshake(
-                socket = sock,
-                input = inStream,
-                output = outStream,
-                host = host,
-                port = port,
-                path = path,
-            )
+            val sock = Socket()
+            try {
+                sock.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
+                sock.soTimeout = (timeoutSeconds * 1000L).toInt()
+                val inStream = sock.getInputStream()
+                val outStream = sock.getOutputStream()
 
-            sock.soTimeout = 0
-            socket = sock
-            input = inStream
-            output = outStream
-            connected = true
-            startReader()
-        } catch (error: Throwable) {
-            runCatching { sock.close() }
-            throw IllegalStateException("Failed websocket connect/handshake at $url", error)
+                performHandshake(
+                    socket = sock,
+                    input = inStream,
+                    output = outStream,
+                    host = host,
+                    port = port,
+                    path = path,
+                )
+
+                sock.soTimeout = 0
+                socket = sock
+                input = inStream
+                output = outStream
+                connected = true
+                connectedEpoch = connectionEpochCounter.incrementAndGet()
+                initializedEpoch = 0
+                startReaderLocked(connectedEpoch)
+                return true
+            } catch (error: Throwable) {
+                runCatching { sock.close() }
+                throw IllegalStateException("Failed websocket connect/handshake at $url", error)
+            }
         }
     }
 
@@ -86,6 +111,50 @@ internal class BridgeRpcTransport(
         timeoutSeconds: Long = 20,
     ): JSONObject {
         connect()
+        if (method != INITIALIZE_METHOD) {
+            ensureInitialized(timeoutSeconds)
+        }
+
+        val result = requestInternal(method = method, params = params, timeoutSeconds = timeoutSeconds)
+        if (method == INITIALIZE_METHOD) {
+            synchronized(lifecycleLock) {
+                if (connected) {
+                    initializedEpoch = connectedEpoch
+                }
+            }
+        }
+        return result
+    }
+
+    override fun close() {
+        runCatching { sendFrame(0x8, ByteArray(0)) }
+        markDisconnected(IOException("WebSocket disconnected"), expectedEpoch = null)
+    }
+
+    private fun ensureInitialized(timeoutSeconds: Long) {
+        val epoch = connectedEpoch
+        if (epoch == 0 || initializedEpoch == epoch) {
+            return
+        }
+
+        requestInternal(
+            method = INITIALIZE_METHOD,
+            params = defaultInitializeParams(),
+            timeoutSeconds = maxOf(timeoutSeconds, 8),
+        )
+
+        synchronized(lifecycleLock) {
+            if (connectedEpoch == epoch && connected) {
+                initializedEpoch = epoch
+            }
+        }
+    }
+
+    private fun requestInternal(
+        method: String,
+        params: JSONObject?,
+        timeoutSeconds: Long,
+    ): JSONObject {
         val id = requestCounter.getAndIncrement().toString()
         val payload = JSONObject()
             .put("jsonrpc", "2.0")
@@ -113,23 +182,12 @@ internal class BridgeRpcTransport(
         return pendingRequest.result ?: JSONObject()
     }
 
-    override fun close() {
-        connected = false
-        readerThread?.interrupt()
-        readerThread = null
-        runCatching { sendFrame(0x8, ByteArray(0)) }
-        runCatching { socket?.close() }
-        socket = null
-        input = null
-        output = null
-        failPending(IOException("WebSocket disconnected"))
-    }
-
-    private fun startReader() {
+    private fun startReaderLocked(expectedEpoch: Int) {
         val inStream = input ?: throw IllegalStateException("WebSocket input stream unavailable")
         readerThread = Thread {
+            var disconnectCause: Throwable? = null
             try {
-                while (connected) {
+                while (connected && connectedEpoch == expectedEpoch) {
                     val frame = readFrame(inStream)
                     when (frame.opcode) {
                         0x1 -> {
@@ -138,7 +196,7 @@ internal class BridgeRpcTransport(
                         }
 
                         0x8 -> {
-                            connected = false
+                            disconnectCause = IOException("WebSocket closed by peer")
                             break
                         }
 
@@ -149,12 +207,12 @@ internal class BridgeRpcTransport(
                     }
                 }
             } catch (error: Throwable) {
-                if (connected) {
-                    failPending(error)
-                }
+                disconnectCause = error
             } finally {
-                connected = false
-                runCatching { socket?.close() }
+                markDisconnected(
+                    cause = disconnectCause ?: IOException("WebSocket disconnected"),
+                    expectedEpoch = expectedEpoch,
+                )
             }
         }.apply {
             name = "Litter-BridgeRpcTransport-Reader"
@@ -162,6 +220,56 @@ internal class BridgeRpcTransport(
             start()
         }
     }
+
+    private fun markDisconnected(
+        cause: Throwable,
+        expectedEpoch: Int?,
+    ) {
+        var shouldFailPending = false
+        var socketToClose: Socket? = null
+
+        synchronized(lifecycleLock) {
+            if (expectedEpoch != null && connectedEpoch != expectedEpoch) {
+                return
+            }
+
+            shouldFailPending = connected || socket != null || input != null || output != null
+            connected = false
+            initializedEpoch = 0
+            readerThread = null
+
+            socketToClose = socket
+            socket = null
+            input = null
+            output = null
+        }
+
+        runCatching { socketToClose?.close() }
+        if (shouldFailPending) {
+            failPending(cause)
+        }
+    }
+
+    private fun closeSocketLocked() {
+        connected = false
+        initializedEpoch = 0
+        readerThread = null
+        val sock = socket
+        socket = null
+        input = null
+        output = null
+        runCatching { sock?.close() }
+    }
+
+    private fun defaultInitializeParams(): JSONObject =
+        JSONObject()
+            .put(
+                "clientInfo",
+                JSONObject()
+                    .put("name", "Litter Android")
+                    .put("version", "1.0")
+                    .put("title", JSONObject.NULL),
+            )
 
     private fun performHandshake(
         socket: Socket,
@@ -249,42 +357,51 @@ internal class BridgeRpcTransport(
 
     private fun sendFrame(opcode: Int, payload: ByteArray) {
         val out = output ?: throw IllegalStateException("WebSocket output unavailable")
+        val epoch = connectedEpoch
         synchronized(outputLock) {
-            val frame = ByteArrayOutputStream()
-            frame.write(0x80 or (opcode and 0x0F))
+            try {
+                val frame = ByteArrayOutputStream()
+                frame.write(0x80 or (opcode and 0x0F))
 
-            val maskBit = 0x80
-            val len = payload.size
-            when {
-                len < 126 -> frame.write(maskBit or len)
-                len <= 0xFFFF -> {
-                    frame.write(maskBit or 126)
-                    frame.write((len ushr 8) and 0xFF)
-                    frame.write(len and 0xFF)
-                }
-
-                else -> {
-                    frame.write(maskBit or 127)
-                    var value = len.toLong()
-                    val bytes = ByteArray(8)
-                    for (index in 7 downTo 0) {
-                        bytes[index] = (value and 0xFF).toByte()
-                        value = value ushr 8
+                val maskBit = 0x80
+                val len = payload.size
+                when {
+                    len < 126 -> frame.write(maskBit or len)
+                    len <= 0xFFFF -> {
+                        frame.write(maskBit or 126)
+                        frame.write((len ushr 8) and 0xFF)
+                        frame.write(len and 0xFF)
                     }
-                    frame.write(bytes)
+
+                    else -> {
+                        frame.write(maskBit or 127)
+                        var value = len.toLong()
+                        val bytes = ByteArray(8)
+                        for (index in 7 downTo 0) {
+                            bytes[index] = (value and 0xFF).toByte()
+                            value = value ushr 8
+                        }
+                        frame.write(bytes)
+                    }
                 }
+
+                val mask = ByteArray(4)
+                random.nextBytes(mask)
+                frame.write(mask)
+
+                for (index in payload.indices) {
+                    frame.write(payload[index].toInt() xor mask[index % 4].toInt())
+                }
+
+                out.write(frame.toByteArray())
+                out.flush()
+            } catch (error: Throwable) {
+                markDisconnected(
+                    cause = IOException("WebSocket send failed", error),
+                    expectedEpoch = epoch,
+                )
+                throw error
             }
-
-            val mask = ByteArray(4)
-            random.nextBytes(mask)
-            frame.write(mask)
-
-            for (index in payload.indices) {
-                frame.write(payload[index].toInt() xor mask[index % 4].toInt())
-            }
-
-            out.write(frame.toByteArray())
-            out.flush()
         }
     }
 
@@ -440,4 +557,35 @@ internal class BridgeRpcTransport(
         var result: JSONObject? = null
         var error: IllegalStateException? = null
     }
+
+    private companion object {
+        private const val INITIALIZE_METHOD = "initialize"
+    }
+}
+
+internal object BridgeTransportReliabilityPolicy {
+    fun shouldReconnect(
+        connected: Boolean,
+        socketConnected: Boolean,
+        socketClosed: Boolean,
+        hasInput: Boolean,
+        hasOutput: Boolean,
+        readerAlive: Boolean,
+    ): Boolean = !isHealthy(
+        connected = connected,
+        socketConnected = socketConnected,
+        socketClosed = socketClosed,
+        hasInput = hasInput,
+        hasOutput = hasOutput,
+        readerAlive = readerAlive,
+    )
+
+    fun isHealthy(
+        connected: Boolean,
+        socketConnected: Boolean,
+        socketClosed: Boolean,
+        hasInput: Boolean,
+        hasOutput: Boolean,
+        readerAlive: Boolean,
+    ): Boolean = connected && socketConnected && !socketClosed && hasInput && hasOutput && readerAlive
 }

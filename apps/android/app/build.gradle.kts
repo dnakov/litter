@@ -16,6 +16,26 @@ android {
         versionName = "0.1.0"
     }
 
+    flavorDimensions += "runtime"
+    productFlavors {
+        create("onDevice") {
+            dimension = "runtime"
+            buildConfigField("boolean", "ENABLE_ON_DEVICE_BRIDGE", "true")
+            buildConfigField("String", "RUNTIME_STARTUP_MODE", "\"hybrid\"")
+            buildConfigField("String", "APP_RUNTIME_TRANSPORT", "\"app_bridge_rpc_transport\"")
+            manifestPlaceholders["runtimeStartupMode"] = "hybrid"
+            manifestPlaceholders["enableOnDeviceBridge"] = "true"
+        }
+        create("remoteOnly") {
+            dimension = "runtime"
+            buildConfigField("boolean", "ENABLE_ON_DEVICE_BRIDGE", "false")
+            buildConfigField("String", "RUNTIME_STARTUP_MODE", "\"remote_only\"")
+            buildConfigField("String", "APP_RUNTIME_TRANSPORT", "\"app_bridge_rpc_transport\"")
+            manifestPlaceholders["runtimeStartupMode"] = "remote_only"
+            manifestPlaceholders["enableOnDeviceBridge"] = "false"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -37,6 +57,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -60,4 +81,5 @@ dependencies {
     implementation("com.github.mwiede:jsch:0.2.22")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }

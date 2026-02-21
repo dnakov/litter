@@ -1,13 +1,26 @@
 package com.litter.android.ui
 
+import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.net.Uri
 import android.text.format.DateUtils
+import android.util.Base64
 import android.widget.TextView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +31,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -30,6 +44,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -37,10 +52,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -67,8 +89,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,6 +115,10 @@ import com.litter.android.state.ServerSource
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
 import io.noties.markwon.Markwon
+import kotlinx.coroutines.delay
+import java.io.File
+import java.io.FileOutputStream
+import java.util.Locale
 
 @Composable
 fun LitterAppShell(appState: LitterAppState) {
@@ -114,14 +146,20 @@ fun LitterAppShell(appState: LitterAppState) {
             )
 
             if (uiState.activeThreadKey == null) {
-                EmptyState()
+                EmptyState(
+                    connectionStatus = uiState.connectionStatus,
+                    onOpenDiscovery = appState::openDiscovery,
+                )
             } else {
                 ConversationPanel(
                     messages = uiState.messages,
                     draft = uiState.draft,
                     isSending = uiState.isSending,
                     onDraftChange = appState::updateDraft,
-                    onSend = appState::sendDraft,
+                    onSend = { payloadDraft ->
+                        appState.updateDraft(payloadDraft)
+                        appState.sendDraft()
+                    },
                     onInterrupt = appState::interrupt,
                 )
             }
@@ -382,16 +420,38 @@ private fun StatusDot(connectionStatus: ServerConnectionStatus) {
 }
 
 @Composable
-private fun EmptyState() {
+private fun EmptyState(
+    connectionStatus: ServerConnectionStatus,
+    onOpenDiscovery: () -> Unit,
+) {
+    val canConnect =
+        connectionStatus == ServerConnectionStatus.DISCONNECTED ||
+            connectionStatus == ServerConnectionStatus.ERROR
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = "Start a new session",
-            style = MaterialTheme.typography.bodyMedium,
-            color = LitterTheme.textMuted,
-        )
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "LITTER",
+                style = MaterialTheme.typography.titleMedium,
+                color = LitterTheme.accent,
+            )
+            Text(
+                text = "Open the sidebar to start a session",
+                style = MaterialTheme.typography.bodyMedium,
+                color = LitterTheme.textMuted,
+            )
+            if (canConnect) {
+                OutlinedButton(onClick = onOpenDiscovery) {
+                    Text("Connect to Server", color = LitterTheme.accent)
+                }
+            }
+        }
     }
 }
 
@@ -475,36 +535,136 @@ private fun SessionSidebar(
                                     if (isActive) LitterTheme.accent else LitterTheme.border,
                                 ),
                         ) {
-                            Column(
+                            Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.Top,
                             ) {
-                                Text(
-                                    text = thread.preview.ifBlank { "Untitled session" },
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = LitterTheme.textPrimary,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    text = "${relativeDate(thread.updatedAtEpochMillis)} * ${thread.cwd.ifBlank { "/" }}",
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = LitterTheme.textSecondary,
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
+                                if (thread.hasTurnActive) {
+                                    ActiveTurnPulseDot(modifier = Modifier.padding(top = 3.dp))
+                                } else {
+                                    Spacer(modifier = Modifier.size(8.dp))
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = thread.preview.ifBlank { "Untitled session" },
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = LitterTheme.textPrimary,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = relativeDate(thread.updatedAtEpochMillis),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = LitterTheme.textSecondary,
+                                            style = MaterialTheme.typography.labelLarge,
+                                        )
+                                        ServerSourceBadge(
+                                            source = thread.serverSource,
+                                            serverName = thread.serverName,
+                                        )
+                                        Text(
+                                            text = cwdLeaf(thread.cwd),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = LitterTheme.textMuted,
+                                            style = MaterialTheme.typography.labelLarge,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            TextButton(
-                onClick = onOpenSettings,
-                modifier = Modifier.fillMaxWidth(),
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { onOpenSettings() },
+                color = Color(0xFF131313),
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
             ) {
-                Text("Settings", color = LitterTheme.textSecondary)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = LitterTheme.textSecondary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text("Settings", color = LitterTheme.textSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text("Open", color = LitterTheme.accent, style = MaterialTheme.typography.labelLarge)
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ActiveTurnPulseDot(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "active_turn_pulse")
+    val pulse by
+        transition.animateFloat(
+            initialValue = 0.82f,
+            targetValue = 1.24f,
+            animationSpec =
+                infiniteRepeatable(
+                    animation = tween(durationMillis = 900),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+            label = "active_turn_pulse_scale",
+        )
+    Box(
+        modifier =
+            modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(LitterTheme.accent.copy(alpha = pulse.coerceIn(0.45f, 1f))),
+    )
+}
+
+@Composable
+private fun ServerSourceBadge(
+    source: ServerSource,
+    serverName: String,
+) {
+    val accent = serverSourceAccentColor(source)
+    Surface(
+        color = accent.copy(alpha = 0.13f),
+        shape = RoundedCornerShape(4.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .size(5.dp)
+                        .clip(CircleShape)
+                        .background(accent),
+            )
+            Text(
+                text = "${serverSourceLabel(source)}:${serverName.ifBlank { "server" }}",
+                color = accent,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -515,10 +675,28 @@ private fun ConversationPanel(
     draft: String,
     isSending: Boolean,
     onDraftChange: (String) -> Unit,
-    onSend: () -> Unit,
+    onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var attachedImagePath by remember { mutableStateOf<String?>(null) }
+    var attachmentError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+    val attachmentLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent(),
+        ) { uri ->
+            if (uri == null) {
+                return@rememberLauncherForActivityResult
+            }
+            val cachedPath = runCatching { cacheAttachmentImage(context, uri) }.getOrNull()
+            if (cachedPath != null) {
+                attachedImagePath = cachedPath
+                attachmentError = null
+            } else {
+                attachmentError = "Unable to attach image from picker"
+            }
+        }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -542,9 +720,20 @@ private fun ConversationPanel(
 
         InputBar(
             draft = draft,
+            attachedImagePath = attachedImagePath,
+            attachmentError = attachmentError,
             isSending = isSending,
             onDraftChange = onDraftChange,
-            onSend = onSend,
+            onAttachImage = { attachmentLauncher.launch("image/*") },
+            onClearAttachment = {
+                attachedImagePath = null
+                attachmentError = null
+            },
+            onSend = {
+                onSend(encodeDraftWithLocalImageAttachment(draft, attachedImagePath))
+                attachedImagePath = null
+                attachmentError = null
+            },
             onInterrupt = onInterrupt,
         )
     }
@@ -573,24 +762,14 @@ private fun MessageRow(message: ChatMessage) {
         }
 
         MessageRole.ASSISTANT -> {
-            AssistantMarkdown(
+            MessageMarkdownContent(
                 markdown = message.text,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
             )
         }
 
         MessageRole.SYSTEM -> {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xFF171717),
-                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                AssistantMarkdown(
-                    markdown = message.text,
-                    modifier = Modifier.fillMaxWidth().padding(10.dp),
-                )
-            }
+            SystemMessageCard(message = message)
         }
 
         MessageRole.REASONING -> {
@@ -617,8 +796,70 @@ private fun MessageRow(message: ChatMessage) {
 }
 
 @Composable
-private fun AssistantMarkdown(
+private fun MessageMarkdownContent(
     markdown: String,
+    modifier: Modifier = Modifier,
+    textColor: Color = Color(0xFFE0E0E0),
+) {
+    val blocks = remember(markdown) { splitMarkdownCodeBlocks(markdown) }
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        blocks.forEach { block ->
+            when (block) {
+                is MarkdownBlock.Text -> InlineMediaMarkdown(markdown = block.markdown, textColor = textColor)
+                is MarkdownBlock.Code -> CodeBlockCard(language = block.language, code = block.code)
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineMediaMarkdown(
+    markdown: String,
+    textColor: Color,
+) {
+    val segments = remember(markdown) { extractInlineSegments(markdown) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        segments.forEach { segment ->
+            when (segment) {
+                is InlineSegment.Text -> AssistantMarkdownText(markdown = segment.value, textColor = textColor)
+                is InlineSegment.ImageBytes -> {
+                    val bitmap =
+                        remember(segment.bytes) {
+                            BitmapFactory.decodeByteArray(segment.bytes, 0, segment.bytes.size)
+                        }
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Inline image",
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+
+                is InlineSegment.LocalImagePath -> {
+                    val bitmap = remember(segment.path) { BitmapFactory.decodeFile(segment.path) }
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Local image",
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMarkdownText(
+    markdown: String,
+    textColor: Color,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -630,7 +871,7 @@ private fun AssistantMarkdown(
             TextView(it).apply {
                 typeface = Typeface.MONOSPACE
                 textSize = 14f
-                setTextColor(android.graphics.Color.parseColor("#E0E0E0"))
+                setTextColor(textColor.toArgb())
                 setLineSpacing(0f, 1.2f)
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
@@ -640,10 +881,165 @@ private fun AssistantMarkdown(
 }
 
 @Composable
+private fun CodeBlockCard(
+    language: String,
+    code: String,
+    modifier: Modifier = Modifier,
+) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(code) { mutableStateOf(false) }
+    val horizontalScroll = rememberScrollState()
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1400L)
+            copied = false
+        }
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFF111111),
+        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+    ) {
+        Column {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF181818))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (language.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFF242424),
+                    ) {
+                        Text(
+                            text = language,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                            color = LitterTheme.textSecondary,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(code))
+                        copied = true
+                    },
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = if (copied) "Copied" else "Copy code",
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (copied) "Copied" else "Copy")
+                }
+            }
+
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(horizontalScroll)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = code,
+                    color = Color(0xFFCCCCCC),
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SystemMessageCard(message: ChatMessage) {
+    val (title, body) = remember(message.text) { extractSystemTitleAndBody(message.text) }
+    val toolCall = remember(title) { isToolCallTitle(title) }
+    val theme = remember(title) { systemCardTheme(title) }
+    val summary = remember(title, body, toolCall) { compactSystemSummary(title, body, toolCall) }
+    var expanded by remember(message.id) { mutableStateOf(!toolCall) }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xFF171717),
+        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+        ) {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .let { base ->
+                            if (toolCall) {
+                                base.clickable { expanded = !expanded }
+                            } else {
+                                base
+                            }
+                        },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(theme.accent),
+                )
+                Text(
+                    text = summary,
+                    color = LitterTheme.textSecondary,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (toolCall) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (expanded) "Collapse" else "Expand",
+                        tint = LitterTheme.textMuted,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+
+            if (!toolCall || expanded) {
+                val markdown = if (toolCall) body else message.text
+                if (markdown.isNotBlank()) {
+                    MessageMarkdownContent(
+                        markdown = markdown,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        textColor = Color(0xFFD2D2D2),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun InputBar(
     draft: String,
+    attachedImagePath: String?,
+    attachmentError: String?,
     isSending: Boolean,
     onDraftChange: (String) -> Unit,
+    onAttachImage: () -> Unit,
+    onClearAttachment: () -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
 ) {
@@ -651,29 +1047,425 @@ private fun InputBar(
         modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
         color = Color(0xFF0D0D0D),
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraftChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message litter...") },
-                minLines = 1,
-                maxLines = 5,
-            )
-
-            Button(onClick = onSend, enabled = draft.isNotBlank() && !isSending) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(16.dp))
+            if (attachedImagePath != null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF171717),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = null,
+                            tint = LitterTheme.textSecondary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = attachedImagePath.substringAfterLast('/'),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = LitterTheme.textSecondary,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = onClearAttachment, enabled = !isSending) {
+                            Icon(Icons.Default.Close, contentDescription = "Remove attachment", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
             }
 
-            OutlinedButton(onClick = onInterrupt, enabled = isSending) {
-                Icon(Icons.Default.Stop, contentDescription = "Interrupt", modifier = Modifier.size(16.dp))
+            if (!attachmentError.isNullOrBlank()) {
+                Text(
+                    text = attachmentError,
+                    color = Color(0xFFFF7A7A),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onAttachImage, enabled = !isSending) {
+                    Icon(Icons.Default.AttachFile, contentDescription = "Attach image", modifier = Modifier.size(16.dp))
+                }
+
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Message litter...") },
+                    minLines = 1,
+                    maxLines = 5,
+                )
+
+                Button(
+                    onClick = onSend,
+                    enabled = (draft.isNotBlank() || attachedImagePath != null) && !isSending,
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(16.dp))
+                }
+
+                OutlinedButton(onClick = onInterrupt, enabled = isSending) {
+                    Icon(Icons.Default.Stop, contentDescription = "Interrupt", modifier = Modifier.size(16.dp))
+                }
             }
         }
     }
+}
+
+private const val LOCAL_IMAGE_MARKER_PREFIX = "[[litter_local_image:"
+private const val LOCAL_IMAGE_MARKER_SUFFIX = "]]"
+
+private data class SystemCardTheme(
+    val accent: Color,
+)
+
+private sealed interface MarkdownBlock {
+    data class Text(
+        val markdown: String,
+    ) : MarkdownBlock
+
+    data class Code(
+        val language: String,
+        val code: String,
+    ) : MarkdownBlock
+}
+
+private sealed interface InlineSegment {
+    data class Text(
+        val value: String,
+    ) : InlineSegment
+
+    data class ImageBytes(
+        val bytes: ByteArray,
+    ) : InlineSegment
+
+    data class LocalImagePath(
+        val path: String,
+    ) : InlineSegment
+}
+
+private fun splitMarkdownCodeBlocks(markdown: String): List<MarkdownBlock> {
+    val pattern = Regex("```([A-Za-z0-9_+\\-.#]*)\\n([\\s\\S]*?)```")
+    val blocks = ArrayList<MarkdownBlock>()
+    var cursor = 0
+    pattern.findAll(markdown).forEach { match ->
+        if (match.range.first > cursor) {
+            val text = markdown.substring(cursor, match.range.first)
+            if (text.isNotBlank()) {
+                blocks += MarkdownBlock.Text(text)
+            }
+        }
+        val language = match.groups[1]?.value?.trim().orEmpty()
+        val code = match.groups[2]?.value?.trimEnd('\n').orEmpty()
+        blocks += MarkdownBlock.Code(language = language, code = code)
+        cursor = match.range.last + 1
+    }
+    if (cursor < markdown.length) {
+        val trailing = markdown.substring(cursor)
+        if (trailing.isNotBlank()) {
+            blocks += MarkdownBlock.Text(trailing)
+        }
+    }
+    return if (blocks.isEmpty()) listOf(MarkdownBlock.Text(markdown)) else blocks
+}
+
+private fun extractInlineSegments(markdown: String): List<InlineSegment> {
+    val pattern =
+        Regex(
+            "!\\[[^\\]]*\\]\\(([^)]+)\\)|(?<![\\(])(data:image/[^;]+;base64,[A-Za-z0-9+/=\\s]+)",
+        )
+    val segments = ArrayList<InlineSegment>()
+    var cursor = 0
+    pattern.findAll(markdown).forEach { match ->
+        val range = match.range
+        if (range.first > cursor) {
+            val text = markdown.substring(cursor, range.first)
+            if (text.isNotBlank()) {
+                segments += InlineSegment.Text(text)
+            }
+        }
+
+        val full = match.value
+        val markdownImageUrl = match.groups[1]?.value
+        val bareDataUri = match.groups[2]?.value
+        var handled = false
+
+        if (!markdownImageUrl.isNullOrBlank()) {
+            val fromDataUri = decodeBase64DataUri(markdownImageUrl)
+            if (fromDataUri != null) {
+                segments += InlineSegment.ImageBytes(fromDataUri)
+                handled = true
+            } else {
+                val localPath = resolveLocalImagePath(markdownImageUrl)
+                if (localPath != null && File(localPath).exists()) {
+                    segments += InlineSegment.LocalImagePath(localPath)
+                    handled = true
+                }
+            }
+        } else if (!bareDataUri.isNullOrBlank()) {
+            val decoded = decodeBase64DataUri(bareDataUri)
+            if (decoded != null) {
+                segments += InlineSegment.ImageBytes(decoded)
+                handled = true
+            }
+        }
+
+        if (!handled && full.isNotBlank()) {
+            segments += InlineSegment.Text(full)
+        }
+        cursor = range.last + 1
+    }
+
+    if (cursor < markdown.length) {
+        val tail = markdown.substring(cursor)
+        if (tail.isNotBlank()) {
+            segments += InlineSegment.Text(tail)
+        }
+    }
+
+    if (segments.isEmpty()) {
+        return listOf(InlineSegment.Text(markdown))
+    }
+    return mergeAdjacentTextSegments(segments)
+}
+
+private fun mergeAdjacentTextSegments(segments: List<InlineSegment>): List<InlineSegment> {
+    if (segments.size < 2) {
+        return segments
+    }
+    val merged = ArrayList<InlineSegment>(segments.size)
+    var textBuffer: StringBuilder? = null
+
+    fun flushText() {
+        val text = textBuffer?.toString()?.trim()
+        if (!text.isNullOrEmpty()) {
+            merged += InlineSegment.Text(text)
+        }
+        textBuffer = null
+    }
+
+    for (segment in segments) {
+        when (segment) {
+            is InlineSegment.Text -> {
+                val buffer = textBuffer ?: StringBuilder().also { textBuffer = it }
+                if (buffer.isNotEmpty()) {
+                    buffer.append('\n')
+                }
+                buffer.append(segment.value)
+            }
+
+            else -> {
+                flushText()
+                merged += segment
+            }
+        }
+    }
+    flushText()
+    return merged
+}
+
+private fun decodeBase64DataUri(uri: String): ByteArray? {
+    val trimmed = uri.trim()
+    if (!trimmed.startsWith("data:image/", ignoreCase = true)) {
+        return null
+    }
+    val commaIndex = trimmed.indexOf(',')
+    if (commaIndex <= 0 || commaIndex >= trimmed.lastIndex) {
+        return null
+    }
+    val base64 = trimmed.substring(commaIndex + 1).replace("\\s".toRegex(), "")
+    return runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull()
+}
+
+private fun resolveLocalImagePath(rawUrl: String): String? {
+    val trimmed = rawUrl.trim().removePrefix("<").removeSuffix(">")
+    if (trimmed.startsWith("file://")) {
+        return Uri.parse(trimmed).path?.trim()?.takeIf { it.isNotEmpty() }
+    }
+    if (trimmed.startsWith("/")) {
+        return trimmed
+    }
+    return null
+}
+
+private fun extractSystemTitleAndBody(text: String): Pair<String?, String> {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith("### ")) {
+        return null to trimmed
+    }
+    val lines = trimmed.lines()
+    if (lines.isEmpty()) {
+        return null to ""
+    }
+    val title = lines.first().removePrefix("### ").trim().ifEmpty { null }
+    val body = lines.drop(1).joinToString(separator = "\n").trim()
+    return title to body
+}
+
+private fun isToolCallTitle(title: String?): Boolean {
+    val lower = title?.lowercase().orEmpty()
+    return lower.contains("command") ||
+        lower.contains("file") ||
+        lower.contains("mcp") ||
+        lower.contains("web") ||
+        lower.contains("collab") ||
+        lower.contains("image")
+}
+
+private fun compactSystemSummary(
+    title: String?,
+    body: String,
+    toolCall: Boolean,
+): String {
+    if (!toolCall) {
+        return title ?: "System"
+    }
+
+    val lower = title?.lowercase().orEmpty()
+    val lines = body.lines().map { it.trim() }
+
+    if (lower.contains("command")) {
+        val commandStart = lines.indexOfFirst { it.startsWith("Command:") }
+        if (commandStart >= 0 && commandStart + 2 < lines.size) {
+            val raw = lines[commandStart + 2]
+            val command =
+                raw
+                    .replace("/bin/zsh -lc '", "")
+                    .replace("/bin/bash -lc '", "")
+                    .removeSuffix("'")
+                    .trim()
+            val status =
+                lines
+                    .firstOrNull { it.startsWith("Status:") }
+                    ?.removePrefix("Status:")
+                    ?.trim()
+                    .orEmpty()
+            val duration =
+                lines
+                    .firstOrNull { it.startsWith("Duration:") }
+                    ?.removePrefix("Duration:")
+                    ?.trim()
+                    .orEmpty()
+            val statusSuffix =
+                when {
+                    status == "completed" -> " ✓"
+                    status.isNotEmpty() -> " ($status)"
+                    else -> ""
+                }
+            val durationSuffix = if (duration.isNotEmpty()) " $duration" else ""
+            return "$command$statusSuffix$durationSuffix".trim()
+        }
+    }
+
+    if (lower.contains("file")) {
+        val paths = lines.filter { it.startsWith("Path: ") }.map { it.removePrefix("Path: ").trim() }
+        if (paths.isNotEmpty()) {
+            val first = paths.first().substringAfterLast('/').ifBlank { paths.first() }
+            if (paths.size > 1) {
+                return "$first +${paths.size - 1} files"
+            }
+            return first
+        }
+    }
+
+    if (lower.contains("mcp")) {
+        val tool = lines.firstOrNull { it.startsWith("Tool: ") }?.removePrefix("Tool: ")?.trim()
+        val status = lines.firstOrNull { it.startsWith("Status: ") }?.removePrefix("Status: ")?.trim()
+        if (!tool.isNullOrBlank()) {
+            if (status == "completed") {
+                return "$tool ✓"
+            }
+            if (!status.isNullOrBlank()) {
+                return "$tool ($status)"
+            }
+            return tool
+        }
+    }
+
+    if (lower.contains("web")) {
+        val query = lines.firstOrNull { it.startsWith("Query: ") }?.removePrefix("Query: ")?.trim()
+        if (!query.isNullOrBlank()) {
+            return query
+        }
+    }
+
+    if (lower.contains("image")) {
+        val path = lines.firstOrNull { it.startsWith("Path: ") }?.removePrefix("Path: ")?.trim()
+        if (!path.isNullOrBlank()) {
+            return path.substringAfterLast('/').ifBlank { path }
+        }
+    }
+
+    return title ?: "Tool Call"
+}
+
+private fun systemCardTheme(title: String?): SystemCardTheme {
+    val lower = title?.lowercase().orEmpty()
+    return when {
+        lower.contains("command") -> SystemCardTheme(accent = Color(0xFFC7B072))
+        lower.contains("file") -> SystemCardTheme(accent = Color(0xFF7CAFD9))
+        lower.contains("mcp") -> SystemCardTheme(accent = Color(0xFFC797D8))
+        lower.contains("web") -> SystemCardTheme(accent = Color(0xFF88C6C7))
+        lower.contains("collab") -> SystemCardTheme(accent = Color(0xFF9BCF8E))
+        lower.contains("image") -> SystemCardTheme(accent = Color(0xFFE3A66F))
+        else -> SystemCardTheme(accent = LitterTheme.accent)
+    }
+}
+
+private fun encodeDraftWithLocalImageAttachment(
+    draft: String,
+    localImagePath: String?,
+): String {
+    val trimmedPath = localImagePath?.trim().orEmpty()
+    if (trimmedPath.isEmpty()) {
+        return draft
+    }
+    return buildString {
+        append(draft)
+        if (isNotEmpty()) {
+            append("\n\n")
+        }
+        append(LOCAL_IMAGE_MARKER_PREFIX)
+        append(trimmedPath)
+        append(LOCAL_IMAGE_MARKER_SUFFIX)
+    }
+}
+
+private fun cacheAttachmentImage(
+    context: Context,
+    uri: Uri,
+): String? {
+    val resolver = context.contentResolver
+    val mimeType = resolver.getType(uri).orEmpty().lowercase(Locale.US)
+    val extension =
+        when {
+            mimeType.contains("png") -> "png"
+            mimeType.contains("webp") -> "webp"
+            else -> "jpg"
+        }
+    val targetDirectory = File(context.cacheDir, "litter-attachments")
+    if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+        return null
+    }
+    val target = File(targetDirectory, "attachment_${System.currentTimeMillis()}.$extension")
+    resolver.openInputStream(uri)?.use { input ->
+        FileOutputStream(target).use { output ->
+            input.copyTo(output)
+        }
+    } ?: return null
+    return target.absolutePath
 }
 
 @Composable
@@ -1215,6 +2007,24 @@ private fun serverSourceLabel(source: ServerSource): String =
         ServerSource.MANUAL -> "manual"
         ServerSource.REMOTE -> "remote"
     }
+
+private fun serverSourceAccentColor(source: ServerSource): Color =
+    when (source) {
+        ServerSource.LOCAL -> LitterTheme.accent
+        ServerSource.BONJOUR -> Color(0xFF6AD9FF)
+        ServerSource.SSH -> Color(0xFFFFB454)
+        ServerSource.TAILSCALE -> Color(0xFF6E9DFF)
+        ServerSource.MANUAL -> Color(0xFFB794FF)
+        ServerSource.REMOTE -> Color(0xFFFF7A9E)
+    }
+
+private fun cwdLeaf(path: String): String {
+    val trimmed = path.trim().trimEnd('/')
+    if (trimmed.isEmpty() || trimmed == "/") {
+        return "/"
+    }
+    return trimmed.substringAfterLast('/')
+}
 
 private fun discoverySourceLabel(source: DiscoverySource): String =
     when (source) {
