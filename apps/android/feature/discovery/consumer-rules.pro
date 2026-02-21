@@ -1,0 +1,1 @@
+# Placeholder consumer ProGuard rules.

@@ -1,0 +1,38 @@
+name: iOS
+
+on:
+  pull_request:
+    paths:
+      - 'apps/ios/**'
+      - 'Package.swift'
+      - '.github/workflows/ios.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'apps/ios/**'
+      - 'Package.swift'
+      - '.github/workflows/ios.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate --spec apps/ios/project.yml --project apps/ios/Litter.xcodeproj
+
+      - name: Build (LitterRemote)
+        run: |
+          xcodebuild \
+            -project apps/ios/Litter.xcodeproj \
+            -scheme LitterRemote \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            build

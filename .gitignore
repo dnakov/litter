@@ -17,6 +17,9 @@ Packages/
 # Rust
 **/target/
 
+# Android JNI outputs (generated from Rust bridge)
+apps/android/core/bridge/src/main/jniLibs/*/*.so
+
 # Logs and temp
 *.log
 *.tmp
