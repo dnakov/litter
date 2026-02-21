@@ -12,7 +12,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 object LitterTheme {
-    val accent = Color(0xFFB0B0B0)
+    val accent = Color(0xFF00FF9C)
     val textPrimary = Color.White
     val textSecondary = Color(0xFF888888)
     val textMuted = Color(0xFF555555)

@@ -1,6 +1,7 @@
 package com.litter.android.ui
 
 import android.graphics.Typeface
+import android.text.format.DateUtils
 import android.widget.TextView
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -31,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -65,19 +67,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.litter.android.core.network.DiscoverySource
+import com.litter.android.state.AccountState
+import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
 import com.litter.android.state.MessageRole
 import com.litter.android.state.ModelOption
+import com.litter.android.state.ServerConfig
 import com.litter.android.state.ServerConnectionStatus
+import com.litter.android.state.ServerSource
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
 import io.noties.markwon.Markwon
-import android.text.format.DateUtils
 
 @Composable
 fun LitterAppShell(appState: LitterAppState) {
@@ -87,12 +95,12 @@ fun LitterAppShell(appState: LitterAppState) {
         animateDpAsState(
             targetValue = if (uiState.isSidebarOpen) 0.dp else -drawerWidth,
             animationSpec = tween(durationMillis = 220),
-            label = "sidebar_offset"
+            label = "sidebar_offset",
         )
 
     Box(modifier = Modifier.fillMaxSize().background(LitterTheme.backgroundBrush)) {
         Column(
-            modifier = Modifier.fillMaxSize().statusBarsPadding()
+            modifier = Modifier.fillMaxSize().statusBarsPadding(),
         ) {
             HeaderBar(
                 models = uiState.models,
@@ -128,7 +136,7 @@ fun LitterAppShell(appState: LitterAppState) {
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                             onClick = appState::dismissSidebar,
-                        )
+                        ),
             )
         }
 
@@ -145,6 +153,14 @@ fun LitterAppShell(appState: LitterAppState) {
             onSessionSelected = appState::selectSession,
             onNewSession = appState::openNewSessionPicker,
             onRefresh = appState::refreshSessions,
+            onOpenDiscovery = {
+                appState.dismissSidebar()
+                appState.openDiscovery()
+            },
+            onOpenSettings = {
+                appState.dismissSidebar()
+                appState.openSettings()
+            },
         )
 
         if (uiState.directoryPicker.isVisible) {
@@ -157,6 +173,43 @@ fun LitterAppShell(appState: LitterAppState) {
                 onNavigateUp = appState::navigateDirectoryUp,
                 onNavigateInto = appState::navigateDirectoryInto,
                 onSelect = appState::confirmStartSessionFromPicker,
+            )
+        }
+
+        if (uiState.discovery.isVisible) {
+            DiscoverySheet(
+                state = uiState.discovery,
+                onDismiss = appState::dismissDiscovery,
+                onRefresh = appState::refreshDiscovery,
+                onConnectDiscovered = appState::connectDiscoveredServer,
+                onManualHostChanged = appState::updateManualHost,
+                onManualPortChanged = appState::updateManualPort,
+                onConnectManual = appState::connectManualServer,
+            )
+        }
+
+        if (uiState.showSettings) {
+            SettingsSheet(
+                accountState = uiState.accountState,
+                connectedServers = uiState.connectedServers,
+                onDismiss = appState::dismissSettings,
+                onOpenAccount = appState::openAccount,
+                onOpenDiscovery = appState::openDiscovery,
+                onRemoveServer = appState::removeServer,
+            )
+        }
+
+        if (uiState.showAccount) {
+            AccountSheet(
+                accountState = uiState.accountState,
+                apiKeyDraft = uiState.apiKeyDraft,
+                isWorking = uiState.isAuthWorking,
+                onDismiss = appState::dismissAccount,
+                onApiKeyDraftChanged = appState::updateApiKeyDraft,
+                onLoginWithChatGpt = appState::loginWithChatGpt,
+                onLoginWithApiKey = appState::loginWithApiKey,
+                onLogout = appState::logoutAccount,
+                onCancelLogin = appState::cancelLogin,
             )
         }
 
@@ -260,6 +313,7 @@ private fun ModelSelector(
                         if (model.defaultReasoningEffort != null) {
                             onSelectReasoningEffort(model.defaultReasoningEffort)
                         }
+                        expanded = false
                     },
                 )
             }
@@ -276,7 +330,7 @@ private fun ModelSelector(
                         text = {
                             val label =
                                 if (effort.effort == selectedReasoningEffort) {
-                                    "• ${effort.effort}"
+                                    "* ${effort.effort}"
                                 } else {
                                     effort.effort
                                 }
@@ -307,7 +361,7 @@ private fun StatusDot(connectionStatus: ServerConnectionStatus) {
             Modifier
                 .size(9.dp)
                 .clip(CircleShape)
-                .background(color)
+                .background(color),
     )
 }
 
@@ -335,6 +389,8 @@ private fun SessionSidebar(
     onSessionSelected: (ThreadKey) -> Unit,
     onNewSession: () -> Unit,
     onRefresh: () -> Unit,
+    onOpenDiscovery: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     Surface(
         modifier = modifier,
@@ -368,8 +424,13 @@ private fun SessionSidebar(
                     color = LitterTheme.textSecondary,
                     style = MaterialTheme.typography.labelLarge,
                 )
-                TextButton(onClick = onRefresh) {
-                    Text("Refresh")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onOpenDiscovery) {
+                        Text(if (connectionStatus == ServerConnectionStatus.READY) "Add" else "Connect")
+                    }
+                    TextButton(onClick = onRefresh) {
+                        Text("Refresh")
+                    }
                 }
             }
 
@@ -383,7 +444,7 @@ private fun SessionSidebar(
                 Spacer(modifier = Modifier.weight(1f))
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(items = sessions, key = { "${it.key.serverId}:${it.key.threadId}" }) { thread ->
@@ -410,7 +471,7 @@ private fun SessionSidebar(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                                 Text(
-                                    text = "${relativeDate(thread.updatedAtEpochMillis)} · ${thread.cwd.ifBlank { "/" }}",
+                                    text = "${relativeDate(thread.updatedAtEpochMillis)} * ${thread.cwd.ifBlank { "/" }}",
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     color = LitterTheme.textSecondary,
@@ -420,6 +481,13 @@ private fun SessionSidebar(
                         }
                     }
                 }
+            }
+
+            TextButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Settings", color = LitterTheme.textSecondary)
             }
         }
     }
@@ -632,12 +700,15 @@ private fun DirectoryPickerSheet(
                 isLoading -> {
                     Text("Loading...", color = LitterTheme.textMuted)
                 }
+
                 error != null -> {
                     Text(error, color = Color(0xFFFF7A7A))
                 }
+
                 entries.isEmpty() -> {
                     Text("No subdirectories", color = LitterTheme.textMuted)
                 }
+
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxWidth().fillMaxHeight(0.55f),
@@ -667,6 +738,322 @@ private fun DirectoryPickerSheet(
     }
 }
 
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun DiscoverySheet(
+    state: DiscoveryUiState,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onConnectDiscovered: (String) -> Unit,
+    onManualHostChanged: (String) -> Unit,
+    onManualPortChanged: (String) -> Unit,
+    onConnectManual: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Connect Server", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onRefresh) {
+                    Text("Refresh")
+                }
+            }
+
+            if (state.isLoading) {
+                Text("Scanning local network and tailscale...", color = LitterTheme.textSecondary)
+            }
+
+            if (state.errorMessage != null) {
+                Text(state.errorMessage, color = Color(0xFFFF7A7A))
+            }
+
+            if (state.servers.isEmpty() && !state.isLoading) {
+                Text("No servers discovered", color = LitterTheme.textMuted)
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().fillMaxHeight(0.4f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(state.servers, key = { it.id }) { server ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable { onConnectDiscovered(server.id) },
+                            color = Color(0xFF131313),
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        server.name,
+                                        color = LitterTheme.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        discoverySourceLabel(server.source),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = LitterTheme.textSecondary,
+                                    )
+                                }
+                                Text(
+                                    "${server.host}:${server.port}",
+                                    color = LitterTheme.textSecondary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                                Text(
+                                    if (server.hasCodexServer) "codex running" else "ssh only",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (server.hasCodexServer) LitterTheme.accent else LitterTheme.textMuted,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text("Manual", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = state.manualHost,
+                    onValueChange = onManualHostChanged,
+                    label = { Text("Host") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = state.manualPort,
+                    onValueChange = onManualPortChanged,
+                    label = { Text("Port") },
+                    modifier = Modifier.width(110.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                )
+            }
+
+            Button(
+                onClick = onConnectManual,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
+            ) {
+                Text("Connect Manual Server")
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun SettingsSheet(
+    accountState: AccountState,
+    connectedServers: List<ServerConfig>,
+    onDismiss: () -> Unit,
+    onOpenAccount: () -> Unit,
+    onOpenDiscovery: () -> Unit,
+    onRemoveServer: (String) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Settings", style = MaterialTheme.typography.titleMedium)
+
+            Text("Authentication", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable { onOpenAccount() },
+                color = Color(0xFF131313),
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Account", color = LitterTheme.textPrimary)
+                        Text(accountState.summaryTitle, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                    }
+                    Text("Open", color = LitterTheme.accent, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Servers", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = onOpenDiscovery) {
+                    Text("Add Server")
+                }
+            }
+
+            if (connectedServers.isEmpty()) {
+                Text("No servers connected", color = LitterTheme.textMuted)
+            } else {
+                connectedServers.forEach { server ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Color(0xFF131313),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(server.name, color = LitterTheme.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    "${server.host}:${server.port} * ${serverSourceLabel(server.source)}",
+                                    color = LitterTheme.textSecondary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            TextButton(onClick = { onRemoveServer(server.id) }) {
+                                Text("Remove", color = Color(0xFFFF7A7A))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun AccountSheet(
+    accountState: AccountState,
+    apiKeyDraft: String,
+    isWorking: Boolean,
+    onDismiss: () -> Unit,
+    onApiKeyDraftChanged: (String) -> Unit,
+    onLoginWithChatGpt: () -> Unit,
+    onLoginWithApiKey: () -> Unit,
+    onLogout: () -> Unit,
+    onCancelLogin: () -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Account", style = MaterialTheme.typography.titleMedium)
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF131313),
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(accountStatusColor(accountState.status)),
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(accountState.summaryTitle, color = LitterTheme.textPrimary)
+                        val subtitle = accountState.summarySubtitle
+                        if (subtitle != null) {
+                            Text(subtitle, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    if (accountState.status == AuthStatus.API_KEY || accountState.status == AuthStatus.CHATGPT) {
+                        TextButton(onClick = onLogout, enabled = !isWorking) {
+                            Text("Logout", color = Color(0xFFFF7A7A))
+                        }
+                    }
+                }
+            }
+
+            Button(
+                onClick = onLoginWithChatGpt,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isWorking,
+            ) {
+                Text(if (isWorking) "Working..." else "Login with ChatGPT")
+            }
+
+            if (accountState.oauthUrl != null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF131313),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Finish login in browser", color = LitterTheme.textSecondary)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { uriHandler.openUri(accountState.oauthUrl) }) {
+                                Text("Open Browser")
+                            }
+                            TextButton(onClick = onCancelLogin) {
+                                Text("Cancel", color = Color(0xFFFF7A7A))
+                            }
+                        }
+                    }
+                }
+            }
+
+            OutlinedTextField(
+                value = apiKeyDraft,
+                onValueChange = onApiKeyDraftChanged,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("API Key") },
+                placeholder = { Text("sk-...") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                singleLine = true,
+            )
+
+            OutlinedButton(
+                onClick = onLoginWithApiKey,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = apiKeyDraft.isNotBlank() && !isWorking,
+            ) {
+                Text("Save API Key")
+            }
+
+            if (accountState.lastError != null) {
+                Text(accountState.lastError, color = Color(0xFFFF7A7A), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
 private fun relativeDate(timestamp: Long): String {
     return DateUtils.getRelativeTimeSpanString(
         timestamp,
@@ -675,3 +1062,31 @@ private fun relativeDate(timestamp: Long): String {
         DateUtils.FORMAT_ABBREV_RELATIVE,
     ).toString()
 }
+
+private fun accountStatusColor(status: AuthStatus): Color =
+    when (status) {
+        AuthStatus.CHATGPT -> LitterTheme.accent
+        AuthStatus.API_KEY -> Color(0xFF00AAFF)
+        AuthStatus.NOT_LOGGED_IN -> LitterTheme.textMuted
+        AuthStatus.UNKNOWN -> LitterTheme.textMuted
+    }
+
+private fun serverSourceLabel(source: ServerSource): String =
+    when (source) {
+        ServerSource.LOCAL -> "local"
+        ServerSource.BONJOUR -> "bonjour"
+        ServerSource.SSH -> "ssh"
+        ServerSource.TAILSCALE -> "tailscale"
+        ServerSource.MANUAL -> "manual"
+        ServerSource.REMOTE -> "remote"
+    }
+
+private fun discoverySourceLabel(source: DiscoverySource): String =
+    when (source) {
+        DiscoverySource.LOCAL -> "local"
+        DiscoverySource.BONJOUR -> "bonjour"
+        DiscoverySource.SSH -> "ssh"
+        DiscoverySource.TAILSCALE -> "tailscale"
+        DiscoverySource.MANUAL -> "manual"
+        DiscoverySource.LAN -> "lan"
+    }

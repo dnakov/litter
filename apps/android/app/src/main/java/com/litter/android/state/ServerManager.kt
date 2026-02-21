@@ -1,5 +1,6 @@
 package com.litter.android.state
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.litter.android.core.bridge.CodexRpcClient
@@ -12,6 +13,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class ServerManager(
+    context: Context? = null,
     private val codexRpcClient: CodexRpcClient = CodexRpcClient(),
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "Litter-ServerManager").apply { isDaemon = true }
@@ -20,15 +22,21 @@ class ServerManager(
     private val listeners = CopyOnWriteArrayList<(AppState) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val threadsByKey = LinkedHashMap<ThreadKey, ThreadState>()
+    private val transportsByServerId = LinkedHashMap<String, BridgeRpcTransport>()
+    private val serversById = LinkedHashMap<String, ServerConfig>()
+    private val accountByServerId = LinkedHashMap<String, AccountState>()
+
+    private val appContext = context?.applicationContext
+    private val savedServersPreferences by lazy {
+        appContext?.getSharedPreferences("litter_saved_servers", Context.MODE_PRIVATE)
+    }
+    private val savedServersKey = "servers"
 
     @Volatile
-    private var state: AppState = AppState()
+    private var state: AppState = AppState(savedServers = loadSavedServersInternal())
 
     @Volatile
     private var closed = false
-
-    private var rpcTransport: BridgeRpcTransport? = null
-    private var localServer: ServerConfig? = null
 
     fun observe(listener: (AppState) -> Unit): Closeable {
         listeners += listener
@@ -50,8 +58,9 @@ class ServerManager(
 
             val result = runCatching {
                 val server = connectLocalDefaultServerInternal()
-                refreshSessionsInternal()
-                loadModelsInternal()
+                refreshSessionsInternal(server.id)
+                loadModelsInternal(server.id)
+                refreshAccountStateInternal(server.id)
                 server
             }
 
@@ -67,24 +76,69 @@ class ServerManager(
         }
     }
 
-    fun disconnect() {
+    fun connectServer(
+        server: ServerConfig,
+        onComplete: ((Result<ServerConfig>) -> Unit)? = null,
+    ) {
         submit {
-            runCatching { rpcTransport?.close() }
-            rpcTransport = null
-            localServer = null
-            runCatching { codexRpcClient.stop() }
-            threadsByKey.clear()
-            commitState(
-                state.copy(
-                    connectionStatus = ServerConnectionStatus.DISCONNECTED,
+            updateState {
+                it.copy(
+                    connectionStatus = ServerConnectionStatus.CONNECTING,
                     connectionError = null,
-                    servers = emptyList(),
-                    activeServerId = null,
-                    activeThreadKey = null,
-                    availableModels = emptyList(),
-                ),
-            )
+                )
+            }
+
+            val result = runCatching {
+                val connected = connectServerInternal(server)
+                refreshSessionsInternal(connected.id)
+                loadModelsInternal(connected.id)
+                refreshAccountStateInternal(connected.id)
+                connected
+            }
+
+            result.exceptionOrNull()?.let { error ->
+                updateState {
+                    it.copy(
+                        connectionStatus = ServerConnectionStatus.ERROR,
+                        connectionError = error.message ?: "Failed to connect",
+                    )
+                }
+            }
+            deliver(onComplete, result)
         }
+    }
+
+    fun reconnectSavedServers(onComplete: ((Result<List<ServerConfig>>) -> Unit)? = null) {
+        submit {
+            val result = runCatching {
+                val saved = loadSavedServersInternal()
+                val connected = mutableListOf<ServerConfig>()
+                for (savedServer in saved) {
+                    runCatching {
+                        val cfg = savedServer.toServerConfig()
+                        val connectedServer = connectServerInternal(cfg)
+                        refreshSessionsInternal(connectedServer.id)
+                        refreshAccountStateInternal(connectedServer.id)
+                        connected += connectedServer
+                    }
+                }
+                if (connected.isNotEmpty()) {
+                    loadModelsInternal(connected.first().id)
+                }
+                connected
+            }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun disconnect(serverId: String? = null) {
+        submit {
+            disconnectInternal(serverId)
+        }
+    }
+
+    fun removeServer(serverId: String) {
+        disconnect(serverId)
     }
 
     fun refreshSessions(onComplete: ((Result<List<ThreadState>>) -> Unit)? = null) {
@@ -105,6 +159,59 @@ class ServerManager(
     fun loadModels(onComplete: ((Result<List<ModelOption>>) -> Unit)? = null) {
         submit {
             val result = runCatching { loadModelsInternal() }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun refreshAccountState(onComplete: ((Result<AccountState>) -> Unit)? = null) {
+        submit {
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                refreshAccountStateInternal(serverId)
+            }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun loginWithChatGpt(onComplete: ((Result<AccountState>) -> Unit)? = null) {
+        submit {
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                loginWithChatGptInternal(serverId)
+            }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun loginWithApiKey(
+        apiKey: String,
+        onComplete: ((Result<AccountState>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                loginWithApiKeyInternal(serverId, apiKey)
+            }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun logoutAccount(onComplete: ((Result<AccountState>) -> Unit)? = null) {
+        submit {
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                logoutAccountInternal(serverId)
+            }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun cancelLogin(onComplete: ((Result<AccountState>) -> Unit)? = null) {
+        submit {
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                cancelLoginInternal(serverId)
+            }
             deliver(onComplete, result)
         }
     }
@@ -158,7 +265,10 @@ class ServerManager(
         onComplete: ((Result<ThreadKey>) -> Unit)? = null,
     ) {
         submit {
-            val result = runCatching { resumeThreadInternal(threadId, cwd) }
+            val result = runCatching {
+                val serverId = resolveServerIdForActiveOperations()
+                resumeThreadInternal(serverId = serverId, threadId = threadId, cwd = cwd)
+            }
             deliver(onComplete, result)
         }
     }
@@ -171,13 +281,16 @@ class ServerManager(
         submit {
             val result = runCatching {
                 val existing = threadsByKey[threadKey]
-                if (existing == null) {
-                    throw IllegalStateException("Unknown thread: ${threadKey.threadId}")
-                }
+                    ?: throw IllegalStateException("Unknown thread: ${threadKey.threadId}")
                 if (existing.messages.isEmpty() && !cwdForLazyResume.isNullOrBlank()) {
-                    resumeThreadInternal(threadKey.threadId, cwdForLazyResume)
+                    resumeThreadInternal(threadKey.serverId, threadKey.threadId, cwdForLazyResume)
                 } else {
-                    updateState { it.copy(activeThreadKey = threadKey) }
+                    updateState {
+                        it.copy(
+                            activeThreadKey = threadKey,
+                            activeServerId = threadKey.serverId,
+                        )
+                    }
                     threadKey
                 }
             }
@@ -215,21 +328,46 @@ class ServerManager(
             return
         }
         closed = true
-        runCatching { rpcTransport?.close() }
-        rpcTransport = null
+        runCatching {
+            transportsByServerId.values.forEach { it.close() }
+            transportsByServerId.clear()
+        }
         runCatching { codexRpcClient.stop() }
         runCatching { worker.shutdownNow() }
     }
 
     private fun connectLocalDefaultServerInternal(): ServerConfig {
         val port = codexRpcClient.ensureServerStarted()
-        val server = ServerConfig.local(port)
-        val url = "ws://127.0.0.1:$port"
+        val local = ServerConfig.local(port)
+        return connectServerInternal(local)
+    }
+
+    private fun connectServerInternal(server: ServerConfig): ServerConfig {
+        val existingServer = serversById[server.id]
+        val existingTransport = transportsByServerId[server.id]
+        if (existingServer != null && existingTransport != null) {
+            updateState {
+                it.copy(
+                    activeServerId = server.id,
+                    connectionStatus = ServerConnectionStatus.READY,
+                    connectionError = null,
+                )
+            }
+            return existingServer
+        }
+
+        val normalizedServer =
+            if (server.source == ServerSource.LOCAL && server.port <= 0) {
+                ServerConfig.local(codexRpcClient.ensureServerStarted())
+            } else {
+                server
+            }
+
         val transport = BridgeRpcTransport(
-            url = url,
+            url = websocketUrl(normalizedServer),
             onNotification = { method, params ->
                 submit {
-                    handleNotification(server.id, method, params)
+                    handleNotification(normalizedServer.id, method, params)
                 }
             },
         )
@@ -242,18 +380,95 @@ class ServerManager(
             throw error
         }
 
-        rpcTransport?.close()
-        rpcTransport = transport
-        localServer = server
+        transportsByServerId[normalizedServer.id]?.close()
+        transportsByServerId[normalizedServer.id] = transport
+        serversById[normalizedServer.id] = normalizedServer
+        accountByServerId.putIfAbsent(normalizedServer.id, AccountState())
+        persistSavedServersInternal()
+
         updateState {
             it.copy(
                 connectionStatus = ServerConnectionStatus.READY,
                 connectionError = null,
-                servers = listOf(server),
-                activeServerId = server.id,
+                activeServerId = normalizedServer.id,
             )
         }
-        return server
+
+        return normalizedServer
+    }
+
+    private fun disconnectInternal(serverId: String?) {
+        if (serverId == null) {
+            transportsByServerId.values.forEach { runCatching { it.close() } }
+            transportsByServerId.clear()
+            serversById.clear()
+            accountByServerId.clear()
+            threadsByKey.clear()
+            runCatching { codexRpcClient.stop() }
+            commitState(
+                state.copy(
+                    connectionStatus = ServerConnectionStatus.DISCONNECTED,
+                    connectionError = null,
+                    activeServerId = null,
+                    activeThreadKey = null,
+                    availableModels = emptyList(),
+                    accountByServerId = emptyMap(),
+                ),
+            )
+            persistSavedServersInternal()
+            return
+        }
+
+        runCatching { transportsByServerId.remove(serverId)?.close() }
+        val removedServer = serversById.remove(serverId)
+        accountByServerId.remove(serverId)
+        threadsByKey.entries.removeAll { it.key.serverId == serverId }
+
+        if (removedServer?.source == ServerSource.LOCAL && serversById.values.none { it.source == ServerSource.LOCAL }) {
+            runCatching { codexRpcClient.stop() }
+        }
+
+        val nextActiveThread =
+            if (state.activeThreadKey?.serverId == serverId) {
+                threadsByKey.keys.firstOrNull()
+            } else {
+                state.activeThreadKey
+            }
+        val nextActiveServer =
+            when {
+                state.activeServerId == serverId -> nextActiveThread?.serverId ?: serversById.keys.firstOrNull()
+                else -> state.activeServerId?.takeIf { serversById.containsKey(it) } ?: serversById.keys.firstOrNull()
+            }
+
+        val nextConnectionStatus =
+            if (serversById.isEmpty()) {
+                ServerConnectionStatus.DISCONNECTED
+            } else {
+                ServerConnectionStatus.READY
+            }
+
+        commitState(
+            state.copy(
+                connectionStatus = nextConnectionStatus,
+                connectionError = null,
+                activeServerId = nextActiveServer,
+                activeThreadKey = nextActiveThread,
+                availableModels = if (serversById.isEmpty()) emptyList() else state.availableModels,
+                accountByServerId = LinkedHashMap(accountByServerId),
+            ),
+        )
+        persistSavedServersInternal()
+    }
+
+    private fun websocketUrl(server: ServerConfig): String {
+        val host = server.host.trim().ifEmpty { "127.0.0.1" }
+        val normalizedHost =
+            if (host.contains(':') && !host.startsWith("[") && !host.endsWith("]")) {
+                "[$host]"
+            } else {
+                host
+            }
+        return "ws://$normalizedHost:${server.port}"
     }
 
     private fun sendInitialize(transport: BridgeRpcTransport) {
@@ -268,63 +483,72 @@ class ServerManager(
         transport.request(method = "initialize", params = params)
     }
 
-    private fun refreshSessionsInternal(): List<ThreadState> {
-        val server = requireConnectedServer()
-        val transport = requireTransport()
-        val response = transport.request(
-            method = "thread/list",
-            params = JSONObject()
-                .put("cursor", JSONObject.NULL)
-                .put("limit", 50)
-                .put("sortKey", "updated_at")
-                .put("cwd", JSONObject.NULL),
-        )
-
-        val data = response.optJSONArray("data") ?: JSONArray()
-        for (index in 0 until data.length()) {
-            val item = data.optJSONObject(index) ?: continue
-            val threadId = item.optString("id").trim()
-            if (threadId.isEmpty()) {
-                continue
+    private fun refreshSessionsInternal(serverId: String? = null): List<ThreadState> {
+        val targetServers =
+            if (serverId != null) {
+                listOfNotNull(serversById[serverId])
+            } else {
+                serversById.values.toList()
             }
-            val key = ThreadKey(server.id, threadId)
-            val existing = threadsByKey[key]
-            val preview = item.optString("preview").trim().ifBlank {
-                existing?.preview ?: "Session $threadId"
-            }
-            val cwd = item.optString("cwd").trim().ifBlank { existing?.cwd ?: state.currentCwd }
-            val updatedAtRaw =
-                item.opt("updatedAt").asLongOrNull()
-                    ?: item.opt("updated_at").asLongOrNull()
-                    ?: System.currentTimeMillis()
-            val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
 
-            val threadState = ThreadState(
-                key = key,
-                serverName = server.name,
-                serverSource = server.source,
-                status = existing?.status ?: ThreadStatus.READY,
-                messages = existing?.messages ?: emptyList(),
-                preview = preview,
-                cwd = cwd,
-                updatedAtEpochMillis = maxOf(updatedAtEpochMillis, existing?.updatedAtEpochMillis ?: 0L),
-                activeTurnId = existing?.activeTurnId,
-                lastError = existing?.lastError,
+        for (server in targetServers) {
+            val transport = requireTransport(server.id)
+            val response = transport.request(
+                method = "thread/list",
+                params = JSONObject()
+                    .put("cursor", JSONObject.NULL)
+                    .put("limit", 50)
+                    .put("sortKey", "updated_at")
+                    .put("cwd", JSONObject.NULL),
             )
-            threadsByKey[key] = threadState
+
+            val data = response.optJSONArray("data") ?: JSONArray()
+            for (index in 0 until data.length()) {
+                val item = data.optJSONObject(index) ?: continue
+                val threadId = item.optString("id").trim()
+                if (threadId.isEmpty()) {
+                    continue
+                }
+                val key = ThreadKey(server.id, threadId)
+                val existing = threadsByKey[key]
+                val preview = item.optString("preview").trim().ifBlank {
+                    existing?.preview ?: "Session $threadId"
+                }
+                val cwd = item.optString("cwd").trim().ifBlank { existing?.cwd ?: state.currentCwd }
+                val updatedAtRaw =
+                    item.opt("updatedAt").asLongOrNull()
+                        ?: item.opt("updated_at").asLongOrNull()
+                        ?: System.currentTimeMillis()
+                val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
+
+                threadsByKey[key] =
+                    ThreadState(
+                        key = key,
+                        serverName = server.name,
+                        serverSource = server.source,
+                        status = existing?.status ?: ThreadStatus.READY,
+                        messages = existing?.messages ?: emptyList(),
+                        preview = preview,
+                        cwd = cwd,
+                        updatedAtEpochMillis = maxOf(updatedAtEpochMillis, existing?.updatedAtEpochMillis ?: 0L),
+                        activeTurnId = existing?.activeTurnId,
+                        lastError = existing?.lastError,
+                    )
+            }
         }
 
         updateState {
             it.copy(
-                connectionStatus = ServerConnectionStatus.READY,
+                connectionStatus = if (serversById.isEmpty()) ServerConnectionStatus.DISCONNECTED else ServerConnectionStatus.READY,
                 connectionError = null,
             )
         }
         return state.threads
     }
 
-    private fun loadModelsInternal(): List<ModelOption> {
-        val transport = requireTransport()
+    private fun loadModelsInternal(serverId: String? = null): List<ModelOption> {
+        val targetServerId = serverId ?: resolveServerIdForActiveOperations()
+        val transport = requireTransport(targetServerId)
         val response = transport.request(
             method = "model/list",
             params = JSONObject()
@@ -359,14 +583,15 @@ class ServerManager(
                 item.optBoolean("isDefault", false) ||
                     item.optBoolean("is_default", false)
 
-            parsed += ModelOption(
-                id = modelId,
-                displayName = displayName,
-                description = description,
-                defaultReasoningEffort = defaultEffort,
-                supportedReasoningEfforts = supportedEfforts,
-                isDefault = isDefault,
-            )
+            parsed +=
+                ModelOption(
+                    id = modelId,
+                    displayName = displayName,
+                    description = description,
+                    defaultReasoningEffort = defaultEffort,
+                    supportedReasoningEfforts = supportedEfforts,
+                    isDefault = isDefault,
+                )
         }
 
         updateState { current ->
@@ -374,17 +599,132 @@ class ServerManager(
             current.copy(
                 availableModels = parsed,
                 selectedModel = selectedModel,
+                activeServerId = targetServerId,
             )
         }
         return parsed
     }
 
+    private fun refreshAccountStateInternal(serverId: String): AccountState {
+        val response =
+            requireTransport(serverId).request(
+                method = "account/read",
+                params = JSONObject().put("refreshToken", false),
+            )
+
+        val account = response.optJSONObject("account")
+        val accountState =
+            if (account == null || account == JSONObject.NULL) {
+                AccountState(status = AuthStatus.NOT_LOGGED_IN)
+            } else {
+                when (account.optString("type")) {
+                    "chatgpt" -> {
+                        AccountState(
+                            status = AuthStatus.CHATGPT,
+                            email = account.optString("email").trim(),
+                            oauthUrl = accountByServerId[serverId]?.oauthUrl,
+                            pendingLoginId = accountByServerId[serverId]?.pendingLoginId,
+                        )
+                    }
+
+                    "apiKey" -> {
+                        AccountState(
+                            status = AuthStatus.API_KEY,
+                            oauthUrl = null,
+                            pendingLoginId = null,
+                        )
+                    }
+
+                    else -> AccountState(status = AuthStatus.NOT_LOGGED_IN)
+                }
+            }
+
+        accountByServerId[serverId] = accountState
+        updateState {
+            it.copy(
+                accountByServerId = LinkedHashMap(accountByServerId),
+                activeServerId = serverId,
+            )
+        }
+        return accountState
+    }
+
+    private fun loginWithChatGptInternal(serverId: String): AccountState {
+        val response =
+            requireTransport(serverId).request(
+                method = "account/login/start",
+                params = JSONObject().put("type", "chatgpt"),
+            )
+
+        val next =
+            accountByServerId[serverId]
+                ?.copy(
+                    oauthUrl = response.optString("authUrl").trim().ifBlank { null },
+                    pendingLoginId = response.optString("loginId").trim().ifBlank { null },
+                    lastError = null,
+                ) ?: AccountState(
+                status = AuthStatus.UNKNOWN,
+                oauthUrl = response.optString("authUrl").trim().ifBlank { null },
+                pendingLoginId = response.optString("loginId").trim().ifBlank { null },
+            )
+
+        accountByServerId[serverId] = next
+        updateState {
+            it.copy(accountByServerId = LinkedHashMap(accountByServerId), activeServerId = serverId)
+        }
+        return next
+    }
+
+    private fun loginWithApiKeyInternal(
+        serverId: String,
+        apiKey: String,
+    ): AccountState {
+        requireTransport(serverId).request(
+            method = "account/login/start",
+            params = JSONObject().put("type", "apiKey").put("apiKey", apiKey),
+        )
+        return refreshAccountStateInternal(serverId)
+    }
+
+    private fun logoutAccountInternal(serverId: String): AccountState {
+        requireTransport(serverId).request(
+            method = "account/logout",
+            params = JSONObject(),
+        )
+        val next = AccountState(status = AuthStatus.NOT_LOGGED_IN)
+        accountByServerId[serverId] = next
+        updateState {
+            it.copy(accountByServerId = LinkedHashMap(accountByServerId), activeServerId = serverId)
+        }
+        return next
+    }
+
+    private fun cancelLoginInternal(serverId: String): AccountState {
+        val pendingLoginId = accountByServerId[serverId]?.pendingLoginId
+        if (!pendingLoginId.isNullOrBlank()) {
+            requireTransport(serverId).request(
+                method = "account/login/cancel",
+                params = JSONObject().put("loginId", pendingLoginId),
+            )
+        }
+
+        val next = accountByServerId[serverId]?.copy(oauthUrl = null, pendingLoginId = null)
+            ?: AccountState(status = AuthStatus.UNKNOWN)
+        accountByServerId[serverId] = next
+        updateState {
+            it.copy(accountByServerId = LinkedHashMap(accountByServerId), activeServerId = serverId)
+        }
+        return next
+    }
+
     private fun resolveHomeDirectoryInternal(): String {
-        if (rpcTransport == null) {
+        if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
+        val serverId = resolveServerIdForActiveOperations()
         return runCatching {
             val result = executeCommandInternal(
+                serverId = serverId,
                 command = listOf("/bin/sh", "-lc", "printf %s \"${'$'}HOME\""),
                 cwd = "/tmp",
             )
@@ -399,11 +739,13 @@ class ServerManager(
     }
 
     private fun listDirectoriesInternal(path: String): List<String> {
-        if (rpcTransport == null) {
+        if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
+        val serverId = resolveServerIdForActiveOperations()
         val normalized = path.trim().ifEmpty { "/" }
         val result = executeCommandInternal(
+            serverId = serverId,
             command = listOf("/bin/ls", "-1ap", normalized),
             cwd = normalized,
         )
@@ -450,12 +792,13 @@ class ServerManager(
         cwd: String,
         modelSelection: ModelSelection?,
     ): ThreadKey {
-        if (rpcTransport == null) {
+        if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
-        val server = requireConnectedServer()
+        val serverId = resolveServerIdForActiveOperations()
+        val server = ensureConnectedServer(serverId)
         val model = modelSelection?.modelId ?: state.selectedModel.modelId
-        val response = startThreadWithFallback(cwd, model)
+        val response = startThreadWithFallback(serverId = serverId, cwd = cwd, model = model)
         val threadId =
             response
                 .optJSONObject("thread")
@@ -496,18 +839,23 @@ class ServerManager(
         return key
     }
 
-    private fun startThreadWithFallback(cwd: String, model: String?): JSONObject {
+    private fun startThreadWithFallback(
+        serverId: String,
+        cwd: String,
+        model: String?,
+    ): JSONObject {
         return try {
-            startThreadWithSandbox(cwd, model, sandbox = "workspace-write")
+            startThreadWithSandbox(serverId, cwd, model, sandbox = "workspace-write")
         } catch (error: Throwable) {
             if (!shouldRetryWithoutLinuxSandbox(error)) {
                 throw error
             }
-            startThreadWithSandbox(cwd, model, sandbox = "danger-full-access")
+            startThreadWithSandbox(serverId, cwd, model, sandbox = "danger-full-access")
         }
     }
 
     private fun startThreadWithSandbox(
+        serverId: String,
         cwd: String,
         model: String?,
         sandbox: String,
@@ -518,17 +866,18 @@ class ServerManager(
                 .put("cwd", cwd)
                 .put("approvalPolicy", "never")
                 .put("sandbox", sandbox)
-        return requireTransport().request("thread/start", params)
+        return requireTransport(serverId).request("thread/start", params)
     }
 
     private fun resumeThreadInternal(
+        serverId: String,
         threadId: String,
         cwd: String,
     ): ThreadKey {
-        if (rpcTransport == null) {
+        if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
-        val server = requireConnectedServer()
+        val server = ensureConnectedServer(serverId)
         val key = ThreadKey(server.id, threadId)
         val existing = threadsByKey[key]
         threadsByKey[key] =
@@ -544,10 +893,10 @@ class ServerManager(
                 activeTurnId = existing?.activeTurnId,
                 lastError = null,
             )
-        updateState { it.copy(activeThreadKey = key, currentCwd = cwd) }
+        updateState { it.copy(activeThreadKey = key, activeServerId = serverId, currentCwd = cwd) }
 
         try {
-            val response = resumeThreadWithFallback(threadId = threadId, cwd = cwd)
+            val response = resumeThreadWithFallback(serverId = serverId, threadId = threadId, cwd = cwd)
             val threadObj = response.optJSONObject("thread") ?: JSONObject()
             val restored = restoreMessages(threadObj)
             val now = System.currentTimeMillis()
@@ -588,20 +937,22 @@ class ServerManager(
     }
 
     private fun resumeThreadWithFallback(
+        serverId: String,
         threadId: String,
         cwd: String,
     ): JSONObject {
         return try {
-            resumeThreadWithSandbox(threadId = threadId, cwd = cwd, sandbox = "workspace-write")
+            resumeThreadWithSandbox(serverId, threadId, cwd, sandbox = "workspace-write")
         } catch (error: Throwable) {
             if (!shouldRetryWithoutLinuxSandbox(error)) {
                 throw error
             }
-            resumeThreadWithSandbox(threadId = threadId, cwd = cwd, sandbox = "danger-full-access")
+            resumeThreadWithSandbox(serverId, threadId, cwd, sandbox = "danger-full-access")
         }
     }
 
     private fun resumeThreadWithSandbox(
+        serverId: String,
         threadId: String,
         cwd: String,
         sandbox: String,
@@ -612,7 +963,7 @@ class ServerManager(
                 .put("cwd", cwd)
                 .put("approvalPolicy", "never")
                 .put("sandbox", sandbox)
-        return requireTransport().request("thread/resume", params)
+        return requireTransport(serverId).request("thread/resume", params)
     }
 
     private fun sendMessageInternal(
@@ -625,10 +976,12 @@ class ServerManager(
             return
         }
 
-        if (rpcTransport == null) {
+        if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
+
         val key = state.activeThreadKey ?: startThreadInternal(cwd, modelSelection)
+        val serverId = key.serverId
         val existing = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve active thread")
         val now = System.currentTimeMillis()
         val withUserMessage =
@@ -644,7 +997,7 @@ class ServerManager(
         updateState {
             it.copy(
                 activeThreadKey = key,
-                activeServerId = key.serverId,
+                activeServerId = serverId,
                 currentCwd = cwd,
                 connectionError = null,
             )
@@ -665,7 +1018,7 @@ class ServerManager(
                 .put("effort", modelSelection.reasoningEffort ?: JSONObject.NULL)
 
         try {
-            val response = requireTransport().request("turn/start", params)
+            val response = requireTransport(serverId).request("turn/start", params)
             val turnId = response.optString("turnId").trim().takeIf { it.isNotEmpty() }
             val latest = threadsByKey[key] ?: return
             threadsByKey[key] =
@@ -695,7 +1048,7 @@ class ServerManager(
     private fun interruptInternal() {
         val key = state.activeThreadKey ?: return
         val params = JSONObject().put("threadId", key.threadId)
-        requireTransport().request("turn/interrupt", params)
+        requireTransport(key.serverId).request("turn/interrupt", params)
         val existing = threadsByKey[key] ?: return
         threadsByKey[key] =
             existing.copy(
@@ -713,6 +1066,29 @@ class ServerManager(
         params: JSONObject?,
     ) {
         when (method) {
+            "account/login/completed" -> {
+                val success = params?.optBoolean("success", false) ?: false
+                if (success) {
+                    val current = accountByServerId[serverId] ?: AccountState()
+                    accountByServerId[serverId] = current.copy(oauthUrl = null, pendingLoginId = null, lastError = null)
+                    runCatching { refreshAccountStateInternal(serverId) }
+                } else {
+                    val message = params?.optString("error")?.trim().orEmpty().ifBlank { "Login failed" }
+                    val current = accountByServerId[serverId] ?: AccountState()
+                    accountByServerId[serverId] = current.copy(lastError = message)
+                    updateState {
+                        it.copy(
+                            accountByServerId = LinkedHashMap(accountByServerId),
+                            connectionError = message,
+                        )
+                    }
+                }
+            }
+
+            "account/updated" -> {
+                runCatching { refreshAccountStateInternal(serverId) }
+            }
+
             "turn/started" -> {
                 val threadId = params.optThreadId()
                 val key = resolveThreadKey(serverId, threadId) ?: return
@@ -725,7 +1101,7 @@ class ServerManager(
                         updatedAtEpochMillis = System.currentTimeMillis(),
                         lastError = null,
                     )
-                updateState { it.copy(activeThreadKey = key) }
+                updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
             }
 
             "item/agentMessage/delta" -> {
@@ -743,7 +1119,7 @@ class ServerManager(
                         preview = derivePreview(mergedMessages, existing.preview),
                         updatedAtEpochMillis = System.currentTimeMillis(),
                     )
-                updateState { it.copy(activeThreadKey = key) }
+                updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
             }
 
             "item/completed" -> {
@@ -752,7 +1128,6 @@ class ServerManager(
                 val existing = ensureThreadState(key)
                 val itemType = item.optString("type")
 
-                // Streamed agent content is handled by item/agentMessage/delta
                 if (itemType == "agentMessage" || itemType == "userMessage") {
                     return
                 }
@@ -765,7 +1140,7 @@ class ServerManager(
                         preview = derivePreview(updatedMessages, existing.preview),
                         updatedAtEpochMillis = System.currentTimeMillis(),
                     )
-                updateState { it.copy(activeThreadKey = key) }
+                updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
             }
 
             "turn/completed",
@@ -890,25 +1265,28 @@ class ServerManager(
     private fun parseCommandExecutionMessage(item: JSONObject): ChatMessage? {
         val status = item.optString("status").trim()
         val cwd = item.optString("cwd").trim()
-        val output = item.optString("output")
-            .trim()
-            .ifEmpty { item.optString("stdout").trim() }
+        val output =
+            item.optString("output")
+                .trim()
+                .ifEmpty { item.optString("stdout").trim() }
         val exitCode = item.opt("exitCode")
         val durationMs = item.opt("durationMs")
-        val command = when (val commandValue = item.opt("command")) {
-            is JSONArray -> {
-                val parts = ArrayList<String>(commandValue.length())
-                for (idx in 0 until commandValue.length()) {
-                    val token = commandValue.opt(idx)?.toString()?.trim().orEmpty()
-                    if (token.isNotEmpty()) {
-                        parts += token
+        val command =
+            when (val commandValue = item.opt("command")) {
+                is JSONArray -> {
+                    val parts = ArrayList<String>(commandValue.length())
+                    for (idx in 0 until commandValue.length()) {
+                        val token = commandValue.opt(idx)?.toString()?.trim().orEmpty()
+                        if (token.isNotEmpty()) {
+                            parts += token
+                        }
                     }
+                    parts.joinToString(separator = " ")
                 }
-                parts.joinToString(separator = " ")
+
+                is String -> commandValue.trim()
+                else -> ""
             }
-            is String -> commandValue.trim()
-            else -> ""
-        }
 
         val lines = ArrayList<String>()
         if (status.isNotEmpty()) {
@@ -926,21 +1304,22 @@ class ServerManager(
             lines += "Duration: $numericDuration ms"
         }
 
-        val body = buildString {
-            append(lines.joinToString(separator = "\n"))
-            if (command.isNotEmpty()) {
-                if (isNotEmpty()) append("\n\n")
-                append("Command:\n```bash\n")
-                append(command)
-                append("\n```")
-            }
-            if (output.isNotEmpty()) {
-                if (isNotEmpty()) append("\n\n")
-                append("Output:\n```text\n")
-                append(output)
-                append("\n```")
-            }
-        }.trim()
+        val body =
+            buildString {
+                append(lines.joinToString(separator = "\n"))
+                if (command.isNotEmpty()) {
+                    if (isNotEmpty()) append("\n\n")
+                    append("Command:\n```bash\n")
+                    append(command)
+                    append("\n```")
+                }
+                if (output.isNotEmpty()) {
+                    if (isNotEmpty()) append("\n\n")
+                    append("Output:\n```text\n")
+                    append(output)
+                    append("\n```")
+                }
+            }.trim()
 
         return if (body.isEmpty()) null else systemMessage("Command Execution", body)
     }
@@ -958,27 +1337,29 @@ class ServerManager(
             val path = change.optString("path").trim()
             val kind = change.optString("kind").trim()
             val diff = change.optString("diff").trim()
-            val piece = buildString {
-                if (path.isNotEmpty()) append("Path: $path\n")
-                if (kind.isNotEmpty()) append("Kind: $kind")
-                if (diff.isNotEmpty()) {
-                    if (isNotEmpty()) append("\n\n")
-                    append("```diff\n")
-                    append(diff)
-                    append("\n```")
-                }
-            }.trim()
+            val piece =
+                buildString {
+                    if (path.isNotEmpty()) append("Path: $path\n")
+                    if (kind.isNotEmpty()) append("Kind: $kind")
+                    if (diff.isNotEmpty()) {
+                        if (isNotEmpty()) append("\n\n")
+                        append("```diff\n")
+                        append(diff)
+                        append("\n```")
+                    }
+                }.trim()
             if (piece.isNotEmpty()) {
                 parts += piece
             }
         }
-        val body = buildString {
-            append("Status: $status")
-            if (parts.isNotEmpty()) {
-                append("\n\n")
-                append(parts.joinToString(separator = "\n\n---\n\n"))
+        val body =
+            buildString {
+                append("Status: $status")
+                if (parts.isNotEmpty()) {
+                    append("\n\n")
+                    append(parts.joinToString(separator = "\n\n---\n\n"))
+                }
             }
-        }
         return systemMessage("File Change", body)
     }
 
@@ -1031,17 +1412,18 @@ class ServerManager(
     private fun parseWebSearchMessage(item: JSONObject): ChatMessage? {
         val query = item.optString("query").trim()
         val action = item.opt("action")
-        val body = buildString {
-            if (query.isNotEmpty()) {
-                append("Query: $query")
-            }
-            if (action != null && action != JSONObject.NULL) {
-                if (isNotEmpty()) append("\n\n")
-                append("Action:\n```json\n")
-                append(action.toString())
-                append("\n```")
-            }
-        }.trim()
+        val body =
+            buildString {
+                if (query.isNotEmpty()) {
+                    append("Query: $query")
+                }
+                if (action != null && action != JSONObject.NULL) {
+                    if (isNotEmpty()) append("\n\n")
+                    append("Action:\n```json\n")
+                    append(action.toString())
+                    append("\n```")
+                }
+            }.trim()
         return if (body.isEmpty()) null else systemMessage("Web Search", body)
     }
 
@@ -1126,7 +1508,7 @@ class ServerManager(
         if (existing != null) {
             return existing
         }
-        val server = localServer ?: ServerConfig.local(port = 0)
+        val server = serversById[key.serverId] ?: ServerConfig.local(port = 0)
         val created =
             ThreadState(
                 key = key,
@@ -1166,7 +1548,8 @@ class ServerManager(
         val last = messages.last()
         return if (last.role == MessageRole.ASSISTANT && last.isStreaming) {
             val updated = messages.toMutableList()
-            updated[updated.lastIndex] = last.copy(text = last.text + delta, timestampEpochMillis = System.currentTimeMillis())
+            updated[updated.lastIndex] =
+                last.copy(text = last.text + delta, timestampEpochMillis = System.currentTimeMillis())
             updated
         } else {
             messages + ChatMessage(role = MessageRole.ASSISTANT, text = delta, isStreaming = true)
@@ -1182,7 +1565,8 @@ class ServerManager(
             return messages
         }
         val updated = messages.toMutableList()
-        updated[updated.lastIndex] = last.copy(isStreaming = false, timestampEpochMillis = System.currentTimeMillis())
+        updated[updated.lastIndex] =
+            last.copy(isStreaming = false, timestampEpochMillis = System.currentTimeMillis())
         return updated
     }
 
@@ -1249,24 +1633,33 @@ class ServerManager(
     }
 
     private fun executeCommandInternal(
+        serverId: String,
         command: List<String>,
         cwd: String? = null,
     ): JSONObject {
         val commandArray = JSONArray()
         command.forEach { commandArray.put(it) }
-        return requireTransport().request(
+        return requireTransport(serverId).request(
             method = "command/exec",
             params = JSONObject()
                 .put("command", commandArray)
-                .put("cwd", cwd ?: JSONObject.NULL)
+                .put("cwd", cwd ?: JSONObject.NULL),
         )
     }
 
-    private fun requireTransport(): BridgeRpcTransport =
-        rpcTransport ?: throw IllegalStateException("Codex bridge transport is not connected")
+    private fun requireTransport(serverId: String): BridgeRpcTransport =
+        transportsByServerId[serverId]
+            ?: throw IllegalStateException("Codex bridge transport is not connected for server '$serverId'")
 
-    private fun requireConnectedServer(): ServerConfig =
-        localServer ?: throw IllegalStateException("No connected server")
+    private fun ensureConnectedServer(serverId: String): ServerConfig =
+        serversById[serverId] ?: throw IllegalStateException("No connected server '$serverId'")
+
+    private fun resolveServerIdForActiveOperations(): String {
+        return state.activeThreadKey?.serverId
+            ?: state.activeServerId
+            ?: serversById.keys.firstOrNull()
+            ?: throw IllegalStateException("No connected server")
+    }
 
     private fun updateState(transform: (AppState) -> AppState) {
         commitState(transform(state))
@@ -1280,10 +1673,35 @@ class ServerManager(
                 sortedThreads.isNotEmpty() -> sortedThreads.first().key
                 else -> null
             }
-        val next = base.copy(
-            threads = sortedThreads,
-            activeThreadKey = activeKey,
-        )
+        val activeServerId =
+            when {
+                base.activeServerId != null && serversById.containsKey(base.activeServerId) -> base.activeServerId
+                activeKey != null -> activeKey.serverId
+                serversById.isNotEmpty() -> serversById.keys.first()
+                else -> null
+            }
+        val nextConnectionStatus =
+            when {
+                serversById.isEmpty() -> {
+                    if (base.connectionStatus == ServerConnectionStatus.ERROR) ServerConnectionStatus.ERROR
+                    else ServerConnectionStatus.DISCONNECTED
+                }
+
+                base.connectionStatus == ServerConnectionStatus.CONNECTING -> ServerConnectionStatus.CONNECTING
+                base.connectionStatus == ServerConnectionStatus.ERROR -> ServerConnectionStatus.ERROR
+                else -> ServerConnectionStatus.READY
+            }
+
+        val next =
+            base.copy(
+                connectionStatus = nextConnectionStatus,
+                servers = serversById.values.toList(),
+                savedServers = loadSavedServersInternal(),
+                accountByServerId = LinkedHashMap(accountByServerId),
+                activeServerId = activeServerId,
+                threads = sortedThreads,
+                activeThreadKey = activeKey,
+            )
         state = next
         publish(next)
     }
@@ -1314,6 +1732,54 @@ class ServerManager(
             }
             task()
         }
+    }
+
+    private fun persistSavedServersInternal() {
+        val payload = JSONArray()
+        for (server in serversById.values) {
+            val saved = SavedServer.from(server)
+            payload.put(
+                JSONObject()
+                    .put("id", saved.id)
+                    .put("name", saved.name)
+                    .put("host", saved.host)
+                    .put("port", saved.port)
+                    .put("source", saved.source)
+                    .put("hasCodexServer", saved.hasCodexServer),
+            )
+        }
+        savedServersPreferences
+            ?.edit()
+            ?.putString(savedServersKey, payload.toString())
+            ?.apply()
+    }
+
+    private fun loadSavedServersInternal(): List<SavedServer> {
+        val raw = savedServersPreferences?.getString(savedServersKey, null) ?: return emptyList()
+        val parsed = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<SavedServer>()
+        for (index in 0 until parsed.length()) {
+            val item = parsed.optJSONObject(index) ?: continue
+            val id = item.optString("id").trim()
+            val name = item.optString("name").trim()
+            val host = item.optString("host").trim()
+            val port = item.optInt("port", 0)
+            val source = item.optString("source").trim()
+            val hasCodexServer = item.optBoolean("hasCodexServer", true)
+            if (id.isEmpty() || host.isEmpty() || port <= 0) {
+                continue
+            }
+            out +=
+                SavedServer(
+                    id = id,
+                    name = if (name.isEmpty()) host else name,
+                    host = host,
+                    port = port,
+                    source = source,
+                    hasCodexServer = hasCodexServer,
+                )
+        }
+        return out
     }
 }
 

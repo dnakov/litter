@@ -14,7 +14,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        serverManager = ServerManager()
+        serverManager = ServerManager(context = this)
 
         setContent {
             LitterAppTheme {

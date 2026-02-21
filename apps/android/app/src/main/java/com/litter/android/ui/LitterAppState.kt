@@ -1,17 +1,27 @@
 package com.litter.android.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
+import com.litter.android.core.network.DiscoveredServer
+import com.litter.android.core.network.DiscoverySource
+import com.litter.android.core.network.ServerDiscoveryService
+import com.litter.android.state.AccountState
 import com.litter.android.state.AppState
+import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ModelSelection
+import com.litter.android.state.ServerConfig
 import com.litter.android.state.ServerConnectionStatus
 import com.litter.android.state.ServerManager
+import com.litter.android.state.ServerSource
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
 import com.litter.android.state.ThreadStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,10 +36,29 @@ data class DirectoryPickerUiState(
     val errorMessage: String? = null,
 )
 
+data class UiDiscoveredServer(
+    val id: String,
+    val name: String,
+    val host: String,
+    val port: Int,
+    val source: DiscoverySource,
+    val hasCodexServer: Boolean,
+)
+
+data class DiscoveryUiState(
+    val isVisible: Boolean = false,
+    val isLoading: Boolean = false,
+    val servers: List<UiDiscoveredServer> = emptyList(),
+    val manualHost: String = "",
+    val manualPort: String = "8390",
+    val errorMessage: String? = null,
+)
+
 data class UiShellState(
     val isSidebarOpen: Boolean = false,
     val connectionStatus: ServerConnectionStatus = ServerConnectionStatus.DISCONNECTED,
     val connectionError: String? = null,
+    val connectedServers: List<ServerConfig> = emptyList(),
     val serverCount: Int = 0,
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
@@ -41,6 +70,12 @@ data class UiShellState(
     val isSending: Boolean = false,
     val currentCwd: String = "/",
     val directoryPicker: DirectoryPickerUiState = DirectoryPickerUiState(),
+    val discovery: DiscoveryUiState = DiscoveryUiState(),
+    val showSettings: Boolean = false,
+    val showAccount: Boolean = false,
+    val accountState: AccountState = AccountState(),
+    val apiKeyDraft: String = "",
+    val isAuthWorking: Boolean = false,
     val uiError: String? = null,
 )
 
@@ -75,14 +110,51 @@ interface LitterAppState : Closeable {
 
     fun interrupt()
 
+    fun openSettings()
+
+    fun dismissSettings()
+
+    fun openAccount()
+
+    fun dismissAccount()
+
+    fun updateApiKeyDraft(value: String)
+
+    fun loginWithChatGpt()
+
+    fun loginWithApiKey()
+
+    fun logoutAccount()
+
+    fun cancelLogin()
+
+    fun openDiscovery()
+
+    fun dismissDiscovery()
+
+    fun refreshDiscovery()
+
+    fun connectDiscoveredServer(id: String)
+
+    fun updateManualHost(value: String)
+
+    fun updateManualPort(value: String)
+
+    fun connectManualServer()
+
+    fun removeServer(serverId: String)
+
     fun clearUiError()
 }
 
 class DefaultLitterAppState(
     private val serverManager: ServerManager,
+    private val discoveryService: ServerDiscoveryService = ServerDiscoveryService(),
 ) : LitterAppState {
     private val _uiState = MutableStateFlow(UiShellState())
     override val uiState: StateFlow<UiShellState> = _uiState.asStateFlow()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val observerHandle: Closeable =
         serverManager.observe { backend ->
@@ -95,6 +167,7 @@ class DefaultLitterAppState(
 
     override fun close() {
         observerHandle.close()
+        scope.cancel()
         serverManager.close()
     }
 
@@ -266,22 +339,259 @@ class DefaultLitterAppState(
         }
     }
 
+    override fun openSettings() {
+        _uiState.update {
+            it.copy(
+                showSettings = true,
+                showAccount = false,
+                discovery = it.discovery.copy(isVisible = false),
+            )
+        }
+    }
+
+    override fun dismissSettings() {
+        _uiState.update { it.copy(showSettings = false) }
+    }
+
+    override fun openAccount() {
+        _uiState.update { it.copy(showSettings = false, showAccount = true) }
+        serverManager.refreshAccountState { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to refresh account")
+            }
+        }
+    }
+
+    override fun dismissAccount() {
+        _uiState.update { it.copy(showAccount = false, showSettings = true) }
+    }
+
+    override fun updateApiKeyDraft(value: String) {
+        _uiState.update { it.copy(apiKeyDraft = value) }
+    }
+
+    override fun loginWithChatGpt() {
+        _uiState.update { it.copy(isAuthWorking = true) }
+        serverManager.loginWithChatGpt { result ->
+            _uiState.update { it.copy(isAuthWorking = false) }
+            result.onFailure { error ->
+                setUiError(error.message ?: "ChatGPT login start failed")
+            }
+        }
+    }
+
+    override fun loginWithApiKey() {
+        val key = _uiState.value.apiKeyDraft.trim()
+        if (key.isEmpty()) {
+            return
+        }
+        _uiState.update { it.copy(isAuthWorking = true) }
+        serverManager.loginWithApiKey(key) { result ->
+            _uiState.update { it.copy(isAuthWorking = false) }
+            result.onFailure { error ->
+                setUiError(error.message ?: "API key login failed")
+            }
+            result.onSuccess {
+                _uiState.update { it.copy(apiKeyDraft = "") }
+            }
+        }
+    }
+
+    override fun logoutAccount() {
+        _uiState.update { it.copy(isAuthWorking = true) }
+        serverManager.logoutAccount { result ->
+            _uiState.update { it.copy(isAuthWorking = false) }
+            result.onFailure { error ->
+                setUiError(error.message ?: "Logout failed")
+            }
+        }
+    }
+
+    override fun cancelLogin() {
+        serverManager.cancelLogin { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Cancel login failed")
+            }
+        }
+    }
+
+    override fun openDiscovery() {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(isVisible = true),
+                isSidebarOpen = false,
+                showSettings = false,
+                showAccount = false,
+            )
+        }
+        refreshDiscovery()
+    }
+
+    override fun dismissDiscovery() {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(isVisible = false, errorMessage = null),
+            )
+        }
+    }
+
+    override fun refreshDiscovery() {
+        _uiState.update {
+            it.copy(
+                discovery =
+                    it.discovery.copy(
+                        isVisible = true,
+                        isLoading = true,
+                        errorMessage = null,
+                    ),
+            )
+        }
+
+        scope.launch {
+            val result = runCatching { discoveryService.discover() }
+            result.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        discovery =
+                            it.discovery.copy(
+                                isVisible = true,
+                                isLoading = false,
+                                errorMessage = error.message ?: "Discovery failed",
+                                servers = emptyList(),
+                            ),
+                    )
+                }
+            }
+            result.onSuccess { servers ->
+                _uiState.update {
+                    it.copy(
+                        discovery =
+                            it.discovery.copy(
+                                isVisible = true,
+                                isLoading = false,
+                                errorMessage = null,
+                                servers = servers.map { discovered -> discovered.toUi() },
+                            ),
+                    )
+                }
+            }
+        }
+    }
+
+    override fun connectDiscoveredServer(id: String) {
+        val discovered = _uiState.value.discovery.servers.firstOrNull { it.id == id } ?: return
+
+        if (!discovered.hasCodexServer) {
+            setUiError("SSH-only discovery found. SSH setup flow is next parity step.")
+            return
+        }
+
+        serverManager.connectServer(discovered.toServerConfig()) { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Connection failed")
+            }
+            result.onSuccess {
+                _uiState.update {
+                    it.copy(discovery = it.discovery.copy(isVisible = false, errorMessage = null))
+                }
+                postConnectPrime()
+            }
+        }
+    }
+
+    override fun updateManualHost(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualHost = value),
+            )
+        }
+    }
+
+    override fun updateManualPort(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualPort = value),
+            )
+        }
+    }
+
+    override fun connectManualServer() {
+        val snapshot = _uiState.value.discovery
+        val host = snapshot.manualHost.trim()
+        val port = snapshot.manualPort.trim().toIntOrNull()
+        if (host.isEmpty() || port == null || port <= 0) {
+            setUiError("Enter a valid host and port")
+            return
+        }
+
+        val server =
+            ServerConfig(
+                id = "manual-$host:$port",
+                name = host,
+                host = host,
+                port = port,
+                source = ServerSource.MANUAL,
+                hasCodexServer = true,
+            )
+
+        serverManager.connectServer(server) { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Manual connection failed")
+            }
+            result.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        discovery =
+                            it.discovery.copy(
+                                isVisible = false,
+                                errorMessage = null,
+                                manualHost = "",
+                                manualPort = "8390",
+                            ),
+                    )
+                }
+                postConnectPrime()
+            }
+        }
+    }
+
+    override fun removeServer(serverId: String) {
+        serverManager.removeServer(serverId)
+        if (_uiState.value.connectedServers.size <= 1) {
+            _uiState.update { it.copy(showAccount = false, showSettings = false) }
+            openDiscovery()
+        }
+    }
+
     override fun clearUiError() {
         _uiState.update { it.copy(uiError = null) }
     }
 
     private fun connectAndPrime() {
-        serverManager.connectLocalDefaultServer { result ->
-            result.onFailure { error ->
-                setUiError(error.message ?: "Failed to connect")
+        serverManager.reconnectSavedServers { result ->
+            result.onFailure {
+                openDiscovery()
             }
-            result.onSuccess {
-                serverManager.loadModels { modelsResult ->
-                    modelsResult.onFailure { error ->
-                        setUiError(error.message ?: "Failed to load models")
-                    }
+            result.onSuccess { connected ->
+                if (connected.isEmpty()) {
+                    openDiscovery()
+                } else {
+                    postConnectPrime()
                 }
-                refreshSessions()
+            }
+        }
+    }
+
+    private fun postConnectPrime() {
+        serverManager.loadModels { modelsResult ->
+            modelsResult.onFailure { error ->
+                setUiError(error.message ?: "Failed to load models")
+            }
+        }
+        refreshSessions()
+        serverManager.refreshAccountState { accountResult ->
+            accountResult.onFailure { error ->
+                setUiError(error.message ?: "Failed to refresh account")
             }
         }
     }
@@ -339,6 +649,7 @@ class DefaultLitterAppState(
             current.copy(
                 connectionStatus = backend.connectionStatus,
                 connectionError = backend.connectionError,
+                connectedServers = backend.servers,
                 serverCount = backend.servers.size,
                 models = backend.availableModels,
                 selectedModelId = backend.selectedModel.modelId,
@@ -348,6 +659,7 @@ class DefaultLitterAppState(
                 messages = activeThread?.messages ?: emptyList(),
                 isSending = activeThread?.status == ThreadStatus.THINKING,
                 currentCwd = backend.currentCwd,
+                accountState = backend.activeAccount,
             )
         }
     }
@@ -355,14 +667,44 @@ class DefaultLitterAppState(
     private fun setUiError(message: String) {
         _uiState.update { it.copy(uiError = message) }
     }
+
+    private fun DiscoveredServer.toUi(): UiDiscoveredServer =
+        UiDiscoveredServer(
+            id = id,
+            name = name,
+            host = host,
+            port = port,
+            source = source,
+            hasCodexServer = hasCodexServer,
+        )
+
+    private fun UiDiscoveredServer.toServerConfig(): ServerConfig =
+        ServerConfig(
+            id = id,
+            name = name,
+            host = host,
+            port = port,
+            source = source.toStateSource(),
+            hasCodexServer = hasCodexServer,
+        )
+
+    private fun DiscoverySource.toStateSource(): ServerSource =
+        when (this) {
+            DiscoverySource.LOCAL -> ServerSource.LOCAL
+            DiscoverySource.BONJOUR -> ServerSource.BONJOUR
+            DiscoverySource.SSH -> ServerSource.SSH
+            DiscoverySource.TAILSCALE -> ServerSource.TAILSCALE
+            DiscoverySource.MANUAL -> ServerSource.MANUAL
+            DiscoverySource.LAN -> ServerSource.REMOTE
+        }
 }
 
 @Composable
 fun rememberLitterAppState(
     serverManager: ServerManager,
 ): LitterAppState {
-    val appState = remember(serverManager) { DefaultLitterAppState(serverManager = serverManager) }
-    DisposableEffect(appState) {
+    val appState = androidx.compose.runtime.remember(serverManager) { DefaultLitterAppState(serverManager = serverManager) }
+    androidx.compose.runtime.DisposableEffect(appState) {
         onDispose { appState.close() }
     }
     return appState

@@ -26,7 +26,42 @@ enum class ServerConnectionStatus {
 
 enum class ServerSource {
     LOCAL,
+    BONJOUR,
+    SSH,
+    TAILSCALE,
+    MANUAL,
     REMOTE,
+    ;
+
+    fun rawValue(): String =
+        when (this) {
+            LOCAL -> "local"
+            BONJOUR -> "bonjour"
+            SSH -> "ssh"
+            TAILSCALE -> "tailscale"
+            MANUAL -> "manual"
+            REMOTE -> "remote"
+        }
+
+    companion object {
+        fun from(raw: String?): ServerSource =
+            when (raw?.trim()?.lowercase()) {
+                "local" -> LOCAL
+                "bonjour" -> BONJOUR
+                "ssh" -> SSH
+                "tailscale" -> TAILSCALE
+                "manual" -> MANUAL
+                "remote" -> REMOTE
+                else -> MANUAL
+            }
+    }
+}
+
+enum class AuthStatus {
+    UNKNOWN,
+    NOT_LOGGED_IN,
+    API_KEY,
+    CHATGPT,
 }
 
 data class ThreadKey(
@@ -40,6 +75,7 @@ data class ServerConfig(
     val host: String,
     val port: Int,
     val source: ServerSource,
+    val hasCodexServer: Boolean = true,
 ) {
     companion object {
         fun local(port: Int): ServerConfig =
@@ -49,8 +85,65 @@ data class ServerConfig(
                 host = "127.0.0.1",
                 port = port,
                 source = ServerSource.LOCAL,
+                hasCodexServer = true,
             )
     }
+}
+
+data class SavedServer(
+    val id: String,
+    val name: String,
+    val host: String,
+    val port: Int,
+    val source: String,
+    val hasCodexServer: Boolean,
+) {
+    fun toServerConfig(): ServerConfig =
+        ServerConfig(
+            id = id,
+            name = name,
+            host = host,
+            port = port,
+            source = ServerSource.from(source),
+            hasCodexServer = hasCodexServer,
+        )
+
+    companion object {
+        fun from(server: ServerConfig): SavedServer =
+            SavedServer(
+                id = server.id,
+                name = server.name,
+                host = server.host,
+                port = server.port,
+                source = server.source.rawValue(),
+                hasCodexServer = server.hasCodexServer,
+            )
+    }
+}
+
+data class AccountState(
+    val status: AuthStatus = AuthStatus.UNKNOWN,
+    val email: String = "",
+    val oauthUrl: String? = null,
+    val pendingLoginId: String? = null,
+    val lastError: String? = null,
+) {
+    val summaryTitle: String
+        get() =
+            when (status) {
+                AuthStatus.CHATGPT -> if (email.isBlank()) "ChatGPT" else email
+                AuthStatus.API_KEY -> "API Key"
+                AuthStatus.NOT_LOGGED_IN -> "Not logged in"
+                AuthStatus.UNKNOWN -> "Checking..."
+            }
+
+    val summarySubtitle: String?
+        get() =
+            when (status) {
+                AuthStatus.CHATGPT -> "ChatGPT account"
+                AuthStatus.API_KEY -> "OpenAI API key"
+                else -> null
+            }
 }
 
 data class ReasoningEffortOption(
@@ -100,17 +193,25 @@ data class AppState(
     val connectionStatus: ServerConnectionStatus = ServerConnectionStatus.DISCONNECTED,
     val connectionError: String? = null,
     val servers: List<ServerConfig> = emptyList(),
+    val savedServers: List<SavedServer> = emptyList(),
     val activeServerId: String? = null,
     val threads: List<ThreadState> = emptyList(),
     val activeThreadKey: ThreadKey? = null,
     val selectedModel: ModelSelection = ModelSelection(),
     val availableModels: List<ModelOption> = emptyList(),
+    val accountByServerId: Map<String, AccountState> = emptyMap(),
     val currentCwd: String = defaultWorkingDirectory(),
 ) {
     val activeThread: ThreadState?
         get() = activeThreadKey?.let { key ->
             threads.firstOrNull { it.key == key }
         }
+
+    val activeAccount: AccountState
+        get() =
+            activeServerId
+                ?.let { accountByServerId[it] }
+                ?: AccountState()
 }
 
 internal fun defaultWorkingDirectory(): String =
