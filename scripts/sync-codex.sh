@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SUBMODULE_DIR="$ROOT_DIR/third_party/codex"
+SUBMODULE_DIR="$ROOT_DIR/shared/third_party/codex"
 PATCH_FILE="$ROOT_DIR/patches/codex/ios-exec-hook.patch"
 
 echo "==> Syncing codex submodule..."
-git -C "$ROOT_DIR" submodule update --init --recursive third_party/codex
+git -C "$ROOT_DIR" submodule update --init --recursive shared/third_party/codex
 
 if [ ! -f "$PATCH_FILE" ]; then
     echo "error: missing patch file: $PATCH_FILE" >&2

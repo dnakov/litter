@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `Sources/CodexIOS/` contains the iOS app code.
 - `Sources/CodexIOS/Views/` holds SwiftUI screens, `Models/` contains app state/session logic, and `Bridge/` contains JSON-RPC and C FFI bridge code.
-- `codex-bridge/` is the Rust static library (`libcodex_bridge.a`) exposed through `codex-bridge/include/codex_bridge.h`.
+- `shared/rust-bridge/codex-bridge/` is the Rust static library (`libcodex_bridge.a`) exposed through `shared/rust-bridge/codex-bridge/include/codex_bridge.h`.
 - `Frameworks/` stores vendored XCFrameworks (`codex_bridge.xcframework` and `ios_system/*`).
 - `project.yml` is the source of truth for project generation; regenerate `CodexIOS.xcodeproj` instead of hand-editing project files.
 
@@ -22,7 +22,7 @@
 
 ## Build, Test, and Development Commands
 - `./scripts/download-ios-system.sh`: download required `ios_system` XCFrameworks.
-- `./scripts/build-rust.sh`: cross-compile Rust bridge for device/simulator and rebuild `Frameworks/codex_bridge.xcframework`.
+- `./scripts/build-rust.sh`: cross-compile Rust bridge from `shared/rust-bridge/codex-bridge` for device/simulator and rebuild `Frameworks/codex_bridge.xcframework`.
 - `xcodegen generate`: regenerate `CodexIOS.xcodeproj` after changing `project.yml` or adding/removing files.
 - `open CodexIOS.xcodeproj`: open and run from Xcode.
 - `xcodebuild -project CodexIOS.xcodeproj -scheme CodexIOS -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`: CI-friendly local build.

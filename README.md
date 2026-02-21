@@ -25,7 +25,7 @@
 
 This repo now vendors upstream Codex as a submodule:
 
-- `third_party/codex` -> `https://github.com/openai/codex`
+- `shared/third_party/codex` -> `https://github.com/openai/codex`
 
 On-device iOS exec hook changes are kept as a local patch:
 
@@ -45,8 +45,8 @@ Sync/apply patch (idempotent):
 
 This script:
 
-1. Syncs `third_party/codex` and applies the iOS hook patch
-2. Builds `codex-bridge` for device + simulator targets
+1. Syncs `shared/third_party/codex` and applies the iOS hook patch
+2. Builds `shared/rust-bridge/codex-bridge` for device + simulator targets
 3. Repackages `Frameworks/codex_bridge.xcframework`
 
 ## Build and run iOS app
@@ -77,8 +77,8 @@ xcodebuild -project Litter.xcodeproj -scheme LitterRemote -configuration Debug -
 ## Important paths
 
 - `project.yml`: source of truth for Xcode project/schemes
-- `codex-bridge/`: Rust staticlib wrapper exposing `codex_start_server`/`codex_stop_server`
-- `third_party/codex/`: upstream Codex source (submodule)
+- `shared/rust-bridge/codex-bridge/`: Rust staticlib wrapper exposing `codex_start_server`/`codex_stop_server`
+- `shared/third_party/codex/`: upstream Codex source (submodule)
 - `patches/codex/ios-exec-hook.patch`: iOS-specific hook patch applied to submodule
 - `Sources/Litter/Bridge/`: Swift bridge + JSON-RPC client
 - `Sources/Litter/Resources/brand_logo.svg`: source logo (SVG)

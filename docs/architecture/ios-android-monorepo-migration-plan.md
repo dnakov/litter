@@ -1,8 +1,15 @@
 # iOS + Android Monorepo Migration Plan
 
 ## Branch
-- Working branch: `migration/ios-android-monorepo-plan`
+- Working branch: `migration/ios-android-monorepo-exec`
 - Base commit: `9df7e37`
+
+## Progress
+- [x] Phase 1: Introduced top-level `apps/`, `shared/`, and `tools` scaffolding.
+- [x] Phase 2: Moved shared Rust bridge and Codex submodule paths.
+- [ ] Phase 3: Move iOS app into `apps/ios`.
+- [ ] Phase 4: Expand Android app into feature modules.
+- [ ] Phase 5: Add Android Rust bridge/JNI integration.
 
 ## Goals
 1. Keep iOS shipping while introducing Android native app support.
@@ -173,4 +180,4 @@ Exit criteria:
 7. `docs: refresh build and release guides`
 
 ## Immediate Next Execution Step
-- Execute Phase 1 in a pure-structure commit (no logic changes), then verify iOS still builds before Phase 2.
+- Execute Phase 3: move iOS project/files into `apps/ios`, then run `xcodegen generate` and simulator build from the new location.

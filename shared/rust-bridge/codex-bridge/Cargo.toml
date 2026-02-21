@@ -8,9 +8,9 @@ name = "codex_bridge"
 crate-type = ["staticlib"]
 
 [dependencies]
-codex-app-server = { path = "../third_party/codex/codex-rs/app-server" }
-codex-utils-cli = { path = "../third_party/codex/codex-rs/utils/cli" }
-codex-core = { path = "../third_party/codex/codex-rs/core" }
+codex-app-server = { path = "../../third_party/codex/codex-rs/app-server" }
+codex-utils-cli = { path = "../../third_party/codex/codex-rs/utils/cli" }
+codex-core = { path = "../../third_party/codex/codex-rs/core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [patch.crates-io]
