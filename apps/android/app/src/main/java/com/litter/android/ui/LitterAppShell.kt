@@ -1,6 +1,7 @@
 package com.litter.android.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.net.Uri
@@ -53,6 +54,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -697,6 +699,21 @@ private fun ConversationPanel(
                 attachmentError = "Unable to attach image from picker"
             }
         }
+    val cameraLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.TakePicturePreview(),
+        ) { bitmap ->
+            if (bitmap == null) {
+                return@rememberLauncherForActivityResult
+            }
+            val cachedPath = runCatching { cacheAttachmentBitmap(context, bitmap) }.getOrNull()
+            if (cachedPath != null) {
+                attachedImagePath = cachedPath
+                attachmentError = null
+            } else {
+                attachmentError = "Unable to attach image from camera"
+            }
+        }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -725,6 +742,7 @@ private fun ConversationPanel(
             isSending = isSending,
             onDraftChange = onDraftChange,
             onAttachImage = { attachmentLauncher.launch("image/*") },
+            onCaptureImage = { cameraLauncher.launch(null) },
             onClearAttachment = {
                 attachedImagePath = null
                 attachmentError = null
@@ -1039,6 +1057,7 @@ private fun InputBar(
     isSending: Boolean,
     onDraftChange: (String) -> Unit,
     onAttachImage: () -> Unit,
+    onCaptureImage: () -> Unit,
     onClearAttachment: () -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
@@ -1098,6 +1117,9 @@ private fun InputBar(
             ) {
                 OutlinedButton(onClick = onAttachImage, enabled = !isSending) {
                     Icon(Icons.Default.AttachFile, contentDescription = "Attach image", modifier = Modifier.size(16.dp))
+                }
+                OutlinedButton(onClick = onCaptureImage, enabled = !isSending) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = "Capture image", modifier = Modifier.size(16.dp))
                 }
 
                 OutlinedTextField(
@@ -1466,6 +1488,23 @@ private fun cacheAttachmentImage(
         }
     } ?: return null
     return target.absolutePath
+}
+
+private fun cacheAttachmentBitmap(
+    context: Context,
+    bitmap: Bitmap,
+): String? {
+    val targetDirectory = File(context.cacheDir, "litter-attachments")
+    if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+        return null
+    }
+    val target = File(targetDirectory, "capture_${System.currentTimeMillis()}.jpg")
+    return runCatching {
+        FileOutputStream(target).use { output ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+        }
+        target.absolutePath
+    }.getOrNull()
 }
 
 @Composable
