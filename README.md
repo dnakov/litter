@@ -1,5 +1,9 @@
 # litter (codex-ios)
 
+<p align="center">
+  <img src="Sources/Litter/Resources/brand_logo.png" alt="litter logo" width="180" />
+</p>
+
 `litter` is an iOS client for Codex. It supports:
 
 - `LitterRemote`: remote-only mode (default scheme; no bundled on-device Rust server)
