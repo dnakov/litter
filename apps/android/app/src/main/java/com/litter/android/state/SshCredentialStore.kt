@@ -1,6 +1,9 @@
 package com.litter.android.state
 
 import android.content.Context
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import org.json.JSONObject
 
 enum class SshAuthMethod {
@@ -20,7 +23,24 @@ class SshCredentialStore(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences("litter_ssh_credentials", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences =
+        runCatching {
+            val masterKey =
+                MasterKey
+                    .Builder(appContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+            EncryptedSharedPreferences.create(
+                appContext,
+                "litter_ssh_credentials_secure",
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        }.getOrElse {
+            // Fallback for environments where encrypted prefs initialization fails.
+            appContext.getSharedPreferences("litter_ssh_credentials", Context.MODE_PRIVATE)
+        }
 
     fun load(
         host: String,
