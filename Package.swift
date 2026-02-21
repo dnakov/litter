@@ -12,12 +12,12 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "codex_bridge",
-            path: "Frameworks/codex_bridge.xcframework"
+            path: "apps/ios/Frameworks/codex_bridge.xcframework"
         ),
         .target(
             name: "Litter",
             dependencies: ["codex_bridge"],
-            path: "Sources/Litter",
+            path: "apps/ios/Sources/Litter",
             publicHeadersPath: "Bridge"
         )
     ]

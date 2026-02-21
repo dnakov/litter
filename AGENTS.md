@@ -1,11 +1,11 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `Sources/CodexIOS/` contains the iOS app code.
-- `Sources/CodexIOS/Views/` holds SwiftUI screens, `Models/` contains app state/session logic, and `Bridge/` contains JSON-RPC and C FFI bridge code.
+- `apps/ios/Sources/Litter/` contains the iOS app code.
+- `apps/ios/Sources/Litter/Views/` holds SwiftUI screens, `Models/` contains app state/session logic, and `Bridge/` contains JSON-RPC and C FFI bridge code.
 - `shared/rust-bridge/codex-bridge/` is the Rust static library (`libcodex_bridge.a`) exposed through `shared/rust-bridge/codex-bridge/include/codex_bridge.h`.
-- `Frameworks/` stores vendored XCFrameworks (`codex_bridge.xcframework` and `ios_system/*`).
-- `project.yml` is the source of truth for project generation; regenerate `CodexIOS.xcodeproj` instead of hand-editing project files.
+- `apps/ios/Frameworks/` stores vendored XCFrameworks (`codex_bridge.xcframework` and `ios_system/*`).
+- `apps/ios/project.yml` is the source of truth for project generation; regenerate `apps/ios/Litter.xcodeproj` instead of hand-editing project files.
 
 ## Architecture
 - **Root layout:** `ContentView` uses a `ZStack` with a persistent `HeaderView`, main content area, and a `SidebarOverlay` that slides from the left.
@@ -21,11 +21,11 @@
 - **Inject** — Hot reload support for simulator development (Debug builds only).
 
 ## Build, Test, and Development Commands
-- `./scripts/download-ios-system.sh`: download required `ios_system` XCFrameworks.
-- `./scripts/build-rust.sh`: cross-compile Rust bridge from `shared/rust-bridge/codex-bridge` for device/simulator and rebuild `Frameworks/codex_bridge.xcframework`.
-- `xcodegen generate`: regenerate `CodexIOS.xcodeproj` after changing `project.yml` or adding/removing files.
-- `open CodexIOS.xcodeproj`: open and run from Xcode.
-- `xcodebuild -project CodexIOS.xcodeproj -scheme CodexIOS -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`: CI-friendly local build.
+- `./apps/ios/scripts/download-ios-system.sh`: download required `ios_system` XCFrameworks.
+- `./apps/ios/scripts/build-rust.sh`: cross-compile Rust bridge from `shared/rust-bridge/codex-bridge` for device/simulator and rebuild `apps/ios/Frameworks/codex_bridge.xcframework`.
+- `xcodegen generate --spec apps/ios/project.yml --project apps/ios/Litter.xcodeproj`: regenerate iOS project after spec/path changes.
+- `open apps/ios/Litter.xcodeproj`: open and run from Xcode.
+- `xcodebuild -project apps/ios/Litter.xcodeproj -scheme Litter -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`: CI-friendly local build.
 
 ### Hot Reload (InjectionIII)
 - Install: `brew install --cask injectioniii`
@@ -49,4 +49,4 @@
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects with optional scope (example: `bridge: retry initialize handshake`).
 - PRs should include: purpose, key changes, verification steps (commands/device), and screenshots for UI changes.
-- If project structure changes, include updates to `project.yml` and mention whether `xcodegen generate` was run.
+- If project structure changes, include updates to `apps/ios/project.yml` and mention whether project regeneration was run.

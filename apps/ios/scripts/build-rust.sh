@@ -2,8 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BRIDGE_DIR="$SCRIPT_DIR/../shared/rust-bridge/codex-bridge"
-FRAMEWORKS_DIR="$SCRIPT_DIR/../Frameworks"
+IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$IOS_DIR/../.." && pwd)"
+BRIDGE_DIR="$REPO_DIR/shared/rust-bridge/codex-bridge"
+FRAMEWORKS_DIR="$IOS_DIR/Frameworks"
 
 mkdir -p "$FRAMEWORKS_DIR"
 

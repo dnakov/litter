@@ -7,7 +7,7 @@
 ## Progress
 - [x] Phase 1: Introduced top-level `apps/`, `shared/`, and `tools` scaffolding.
 - [x] Phase 2: Moved shared Rust bridge and Codex submodule paths.
-- [ ] Phase 3: Move iOS app into `apps/ios`.
+- [x] Phase 3: Moved iOS app into `apps/ios` and revalidated build.
 - [ ] Phase 4: Expand Android app into feature modules.
 - [ ] Phase 5: Add Android Rust bridge/JNI integration.
 
@@ -180,4 +180,4 @@ Exit criteria:
 7. `docs: refresh build and release guides`
 
 ## Immediate Next Execution Step
-- Execute Phase 3: move iOS project/files into `apps/ios`, then run `xcodegen generate` and simulator build from the new location.
+- Execute Phase 4: add Android feature modules (`core`, `feature/*`) and align architecture with iOS flows.
