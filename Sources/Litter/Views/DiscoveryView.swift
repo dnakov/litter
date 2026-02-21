@@ -27,6 +27,17 @@ struct DiscoveryView: View {
         }
         .navigationTitle("litter")
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    discovery.startScanning()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundColor(LitterTheme.accent)
+                }
+                .disabled(discovery.isScanning)
+            }
+        }
         .onAppear {
             discovery.startScanning()
             maybeStartSimulatorAutoSSH()
@@ -74,13 +85,20 @@ struct DiscoveryView: View {
         Section {
             let networkServers = discovery.servers.filter { $0.source != .local }
             if networkServers.isEmpty {
-                HStack {
-                    ProgressView().tint(LitterTheme.textMuted).scaleEffect(0.7)
-                    Text("Scanning network...")
+                if discovery.isScanning {
+                    HStack {
+                        ProgressView().tint(LitterTheme.textMuted).scaleEffect(0.7)
+                        Text("Scanning Bonjour + Tailscale...")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundColor(LitterTheme.textMuted)
+                    }
+                    .listRowBackground(LitterTheme.surface.opacity(0.6))
+                } else {
+                    Text("No IPv4 SSH hosts found via Bonjour/Tailscale")
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundColor(LitterTheme.textMuted)
+                        .listRowBackground(LitterTheme.surface.opacity(0.6))
                 }
-                .listRowBackground(LitterTheme.surface.opacity(0.6))
             } else {
                 ForEach(networkServers) { server in
                     serverRow(server)
@@ -156,7 +174,7 @@ struct DiscoveryView: View {
         if server.hasCodexServer {
             parts.append(" - codex running")
         } else {
-            parts.append(" - SSH")
+            parts.append(" - SSH (\(server.source.rawString))")
         }
         return parts.joined()
     }
