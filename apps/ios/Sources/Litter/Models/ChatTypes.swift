@@ -1,6 +1,6 @@
 import Foundation
 
-enum MessageRole {
+enum MessageRole: Equatable {
     case user
     case assistant
     case system

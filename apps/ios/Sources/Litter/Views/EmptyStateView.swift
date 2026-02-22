@@ -4,6 +4,22 @@ struct EmptyStateView: View {
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
 
+    private var connectedServerNames: [String] {
+        serverManager.connections.values
+            .filter { $0.isConnected }
+            .map { $0.server.name }
+            .sorted()
+    }
+
+    private var connectionSummary: String {
+        guard let first = connectedServerNames.first else { return "Not connected" }
+        let extraCount = connectedServerNames.count - 1
+        if extraCount <= 0 {
+            return "Connected: \(first)"
+        }
+        return "Connected: \(first) +\(extraCount)"
+    }
+
     var body: some View {
         VStack {
             Spacer(minLength: 0)
@@ -12,6 +28,18 @@ struct EmptyStateView: View {
                 Text("Open the sidebar to start a session")
                     .font(.system(.body, design: .monospaced))
                     .foregroundColor(LitterTheme.textMuted)
+                if !connectedServerNames.isEmpty {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(LitterTheme.accent)
+                            .frame(width: 8, height: 8)
+                        Text(connectionSummary)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundColor(LitterTheme.accent)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
                 if !serverManager.hasAnyConnection {
                     Button("Connect to Server") {
                         appState.showServerPicker = true

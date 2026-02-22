@@ -25,18 +25,24 @@ struct HeaderView: View {
 
             Button { showModelSelector = true } label: {
                 HStack(spacing: 6) {
-                    if serverManager.activeThreadKey != nil, !shortModelName.isEmpty {
-                        Text(shortModelName)
+                    if serverManager.activeThreadKey != nil, !selectedModelName.isEmpty {
+                        Text(selectedModelName)
                             .font(.system(.title3, weight: .semibold))
                             .foregroundColor(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .allowsTightening(true)
                     } else {
                         Text("litter")
                             .font(.system(.title3, weight: .semibold))
                             .foregroundColor(.white)
-                        if !shortModelName.isEmpty {
-                            Text(shortModelName)
+                        if !selectedModelName.isEmpty {
+                            Text(selectedModelName)
                                 .font(.system(.title3))
                                 .foregroundColor(Color(hex: "#666666"))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .allowsTightening(true)
                         }
                     }
                     Image(systemName: "chevron.right")
@@ -67,11 +73,8 @@ struct HeaderView: View {
         }
     }
 
-    private var shortModelName: String {
-        if appState.selectedModel.isEmpty { return "" }
-        return appState.selectedModel
-            .replacingOccurrences(of: "gpt-", with: "")
-            .replacingOccurrences(of: "-codex", with: "")
+    private var selectedModelName: String {
+        appState.selectedModel
     }
 
     private func loadModelsIfNeeded() async {
