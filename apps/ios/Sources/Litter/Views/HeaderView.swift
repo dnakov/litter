@@ -6,6 +6,7 @@ struct HeaderView: View {
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
     @State private var showModelSelector = false
+    @State private var isReloading = false
 
     private var activeConn: ServerConnection? {
         serverManager.activeConnection
@@ -53,7 +54,7 @@ struct HeaderView: View {
 
             Spacer()
 
-            statusDot
+            reloadButton
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -95,27 +96,29 @@ struct HeaderView: View {
         } catch {}
     }
 
-    @ViewBuilder
-    private var statusDot: some View {
-        let status = serverManager.activeThread?.status
-        switch status {
-        case .idle, .none:
-            if serverManager.hasAnyConnection {
-                Circle().fill(LitterTheme.accent).frame(width: 8, height: 8)
-            } else {
-                Circle().fill(LitterTheme.textMuted).frame(width: 8, height: 8)
+    private var reloadButton: some View {
+        Button {
+            Task {
+                isReloading = true
+                await serverManager.refreshAllSessions()
+                await serverManager.syncActiveThreadFromServer()
+                isReloading = false
             }
-        case .connecting:
-            Circle().fill(Color.yellow).frame(width: 8, height: 8)
-        case .ready:
-            Circle().fill(LitterTheme.accent).frame(width: 8, height: 8)
-        case .thinking:
-            ProgressView()
-                .scaleEffect(0.6)
-                .tint(LitterTheme.accent)
-        case .error:
-            Circle().fill(Color.red).frame(width: 8, height: 8)
+        } label: {
+            Group {
+                if isReloading {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .tint(LitterTheme.accent)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(.subheadline, weight: .semibold))
+                        .foregroundColor(serverManager.hasAnyConnection ? LitterTheme.accent : LitterTheme.textMuted)
+                }
+            }
+            .frame(width: 18, height: 18)
         }
+        .disabled(isReloading || !serverManager.hasAnyConnection)
     }
 }
 

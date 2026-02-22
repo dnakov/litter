@@ -6,14 +6,7 @@ struct ConversationView: View {
     @ObserveInjection var inject
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
-    @State private var inputText = ""
-    @FocusState private var inputFocused: Bool
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
-    @State private var showAttachMenu = false
-    @State private var showPhotoPicker = false
-    @State private var showCamera = false
-    @State private var selectedPhoto: PhotosPickerItem?
-    @State private var attachedImage: UIImage?
 
     private var messages: [ChatMessage] {
         serverManager.activeThread?.messages ?? []
@@ -25,18 +18,35 @@ struct ConversationView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            messageList
-            inputBar
+            ConversationMessageList(
+                messages: messages,
+                threadStatus: threadStatus,
+                activeThreadKey: serverManager.activeThreadKey
+            )
+            ConversationInputBar(onSend: sendMessage)
         }
         .enableInjection()
     }
 
-    private var messageList: some View {
+    private func sendMessage(_ text: String) {
+        let model = appState.selectedModel.isEmpty ? nil : appState.selectedModel
+        let effort = appState.reasoningEffort
+        Task { await serverManager.send(text, cwd: workDir, model: model, effort: effort) }
+    }
+}
+
+private struct ConversationMessageList: View {
+    let messages: [ChatMessage]
+    let threadStatus: ConversationStatus
+    let activeThreadKey: ThreadKey?
+    @State private var pendingScrollWorkItem: DispatchWorkItem?
+
+    var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(messages) { message in
-                        MessageBubbleView(message: message)
+                        EquatableMessageBubble(message: message)
                             .id(message.id)
                     }
                     if case .thinking = threadStatus {
@@ -47,32 +57,63 @@ struct ConversationView: View {
                 .padding(16)
             }
             .onAppear {
-                scrollToBottom(proxy, animated: false)
+                scheduleScrollToBottom(proxy, delay: 0)
             }
-            .onChange(of: serverManager.activeThreadKey) {
-                scrollToBottom(proxy, animated: false)
+            .onChange(of: activeThreadKey) {
+                scheduleScrollToBottom(proxy, delay: 0)
             }
             .onChange(of: messages.count) {
-                scrollToBottom(proxy)
+                scheduleScrollToBottom(proxy)
+            }
+            .onDisappear {
+                pendingScrollWorkItem?.cancel()
+                pendingScrollWorkItem = nil
             }
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-            } else {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
+    private func scheduleScrollToBottom(_ proxy: ScrollViewProxy, delay: TimeInterval = 0.05) {
+        pendingScrollWorkItem?.cancel()
+        let work = DispatchWorkItem {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+        pendingScrollWorkItem = work
+        if delay == 0 {
+            DispatchQueue.main.async(execute: work)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
+}
+
+private struct EquatableMessageBubble: View, Equatable {
+    let message: ChatMessage
+
+    static func == (lhs: EquatableMessageBubble, rhs: EquatableMessageBubble) -> Bool {
+        lhs.message == rhs.message
+    }
+
+    var body: some View {
+        MessageBubbleView(message: message)
+    }
+}
+
+private struct ConversationInputBar: View {
+    let onSend: (String) -> Void
+
+    @State private var inputText = ""
+    @FocusState private var inputFocused: Bool
+    @State private var showAttachMenu = false
+    @State private var showPhotoPicker = false
+    @State private var showCamera = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var attachedImage: UIImage?
 
     private var hasText: Bool {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    private var inputBar: some View {
+    var body: some View {
         VStack(spacing: 0) {
             if let img = attachedImage {
                 HStack {
@@ -122,9 +163,7 @@ struct ConversationView: View {
                             guard !text.isEmpty else { return }
                             inputText = ""
                             attachedImage = nil
-                            let model = appState.selectedModel.isEmpty ? nil : appState.selectedModel
-                            let effort = appState.reasoningEffort
-                            Task { await serverManager.send(text, cwd: workDir, model: model, effort: effort) }
+                            onSend(text)
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")
                                 .font(.system(.title2))
@@ -172,9 +211,12 @@ struct TypingIndicator: View {
             }
         }
         .padding(.leading, 12)
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
-                withAnimation { phase = (phase + 1) % 3 }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(400))
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    phase = (phase + 1) % 3
+                }
             }
         }
     }

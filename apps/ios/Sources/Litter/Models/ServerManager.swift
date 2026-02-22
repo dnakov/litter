@@ -6,12 +6,41 @@ final class ServerManager: ObservableObject {
     @Published var connections: [String: ServerConnection] = [:]
     @Published var threads: [ThreadKey: ThreadState] = [:]
     @Published var activeThreadKey: ThreadKey?
+    @Published var pendingApprovals: [PendingApproval] = []
 
     private let savedServersKey = "codex_saved_servers"
     private var threadSubscriptions: [ThreadKey: AnyCancellable] = [:]
     private var liveItemMessageIndices: [ThreadKey: [String: Int]] = [:]
     private var liveTurnDiffMessageIndices: [ThreadKey: [String: Int]] = [:]
     private var serversUsingItemNotifications: Set<String> = []
+
+    enum ApprovalKind: String, Codable {
+        case commandExecution
+        case fileChange
+    }
+
+    enum ApprovalDecision: String {
+        case accept
+        case acceptForSession
+        case decline
+        case cancel
+    }
+
+    struct PendingApproval: Identifiable, Equatable {
+        let id: String
+        let requestId: String
+        let serverId: String
+        let method: String
+        let kind: ApprovalKind
+        let threadId: String?
+        let turnId: String?
+        let itemId: String?
+        let command: String?
+        let cwd: String?
+        let reason: String?
+        let grantRoot: String?
+        let createdAt: Date
+    }
 
     /// Call after inserting a new ThreadState into `threads` to forward its changes.
     private func observeThread(_ thread: ThreadState) {
@@ -32,6 +61,10 @@ final class ServerManager: ObservableObject {
         activeThreadKey.flatMap { connections[$0.serverId] }
     }
 
+    var activePendingApproval: PendingApproval? {
+        pendingApprovals.first
+    }
+
     var hasAnyConnection: Bool {
         connections.values.contains { $0.isConnected }
     }
@@ -40,6 +73,7 @@ final class ServerManager: ObservableObject {
 
     func addServer(_ server: DiscoveredServer, target: ConnectionTarget) async {
         if let existing = connections[server.id] {
+            configureConnectionCallbacks(existing, serverId: server.id)
             if !existing.isConnected {
                 await existing.connect()
                 if existing.isConnected {
@@ -50,12 +84,7 @@ final class ServerManager: ObservableObject {
         }
 
         let conn = ServerConnection(server: server, target: target)
-        conn.onNotification = { [weak self] method, data in
-            self?.handleNotification(serverId: server.id, method: method, data: data)
-        }
-        conn.onDisconnect = { [weak self] in
-            self?.objectWillChange.send()
-        }
+        configureConnectionCallbacks(conn, serverId: server.id)
         connections[server.id] = conn
         saveServerList()
         await conn.connect()
@@ -64,9 +93,28 @@ final class ServerManager: ObservableObject {
         }
     }
 
+    private func configureConnectionCallbacks(_ conn: ServerConnection, serverId: String) {
+        conn.onNotification = { [weak self] method, data in
+            self?.handleNotification(serverId: serverId, method: method, data: data)
+        }
+        conn.onServerRequest = { [weak self] requestId, method, data in
+            self?.handleServerRequest(
+                serverId: serverId,
+                requestId: requestId,
+                method: method,
+                data: data
+            ) ?? false
+        }
+        conn.onDisconnect = { [weak self] in
+            self?.removePendingApprovals(forServerId: serverId)
+            self?.objectWillChange.send()
+        }
+    }
+
     func removeServer(id: String) {
         connections[id]?.disconnect()
         connections.removeValue(forKey: id)
+        removePendingApprovals(forServerId: id)
         for key in threads.keys where key.serverId == id {
             threadSubscriptions.removeValue(forKey: key)
             liveItemMessageIndices.removeValue(forKey: key)
@@ -158,6 +206,138 @@ final class ServerManager: ObservableObject {
         } else {
             activeThreadKey = key
         }
+    }
+
+    // MARK: - Approvals
+
+    func respondToPendingApproval(requestId: String, decision: ApprovalDecision) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.requestId == requestId }) else { return }
+        let approval = pendingApprovals.remove(at: index)
+        let decisionValue: String
+        switch approval.method {
+        case "execCommandApproval", "applyPatchApproval":
+            switch decision {
+            case .accept: decisionValue = "approved"
+            case .acceptForSession: decisionValue = "approved_for_session"
+            case .decline: decisionValue = "denied"
+            case .cancel: decisionValue = "abort"
+            }
+        default:
+            decisionValue = decision.rawValue
+        }
+        connections[approval.serverId]?.respondToServerRequest(
+            id: approval.requestId,
+            result: ["decision": decisionValue]
+        )
+    }
+
+    private func handleServerRequest(serverId: String, requestId: String, method: String, data: Data) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return false
+        }
+        let params = root["params"] as? [String: Any] ?? [:]
+
+        let pending: PendingApproval
+        switch method {
+        case "item/commandExecution/requestApproval":
+            let command = commandString(from: params)
+            pending = PendingApproval(
+                id: requestId,
+                requestId: requestId,
+                serverId: serverId,
+                method: method,
+                kind: .commandExecution,
+                threadId: extractString(params, keys: ["threadId", "thread_id", "conversationId", "conversation_id"]),
+                turnId: extractString(params, keys: ["turnId", "turn_id"]),
+                itemId: extractString(params, keys: ["itemId", "item_id", "callId", "call_id", "cmdId", "cmd_id"]),
+                command: command?.isEmpty == true ? nil : command,
+                cwd: extractString(params, keys: ["cwd"]),
+                reason: extractString(params, keys: ["reason"]),
+                grantRoot: nil,
+                createdAt: Date()
+            )
+        case "item/fileChange/requestApproval":
+            pending = PendingApproval(
+                id: requestId,
+                requestId: requestId,
+                serverId: serverId,
+                method: method,
+                kind: .fileChange,
+                threadId: extractString(params, keys: ["threadId", "thread_id", "conversationId", "conversation_id"]),
+                turnId: extractString(params, keys: ["turnId", "turn_id"]),
+                itemId: extractString(params, keys: ["itemId", "item_id", "callId", "call_id", "patchId", "patch_id"]),
+                command: nil,
+                cwd: nil,
+                reason: extractString(params, keys: ["reason"]),
+                grantRoot: extractString(params, keys: ["grantRoot", "grant_root"]),
+                createdAt: Date()
+            )
+        case "execCommandApproval":
+            pending = PendingApproval(
+                id: requestId,
+                requestId: requestId,
+                serverId: serverId,
+                method: method,
+                kind: .commandExecution,
+                threadId: extractString(params, keys: ["conversationId", "threadId"]),
+                turnId: nil,
+                itemId: extractString(params, keys: ["approvalId", "callId", "cmdId"]),
+                command: commandString(from: params),
+                cwd: extractString(params, keys: ["cwd"]),
+                reason: extractString(params, keys: ["reason"]),
+                grantRoot: nil,
+                createdAt: Date()
+            )
+        case "applyPatchApproval":
+            pending = PendingApproval(
+                id: requestId,
+                requestId: requestId,
+                serverId: serverId,
+                method: method,
+                kind: .fileChange,
+                threadId: extractString(params, keys: ["conversationId", "threadId"]),
+                turnId: nil,
+                itemId: extractString(params, keys: ["callId", "patchId"]),
+                command: nil,
+                cwd: nil,
+                reason: extractString(params, keys: ["reason"]),
+                grantRoot: extractString(params, keys: ["grantRoot"]),
+                createdAt: Date()
+            )
+        default:
+            return false
+        }
+
+        pendingApprovals.append(pending)
+        return true
+    }
+
+    private func commandString(from params: [String: Any]) -> String? {
+        if let command = extractString(params, keys: ["command"]), !command.isEmpty {
+            return command
+        }
+        if let array = params["command"] as? [String], !array.isEmpty {
+            return array.joined(separator: " ")
+        }
+        if let array = params["command"] as? [Any] {
+            let parts = array.compactMap { value -> String? in
+                if let text = value as? String {
+                    return text
+                }
+                if let number = value as? NSNumber {
+                    return number.stringValue
+                }
+                return nil
+            }
+            if !parts.isEmpty {
+                return parts.joined(separator: " ")
+            }
+        }
+        return nil
+    }
+
+    private func removePendingApprovals(forServerId serverId: String) {
+        pendingApprovals.removeAll { $0.serverId == serverId }
     }
 
     // MARK: - Send / Interrupt
@@ -754,6 +934,15 @@ final class ServerManager: ObservableObject {
     }
 
     private func shouldPreferLocalMessages(current: [ChatMessage], restored: [ChatMessage]) -> Bool {
+        // Protect against transient/stale resume snapshots that can briefly
+        // return fewer messages and cause the UI to "clear then refill".
+        if !current.isEmpty && restored.isEmpty {
+            return true
+        }
+        if restored.count < current.count {
+            return true
+        }
+
         let currentToolCount = current.filter(isToolSystemMessage).count
         let restoredToolCount = restored.filter(isToolSystemMessage).count
         return currentToolCount > restoredToolCount && restored.count <= current.count

@@ -50,7 +50,7 @@ struct MessageBubbleView: View {
             }
             if !message.text.isEmpty {
                 Text(message.text)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.system(.callout, design: .monospaced))
                     .foregroundColor(.white)
             }
         }
@@ -265,6 +265,11 @@ struct MessageBubbleView: View {
     }
 
     private func extractInlineImages(_ text: String) -> [ContentSegment] {
+        // Fast path to avoid regex work on normal markdown text.
+        if !text.contains("data:image/") {
+            return [.text(text)]
+        }
+
         // Match markdown images with data URIs: ![...](data:image/...;base64,...)
         // Also match bare data URIs: data:image/...;base64,...
         let pattern = "!\\[[^\\]]*\\]\\(data:image/[^;]+;base64,([A-Za-z0-9+/=\\s]+)\\)|(?<![\\(])data:image/[^;]+;base64,([A-Za-z0-9+/=\\s]+)"

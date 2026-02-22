@@ -17,7 +17,6 @@ struct LitterApp: App {
 
 struct ContentView: View {
     @ObserveInjection var inject
-    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var serverManager: ServerManager
     @StateObject private var appState = AppState()
     @State private var showAccount = false
@@ -39,6 +38,12 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             SidebarOverlay()
+
+            if let approval = serverManager.activePendingApproval {
+                ApprovalPromptView(approval: approval) { decision in
+                    serverManager.respondToPendingApproval(requestId: approval.requestId, decision: decision)
+                }
+            }
         }
         .environmentObject(appState)
         .onAppear {
@@ -54,10 +59,6 @@ struct ContentView: View {
         .sheet(isPresented: $showAccount) {
             AccountView().environmentObject(serverManager)
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            await runForegroundRefreshLoop()
-        }
         .enableInjection()
         .sheet(isPresented: $appState.showServerPicker) {
             NavigationStack {
@@ -68,21 +69,6 @@ struct ContentView: View {
                 .environmentObject(serverManager)
             }
             .preferredColorScheme(.dark)
-        }
-    }
-
-    private func runForegroundRefreshLoop() async {
-        await serverManager.refreshAllSessions()
-        await serverManager.syncActiveThreadFromServer()
-
-        while !Task.isCancelled {
-            do {
-                try await Task.sleep(for: .seconds(8))
-            } catch {
-                return
-            }
-            await serverManager.refreshAllSessions()
-            await serverManager.syncActiveThreadFromServer()
         }
     }
 
