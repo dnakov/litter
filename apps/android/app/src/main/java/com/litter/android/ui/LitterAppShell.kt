@@ -154,6 +154,7 @@ fun LitterAppShell(appState: LitterAppState) {
             if (uiState.activeThreadKey == null) {
                 EmptyState(
                     connectionStatus = uiState.connectionStatus,
+                    connectedServers = uiState.connectedServers,
                     onOpenDiscovery = appState::openDiscovery,
                 )
             } else {
@@ -337,11 +338,7 @@ private fun ModelSelector(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedModel = models.firstOrNull { it.id == selectedModelId } ?: models.firstOrNull()
-    val shortModel =
-        (selectedModel?.id ?: "")
-            .replace("gpt-", "")
-            .replace("-codex", "")
-            .ifBlank { "litter" }
+    val selectedModelName = (selectedModel?.id ?: "").ifBlank { "litter" }
 
     Box {
         OutlinedButton(
@@ -349,7 +346,12 @@ private fun ModelSelector(
             border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
             shape = RoundedCornerShape(22.dp),
         ) {
-            Text(shortModel, color = LitterTheme.textPrimary)
+            Text(
+                selectedModelName,
+                color = LitterTheme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Icon(
                 imageVector = Icons.Default.ArrowDropDown,
                 contentDescription = "Select model",
@@ -428,11 +430,23 @@ private fun StatusDot(connectionStatus: ServerConnectionStatus) {
 @Composable
 private fun EmptyState(
     connectionStatus: ServerConnectionStatus,
+    connectedServers: List<ServerConfig>,
     onOpenDiscovery: () -> Unit,
 ) {
     val canConnect =
         connectionStatus == ServerConnectionStatus.DISCONNECTED ||
             connectionStatus == ServerConnectionStatus.ERROR
+    val connectedServerNames = remember(connectedServers) { connectedServers.map { it.name }.sorted() }
+    val connectionSummary =
+        remember(connectedServerNames) {
+            val first = connectedServerNames.firstOrNull()
+            if (first.isNullOrBlank()) {
+                ""
+            } else {
+                val extra = connectedServerNames.size - 1
+                if (extra <= 0) "Connected: $first" else "Connected: $first +$extra"
+            }
+        }
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
@@ -448,6 +462,27 @@ private fun EmptyState(
                 style = MaterialTheme.typography.bodyMedium,
                 color = LitterTheme.textMuted,
             )
+            if (connectedServerNames.isNotEmpty()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(LitterTheme.accent),
+                    )
+                    Text(
+                        text = connectionSummary,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = LitterTheme.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             if (canConnect) {
                 OutlinedButton(onClick = onOpenDiscovery) {
                     Text("Connect to Server", color = LitterTheme.accent)

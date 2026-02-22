@@ -26,6 +26,9 @@ class ServerManager(
     private val transportsByServerId = LinkedHashMap<String, BridgeRpcTransport>()
     private val serversById = LinkedHashMap<String, ServerConfig>()
     private val accountByServerId = LinkedHashMap<String, AccountState>()
+    private val liveItemMessageIndices = LinkedHashMap<ThreadKey, MutableMap<String, Int>>()
+    private val liveTurnDiffMessageIndices = LinkedHashMap<ThreadKey, MutableMap<String, Int>>()
+    private val serversUsingItemNotifications = HashSet<String>()
 
     private val appContext = context?.applicationContext
     private val savedServersPreferences by lazy {
@@ -153,6 +156,13 @@ class ServerManager(
                     )
                 }
             }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun syncActiveThreadFromServer(onComplete: ((Result<Unit>) -> Unit)? = null) {
+        submit {
+            val result = runCatching { syncActiveThreadFromServerInternal() }
             deliver(onComplete, result)
         }
     }
@@ -407,6 +417,9 @@ class ServerManager(
             serversById.clear()
             accountByServerId.clear()
             threadsByKey.clear()
+            liveItemMessageIndices.clear()
+            liveTurnDiffMessageIndices.clear()
+            serversUsingItemNotifications.clear()
             runCatching { codexRpcClient.stop() }
             commitState(
                 state.copy(
@@ -426,6 +439,9 @@ class ServerManager(
         val removedServer = serversById.remove(serverId)
         accountByServerId.remove(serverId)
         threadsByKey.entries.removeAll { it.key.serverId == serverId }
+        liveItemMessageIndices.keys.removeAll { it.serverId == serverId }
+        liveTurnDiffMessageIndices.keys.removeAll { it.serverId == serverId }
+        serversUsingItemNotifications.remove(serverId)
 
         if (removedServer?.source == ServerSource.LOCAL && serversById.values.none { it.source == ServerSource.LOCAL }) {
             runCatching { codexRpcClient.stop() }
@@ -829,6 +845,8 @@ class ServerManager(
                 activeTurnId = null,
                 lastError = null,
             )
+        liveItemMessageIndices.remove(key)
+        liveTurnDiffMessageIndices.remove(key)
 
         updateState {
             it.copy(
@@ -916,6 +934,8 @@ class ServerManager(
                     activeTurnId = null,
                     lastError = null,
                 )
+            liveItemMessageIndices.remove(key)
+            liveTurnDiffMessageIndices.remove(key)
             updateState {
                 it.copy(
                     activeThreadKey = key,
@@ -1164,30 +1184,26 @@ class ServerManager(
                 updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
             }
 
+            "item/started",
             "item/completed" -> {
-                val item = params?.optJSONObject("item") ?: return
-                val key = resolveThreadKey(serverId, params.optThreadId()) ?: return
-                val existing = ensureThreadState(key)
-                val itemType = item.optString("type")
+                serversUsingItemNotifications += serverId
+                handleItemLifecycleNotification(serverId = serverId, method = method, params = params)
+            }
 
-                if (itemType == "agentMessage" || itemType == "userMessage") {
-                    return
-                }
+            "item/commandExecution/outputDelta" -> {
+                serversUsingItemNotifications += serverId
+                handleCommandOutputDeltaNotification(serverId = serverId, params = params)
+            }
 
-                val message = chatMessageFromItem(item) ?: return
-                val updatedMessages = existing.messages + message
-                threadsByKey[key] =
-                    existing.copy(
-                        messages = updatedMessages,
-                        preview = derivePreview(updatedMessages, existing.preview),
-                        updatedAtEpochMillis = System.currentTimeMillis(),
-                    )
-                updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+            "item/mcpToolCall/progress" -> {
+                serversUsingItemNotifications += serverId
+                handleMcpProgressNotification(serverId = serverId, params = params)
             }
 
             "turn/completed",
             "codex/event/task_complete" -> {
-                val explicitThreadId = params.optThreadId()
+                var activeCompletedKey: ThreadKey? = null
+                val explicitThreadId = extractThreadId(params)
                 if (!explicitThreadId.isNullOrBlank()) {
                     val key = resolveThreadKey(serverId, explicitThreadId) ?: return
                     val existing = ensureThreadState(key)
@@ -1200,6 +1216,11 @@ class ServerManager(
                             preview = derivePreview(finalized, existing.preview),
                             updatedAtEpochMillis = System.currentTimeMillis(),
                         )
+                    liveItemMessageIndices.remove(key)
+                    liveTurnDiffMessageIndices.remove(key)
+                    if (state.activeThreadKey == key) {
+                        activeCompletedKey = key
+                    }
                 } else {
                     val keys =
                         threadsByKey.values
@@ -1216,11 +1237,736 @@ class ServerManager(
                                 preview = derivePreview(finalized, existing.preview),
                                 updatedAtEpochMillis = System.currentTimeMillis(),
                             )
+                        liveItemMessageIndices.remove(key)
+                        liveTurnDiffMessageIndices.remove(key)
+                        if (state.activeThreadKey == key) {
+                            activeCompletedKey = key
+                        }
                     }
                 }
+                activeCompletedKey?.let { syncThreadFromServerInternal(it) }
                 updateState { it }
             }
+
+            "turn/diff/updated" -> {
+                handleTurnDiffNotification(serverId = serverId, params = params)
+            }
+
+            "codex/event/turn_diff" -> {
+                handleLegacyCodexEventNotification(serverId = serverId, method = method, params = params)
+            }
+
+            else -> {
+                if (method.startsWith("item/")) {
+                    serversUsingItemNotifications += serverId
+                } else if ((method == "codex/event" || method.startsWith("codex/event/")) &&
+                    !serversUsingItemNotifications.contains(serverId)
+                ) {
+                    handleLegacyCodexEventNotification(serverId = serverId, method = method, params = params)
+                }
+            }
         }
+    }
+
+    private fun handleItemLifecycleNotification(
+        serverId: String,
+        method: String,
+        params: JSONObject?,
+    ) {
+        val item = params?.optJSONObject("item") ?: return
+        val key = resolveThreadKey(serverId, extractThreadId(params)) ?: return
+        val existing = ensureThreadState(key)
+        val itemType = item.optString("type").trim()
+        if (itemType == "agentMessage" || itemType == "userMessage") {
+            return
+        }
+
+        val message = chatMessageFromItem(item) ?: return
+        val itemId = extractString(item, "id")
+        val updatedMessages =
+            when {
+                method == "item/started" && itemId != null ->
+                    upsertLiveItemMessage(existing.messages, message, itemId, key)
+
+                method == "item/completed" && itemId != null ->
+                    completeLiveItemMessage(existing.messages, message, itemId, key)
+
+                else -> existing.messages + message
+            }
+
+        threadsByKey[key] =
+            existing.copy(
+                messages = updatedMessages,
+                preview = derivePreview(updatedMessages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+    }
+
+    private fun handleCommandOutputDeltaNotification(
+        serverId: String,
+        params: JSONObject?,
+    ) {
+        val delta = extractString(params, "delta") ?: return
+        if (delta.isBlank()) {
+            return
+        }
+        val key = resolveThreadKey(serverId, extractThreadId(params)) ?: return
+        val existing = ensureThreadState(key)
+        val itemId = extractString(params, "itemId", "item_id")
+
+        val updatedMessages =
+            if (itemId != null) {
+                appendCommandOutputDelta(existing.messages, delta, itemId, key)
+                    ?: (existing.messages + (systemMessage("Command Output", "```text\n$delta\n```") ?: return))
+            } else {
+                existing.messages + (systemMessage("Command Output", "```text\n$delta\n```") ?: return)
+            }
+
+        threadsByKey[key] =
+            existing.copy(
+                messages = updatedMessages,
+                preview = derivePreview(updatedMessages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+    }
+
+    private fun handleMcpProgressNotification(
+        serverId: String,
+        params: JSONObject?,
+    ) {
+        val progress = extractString(params, "message") ?: return
+        if (progress.isBlank()) {
+            return
+        }
+        val key = resolveThreadKey(serverId, extractThreadId(params)) ?: return
+        val existing = ensureThreadState(key)
+        val itemId = extractString(params, "itemId", "item_id")
+
+        val updatedMessages =
+            if (itemId != null) {
+                appendMcpProgress(existing.messages, progress, itemId, key)
+                    ?: (existing.messages + (systemMessage("MCP Tool Progress", progress) ?: return))
+            } else {
+                existing.messages + (systemMessage("MCP Tool Progress", progress) ?: return)
+            }
+
+        threadsByKey[key] =
+            existing.copy(
+                messages = updatedMessages,
+                preview = derivePreview(updatedMessages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+    }
+
+    private fun handleTurnDiffNotification(
+        serverId: String,
+        params: JSONObject?,
+    ) {
+        val diff = extractString(params, "diff")?.trim().orEmpty()
+        if (diff.isEmpty()) {
+            return
+        }
+        val key = resolveThreadKey(serverId, extractThreadId(params)) ?: return
+        val existing = ensureThreadState(key)
+        val message = systemMessage("File Diff", "```diff\n$diff\n```") ?: return
+        val turnId = extractString(params, "turnId", "turn_id")
+        val updatedMessages =
+            if (!turnId.isNullOrBlank()) {
+                upsertLiveTurnDiffMessage(existing.messages, message, turnId, key)
+            } else {
+                existing.messages + message
+            }
+
+        threadsByKey[key] =
+            existing.copy(
+                messages = updatedMessages,
+                preview = derivePreview(updatedMessages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+    }
+
+    private fun handleLegacyCodexEventNotification(
+        serverId: String,
+        method: String,
+        params: JSONObject?,
+    ) {
+        val eventPayload: JSONObject
+        val eventType: String
+
+        if (method == "codex/event") {
+            val msg = params?.optJSONObject("msg") ?: return
+            eventPayload = msg
+            eventType = extractString(msg, "type").orEmpty()
+        } else {
+            eventPayload = params?.optJSONObject("msg") ?: params ?: return
+            eventType = method.removePrefix("codex/event/")
+        }
+        if (eventType.isBlank()) {
+            return
+        }
+
+        val threadId =
+            extractString(params, "threadId", "thread_id", "conversationId", "conversation_id")
+                ?: extractString(eventPayload, "threadId", "thread_id", "conversationId", "conversation_id")
+        val key = resolveThreadKey(serverId, threadId) ?: return
+        val existing = ensureThreadState(key)
+
+        val updatedMessages: List<ChatMessage> =
+            when (eventType) {
+                "exec_command_begin" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val command = extractCommandText(eventPayload)
+                    val cwd = extractString(eventPayload, "cwd").orEmpty()
+                    val lines = ArrayList<String>()
+                    lines += "Status: inProgress"
+                    if (cwd.isNotEmpty()) lines += "Directory: $cwd"
+                    val body =
+                        buildString {
+                            append(lines.joinToString(separator = "\n"))
+                            if (command.isNotEmpty()) {
+                                append("\n\nCommand:\n```bash\n")
+                                append(command)
+                                append("\n```")
+                            }
+                        }
+                    val message = systemMessage("Command Execution", body) ?: return
+                    if (itemId != null) {
+                        upsertLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "exec_command_output_delta" -> {
+                    val delta = extractString(eventPayload, "chunk").orEmpty()
+                    if (delta.isBlank()) return
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    if (itemId != null) {
+                        appendCommandOutputDelta(existing.messages, delta, itemId, key)
+                            ?: (existing.messages + (systemMessage("Command Output", "```text\n$delta\n```") ?: return))
+                    } else {
+                        existing.messages + (systemMessage("Command Output", "```text\n$delta\n```") ?: return)
+                    }
+                }
+
+                "exec_command_end" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val command = extractCommandText(eventPayload)
+                    val cwd = extractString(eventPayload, "cwd").orEmpty()
+                    val status = extractString(eventPayload, "status").orEmpty().ifBlank { "completed" }
+                    val exitCode = extractString(eventPayload, "exit_code", "exitCode")
+                    val durationMs = durationMillis(eventPayload.opt("duration"))
+                    val output = extractCommandOutput(eventPayload)
+                    val lines = ArrayList<String>()
+                    lines += "Status: $status"
+                    if (cwd.isNotEmpty()) lines += "Directory: $cwd"
+                    if (!exitCode.isNullOrBlank()) lines += "Exit code: $exitCode"
+                    if (durationMs != null) lines += "Duration: $durationMs ms"
+                    val body =
+                        buildString {
+                            append(lines.joinToString(separator = "\n"))
+                            if (command.isNotEmpty()) {
+                                append("\n\nCommand:\n```bash\n")
+                                append(command)
+                                append("\n```")
+                            }
+                            if (output.isNotEmpty()) {
+                                append("\n\nOutput:\n```text\n")
+                                append(output)
+                                append("\n```")
+                            }
+                        }
+                    val message = systemMessage("Command Execution", body) ?: return
+                    if (itemId != null) {
+                        completeLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "mcp_tool_call_begin" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val invocation = eventPayload.optJSONObject("invocation")
+                    val server = extractString(invocation, "server").orEmpty()
+                    val tool = extractString(invocation, "tool").orEmpty()
+                    val lines = ArrayList<String>()
+                    lines += "Status: inProgress"
+                    if (server.isNotEmpty() || tool.isNotEmpty()) {
+                        lines += "Tool: ${if (server.isEmpty()) tool else "$server/$tool"}"
+                    }
+                    val body =
+                        buildString {
+                            append(lines.joinToString(separator = "\n"))
+                            val args = invocation?.opt("arguments")
+                            val prettyArgs = prettyJson(args)
+                            if (!prettyArgs.isNullOrBlank()) {
+                                append("\n\nArguments:\n```json\n")
+                                append(prettyArgs)
+                                append("\n```")
+                            }
+                        }
+                    val message = systemMessage("MCP Tool Call", body) ?: return
+                    if (itemId != null) {
+                        upsertLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "mcp_tool_call_end" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val invocation = eventPayload.optJSONObject("invocation")
+                    val server = extractString(invocation, "server").orEmpty()
+                    val tool = extractString(invocation, "tool").orEmpty()
+                    val durationMs = durationMillis(eventPayload.opt("duration"))
+                    val result = eventPayload.opt("result")
+                    var status = "completed"
+                    if (result is JSONObject && result.has("Err")) {
+                        status = "failed"
+                    }
+                    val lines = ArrayList<String>()
+                    lines += "Status: $status"
+                    if (server.isNotEmpty() || tool.isNotEmpty()) {
+                        lines += "Tool: ${if (server.isEmpty()) tool else "$server/$tool"}"
+                    }
+                    if (durationMs != null) {
+                        lines += "Duration: $durationMs ms"
+                    }
+                    val body =
+                        buildString {
+                            append(lines.joinToString(separator = "\n"))
+                            val prettyResult = prettyJson(result)
+                            if (!prettyResult.isNullOrBlank()) {
+                                append("\n\nResult:\n```json\n")
+                                append(prettyResult)
+                                append("\n```")
+                            }
+                        }
+                    val message = systemMessage("MCP Tool Call", body) ?: return
+                    if (itemId != null) {
+                        completeLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "patch_apply_begin" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val changeSummary = legacyPatchChangeBody(eventPayload.opt("changes"))
+                    val autoApproved = eventPayload.optBoolean("auto_approved", false)
+                    val body =
+                        buildString {
+                            append("Status: inProgress")
+                            append("\nApproval: ${if (autoApproved) "auto" else "requested"}")
+                            if (changeSummary.isNotBlank()) {
+                                append("\n\n")
+                                append(changeSummary)
+                            }
+                        }
+                    val message = systemMessage("File Change", body) ?: return
+                    if (itemId != null) {
+                        upsertLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "patch_apply_end" -> {
+                    val itemId = extractString(eventPayload, "call_id", "callId")
+                    val status =
+                        extractString(eventPayload, "status")
+                            ?: if (eventPayload.optBoolean("success", false)) "completed" else "failed"
+                    val stdout = extractString(eventPayload, "stdout").orEmpty().trim()
+                    val stderr = extractString(eventPayload, "stderr").orEmpty().trim()
+                    val changeSummary = legacyPatchChangeBody(eventPayload.opt("changes"))
+                    val body =
+                        buildString {
+                            append("Status: $status")
+                            if (changeSummary.isNotBlank()) {
+                                append("\n\n")
+                                append(changeSummary)
+                            }
+                            if (stdout.isNotBlank()) {
+                                append("\n\nOutput:\n```text\n")
+                                append(stdout)
+                                append("\n```")
+                            }
+                            if (stderr.isNotBlank()) {
+                                append("\n\nError:\n```text\n")
+                                append(stderr)
+                                append("\n```")
+                            }
+                        }
+                    val message = systemMessage("File Change", body) ?: return
+                    if (itemId != null) {
+                        completeLiveItemMessage(existing.messages, message, itemId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                "turn_diff" -> {
+                    val turnId =
+                        extractString(params, "id", "turnId", "turn_id")
+                            ?: extractString(eventPayload, "id", "turnId", "turn_id")
+                    val diff = extractString(eventPayload, "unified_diff").orEmpty().trim()
+                    if (diff.isBlank()) {
+                        return
+                    }
+                    val message = systemMessage("File Diff", "```diff\n$diff\n```") ?: return
+                    if (!turnId.isNullOrBlank()) {
+                        upsertLiveTurnDiffMessage(existing.messages, message, turnId, key)
+                    } else {
+                        existing.messages + message
+                    }
+                }
+
+                else -> return
+            }
+
+        threadsByKey[key] =
+            existing.copy(
+                messages = updatedMessages,
+                preview = derivePreview(updatedMessages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId) }
+    }
+
+    private fun upsertLiveItemMessage(
+        messages: List<ChatMessage>,
+        message: ChatMessage,
+        itemId: String,
+        key: ThreadKey,
+    ): List<ChatMessage> {
+        val indices = liveItemMessageIndices.getOrPut(key) { LinkedHashMap() }
+        val existingIndex = indices[itemId]
+        val updated = messages.toMutableList()
+        if (existingIndex != null && existingIndex in updated.indices) {
+            updated[existingIndex] = message
+        } else {
+            indices[itemId] = updated.size
+            updated += message
+        }
+        return updated
+    }
+
+    private fun completeLiveItemMessage(
+        messages: List<ChatMessage>,
+        message: ChatMessage,
+        itemId: String,
+        key: ThreadKey,
+    ): List<ChatMessage> {
+        val indices = liveItemMessageIndices.getOrPut(key) { LinkedHashMap() }
+        val existingIndex = indices[itemId]
+        val updated = messages.toMutableList()
+        if (existingIndex != null && existingIndex in updated.indices) {
+            updated[existingIndex] = message
+        } else {
+            updated += message
+        }
+        indices.remove(itemId)
+        return updated
+    }
+
+    private fun appendCommandOutputDelta(
+        messages: List<ChatMessage>,
+        delta: String,
+        itemId: String,
+        key: ThreadKey,
+    ): List<ChatMessage>? {
+        val index = liveItemMessageIndices[key]?.get(itemId) ?: return null
+        if (index !in messages.indices) {
+            return null
+        }
+        val updated = messages.toMutableList()
+        val current = updated[index]
+        updated[index] = current.copy(text = mergeCommandOutput(current.text, delta))
+        return updated
+    }
+
+    private fun appendMcpProgress(
+        messages: List<ChatMessage>,
+        progress: String,
+        itemId: String,
+        key: ThreadKey,
+    ): List<ChatMessage>? {
+        val index = liveItemMessageIndices[key]?.get(itemId) ?: return null
+        if (index !in messages.indices) {
+            return null
+        }
+        val updated = messages.toMutableList()
+        val current = updated[index]
+        updated[index] = current.copy(text = mergeProgress(current.text, progress))
+        return updated
+    }
+
+    private fun mergeCommandOutput(
+        current: String,
+        delta: String,
+    ): String {
+        val outputPrefix = "\n\nOutput:\n```text\n"
+        val closingFence = "\n```"
+        val outputStart = current.indexOf(outputPrefix)
+        if (outputStart >= 0) {
+            val closeStart = current.lastIndexOf(closingFence)
+            if (closeStart >= outputStart + outputPrefix.length) {
+                return buildString {
+                    append(current.substring(0, closeStart))
+                    append(delta)
+                    append(current.substring(closeStart))
+                }
+            }
+        }
+        val chunk = if (delta.endsWith("\n")) delta else "$delta\n"
+        return current + outputPrefix + chunk + "```"
+    }
+
+    private fun mergeProgress(
+        current: String,
+        progress: String,
+    ): String {
+        return if (current.contains("\n\nProgress:\n")) {
+            "$current\n$progress"
+        } else {
+            "$current\n\nProgress:\n$progress"
+        }
+    }
+
+    private fun upsertLiveTurnDiffMessage(
+        messages: List<ChatMessage>,
+        message: ChatMessage,
+        turnId: String,
+        key: ThreadKey,
+    ): List<ChatMessage> {
+        val indices = liveTurnDiffMessageIndices.getOrPut(key) { LinkedHashMap() }
+        val existingIndex = indices[turnId]
+        val updated = messages.toMutableList()
+        if (existingIndex != null && existingIndex in updated.indices) {
+            updated[existingIndex] = message
+        } else {
+            indices[turnId] = updated.size
+            updated += message
+        }
+        return updated
+    }
+
+    private fun extractCommandText(eventPayload: JSONObject): String {
+        val command = eventPayload.opt("command")
+        return when (command) {
+            is JSONArray -> {
+                val parts = ArrayList<String>(command.length())
+                for (index in 0 until command.length()) {
+                    val token = command.opt(index)?.toString()?.trim().orEmpty()
+                    if (token.isNotEmpty()) {
+                        parts += token
+                    }
+                }
+                parts.joinToString(separator = " ")
+            }
+
+            is String -> command.trim()
+            else -> ""
+        }
+    }
+
+    private fun extractCommandOutput(eventPayload: JSONObject): String {
+        val candidates =
+            listOf(
+                extractString(eventPayload, "aggregated_output"),
+                extractString(eventPayload, "formatted_output"),
+                extractString(eventPayload, "stdout"),
+                extractString(eventPayload, "stderr"),
+            )
+        return candidates
+            .mapNotNull { it?.trim()?.takeIf { text -> text.isNotEmpty() } }
+            .joinToString(separator = "\n")
+    }
+
+    private fun durationMillis(rawDuration: Any?): Long? {
+        return when (rawDuration) {
+            null, JSONObject.NULL -> null
+            is Number -> rawDuration.toLong()
+            is JSONObject -> {
+                val secs = rawDuration.opt("secs").asLongOrNull() ?: return null
+                val nanos = rawDuration.opt("nanos").asLongOrNull() ?: 0L
+                secs * 1000L + nanos / 1_000_000L
+            }
+
+            else -> rawDuration.toString().trim().toLongOrNull()
+        }
+    }
+
+    private fun legacyPatchChangeBody(rawChanges: Any?): String {
+        val changes = rawChanges as? JSONObject ?: return ""
+        val keys = changes.keys().asSequence().toList().sorted()
+        if (keys.isEmpty()) {
+            return ""
+        }
+
+        val sections = ArrayList<String>()
+        for (path in keys) {
+            val change = changes.optJSONObject(path) ?: continue
+            val kind = extractString(change, "type").orEmpty().ifBlank { "update" }
+            val section =
+                buildString {
+                    append("Path: $path\n")
+                    append("Kind: $kind")
+                    val diff = extractString(change, "unified_diff").orEmpty().trim()
+                    if (kind == "update" && diff.isNotEmpty()) {
+                        append("\n\n```diff\n")
+                        append(diff)
+                        append("\n```")
+                    } else if ((kind == "add" || kind == "delete")) {
+                        val content = extractString(change, "content").orEmpty().trim()
+                        if (content.isNotEmpty()) {
+                            append("\n\n```text\n")
+                            append(content)
+                            append("\n```")
+                        }
+                    }
+                }.trim()
+            if (section.isNotEmpty()) {
+                sections += section
+            }
+        }
+        return sections.joinToString(separator = "\n\n---\n\n")
+    }
+
+    private fun extractString(
+        obj: JSONObject?,
+        vararg keys: String,
+    ): String? {
+        if (obj == null) {
+            return null
+        }
+        for (key in keys) {
+            if (!obj.has(key)) {
+                continue
+            }
+            val value = obj.opt(key)
+            val text =
+                when (value) {
+                    null, JSONObject.NULL -> null
+                    is Number -> value.toString()
+                    is String -> value
+                    else -> value.toString()
+                }?.trim()
+            if (!text.isNullOrEmpty()) {
+                return text
+            }
+        }
+        return null
+    }
+
+    private fun prettyJson(value: Any?): String? {
+        return when (value) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> value.toString(2)
+            is JSONArray -> value.toString(2)
+            else -> value.toString()
+        }?.trim()?.ifEmpty { null }
+    }
+
+    private fun extractThreadId(params: JSONObject?): String? {
+        return extractString(
+            params,
+            "threadId",
+            "thread_id",
+            "conversationId",
+            "conversation_id",
+        )
+    }
+
+    private fun syncActiveThreadFromServerInternal() {
+        val key = state.activeThreadKey ?: return
+        val changed = syncThreadFromServerInternal(key)
+        if (changed) {
+            updateState { it }
+        }
+    }
+
+    private fun syncThreadFromServerInternal(key: ThreadKey): Boolean {
+        val thread = threadsByKey[key] ?: return false
+        if (thread.hasTurnActive) {
+            return false
+        }
+
+        val cwd = thread.cwd.ifBlank { defaultWorkingDirectory() }
+        val response = runCatching { resumeThreadWithFallback(key.serverId, key.threadId, cwd) }.getOrNull() ?: return false
+        val threadObj = response.optJSONObject("thread") ?: return false
+        val restored = restoreMessages(threadObj)
+        if (messagesEquivalent(thread.messages, restored)) {
+            return false
+        }
+        if (shouldPreferLocalMessages(thread.messages, restored)) {
+            return false
+        }
+
+        threadsByKey[key] =
+            thread.copy(
+                status = ThreadStatus.READY,
+                activeTurnId = null,
+                messages = restored,
+                preview = derivePreview(restored, thread.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+                lastError = null,
+            )
+        liveItemMessageIndices.remove(key)
+        liveTurnDiffMessageIndices.remove(key)
+        return true
+    }
+
+    private fun messagesEquivalent(
+        left: List<ChatMessage>,
+        right: List<ChatMessage>,
+    ): Boolean {
+        if (left.size != right.size) {
+            return false
+        }
+        for (index in left.indices) {
+            val lhs = left[index]
+            val rhs = right[index]
+            if (lhs.role != rhs.role || lhs.text != rhs.text) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun shouldPreferLocalMessages(
+        current: List<ChatMessage>,
+        restored: List<ChatMessage>,
+    ): Boolean {
+        val currentToolCount = current.count { isToolSystemMessage(it) }
+        val restoredToolCount = restored.count { isToolSystemMessage(it) }
+        return currentToolCount > restoredToolCount && restored.size <= current.size
+    }
+
+    private fun isToolSystemMessage(message: ChatMessage): Boolean {
+        if (message.role != MessageRole.SYSTEM) {
+            return false
+        }
+        val title = extractSystemTitle(message.text)?.lowercase().orEmpty()
+        return title.contains("command") ||
+            title.contains("file") ||
+            title.contains("mcp") ||
+            title.contains("web") ||
+            title.contains("collab") ||
+            title.contains("image")
+    }
+
+    private fun extractSystemTitle(text: String): String? {
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("### ")) {
+            return null
+        }
+        val firstLine = trimmed.lineSequence().firstOrNull().orEmpty()
+        return firstLine.removePrefix("### ").trim().ifEmpty { null }
     }
 
     private fun restoreMessages(threadObject: JSONObject): List<ChatMessage> {
@@ -1377,8 +2123,15 @@ class ServerManager(
         for (idx in 0 until changes.length()) {
             val change = changes.optJSONObject(idx) ?: continue
             val path = change.optString("path").trim()
-            val kind = change.optString("kind").trim()
-            val diff = change.optString("diff").trim()
+            val kind =
+                when (val kindValue = change.opt("kind")) {
+                    is JSONObject -> kindValue.optString("type").trim()
+                    else -> kindValue?.toString()?.trim().orEmpty()
+                }.ifBlank { "update" }
+            val diff =
+                extractString(change, "diff", "unified_diff")
+                    .orEmpty()
+                    .trim()
             val piece =
                 buildString {
                     if (path.isNotEmpty()) append("Path: $path\n")
@@ -1861,7 +2614,17 @@ private fun JSONObject?.optThreadId(): String? {
     if (this == null) {
         return null
     }
-    val value = opt("threadId")
-    val threadId = value.asLongOrNull()?.toString() ?: value?.toString()
-    return threadId?.trim()?.takeIf { it.isNotEmpty() }
+    val keys = arrayOf("threadId", "thread_id", "conversationId", "conversation_id")
+    for (key in keys) {
+        if (!has(key)) {
+            continue
+        }
+        val value = opt(key)
+        val threadId = value.asLongOrNull()?.toString() ?: value?.toString()
+        val trimmed = threadId?.trim()
+        if (!trimmed.isNullOrEmpty()) {
+            return trimmed
+        }
+    }
+    return null
 }

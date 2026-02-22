@@ -27,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -211,6 +213,7 @@ class DefaultLitterAppState(
 
     init {
         connectAndPrime()
+        scope.launch { runForegroundRefreshLoop() }
     }
 
     override fun close() {
@@ -256,6 +259,11 @@ class DefaultLitterAppState(
         serverManager.refreshSessions { result ->
             result.onFailure { error ->
                 setUiError(error.message ?: "Failed to refresh sessions")
+            }
+        }
+        serverManager.syncActiveThreadFromServer { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to sync active thread")
             }
         }
     }
@@ -887,6 +895,14 @@ class DefaultLitterAppState(
             accountResult.onFailure { error ->
                 setUiError(error.message ?: "Failed to refresh account")
             }
+        }
+    }
+
+    private suspend fun runForegroundRefreshLoop() {
+        while (scope.isActive) {
+            serverManager.refreshSessions()
+            serverManager.syncActiveThreadFromServer()
+            delay(8_000)
         }
     }
 
