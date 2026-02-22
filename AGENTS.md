@@ -40,6 +40,8 @@
 - `xcodegen generate --spec apps/ios/project.yml --project apps/ios/Litter.xcodeproj`: regenerate iOS project after spec/path changes.
 - `open apps/ios/Litter.xcodeproj`: open and run from Xcode.
 - `xcodebuild -project apps/ios/Litter.xcodeproj -scheme Litter -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`: CI-friendly local build.
+- `./apps/ios/scripts/testflight-setup.sh`: create/check TestFlight internal group and optionally update beta review contact details.
+- `./apps/ios/scripts/testflight-upload.sh`: archive iOS app, export IPA, upload to TestFlight with `asc`, and auto-attach build to internal beta group.
 - `gradle -p apps/android :app:assembleOnDeviceDebug :app:assembleRemoteOnlyDebug`: build Android flavors.
 - `gradle -p apps/android :app:testOnDeviceDebugUnitTest :app:testRemoteOnlyDebugUnitTest`: run Android unit tests.
 - `adb -e install -r apps/android/app/build/outputs/apk/onDevice/debug/app-onDevice-debug.apk`: install Android on-device flavor APK to running emulator.

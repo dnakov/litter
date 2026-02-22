@@ -125,6 +125,44 @@ Build Android Rust JNI libs (optional bridge runtime step):
 ./tools/scripts/build-android-rust.sh
 ```
 
+## TestFlight (iOS)
+
+1) Authenticate `asc` once with your App Store Connect API key:
+
+```bash
+asc auth login \
+  --name "Litter ASC" \
+  --key-id "<KEY_ID>" \
+  --issuer-id "<ISSUER_ID>" \
+  --private-key "$HOME/AppStore.p8" \
+  --network
+```
+
+2) Bootstrap TestFlight defaults (internal group, optional review contact metadata):
+
+```bash
+APP_BUNDLE_ID=<BUNDLE_ID> \
+./apps/ios/scripts/testflight-setup.sh
+```
+
+3) Build and upload to TestFlight:
+
+```bash
+APP_BUNDLE_ID=<BUNDLE_ID> \
+APP_STORE_APP_ID=<APP_STORE_CONNECT_APP_ID> \
+TEAM_ID=<APPLE_TEAM_ID> \
+ASC_KEY_ID=<KEY_ID> \
+ASC_ISSUER_ID=<ISSUER_ID> \
+ASC_PRIVATE_KEY_PATH="$HOME/AppStore.p8" \
+MARKETING_VERSION=1.0.0 \
+./apps/ios/scripts/testflight-upload.sh
+```
+
+Notes:
+- `testflight-upload.sh` auto-increments build number from the latest App Store Connect build.
+- It archives, exports an IPA, uploads via `asc builds upload`, and assigns the build to `Internal Testers` by default.
+- Override `SCHEME` to `LitterRemote` if you are shipping the remote-only target.
+
 ## Important paths
 
 - `apps/ios/project.yml`: source of truth for Xcode project/schemes

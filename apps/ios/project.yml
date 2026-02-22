@@ -11,6 +11,8 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     SWIFT_STRICT_CONCURRENCY: targeted
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
     SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
     OTHER_LDFLAGS: "$(inherited) -lc++ -lz"
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
@@ -70,7 +72,7 @@ targets:
           - "**/*.h"
     dependencies:
       - framework: Frameworks/codex_bridge.xcframework
-        embed: true
+        embed: false
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
       - sdk: Network.framework
@@ -94,6 +96,10 @@ targets:
       configs:
         Debug:
           OTHER_LDFLAGS: "$(inherited) -lc++ -lz"
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: Litter App Store
 
 schemes:
   LitterRemote:
