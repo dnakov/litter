@@ -146,10 +146,21 @@ final class ServerManager: ObservableObject {
 
     // MARK: - Thread Lifecycle
 
-    func startThread(serverId: String, cwd: String, model: String? = nil) async -> ThreadKey? {
+    func startThread(
+        serverId: String,
+        cwd: String,
+        model: String? = nil,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async -> ThreadKey? {
         guard let conn = connections[serverId] else { return nil }
         do {
-            let resp = try await conn.startThread(cwd: cwd, model: model)
+            let resp = try await conn.startThread(
+                cwd: cwd,
+                model: model,
+                approvalPolicy: approvalPolicy,
+                sandboxMode: sandboxMode
+            )
             let threadId = resp.thread.id
             let key = ThreadKey(serverId: serverId, threadId: threadId)
             let state = ThreadState(
@@ -171,7 +182,13 @@ final class ServerManager: ObservableObject {
         }
     }
 
-    func resumeThread(serverId: String, threadId: String, cwd: String) async -> Bool {
+    func resumeThread(
+        serverId: String,
+        threadId: String,
+        cwd: String,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async -> Bool {
         guard let conn = connections[serverId] else { return false }
         let key = ThreadKey(serverId: serverId, threadId: threadId)
         let state = threads[key] ?? ThreadState(
@@ -184,7 +201,12 @@ final class ServerManager: ObservableObject {
         threads[key] = state
         observeThread(state)
         do {
-            let resp = try await conn.resumeThread(threadId: threadId, cwd: cwd)
+            let resp = try await conn.resumeThread(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandboxMode: sandboxMode
+            )
             state.messages = restoredMessages(from: resp.thread.turns)
             liveItemMessageIndices[key] = nil
             liveTurnDiffMessageIndices[key] = nil
@@ -199,10 +221,20 @@ final class ServerManager: ObservableObject {
         }
     }
 
-    func viewThread(_ key: ThreadKey) async {
+    func viewThread(
+        _ key: ThreadKey,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async {
         if threads[key]?.messages.isEmpty == true {
             let cwd = threads[key]?.cwd ?? "/tmp"
-            _ = await resumeThread(serverId: key.serverId, threadId: key.threadId, cwd: cwd)
+            _ = await resumeThread(
+                serverId: key.serverId,
+                threadId: key.threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandboxMode: sandboxMode
+            )
         } else {
             activeThreadKey = key
         }
@@ -342,11 +374,24 @@ final class ServerManager: ObservableObject {
 
     // MARK: - Send / Interrupt
 
-    func send(_ text: String, cwd: String, model: String? = nil, effort: String? = nil) async {
+    func send(
+        _ text: String,
+        cwd: String,
+        model: String? = nil,
+        effort: String? = nil,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async {
         var key = activeThreadKey
         if key == nil {
             if let serverId = connections.values.first(where: { $0.isConnected })?.id {
-                key = await startThread(serverId: serverId, cwd: cwd, model: model)
+                key = await startThread(
+                    serverId: serverId,
+                    cwd: cwd,
+                    model: model,
+                    approvalPolicy: approvalPolicy,
+                    sandboxMode: sandboxMode
+                )
             }
         }
         guard let key, let thread = threads[key], let conn = connections[key.serverId] else { return }
@@ -358,6 +403,36 @@ final class ServerManager: ObservableObject {
         } catch {
             thread.status = .error(error.localizedDescription)
         }
+    }
+
+    func startReviewOnActiveThread() async throws {
+        guard let key = activeThreadKey,
+              let thread = threads[key],
+              let conn = connections[key.serverId] else {
+            throw NSError(domain: "Litter", code: 1001, userInfo: [NSLocalizedDescriptionKey: "No active thread to review"])
+        }
+        thread.status = .thinking
+        do {
+            _ = try await conn.startReview(threadId: key.threadId)
+        } catch {
+            thread.status = .error(error.localizedDescription)
+            throw error
+        }
+    }
+
+    func renameActiveThread(_ newName: String) async throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw NSError(domain: "Litter", code: 1002, userInfo: [NSLocalizedDescriptionKey: "Thread name cannot be empty"])
+        }
+        guard let key = activeThreadKey,
+              let thread = threads[key],
+              let conn = connections[key.serverId] else {
+            throw NSError(domain: "Litter", code: 1003, userInfo: [NSLocalizedDescriptionKey: "No active thread to rename"])
+        }
+        try await conn.setThreadName(threadId: key.threadId, name: trimmed)
+        thread.preview = trimmed
+        thread.updatedAt = Date()
     }
 
     func interrupt() async {

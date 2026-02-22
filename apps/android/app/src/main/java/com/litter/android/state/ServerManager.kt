@@ -9,9 +9,18 @@ import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
 import java.util.LinkedHashMap
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
+data class FuzzyFileSearchResult(
+    val root: String,
+    val path: String,
+    val fileName: String,
+    val score: Int,
+    val indices: List<Int> = emptyList(),
+)
 
 class ServerManager(
     context: Context? = null,
@@ -227,19 +236,35 @@ class ServerManager(
         }
     }
 
-    fun resolveHomeDirectory(onComplete: ((Result<String>) -> Unit)? = null) {
+    fun resolveHomeDirectory(
+        serverId: String? = null,
+        onComplete: ((Result<String>) -> Unit)? = null,
+    ) {
         submit {
-            val result = runCatching { resolveHomeDirectoryInternal() }
+            val result = runCatching { resolveHomeDirectoryInternal(serverId) }
             deliver(onComplete, result)
         }
     }
 
     fun listDirectories(
         path: String,
+        serverId: String? = null,
         onComplete: ((Result<List<String>>) -> Unit)? = null,
     ) {
         submit {
-            val result = runCatching { listDirectoriesInternal(path) }
+            val result = runCatching { listDirectoriesInternal(path, serverId) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun fuzzyFileSearch(
+        query: String,
+        roots: List<String>,
+        cancellationToken: String? = null,
+        onComplete: ((Result<List<FuzzyFileSearchResult>>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { fuzzyFileSearchInternal(query, roots, cancellationToken) }
             deliver(onComplete, result)
         }
     }
@@ -262,10 +287,11 @@ class ServerManager(
     fun startThread(
         cwd: String = defaultWorkingDirectory(),
         modelSelection: ModelSelection? = null,
+        serverId: String? = null,
         onComplete: ((Result<ThreadKey>) -> Unit)? = null,
     ) {
         submit {
-            val result = runCatching { startThreadInternal(cwd, modelSelection) }
+            val result = runCatching { startThreadInternal(cwd, modelSelection, serverId) }
             deliver(onComplete, result)
         }
     }
@@ -736,14 +762,14 @@ class ServerManager(
         return next
     }
 
-    private fun resolveHomeDirectoryInternal(): String {
+    private fun resolveHomeDirectoryInternal(serverId: String? = null): String {
         if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
-        val serverId = resolveServerIdForActiveOperations()
+        val targetServerId = resolveServerIdForRequestedOperation(serverId)
         return runCatching {
             val result = executeCommandInternal(
-                serverId = serverId,
+                serverId = targetServerId,
                 command = listOf("/bin/sh", "-lc", "printf %s \"${'$'}HOME\""),
                 cwd = "/tmp",
             )
@@ -757,14 +783,17 @@ class ServerManager(
         }.getOrDefault("/")
     }
 
-    private fun listDirectoriesInternal(path: String): List<String> {
+    private fun listDirectoriesInternal(
+        path: String,
+        serverId: String? = null,
+    ): List<String> {
         if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
-        val serverId = resolveServerIdForActiveOperations()
+        val targetServerId = resolveServerIdForRequestedOperation(serverId)
         val normalized = path.trim().ifEmpty { "/" }
         val result = executeCommandInternal(
-            serverId = serverId,
+            serverId = targetServerId,
             command = listOf("/bin/ls", "-1ap", normalized),
             cwd = normalized,
         )
@@ -784,8 +813,74 @@ class ServerManager(
             .filter { it.isNotEmpty() }
             .filter { it.endsWith("/") && it != "./" && it != "../" }
             .map { it.removeSuffix("/") }
-            .sorted()
+            .sortedWith(compareBy<String> { it.lowercase(Locale.ROOT) }.thenBy { it })
             .toList()
+    }
+
+    private fun fuzzyFileSearchInternal(
+        query: String,
+        roots: List<String>,
+        cancellationToken: String?,
+    ): List<FuzzyFileSearchResult> {
+        if (transportsByServerId.isEmpty()) {
+            connectLocalDefaultServerInternal()
+        }
+        val serverId = resolveServerIdForActiveOperations()
+        val normalizedRoots =
+            roots
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .ifEmpty { listOf(state.currentCwd.ifBlank { "/" }) }
+
+        val rootsJson = JSONArray()
+        normalizedRoots.forEach { rootsJson.put(it) }
+
+        val params =
+            JSONObject()
+                .put("query", query)
+                .put("roots", rootsJson)
+        val token = cancellationToken?.trim().orEmpty()
+        if (token.isNotEmpty()) {
+            params.put("cancellationToken", token)
+        }
+
+        val response = requireTransport(serverId).request(method = "fuzzyFileSearch", params = params)
+        val files = response.optJSONArray("files") ?: JSONArray()
+        val parsed = ArrayList<FuzzyFileSearchResult>(files.length())
+        for (index in 0 until files.length()) {
+            val item = files.optJSONObject(index) ?: continue
+            val path = item.optString("path").trim()
+            if (path.isEmpty()) {
+                continue
+            }
+            val root = item.optString("root").trim()
+            val fileName =
+                item
+                    .optString("file_name")
+                    .trim()
+                    .ifBlank { item.optString("fileName").trim() }
+                    .ifBlank { path.substringAfterLast('/') }
+            val score = item.optInt("score", 0)
+            val indicesArray = item.optJSONArray("indices")
+            val indices = ArrayList<Int>()
+            if (indicesArray != null) {
+                for (indicesIndex in 0 until indicesArray.length()) {
+                    val parsedIndex = indicesArray.optInt(indicesIndex, Int.MIN_VALUE)
+                    if (parsedIndex != Int.MIN_VALUE) {
+                        indices += parsedIndex
+                    }
+                }
+            }
+            parsed +=
+                FuzzyFileSearchResult(
+                    root = root,
+                    path = path,
+                    fileName = fileName,
+                    score = score,
+                    indices = indices,
+                )
+        }
+        return parsed
     }
 
     private fun chooseModelSelection(
@@ -810,14 +905,15 @@ class ServerManager(
     private fun startThreadInternal(
         cwd: String,
         modelSelection: ModelSelection?,
+        serverId: String? = null,
     ): ThreadKey {
         if (transportsByServerId.isEmpty()) {
             connectLocalDefaultServerInternal()
         }
-        val serverId = resolveServerIdForActiveOperations()
-        val server = ensureConnectedServer(serverId)
+        val targetServerId = resolveServerIdForRequestedOperation(serverId)
+        val server = ensureConnectedServer(targetServerId)
         val model = modelSelection?.modelId ?: state.selectedModel.modelId
-        val response = startThreadWithFallback(serverId = serverId, cwd = cwd, model = model)
+        val response = startThreadWithFallback(serverId = targetServerId, cwd = cwd, model = model)
         val threadId =
             response
                 .optJSONObject("thread")
@@ -2471,6 +2567,15 @@ class ServerManager(
             ?: state.activeServerId
             ?: serversById.keys.firstOrNull()
             ?: throw IllegalStateException("No connected server")
+    }
+
+    private fun resolveServerIdForRequestedOperation(serverId: String?): String {
+        val explicitServerId = serverId?.trim().orEmpty()
+        if (explicitServerId.isNotEmpty()) {
+            ensureConnectedServer(explicitServerId)
+            return explicitServerId
+        }
+        return resolveServerIdForActiveOperations()
     }
 
     private fun updateState(transform: (AppState) -> AppState) {

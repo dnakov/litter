@@ -109,7 +109,7 @@ struct DiscoveryView: View {
                     }
                     .listRowBackground(LitterTheme.surface.opacity(0.6))
                 } else {
-                    Text("No IPv4 SSH hosts found via Bonjour/Tailscale")
+                    Text("No IPv4 Codex/SSH hosts found via Bonjour/Tailscale")
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundColor(LitterTheme.textMuted)
                         .listRowBackground(LitterTheme.surface.opacity(0.6))

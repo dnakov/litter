@@ -83,10 +83,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,9 +102,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -111,6 +115,7 @@ import com.litter.android.core.network.DiscoverySource
 import com.litter.android.state.AccountState
 import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
+import com.litter.android.state.FuzzyFileSearchResult
 import com.litter.android.state.MessageRole
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ServerConfig
@@ -118,9 +123,11 @@ import com.litter.android.state.ServerConnectionStatus
 import com.litter.android.state.ServerSource
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
-import com.sigkitten.litter.android.R
+import com.makyinc.litter.android.R
 import io.noties.markwon.Markwon
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
@@ -163,6 +170,7 @@ fun LitterAppShell(appState: LitterAppState) {
                     draft = uiState.draft,
                     isSending = uiState.isSending,
                     onDraftChange = appState::updateDraft,
+                    onFileSearch = appState::searchComposerFiles,
                     onSend = { payloadDraft ->
                         appState.updateDraft(payloadDraft)
                         appState.sendDraft()
@@ -211,11 +219,18 @@ fun LitterAppShell(appState: LitterAppState) {
 
         if (uiState.directoryPicker.isVisible) {
             DirectoryPickerSheet(
+                connectedServers = uiState.connectedServers,
+                selectedServerId = uiState.directoryPicker.selectedServerId,
                 path = uiState.directoryPicker.currentPath,
                 entries = uiState.directoryPicker.entries,
                 isLoading = uiState.directoryPicker.isLoading,
                 error = uiState.directoryPicker.errorMessage,
+                searchQuery = uiState.directoryPicker.searchQuery,
+                showHiddenDirectories = uiState.directoryPicker.showHiddenDirectories,
                 onDismiss = appState::dismissDirectoryPicker,
+                onServerSelected = appState::updateDirectoryPickerServer,
+                onSearchQueryChange = appState::updateDirectorySearchQuery,
+                onShowHiddenDirectoriesChange = appState::updateShowHiddenDirectories,
                 onNavigateUp = appState::navigateDirectoryUp,
                 onNavigateInto = appState::navigateDirectoryInto,
                 onSelect = appState::confirmStartSessionFromPicker,
@@ -730,6 +745,7 @@ private fun ConversationPanel(
     draft: String,
     isSending: Boolean,
     onDraftChange: (String) -> Unit,
+    onFileSearch: (String, (Result<List<FuzzyFileSearchResult>>) -> Unit) -> Unit,
     onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
@@ -794,14 +810,15 @@ private fun ConversationPanel(
             attachmentError = attachmentError,
             isSending = isSending,
             onDraftChange = onDraftChange,
+            onFileSearch = onFileSearch,
             onAttachImage = { attachmentLauncher.launch("image/*") },
             onCaptureImage = { cameraLauncher.launch(null) },
             onClearAttachment = {
                 attachedImagePath = null
                 attachmentError = null
             },
-            onSend = {
-                onSend(encodeDraftWithLocalImageAttachment(draft, attachedImagePath))
+            onSend = { text ->
+                onSend(encodeDraftWithLocalImageAttachment(text, attachedImagePath))
                 attachedImagePath = null
                 attachmentError = null
             },
@@ -1109,12 +1126,181 @@ private fun InputBar(
     attachmentError: String?,
     isSending: Boolean,
     onDraftChange: (String) -> Unit,
+    onFileSearch: (String, (Result<List<FuzzyFileSearchResult>>) -> Unit) -> Unit,
     onAttachImage: () -> Unit,
     onCaptureImage: () -> Unit,
     onClearAttachment: () -> Unit,
-    onSend: () -> Unit,
+    onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
+    var composerValue by
+        remember {
+            mutableStateOf(
+                TextFieldValue(
+                    text = draft,
+                    selection = TextRange(draft.length),
+                ),
+            )
+        }
+    var showSlashPopup by remember { mutableStateOf(false) }
+    var activeSlashToken by remember { mutableStateOf<ComposerSlashQueryContext?>(null) }
+    var slashSuggestions by remember { mutableStateOf<List<ComposerSlashCommand>>(emptyList()) }
+
+    var showFilePopup by remember { mutableStateOf(false) }
+    var activeAtToken by remember { mutableStateOf<ComposerTokenContext?>(null) }
+    var fileSearchLoading by remember { mutableStateOf(false) }
+    var fileSearchError by remember { mutableStateOf<String?>(null) }
+    var fileSuggestions by remember { mutableStateOf<List<FuzzyFileSearchResult>>(emptyList()) }
+    var fileSearchGeneration by remember { mutableStateOf(0) }
+    var fileSearchJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun clearFileSearchState() {
+        fileSearchJob?.cancel()
+        fileSearchJob = null
+        fileSearchGeneration += 1
+        fileSearchLoading = false
+        fileSearchError = null
+        fileSuggestions = emptyList()
+    }
+
+    fun hideComposerPopups() {
+        showSlashPopup = false
+        activeSlashToken = null
+        slashSuggestions = emptyList()
+        showFilePopup = false
+        activeAtToken = null
+        clearFileSearchState()
+    }
+
+    fun startFileSearch(query: String) {
+        fileSearchJob?.cancel()
+        fileSearchJob = null
+        val requestId = fileSearchGeneration + 1
+        fileSearchGeneration = requestId
+        fileSearchLoading = true
+        fileSearchError = null
+        fileSuggestions = emptyList()
+        fileSearchJob =
+            scope.launch {
+                delay(140)
+                if (activeAtToken?.value != query) {
+                    return@launch
+                }
+                onFileSearch(query) { result ->
+                    if (requestId != fileSearchGeneration || activeAtToken?.value != query) {
+                        return@onFileSearch
+                    }
+                    result.onFailure { error ->
+                        fileSuggestions = emptyList()
+                        fileSearchLoading = false
+                        fileSearchError = error.message ?: "File search failed"
+                    }
+                    result.onSuccess { matches ->
+                        fileSuggestions = matches
+                        fileSearchLoading = false
+                        fileSearchError = null
+                    }
+                }
+            }
+    }
+
+    fun refreshComposerPopups(nextValue: TextFieldValue) {
+        val atToken =
+            currentPrefixedToken(
+                text = nextValue.text,
+                cursor = nextValue.selection.start,
+                prefix = '@',
+                allowEmpty = true,
+            )
+        if (atToken != null) {
+            showSlashPopup = false
+            activeSlashToken = null
+            slashSuggestions = emptyList()
+            showFilePopup = true
+            if (activeAtToken != atToken) {
+                activeAtToken = atToken
+                startFileSearch(atToken.value)
+            }
+            return
+        }
+
+        activeAtToken = null
+        showFilePopup = false
+        clearFileSearchState()
+
+        val slashToken =
+            currentSlashQueryContext(
+                text = nextValue.text,
+                cursor = nextValue.selection.start,
+            )
+        if (slashToken == null) {
+            showSlashPopup = false
+            activeSlashToken = null
+            slashSuggestions = emptyList()
+            return
+        }
+
+        activeSlashToken = slashToken
+        slashSuggestions = filterSlashCommands(slashToken.query)
+        showSlashPopup = slashSuggestions.isNotEmpty()
+    }
+
+    fun applySlashSuggestion(command: ComposerSlashCommand) {
+        val slashToken = activeSlashToken ?: return
+        val replacement = "/${command.rawValue} "
+        val updatedText =
+            composerValue.text.replaceRange(
+                startIndex = slashToken.range.start,
+                endIndex = slashToken.range.end,
+                replacement = replacement,
+            )
+        val nextCursor = slashToken.range.start + replacement.length
+        composerValue = TextFieldValue(text = updatedText, selection = TextRange(nextCursor))
+        onDraftChange(updatedText)
+        showSlashPopup = false
+        activeSlashToken = null
+        slashSuggestions = emptyList()
+    }
+
+    fun applyFileSuggestion(match: FuzzyFileSearchResult) {
+        val token = activeAtToken ?: return
+        val quotedPath =
+            if (match.path.contains(" ") && !match.path.contains("\"")) {
+                "\"${match.path}\""
+            } else {
+                match.path
+            }
+        val replacement = "$quotedPath "
+        val updatedText =
+            composerValue.text.replaceRange(
+                startIndex = token.range.start,
+                endIndex = token.range.end,
+                replacement = replacement,
+            )
+        val nextCursor = token.range.start + replacement.length
+        composerValue = TextFieldValue(text = updatedText, selection = TextRange(nextCursor))
+        onDraftChange(updatedText)
+        showFilePopup = false
+        activeAtToken = null
+        clearFileSearchState()
+    }
+
+    LaunchedEffect(draft) {
+        if (draft != composerValue.text) {
+            val cursor = composerValue.selection.start.coerceIn(0, draft.length)
+            val synced = TextFieldValue(text = draft, selection = TextRange(cursor))
+            composerValue = synced
+            refreshComposerPopups(synced)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            fileSearchJob?.cancel()
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
         color = LitterTheme.surface,
@@ -1163,6 +1349,119 @@ private fun InputBar(
                 )
             }
 
+            if (showSlashPopup) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.95f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                ) {
+                    Column {
+                        slashSuggestions.forEachIndexed { index, command ->
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { applySlashSuggestion(command) }
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "/${command.rawValue}",
+                                    color = Color(0xFF6EA676),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = command.description,
+                                    color = LitterTheme.textSecondary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (index < slashSuggestions.lastIndex) {
+                                HorizontalDivider(color = LitterTheme.border)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showFilePopup) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.95f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                ) {
+                    when {
+                        fileSearchLoading -> {
+                            Text(
+                                text = "Searching files...",
+                                color = LitterTheme.textSecondary,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                            )
+                        }
+
+                        !fileSearchError.isNullOrBlank() -> {
+                            Text(
+                                text = fileSearchError.orEmpty(),
+                                color = LitterTheme.danger,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                            )
+                        }
+
+                        fileSuggestions.isEmpty() -> {
+                            Text(
+                                text = "No matches",
+                                color = LitterTheme.textSecondary,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                            )
+                        }
+
+                        else -> {
+                            val visibleSuggestions = fileSuggestions.take(8)
+                            Column {
+                                visibleSuggestions.forEachIndexed { index, suggestion ->
+                                    Row(
+                                        modifier =
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clickable { applyFileSuggestion(suggestion) }
+                                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Folder,
+                                            contentDescription = null,
+                                            tint = LitterTheme.textSecondary,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                        Text(
+                                            text = suggestion.path,
+                                            color = LitterTheme.textPrimary,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                    if (index < visibleSuggestions.lastIndex) {
+                                        HorizontalDivider(color = LitterTheme.border)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1176,8 +1475,12 @@ private fun InputBar(
                 }
 
                 OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
+                    value = composerValue,
+                    onValueChange = { nextValue ->
+                        composerValue = nextValue
+                        onDraftChange(nextValue.text)
+                        refreshComposerPopups(nextValue)
+                    },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("Message litter...") },
                     minLines = 1,
@@ -1185,8 +1488,11 @@ private fun InputBar(
                 )
 
                 Button(
-                    onClick = onSend,
-                    enabled = (draft.isNotBlank() || attachedImagePath != null) && !isSending,
+                    onClick = {
+                        onSend(composerValue.text)
+                        hideComposerPopups()
+                    },
+                    enabled = (composerValue.text.isNotBlank() || attachedImagePath != null) && !isSending,
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(16.dp))
                 }
@@ -1201,6 +1507,170 @@ private fun InputBar(
 
 private const val LOCAL_IMAGE_MARKER_PREFIX = "[[litter_local_image:"
 private const val LOCAL_IMAGE_MARKER_SUFFIX = "]]"
+
+private enum class ComposerSlashCommand(
+    val rawValue: String,
+    val description: String,
+) {
+    MODEL(rawValue = "model", description = "choose what model and reasoning effort to use"),
+    PERMISSIONS(rawValue = "permissions", description = "choose what Codex is allowed to do"),
+    EXPERIMENTAL(rawValue = "experimental", description = "toggle experimental features"),
+    SKILLS(rawValue = "skills", description = "use skills to improve how Codex performs specific tasks"),
+    REVIEW(rawValue = "review", description = "review my current changes and find issues"),
+    RENAME(rawValue = "rename", description = "rename the current thread"),
+    NEW(rawValue = "new", description = "start a new chat during a conversation"),
+    RESUME(rawValue = "resume", description = "resume a saved chat"),
+}
+
+private data class ComposerTokenContext(
+    val value: String,
+    val range: TextRange,
+)
+
+private data class ComposerSlashQueryContext(
+    val query: String,
+    val range: TextRange,
+)
+
+private fun filterSlashCommands(query: String): List<ComposerSlashCommand> {
+    if (query.isEmpty()) {
+        return ComposerSlashCommand.values().toList()
+    }
+    return ComposerSlashCommand.values()
+        .mapNotNull { command ->
+            val score = fuzzyScore(candidate = command.rawValue, query = query) ?: return@mapNotNull null
+            command to score
+        }
+        .sortedWith(
+            compareByDescending<Pair<ComposerSlashCommand, Int>> { it.second }
+                .thenBy { it.first.rawValue },
+        )
+        .map { it.first }
+}
+
+private fun fuzzyScore(
+    candidate: String,
+    query: String,
+): Int? {
+    val normalizedCandidate = candidate.lowercase(Locale.ROOT)
+    val normalizedQuery = query.lowercase(Locale.ROOT)
+
+    if (normalizedCandidate == normalizedQuery) {
+        return 1000
+    }
+    if (normalizedCandidate.startsWith(normalizedQuery)) {
+        return 900 - (normalizedCandidate.length - normalizedQuery.length)
+    }
+    if (normalizedCandidate.contains(normalizedQuery)) {
+        return 700 - (normalizedCandidate.length - normalizedQuery.length)
+    }
+
+    var score = 0
+    var queryIndex = 0
+    var candidateIndex = 0
+    while (queryIndex < normalizedQuery.length && candidateIndex < normalizedCandidate.length) {
+        if (normalizedQuery[queryIndex] == normalizedCandidate[candidateIndex]) {
+            score += 10
+            queryIndex += 1
+        }
+        candidateIndex += 1
+    }
+    return if (queryIndex == normalizedQuery.length) score else null
+}
+
+private fun currentPrefixedToken(
+    text: String,
+    cursor: Int,
+    prefix: Char,
+    allowEmpty: Boolean,
+): ComposerTokenContext? {
+    val tokenRange = tokenRangeAroundCursor(text = text, cursor = cursor) ?: return null
+    val token = text.substring(tokenRange.start, tokenRange.end)
+    if (!token.startsWith(prefix)) {
+        return null
+    }
+    val value = token.drop(1)
+    if (value.isEmpty() && !allowEmpty) {
+        return null
+    }
+    return ComposerTokenContext(value = value, range = tokenRange)
+}
+
+private fun currentSlashQueryContext(
+    text: String,
+    cursor: Int,
+): ComposerSlashQueryContext? {
+    val safeCursor = cursor.coerceIn(0, text.length)
+    val firstLineEnd = text.indexOf('\n').takeIf { it >= 0 } ?: text.length
+    if (safeCursor > firstLineEnd || firstLineEnd <= 0) {
+        return null
+    }
+
+    val firstLine = text.substring(0, firstLineEnd)
+    if (!firstLine.startsWith("/")) {
+        return null
+    }
+
+    var commandEnd = 1
+    while (commandEnd < firstLine.length && !firstLine[commandEnd].isWhitespace()) {
+        commandEnd += 1
+    }
+    if (safeCursor > commandEnd) {
+        return null
+    }
+
+    val query = if (commandEnd > 1) firstLine.substring(1, commandEnd) else ""
+    val rest = if (commandEnd < firstLine.length) firstLine.substring(commandEnd).trim() else ""
+
+    if (query.isEmpty()) {
+        if (rest.isNotEmpty()) {
+            return null
+        }
+    } else if (query.contains('/')) {
+        return null
+    }
+
+    return ComposerSlashQueryContext(query = query, range = TextRange(0, commandEnd))
+}
+
+private fun tokenRangeAroundCursor(
+    text: String,
+    cursor: Int,
+): TextRange? {
+    if (text.isEmpty()) {
+        return null
+    }
+
+    val safeCursor = cursor.coerceIn(0, text.length)
+    if (safeCursor < text.length && text[safeCursor].isWhitespace()) {
+        var index = safeCursor
+        while (index < text.length && text[index].isWhitespace()) {
+            index += 1
+        }
+        if (index < text.length) {
+            var end = index
+            while (end < text.length && !text[end].isWhitespace()) {
+                end += 1
+            }
+            return TextRange(index, end)
+        }
+    }
+
+    var start = safeCursor
+    while (start > 0 && !text[start - 1].isWhitespace()) {
+        start -= 1
+    }
+
+    var end = safeCursor
+    while (end < text.length && !text[end].isWhitespace()) {
+        end += 1
+    }
+
+    if (end <= start) {
+        return null
+    }
+    return TextRange(start, end)
+}
 
 private data class SystemCardTheme(
     val accent: Color,
@@ -1563,30 +2033,100 @@ private fun cacheAttachmentBitmap(
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun DirectoryPickerSheet(
+    connectedServers: List<ServerConfig>,
+    selectedServerId: String?,
     path: String,
     entries: List<String>,
     isLoading: Boolean,
     error: String?,
+    searchQuery: String,
+    showHiddenDirectories: Boolean,
     onDismiss: () -> Unit,
+    onServerSelected: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onShowHiddenDirectoriesChange: (Boolean) -> Unit,
     onNavigateUp: () -> Unit,
     onNavigateInto: (String) -> Unit,
     onSelect: () -> Unit,
 ) {
+    var serverMenuExpanded by remember { mutableStateOf(false) }
+    val selectedServer = connectedServers.firstOrNull { it.id == selectedServerId }
+    val selectedServerLabel =
+        selectedServer?.let { "${it.name} * ${serverSourceLabel(it.source)}" } ?: "Select server"
+    val trimmedQuery = searchQuery.trim()
+    val visibleEntries =
+        remember(entries, trimmedQuery, showHiddenDirectories) {
+            entries
+                .asSequence()
+                .filter { showHiddenDirectories || !it.startsWith(".") }
+                .filter { trimmedQuery.isEmpty() || it.contains(trimmedQuery, ignoreCase = true) }
+                .sortedWith(compareBy<String> { it.lowercase(Locale.ROOT) }.thenBy { it })
+                .toList()
+        }
+    val emptyMessage =
+        if (trimmedQuery.isEmpty()) {
+            "No subdirectories"
+        } else {
+            "No matches for \"$trimmedQuery\""
+        }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("Choose Directory", style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Server", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                Box {
+                    OutlinedButton(
+                        onClick = { serverMenuExpanded = true },
+                        enabled = connectedServers.isNotEmpty(),
+                    ) {
+                        Text(
+                            selectedServerLabel,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(14.dp))
+                    }
+                    DropdownMenu(
+                        expanded = serverMenuExpanded,
+                        onDismissRequest = { serverMenuExpanded = false },
+                    ) {
+                        connectedServers.forEach { server ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "${server.name} * ${serverSourceLabel(server.source)}",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                },
+                                onClick = {
+                                    serverMenuExpanded = false
+                                    onServerSelected(server.id)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             Text(path.ifBlank { "/" }, color = LitterTheme.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onNavigateUp) {
+                OutlinedButton(onClick = onNavigateUp, enabled = selectedServer != null) {
                     Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Up")
                 }
-                Button(onClick = onSelect) {
+                Button(onClick = onSelect, enabled = selectedServer != null) {
                     Text("Select")
                 }
                 TextButton(onClick = onDismiss) {
@@ -1594,6 +2134,28 @@ private fun DirectoryPickerSheet(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Cancel")
                 }
+            }
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search folders") },
+                singleLine = true,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = showHiddenDirectories,
+                    onCheckedChange = { checked ->
+                        onShowHiddenDirectoriesChange(checked)
+                    },
+                )
+                Text("Show hidden folders", color = LitterTheme.textSecondary)
             }
 
             when {
@@ -1605,8 +2167,8 @@ private fun DirectoryPickerSheet(
                     Text(error, color = LitterTheme.danger)
                 }
 
-                entries.isEmpty() -> {
-                    Text("No subdirectories", color = LitterTheme.textMuted)
+                visibleEntries.isEmpty() -> {
+                    Text(emptyMessage, color = LitterTheme.textMuted)
                 }
 
                 else -> {
@@ -1614,7 +2176,7 @@ private fun DirectoryPickerSheet(
                         modifier = Modifier.fillMaxWidth().fillMaxHeight(0.55f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        items(entries, key = { it }) { entry ->
+                        items(visibleEntries, key = { it }) { entry ->
                             Surface(
                                 modifier = Modifier.fillMaxWidth().clickable { onNavigateInto(entry) },
                                 color = LitterTheme.surface.copy(alpha = 0.6f),
