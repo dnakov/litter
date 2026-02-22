@@ -130,16 +130,20 @@ actor SSHSessionManager {
         for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do
           [ -f "$f" ] && . "$f" 2>/dev/null
         done
-        if command -v codex >/dev/null 2>&1; then
-          printf 'codex:%s' "$(command -v codex)"
+        codex_path="$(command -v codex 2>/dev/null || true)"
+        if [ -n "$codex_path" ] && [ -f "$codex_path" ] && [ -x "$codex_path" ]; then
+          printf 'codex:%s' "$codex_path"
         elif [ -x "$HOME/.volta/bin/codex" ]; then
           printf 'codex:%s' "$HOME/.volta/bin/codex"
         elif [ -x "$HOME/.cargo/bin/codex" ]; then
           printf 'codex:%s' "$HOME/.cargo/bin/codex"
-        elif command -v codex-app-server >/dev/null 2>&1; then
-          printf 'codex-app-server:%s' "$(command -v codex-app-server)"
-        elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
-          printf 'codex-app-server:%s' "$HOME/.cargo/bin/codex-app-server"
+        else
+          app_server_path="$(command -v codex-app-server 2>/dev/null || true)"
+          if [ -n "$app_server_path" ] && [ -f "$app_server_path" ] && [ -x "$app_server_path" ]; then
+            printf 'codex-app-server:%s' "$app_server_path"
+          elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
+            printf 'codex-app-server:%s' "$HOME/.cargo/bin/codex-app-server"
+          fi
         fi
         """
         let output = String(buffer: try await client.executeCommand(script))
