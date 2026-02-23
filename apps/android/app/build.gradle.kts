@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.makyinc.litter.android"
+    namespace = "com.sigkitten.litter.android"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.makyinc.litter.android"
+        applicationId = "com.sigkitten.litter.android"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

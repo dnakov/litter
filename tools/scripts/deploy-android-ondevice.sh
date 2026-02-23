@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-APP_ID="com.makyinc.litter.android"
+APP_ID="com.sigkitten.litter.android"
 MAIN_ACTIVITY="com.litter.android.MainActivity"
 APK_PATH="$REPO_DIR/apps/android/app/build/outputs/apk/onDevice/debug/app-onDevice-debug.apk"
 
