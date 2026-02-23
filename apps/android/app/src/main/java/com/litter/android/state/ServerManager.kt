@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
+import java.net.URI
 import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
@@ -50,6 +51,12 @@ class ServerManager(
 
     @Volatile
     private var closed = false
+
+    @Volatile
+    private var composerApprovalPolicy: String = "never"
+
+    @Volatile
+    private var composerSandboxMode: String = "workspace-write"
 
     fun observe(listener: (AppState) -> Unit): Closeable {
         listeners += listener
@@ -284,6 +291,16 @@ class ServerManager(
         }
     }
 
+    fun updateComposerPermissions(
+        approvalPolicy: String,
+        sandboxMode: String,
+    ) {
+        submit {
+            composerApprovalPolicy = approvalPolicy.trim().ifEmpty { "never" }
+            composerSandboxMode = sandboxMode.trim().ifEmpty { "workspace-write" }
+        }
+    }
+
     fun startThread(
         cwd: String = defaultWorkingDirectory(),
         modelSelection: ModelSelection? = null,
@@ -362,6 +379,55 @@ class ServerManager(
         }
     }
 
+    fun startReviewOnActiveThread(onComplete: ((Result<Unit>) -> Unit)? = null) {
+        submit {
+            val result = runCatching { startReviewOnActiveThreadInternal() }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun renameActiveThread(
+        name: String,
+        onComplete: ((Result<Unit>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { renameActiveThreadInternal(name) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun listExperimentalFeatures(
+        limit: Int = 200,
+        onComplete: ((Result<List<ExperimentalFeature>>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { listExperimentalFeaturesInternal(limit) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun setExperimentalFeatureEnabled(
+        featureName: String,
+        enabled: Boolean,
+        onComplete: ((Result<Unit>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { setExperimentalFeatureEnabledInternal(featureName, enabled) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun listSkills(
+        cwds: List<String>? = null,
+        forceReload: Boolean = false,
+        onComplete: ((Result<List<SkillMetadata>>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { listSkillsInternal(cwds, forceReload) }
+            deliver(onComplete, result)
+        }
+    }
+
     override fun close() {
         if (closed) {
             return
@@ -396,10 +462,10 @@ class ServerManager(
         }
 
         val normalizedServer =
-            if (server.source == ServerSource.LOCAL && server.port <= 0) {
+            if (server.source == ServerSource.LOCAL) {
                 ServerConfig.local(codexRpcClient.ensureServerStarted())
             } else {
-                server
+                server.copy(host = normalizeServerHost(server.host))
             }
 
         val transport = BridgeRpcTransport(
@@ -506,7 +572,7 @@ class ServerManager(
     }
 
     private fun websocketUrl(server: ServerConfig): String {
-        val host = server.host.trim().ifEmpty { "127.0.0.1" }
+        val host = normalizeServerHost(server.host)
         val normalizedHost =
             if (host.contains(':') && !host.startsWith("[") && !host.endsWith("]")) {
                 "[$host]"
@@ -514,6 +580,26 @@ class ServerManager(
                 host
             }
         return "ws://$normalizedHost:${server.port}"
+    }
+
+    private fun normalizeServerHost(rawHost: String): String {
+        var host = rawHost.trim()
+        if (host.isEmpty()) {
+            return "127.0.0.1"
+        }
+
+        if (host.contains("://")) {
+            host =
+                runCatching {
+                    val parsed = URI(host)
+                    parsed.host?.trim()
+                        ?: parsed.path?.trim()?.trimStart('/')
+                        ?: host
+                }.getOrDefault(host)
+        }
+
+        host = host.trim().trimStart('/').trimEnd('/')
+        return host.ifEmpty { "127.0.0.1" }
     }
 
     private fun sendInitialize(transport: BridgeRpcTransport) {
@@ -961,13 +1047,18 @@ class ServerManager(
         cwd: String,
         model: String?,
     ): JSONObject {
+        val approvalPolicy = composerApprovalPolicy
+        val sandbox = composerSandboxMode
+        if (sandbox != "workspace-write") {
+            return startThreadWithSandbox(serverId, cwd, model, approvalPolicy, sandbox)
+        }
         return try {
-            startThreadWithSandbox(serverId, cwd, model, sandbox = "workspace-write")
+            startThreadWithSandbox(serverId, cwd, model, approvalPolicy, sandbox = "workspace-write")
         } catch (error: Throwable) {
             if (!shouldRetryWithoutLinuxSandbox(error)) {
                 throw error
             }
-            startThreadWithSandbox(serverId, cwd, model, sandbox = "danger-full-access")
+            startThreadWithSandbox(serverId, cwd, model, approvalPolicy, sandbox = "danger-full-access")
         }
     }
 
@@ -975,13 +1066,14 @@ class ServerManager(
         serverId: String,
         cwd: String,
         model: String?,
+        approvalPolicy: String,
         sandbox: String,
     ): JSONObject {
         val params =
             JSONObject()
                 .put("model", model ?: JSONObject.NULL)
                 .put("cwd", cwd)
-                .put("approvalPolicy", "never")
+                .put("approvalPolicy", approvalPolicy)
                 .put("sandbox", sandbox)
         return requireTransport(serverId).request("thread/start", params)
     }
@@ -1060,13 +1152,18 @@ class ServerManager(
         threadId: String,
         cwd: String,
     ): JSONObject {
+        val approvalPolicy = composerApprovalPolicy
+        val sandbox = composerSandboxMode
+        if (sandbox != "workspace-write") {
+            return resumeThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox)
+        }
         return try {
-            resumeThreadWithSandbox(serverId, threadId, cwd, sandbox = "workspace-write")
+            resumeThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox = "workspace-write")
         } catch (error: Throwable) {
             if (!shouldRetryWithoutLinuxSandbox(error)) {
                 throw error
             }
-            resumeThreadWithSandbox(serverId, threadId, cwd, sandbox = "danger-full-access")
+            resumeThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox = "danger-full-access")
         }
     }
 
@@ -1074,15 +1171,147 @@ class ServerManager(
         serverId: String,
         threadId: String,
         cwd: String,
+        approvalPolicy: String,
         sandbox: String,
     ): JSONObject {
         val params =
             JSONObject()
                 .put("threadId", threadId)
                 .put("cwd", cwd)
-                .put("approvalPolicy", "never")
+                .put("approvalPolicy", approvalPolicy)
                 .put("sandbox", sandbox)
         return requireTransport(serverId).request("thread/resume", params)
+    }
+
+    private fun startReviewOnActiveThreadInternal() {
+        val key = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        requireTransport(key.serverId).request(
+            method = "review/start",
+            params = JSONObject()
+                .put("threadId", key.threadId)
+                .put("target", JSONObject().put("type", "uncommittedChanges"))
+                .put("delivery", "inline"),
+        )
+    }
+
+    private fun renameActiveThreadInternal(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            throw IllegalArgumentException("Thread name is required")
+        }
+        val key = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        requireTransport(key.serverId).request(
+            method = "thread/name/set",
+            params = JSONObject().put("threadId", key.threadId).put("name", trimmed),
+        )
+
+        val existing = threadsByKey[key] ?: return
+        threadsByKey[key] =
+            existing.copy(
+                preview = trimmed.take(120),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+            )
+        updateState { it }
+    }
+
+    private fun listExperimentalFeaturesInternal(limit: Int): List<ExperimentalFeature> {
+        val serverId = resolveServerIdForActiveOperations()
+        val response =
+            requireTransport(serverId).request(
+                method = "experimentalFeature/list",
+                params = JSONObject().put("cursor", JSONObject.NULL).put("limit", limit),
+            )
+        val data = response.optJSONArray("data") ?: JSONArray()
+        val parsed = ArrayList<ExperimentalFeature>(data.length())
+        for (index in 0 until data.length()) {
+            val item = data.optJSONObject(index) ?: continue
+            val name = item.sanitizedOptString("name") ?: continue
+            val stage = item.sanitizedOptString("stage").orEmpty()
+            val displayName =
+                item.sanitizedOptString("displayName")
+                    ?: item.sanitizedOptString("display_name")
+            val description = item.sanitizedOptString("description")
+            val announcement = item.sanitizedOptString("announcement")
+            val defaultEnabled =
+                item.opt("defaultEnabled").asBooleanOrNull()
+                    ?: item.opt("default_enabled").asBooleanOrNull()
+                    ?: false
+            val enabled = item.opt("enabled").asBooleanOrNull() ?: defaultEnabled
+            parsed +=
+                ExperimentalFeature(
+                    name = name,
+                    stage = stage,
+                    displayName = displayName,
+                    description = description,
+                    announcement = announcement,
+                    enabled = enabled,
+                    defaultEnabled = defaultEnabled,
+                )
+        }
+        return parsed
+    }
+
+    private fun setExperimentalFeatureEnabledInternal(
+        featureName: String,
+        enabled: Boolean,
+    ) {
+        val name = featureName.trim()
+        if (name.isEmpty()) {
+            throw IllegalArgumentException("Feature name is required")
+        }
+        val serverId = resolveServerIdForActiveOperations()
+        requireTransport(serverId).request(
+            method = "config/value/write",
+            params =
+                JSONObject()
+                    .put("keyPath", "features.$name")
+                    .put("value", enabled)
+                    .put("mergeStrategy", "upsert")
+                    .put("filePath", JSONObject.NULL)
+                    .put("expectedVersion", JSONObject.NULL),
+        )
+    }
+
+    private fun listSkillsInternal(
+        cwds: List<String>?,
+        forceReload: Boolean,
+    ): List<SkillMetadata> {
+        val serverId = resolveServerIdForActiveOperations()
+        val params = JSONObject().put("forceReload", forceReload)
+        val normalizedCwds =
+            cwds
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+        if (normalizedCwds.isNotEmpty()) {
+            val cwdsJson = JSONArray()
+            normalizedCwds.forEach { cwd -> cwdsJson.put(cwd) }
+            params.put("cwds", cwdsJson)
+        } else {
+            params.put("cwds", JSONObject.NULL)
+        }
+
+        val response = requireTransport(serverId).request(method = "skills/list", params = params)
+        val data = response.optJSONArray("data") ?: JSONArray()
+        val parsed = ArrayList<SkillMetadata>()
+        for (entryIndex in 0 until data.length()) {
+            val entry = data.optJSONObject(entryIndex) ?: continue
+            val skills = entry.optJSONArray("skills") ?: continue
+            for (skillIndex in 0 until skills.length()) {
+                val item = skills.optJSONObject(skillIndex) ?: continue
+                val name = item.sanitizedOptString("name") ?: continue
+                val path = item.sanitizedOptString("path") ?: continue
+                parsed +=
+                    SkillMetadata(
+                        name = name,
+                        description = item.sanitizedOptString("description").orEmpty(),
+                        path = path,
+                        scope = item.sanitizedOptString("scope").orEmpty(),
+                        enabled = item.optBoolean("enabled", true),
+                    )
+            }
+        }
+        return parsed
     }
 
     private fun sendMessageInternal(
@@ -2679,7 +2908,7 @@ class ServerManager(
             val item = parsed.optJSONObject(index) ?: continue
             val id = item.optString("id").trim()
             val name = item.optString("name").trim()
-            val host = item.optString("host").trim()
+            val host = normalizeServerHost(item.optString("host"))
             val port = item.optInt("port", 0)
             val source = item.optString("source").trim()
             val hasCodexServer = item.optBoolean("hasCodexServer", true)
@@ -2708,6 +2937,34 @@ private fun Any?.asLongOrNull(): Long? {
         is Number -> this.toLong()
         is String -> this.trim().toLongOrNull()
         else -> null
+    }
+}
+
+private fun Any?.asBooleanOrNull(): Boolean? {
+    return when (this) {
+        null, JSONObject.NULL -> null
+        is Boolean -> this
+        is Number -> this.toInt() != 0
+        is String -> {
+            when (this.trim().lowercase(Locale.ROOT)) {
+                "true", "1", "yes", "on" -> true
+                "false", "0", "no", "off" -> false
+                else -> null
+            }
+        }
+
+        else -> null
+    }
+}
+
+private fun JSONObject.sanitizedOptString(key: String): String? {
+    if (!has(key)) {
+        return null
+    }
+    val raw = opt(key)
+    return when (raw) {
+        null, JSONObject.NULL -> null
+        else -> raw.toString().trim().takeIf { text -> text.isNotEmpty() && !text.equals("null", ignoreCase = true) }
     }
 }
 

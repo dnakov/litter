@@ -10,6 +10,7 @@ struct SessionSidebarView: View {
     @State private var showSettings = false
     @State private var showDirectoryPicker = false
     @State private var selectedServerId: String?
+    @State private var sessionSearchQuery = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,7 +23,7 @@ struct SessionSidebarView: View {
                 Spacer()
                 ProgressView().tint(LitterTheme.accent).frame(maxWidth: .infinity)
                 Spacer()
-            } else if serverManager.sortedThreads.isEmpty {
+            } else if allThreads.isEmpty {
                 Spacer()
                 Text("No sessions yet")
                     .font(.system(.footnote, design: .monospaced))
@@ -30,7 +31,18 @@ struct SessionSidebarView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                sessionList
+                sessionSearchBar
+                Divider().background(Color(hex: "#1E1E1E"))
+                if filteredThreads.isEmpty {
+                    Spacer()
+                    Text("No matches for \"\(trimmedSessionSearchQuery)\"")
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundColor(LitterTheme.textMuted)
+                        .frame(maxWidth: .infinity)
+                    Spacer()
+                } else {
+                    sessionList
+                }
             }
 
             Divider().background(Color(hex: "#1E1E1E"))
@@ -41,6 +53,11 @@ struct SessionSidebarView: View {
         .task { await loadSessions() }
         .onChange(of: serverManager.hasAnyConnection) { _, connected in
             if connected { Task { await loadSessions() } }
+        }
+        .onChange(of: appState.sidebarOpen) { _, isOpen in
+            if !isOpen {
+                sessionSearchQuery = ""
+            }
         }
         .onChange(of: connectedServerIds) { _, _ in
             guard showDirectoryPicker else { return }
@@ -84,6 +101,20 @@ struct SessionSidebarView: View {
 
     private var connectedServerIds: [String] {
         connectedServerOptions.map(\.id)
+    }
+
+    private var allThreads: [ThreadState] {
+        serverManager.sortedThreads
+    }
+
+    private var trimmedSessionSearchQuery: String {
+        sessionSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredThreads: [ThreadState] {
+        let query = trimmedSessionSearchQuery
+        guard !query.isEmpty else { return allThreads }
+        return allThreads.filter { threadMatchesSessionSearch($0, query: query) }
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
@@ -192,10 +223,45 @@ struct SessionSidebarView: View {
         .padding(.vertical, 12)
     }
 
+    private var sessionSearchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(LitterTheme.textMuted)
+                .font(.system(.caption, design: .monospaced))
+
+            TextField("Search sessions", text: $sessionSearchQuery)
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundColor(.white)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+
+            if !sessionSearchQuery.isEmpty {
+                Button {
+                    sessionSearchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(LitterTheme.textMuted)
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(LitterTheme.surface.opacity(0.55))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(LitterTheme.border.opacity(0.85), lineWidth: 1)
+        )
+        .cornerRadius(8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
     private var sessionList: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(serverManager.sortedThreads) { thread in
+                ForEach(filteredThreads) { thread in
                     Button {
                         Task { await resumeSession(thread) }
                     } label: {
@@ -249,6 +315,12 @@ struct SessionSidebarView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private func threadMatchesSessionSearch(_ thread: ThreadState, query: String) -> Bool {
+        thread.preview.localizedCaseInsensitiveContains(query) ||
+            thread.cwd.localizedCaseInsensitiveContains(query) ||
+            thread.serverName.localizedCaseInsensitiveContains(query)
     }
 
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"

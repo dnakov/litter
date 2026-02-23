@@ -22,6 +22,7 @@ final class ServerConnection: ObservableObject, Identifiable {
     private var pendingLoginId: String?
 
     var onNotification: ((String, Data) -> Void)?
+    var onServerRequest: ((_ requestId: String, _ method: String, _ data: Data) -> Bool)?
     var onDisconnect: (() -> Void)?
 
     init(server: DiscoveredServer, target: ConnectionTarget) {
@@ -224,6 +225,12 @@ final class ServerConnection: ObservableObject, Identifiable {
             params: SkillsListParams(cwds: cwds, forceReload: forceReload),
             responseType: SkillsListResponse.self
         )
+    }
+
+    func respondToServerRequest(id: String, result: [String: Any]) {
+        Task {
+            await client.sendResult(id: id, result: result)
+        }
     }
 
     func listExperimentalFeatures(cursor: String? = nil, limit: Int? = 100) async throws -> ExperimentalFeatureListResponse {
@@ -496,7 +503,11 @@ final class ServerConnection: ObservableObject, Identifiable {
         }
         await client.addRequestHandler { [weak self] id, method, data in
             Task { @MainActor [weak self] in
-                self?.handleServerRequest(id: id, method: method)
+                guard let self else { return }
+                if self.onServerRequest?(id, method, data) == true {
+                    return
+                }
+                self.handleServerRequest(id: id, method: method)
             }
         }
     }

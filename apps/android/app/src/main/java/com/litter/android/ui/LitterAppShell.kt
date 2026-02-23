@@ -115,15 +115,17 @@ import com.litter.android.core.network.DiscoverySource
 import com.litter.android.state.AccountState
 import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
+import com.litter.android.state.ExperimentalFeature
 import com.litter.android.state.FuzzyFileSearchResult
 import com.litter.android.state.MessageRole
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ServerConfig
 import com.litter.android.state.ServerConnectionStatus
 import com.litter.android.state.ServerSource
+import com.litter.android.state.SkillMetadata
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
-import com.sigkitten.litter.android.R
+import com.makyinc.litter.android.R
 import io.noties.markwon.Markwon
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -169,8 +171,25 @@ fun LitterAppShell(appState: LitterAppState) {
                     messages = uiState.messages,
                     draft = uiState.draft,
                     isSending = uiState.isSending,
+                    models = uiState.models,
+                    selectedModelId = uiState.selectedModelId,
+                    selectedReasoningEffort = uiState.selectedReasoningEffort,
+                    approvalPolicy = uiState.approvalPolicy,
+                    sandboxMode = uiState.sandboxMode,
+                    currentCwd = uiState.currentCwd,
+                    activeThreadPreview = uiState.sessions.firstOrNull { it.key == uiState.activeThreadKey }?.preview.orEmpty(),
                     onDraftChange = appState::updateDraft,
                     onFileSearch = appState::searchComposerFiles,
+                    onSelectModel = appState::selectModel,
+                    onSelectReasoningEffort = appState::selectReasoningEffort,
+                    onUpdateComposerPermissions = appState::updateComposerPermissions,
+                    onOpenNewSessionPicker = appState::openNewSessionPicker,
+                    onOpenSidebar = appState::openSidebar,
+                    onStartReview = appState::startReview,
+                    onRenameActiveThread = appState::renameActiveThread,
+                    onListExperimentalFeatures = appState::listExperimentalFeatures,
+                    onSetExperimentalFeatureEnabled = appState::setExperimentalFeatureEnabled,
+                    onListSkills = appState::listSkills,
                     onSend = { payloadDraft ->
                         appState.updateDraft(payloadDraft)
                         appState.sendDraft()
@@ -203,8 +222,10 @@ fun LitterAppShell(appState: LitterAppState) {
             connectionStatus = uiState.connectionStatus,
             serverCount = uiState.serverCount,
             sessions = uiState.sessions,
+            sessionSearchQuery = uiState.sessionSearchQuery,
             activeThreadKey = uiState.activeThreadKey,
             onSessionSelected = appState::selectSession,
+            onSessionSearchQueryChange = appState::updateSessionSearchQuery,
             onNewSession = appState::openNewSessionPicker,
             onRefresh = appState::refreshSessions,
             onOpenDiscovery = {
@@ -513,13 +534,23 @@ private fun SessionSidebar(
     connectionStatus: ServerConnectionStatus,
     serverCount: Int,
     sessions: List<ThreadState>,
+    sessionSearchQuery: String,
     activeThreadKey: ThreadKey?,
     onSessionSelected: (ThreadKey) -> Unit,
+    onSessionSearchQueryChange: (String) -> Unit,
     onNewSession: () -> Unit,
     onRefresh: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val normalizedQuery = sessionSearchQuery.trim()
+    val filteredSessions =
+        if (normalizedQuery.isEmpty()) {
+            sessions
+        } else {
+            sessions.filter { matchesSessionSearch(it, normalizedQuery) }
+        }
+
     Surface(
         modifier = modifier,
         color = LitterTheme.surface.copy(alpha = 0.88f),
@@ -571,70 +602,88 @@ private fun SessionSidebar(
                 )
                 Spacer(modifier = Modifier.weight(1f))
             } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(items = sessions, key = { "${it.key.serverId}:${it.key.threadId}" }) { thread ->
-                        val isActive = thread.key == activeThreadKey
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().clickable { onSessionSelected(thread.key) },
-                            color =
-                                if (isActive) {
-                                    LitterTheme.surfaceLight.copy(alpha = 0.58f)
-                                } else {
-                                    LitterTheme.surface.copy(alpha = 0.58f)
-                                },
-                            shape = RoundedCornerShape(8.dp),
-                            border =
-                                androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    if (isActive) LitterTheme.accent else LitterTheme.border,
-                                ),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.Top,
+                OutlinedTextField(
+                    value = sessionSearchQuery,
+                    onValueChange = onSessionSearchQueryChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Search sessions") },
+                    singleLine = true,
+                )
+
+                if (filteredSessions.isEmpty()) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = "No matches for \"$normalizedQuery\"",
+                        color = LitterTheme.textMuted,
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items = filteredSessions, key = { "${it.key.serverId}:${it.key.threadId}" }) { thread ->
+                            val isActive = thread.key == activeThreadKey
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().clickable { onSessionSelected(thread.key) },
+                                color =
+                                    if (isActive) {
+                                        LitterTheme.surfaceLight.copy(alpha = 0.58f)
+                                    } else {
+                                        LitterTheme.surface.copy(alpha = 0.58f)
+                                    },
+                                shape = RoundedCornerShape(8.dp),
+                                border =
+                                    androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (isActive) LitterTheme.accent else LitterTheme.border,
+                                    ),
                             ) {
-                                if (thread.hasTurnActive) {
-                                    ActiveTurnPulseDot(modifier = Modifier.padding(top = 3.dp))
-                                } else {
-                                    Spacer(modifier = Modifier.size(8.dp))
-                                }
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.Top,
                                 ) {
-                                    Text(
-                                        text = thread.preview.ifBlank { "Untitled session" },
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        color = LitterTheme.textPrimary,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
+                                    if (thread.hasTurnActive) {
+                                        ActiveTurnPulseDot(modifier = Modifier.padding(top = 3.dp))
+                                    } else {
+                                        Spacer(modifier = Modifier.size(8.dp))
+                                    }
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
                                         Text(
-                                            text = relativeDate(thread.updatedAtEpochMillis),
-                                            maxLines = 1,
+                                            text = thread.preview.ifBlank { "Untitled session" },
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis,
-                                            color = LitterTheme.textSecondary,
-                                            style = MaterialTheme.typography.labelLarge,
+                                            color = LitterTheme.textPrimary,
+                                            style = MaterialTheme.typography.bodyMedium,
                                         )
-                                        ServerSourceBadge(
-                                            source = thread.serverSource,
-                                            serverName = thread.serverName,
-                                        )
-                                        Text(
-                                            text = cwdLeaf(thread.cwd),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            color = LitterTheme.textMuted,
-                                            style = MaterialTheme.typography.labelLarge,
-                                        )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = relativeDate(thread.updatedAtEpochMillis),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = LitterTheme.textSecondary,
+                                                style = MaterialTheme.typography.labelLarge,
+                                            )
+                                            ServerSourceBadge(
+                                                source = thread.serverSource,
+                                                serverName = thread.serverName,
+                                            )
+                                            Text(
+                                                text = cwdLeaf(thread.cwd),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = LitterTheme.textMuted,
+                                                style = MaterialTheme.typography.labelLarge,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -667,6 +716,16 @@ private fun SessionSidebar(
             }
         }
     }
+}
+
+private fun matchesSessionSearch(
+    thread: ThreadState,
+    query: String,
+): Boolean {
+    val normalizedQuery = query.lowercase(Locale.ROOT)
+    return thread.preview.lowercase(Locale.ROOT).contains(normalizedQuery) ||
+        thread.cwd.lowercase(Locale.ROOT).contains(normalizedQuery) ||
+        thread.serverName.lowercase(Locale.ROOT).contains(normalizedQuery)
 }
 
 @Composable
@@ -744,8 +803,25 @@ private fun ConversationPanel(
     messages: List<ChatMessage>,
     draft: String,
     isSending: Boolean,
+    models: List<ModelOption>,
+    selectedModelId: String?,
+    selectedReasoningEffort: String?,
+    approvalPolicy: String,
+    sandboxMode: String,
+    currentCwd: String,
+    activeThreadPreview: String,
     onDraftChange: (String) -> Unit,
     onFileSearch: (String, (Result<List<FuzzyFileSearchResult>>) -> Unit) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onSelectReasoningEffort: (String) -> Unit,
+    onUpdateComposerPermissions: (String, String) -> Unit,
+    onOpenNewSessionPicker: () -> Unit,
+    onOpenSidebar: () -> Unit,
+    onStartReview: ((Result<Unit>) -> Unit) -> Unit,
+    onRenameActiveThread: (String, (Result<Unit>) -> Unit) -> Unit,
+    onListExperimentalFeatures: ((Result<List<ExperimentalFeature>>) -> Unit) -> Unit,
+    onSetExperimentalFeatureEnabled: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
+    onListSkills: (String?, Boolean, (Result<List<SkillMetadata>>) -> Unit) -> Unit,
     onSend: (String) -> Unit,
     onInterrupt: () -> Unit,
 ) {
@@ -809,8 +885,25 @@ private fun ConversationPanel(
             attachedImagePath = attachedImagePath,
             attachmentError = attachmentError,
             isSending = isSending,
+            models = models,
+            selectedModelId = selectedModelId,
+            selectedReasoningEffort = selectedReasoningEffort,
+            approvalPolicy = approvalPolicy,
+            sandboxMode = sandboxMode,
+            currentCwd = currentCwd,
+            activeThreadPreview = activeThreadPreview,
             onDraftChange = onDraftChange,
             onFileSearch = onFileSearch,
+            onSelectModel = onSelectModel,
+            onSelectReasoningEffort = onSelectReasoningEffort,
+            onUpdateComposerPermissions = onUpdateComposerPermissions,
+            onOpenNewSessionPicker = onOpenNewSessionPicker,
+            onOpenSidebar = onOpenSidebar,
+            onStartReview = onStartReview,
+            onRenameActiveThread = onRenameActiveThread,
+            onListExperimentalFeatures = onListExperimentalFeatures,
+            onSetExperimentalFeatureEnabled = onSetExperimentalFeatureEnabled,
+            onListSkills = onListSkills,
             onAttachImage = { attachmentLauncher.launch("image/*") },
             onCaptureImage = { cameraLauncher.launch(null) },
             onClearAttachment = {
@@ -1120,13 +1213,31 @@ private fun SystemMessageCard(message: ChatMessage) {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun InputBar(
     draft: String,
     attachedImagePath: String?,
     attachmentError: String?,
     isSending: Boolean,
+    models: List<ModelOption>,
+    selectedModelId: String?,
+    selectedReasoningEffort: String?,
+    approvalPolicy: String,
+    sandboxMode: String,
+    currentCwd: String,
+    activeThreadPreview: String,
     onDraftChange: (String) -> Unit,
     onFileSearch: (String, (Result<List<FuzzyFileSearchResult>>) -> Unit) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onSelectReasoningEffort: (String) -> Unit,
+    onUpdateComposerPermissions: (String, String) -> Unit,
+    onOpenNewSessionPicker: () -> Unit,
+    onOpenSidebar: () -> Unit,
+    onStartReview: ((Result<Unit>) -> Unit) -> Unit,
+    onRenameActiveThread: (String, (Result<Unit>) -> Unit) -> Unit,
+    onListExperimentalFeatures: ((Result<List<ExperimentalFeature>>) -> Unit) -> Unit,
+    onSetExperimentalFeatureEnabled: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
+    onListSkills: (String?, Boolean, (Result<List<SkillMetadata>>) -> Unit) -> Unit,
     onAttachImage: () -> Unit,
     onCaptureImage: () -> Unit,
     onClearAttachment: () -> Unit,
@@ -1153,6 +1264,19 @@ private fun InputBar(
     var fileSuggestions by remember { mutableStateOf<List<FuzzyFileSearchResult>>(emptyList()) }
     var fileSearchGeneration by remember { mutableStateOf(0) }
     var fileSearchJob by remember { mutableStateOf<Job?>(null) }
+
+    var showModelSheet by remember { mutableStateOf(false) }
+    var showPermissionsSheet by remember { mutableStateOf(false) }
+    var showExperimentalSheet by remember { mutableStateOf(false) }
+    var showSkillsSheet by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameDraft by remember { mutableStateOf("") }
+    var slashErrorMessage by remember { mutableStateOf<String?>(null) }
+    var experimentalFeatures by remember { mutableStateOf<List<ExperimentalFeature>>(emptyList()) }
+    var experimentalFeaturesLoading by remember { mutableStateOf(false) }
+    var skills by remember { mutableStateOf<List<SkillMetadata>>(emptyList()) }
+    var skillsLoading by remember { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
 
     fun clearFileSearchState() {
@@ -1246,21 +1370,92 @@ private fun InputBar(
         showSlashPopup = slashSuggestions.isNotEmpty()
     }
 
+    fun loadExperimentalFeatures() {
+        experimentalFeaturesLoading = true
+        onListExperimentalFeatures { result ->
+            experimentalFeaturesLoading = false
+            result.onFailure { error ->
+                slashErrorMessage = error.message ?: "Failed to load experimental features"
+            }
+            result.onSuccess { features ->
+                experimentalFeatures = features.sortedBy { (it.displayName ?: it.name).lowercase(Locale.ROOT) }
+            }
+        }
+    }
+
+    fun loadSkills(forceReload: Boolean = false) {
+        skillsLoading = true
+        onListSkills(currentCwd, forceReload) { result ->
+            skillsLoading = false
+            result.onFailure { error ->
+                slashErrorMessage = error.message ?: "Failed to load skills"
+            }
+            result.onSuccess { loaded ->
+                skills = loaded.sortedBy { it.name.lowercase(Locale.ROOT) }
+            }
+        }
+    }
+
+    fun executeSlashCommand(
+        command: ComposerSlashCommand,
+        args: String?,
+    ) {
+        when (command) {
+            ComposerSlashCommand.MODEL -> {
+                showModelSheet = true
+            }
+
+            ComposerSlashCommand.PERMISSIONS -> {
+                showPermissionsSheet = true
+            }
+
+            ComposerSlashCommand.EXPERIMENTAL -> {
+                showExperimentalSheet = true
+                loadExperimentalFeatures()
+            }
+
+            ComposerSlashCommand.SKILLS -> {
+                showSkillsSheet = true
+                loadSkills(forceReload = false)
+            }
+
+            ComposerSlashCommand.REVIEW -> {
+                onStartReview { result ->
+                    result.onFailure { error ->
+                        slashErrorMessage = error.message ?: "Failed to start review"
+                    }
+                }
+            }
+
+            ComposerSlashCommand.RENAME -> {
+                val initialName = args?.trim().orEmpty()
+                if (initialName.isNotEmpty()) {
+                    onRenameActiveThread(initialName) { result ->
+                        result.onFailure { error ->
+                            slashErrorMessage = error.message ?: "Failed to rename thread"
+                        }
+                    }
+                } else {
+                    renameDraft = activeThreadPreview
+                    showRenameDialog = true
+                }
+            }
+
+            ComposerSlashCommand.NEW -> {
+                onOpenNewSessionPicker()
+            }
+
+            ComposerSlashCommand.RESUME -> {
+                onOpenSidebar()
+            }
+        }
+    }
+
     fun applySlashSuggestion(command: ComposerSlashCommand) {
-        val slashToken = activeSlashToken ?: return
-        val replacement = "/${command.rawValue} "
-        val updatedText =
-            composerValue.text.replaceRange(
-                startIndex = slashToken.range.start,
-                endIndex = slashToken.range.end,
-                replacement = replacement,
-            )
-        val nextCursor = slashToken.range.start + replacement.length
-        composerValue = TextFieldValue(text = updatedText, selection = TextRange(nextCursor))
-        onDraftChange(updatedText)
-        showSlashPopup = false
-        activeSlashToken = null
-        slashSuggestions = emptyList()
+        composerValue = TextFieldValue(text = "", selection = TextRange(0))
+        onDraftChange("")
+        hideComposerPopups()
+        executeSlashCommand(command, args = null)
     }
 
     fun applyFileSuggestion(match: FuzzyFileSearchResult) {
@@ -1299,6 +1494,333 @@ private fun InputBar(
         onDispose {
             fileSearchJob?.cancel()
         }
+    }
+
+    if (showModelSheet) {
+        val selectedModel = models.firstOrNull { it.id == selectedModelId } ?: models.firstOrNull()
+        ModalBottomSheet(onDismissRequest = { showModelSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Model", style = MaterialTheme.typography.titleMedium)
+                if (models.isEmpty()) {
+                    Text("No models available", color = LitterTheme.textMuted)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(0.4f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(models, key = { it.id }) { model ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().clickable { onSelectModel(model.id) },
+                                color = LitterTheme.surface.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (model.id == selectedModelId) LitterTheme.accent else LitterTheme.border),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(model.displayName, color = LitterTheme.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        if (model.description.isNotBlank()) {
+                                            Text(
+                                                model.description,
+                                                color = LitterTheme.textSecondary,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    if (model.id == selectedModelId) {
+                                        Icon(Icons.Default.Check, contentDescription = null, tint = LitterTheme.accent, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val efforts = selectedModel?.supportedReasoningEfforts.orEmpty()
+                if (efforts.isNotEmpty()) {
+                    Text("Reasoning Effort", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        efforts.forEach { effort ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().clickable { onSelectReasoningEffort(effort.effort) },
+                                color = LitterTheme.surface.copy(alpha = 0.6f),
+                                shape = RoundedCornerShape(8.dp),
+                                border =
+                                    androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (effort.effort == selectedReasoningEffort) LitterTheme.accent else LitterTheme.border,
+                                    ),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(effort.effort, color = LitterTheme.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                                    if (effort.effort == selectedReasoningEffort) {
+                                        Icon(Icons.Default.Check, contentDescription = null, tint = LitterTheme.accent, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showPermissionsSheet) {
+        ModalBottomSheet(onDismissRequest = { showPermissionsSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Permissions", style = MaterialTheme.typography.titleMedium)
+                ComposerPermissionPreset.values().forEach { preset ->
+                    val isSelected = preset.approvalPolicy == approvalPolicy && preset.sandboxMode == sandboxMode
+                    Surface(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onUpdateComposerPermissions(preset.approvalPolicy, preset.sandboxMode)
+                                    showPermissionsSheet = false
+                                },
+                        color = LitterTheme.surface.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) LitterTheme.accent else LitterTheme.border),
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(preset.title, color = LitterTheme.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                                if (isSelected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = LitterTheme.accent, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Text(preset.description, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showExperimentalSheet) {
+        ModalBottomSheet(onDismissRequest = { showExperimentalSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Experimental", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { loadExperimentalFeatures() }) { Text("Reload") }
+                }
+
+                when {
+                    experimentalFeaturesLoading -> {
+                        Text("Loading...", color = LitterTheme.textMuted)
+                    }
+
+                    experimentalFeatures.isEmpty() -> {
+                        Text("No experimental features available", color = LitterTheme.textMuted)
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.6f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(experimentalFeatures, key = { it.name }) { feature ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                                        ) {
+                                            Text(
+                                                feature.displayName ?: feature.name,
+                                                color = LitterTheme.textPrimary,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                            )
+                                            Text(
+                                                feature.description ?: feature.stage,
+                                                color = LitterTheme.textSecondary,
+                                                style = MaterialTheme.typography.labelLarge,
+                                            )
+                                        }
+                                        Checkbox(
+                                            checked = feature.enabled,
+                                            onCheckedChange = { checked ->
+                                                onSetExperimentalFeatureEnabled(feature.name, checked) { result ->
+                                                    result.onFailure { error ->
+                                                        slashErrorMessage = error.message ?: "Failed to update feature"
+                                                    }
+                                                    result.onSuccess {
+                                                        experimentalFeatures =
+                                                            experimentalFeatures.map { existing ->
+                                                                if (existing.name == feature.name) {
+                                                                    existing.copy(enabled = checked)
+                                                                } else {
+                                                                    existing
+                                                                }
+                                                            }
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showSkillsSheet) {
+        ModalBottomSheet(onDismissRequest = { showSkillsSheet = false }) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Skills", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = { loadSkills(forceReload = true) }) { Text("Reload") }
+                }
+
+                when {
+                    skillsLoading -> {
+                        Text("Loading...", color = LitterTheme.textMuted)
+                    }
+
+                    skills.isEmpty() -> {
+                        Text("No skills available for this workspace", color = LitterTheme.textMuted)
+                    }
+
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.6f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(skills, key = { "${it.path}#${it.name}" }) { skill ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(skill.name, color = LitterTheme.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                                            if (skill.enabled) {
+                                                Text("enabled", color = LitterTheme.accent, style = MaterialTheme.typography.labelLarge)
+                                            }
+                                        }
+                                        if (skill.description.isNotBlank()) {
+                                            Text(skill.description, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                                        }
+                                        Text(skill.path, color = LitterTheme.textMuted, style = MaterialTheme.typography.labelLarge)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename Thread") },
+            text = {
+                OutlinedTextField(
+                    value = renameDraft,
+                    onValueChange = { renameDraft = it },
+                    label = { Text("Thread name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val nextName = renameDraft.trim()
+                        if (nextName.isEmpty()) {
+                            return@TextButton
+                        }
+                        onRenameActiveThread(nextName) { result ->
+                            result.onFailure { error ->
+                                slashErrorMessage = error.message ?: "Failed to rename thread"
+                            }
+                            result.onSuccess {
+                                showRenameDialog = false
+                            }
+                        }
+                    },
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (!slashErrorMessage.isNullOrBlank()) {
+        AlertDialog(
+            onDismissRequest = { slashErrorMessage = null },
+            title = { Text("Slash Command Error") },
+            text = { Text(slashErrorMessage.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = { slashErrorMessage = null }) {
+                    Text("OK")
+                }
+            },
+        )
     }
 
     Surface(
@@ -1489,6 +2011,17 @@ private fun InputBar(
 
                 Button(
                     onClick = {
+                        val trimmed = composerValue.text.trim()
+                        if (attachedImagePath == null) {
+                            val invocation = parseSlashCommandInvocation(trimmed)
+                            if (invocation != null) {
+                                composerValue = TextFieldValue(text = "", selection = TextRange(0))
+                                onDraftChange("")
+                                hideComposerPopups()
+                                executeSlashCommand(invocation.command, invocation.args)
+                                return@Button
+                            }
+                        }
                         onSend(composerValue.text)
                         hideComposerPopups()
                     },
@@ -1520,6 +2053,39 @@ private enum class ComposerSlashCommand(
     RENAME(rawValue = "rename", description = "rename the current thread"),
     NEW(rawValue = "new", description = "start a new chat during a conversation"),
     RESUME(rawValue = "resume", description = "resume a saved chat"),
+
+    ;
+
+    companion object {
+        fun fromRawCommand(value: String): ComposerSlashCommand? =
+            values().firstOrNull { it.rawValue == value.trim().lowercase(Locale.ROOT) }
+    }
+}
+
+private enum class ComposerPermissionPreset(
+    val title: String,
+    val description: String,
+    val approvalPolicy: String,
+    val sandboxMode: String,
+) {
+    READ_ONLY(
+        title = "Read Only",
+        description = "Ask before commands and run in read-only sandbox",
+        approvalPolicy = "on-request",
+        sandboxMode = "read-only",
+    ),
+    AUTO(
+        title = "Auto",
+        description = "No prompts and workspace-write sandbox",
+        approvalPolicy = "never",
+        sandboxMode = "workspace-write",
+    ),
+    FULL_ACCESS(
+        title = "Full Access",
+        description = "No prompts and danger-full-access sandbox",
+        approvalPolicy = "never",
+        sandboxMode = "danger-full-access",
+    ),
 }
 
 private data class ComposerTokenContext(
@@ -1530,6 +2096,11 @@ private data class ComposerTokenContext(
 private data class ComposerSlashQueryContext(
     val query: String,
     val range: TextRange,
+)
+
+private data class ComposerSlashInvocation(
+    val command: ComposerSlashCommand,
+    val args: String?,
 )
 
 private fun filterSlashCommands(query: String): List<ComposerSlashCommand> {
@@ -1576,6 +2147,24 @@ private fun fuzzyScore(
         candidateIndex += 1
     }
     return if (queryIndex == normalizedQuery.length) score else null
+}
+
+private fun parseSlashCommandInvocation(text: String): ComposerSlashInvocation? {
+    val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+    if (!firstLine.startsWith("/")) {
+        return null
+    }
+    val body = firstLine.drop(1)
+    if (body.isEmpty()) {
+        return null
+    }
+    val commandName = body.substringBefore(' ').trim()
+    if (commandName.isEmpty()) {
+        return null
+    }
+    val command = ComposerSlashCommand.fromRawCommand(commandName) ?: return null
+    val args = body.substringAfter(' ', "").trim().ifEmpty { null }
+    return ComposerSlashInvocation(command = command, args = args)
 }
 
 private fun currentPrefixedToken(

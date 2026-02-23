@@ -9,6 +9,7 @@ import com.litter.android.state.AccountState
 import com.litter.android.state.AppState
 import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
+import com.litter.android.state.ExperimentalFeature
 import com.litter.android.state.FuzzyFileSearchResult
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ModelSelection
@@ -17,6 +18,7 @@ import com.litter.android.state.ServerConfig
 import com.litter.android.state.ServerConnectionStatus
 import com.litter.android.state.ServerManager
 import com.litter.android.state.ServerSource
+import com.litter.android.state.SkillMetadata
 import com.litter.android.state.SshAuthMethod
 import com.litter.android.state.SshCredentialStore
 import com.litter.android.state.SshCredentials
@@ -95,7 +97,10 @@ data class UiShellState(
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
     val selectedReasoningEffort: String? = "medium",
+    val approvalPolicy: String = "never",
+    val sandboxMode: String = "workspace-write",
     val sessions: List<ThreadState> = emptyList(),
+    val sessionSearchQuery: String = "",
     val activeThreadKey: ThreadKey? = null,
     val messages: List<ChatMessage> = emptyList(),
     val draft: String = "",
@@ -120,11 +125,15 @@ interface LitterAppState : Closeable {
 
     fun dismissSidebar()
 
+    fun openSidebar()
+
     fun selectModel(modelId: String)
 
     fun selectReasoningEffort(effort: String)
 
     fun selectSession(threadKey: ThreadKey)
+
+    fun updateSessionSearchQuery(value: String)
 
     fun updateDraft(value: String)
 
@@ -149,6 +158,36 @@ interface LitterAppState : Closeable {
     fun sendDraft()
 
     fun interrupt()
+
+    fun updateComposerPermissions(
+        approvalPolicy: String,
+        sandboxMode: String,
+    )
+
+    fun startReview(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun renameActiveThread(
+        name: String,
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun listExperimentalFeatures(
+        onComplete: (Result<List<ExperimentalFeature>>) -> Unit,
+    )
+
+    fun setExperimentalFeatureEnabled(
+        featureName: String,
+        enabled: Boolean,
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun listSkills(
+        cwd: String?,
+        forceReload: Boolean,
+        onComplete: (Result<List<SkillMetadata>>) -> Unit,
+    )
 
     fun openSettings()
 
@@ -229,6 +268,10 @@ class DefaultLitterAppState(
         }
 
     init {
+        serverManager.updateComposerPermissions(
+            approvalPolicy = _uiState.value.approvalPolicy,
+            sandboxMode = _uiState.value.sandboxMode,
+        )
         connectAndPrime()
         scope.launch { runForegroundRefreshLoop() }
     }
@@ -241,11 +284,21 @@ class DefaultLitterAppState(
     }
 
     override fun toggleSidebar() {
-        _uiState.update { it.copy(isSidebarOpen = !it.isSidebarOpen) }
+        _uiState.update { current ->
+            val isClosing = current.isSidebarOpen
+            current.copy(
+                isSidebarOpen = !current.isSidebarOpen,
+                sessionSearchQuery = if (isClosing) "" else current.sessionSearchQuery,
+            )
+        }
     }
 
     override fun dismissSidebar() {
-        _uiState.update { it.copy(isSidebarOpen = false) }
+        _uiState.update { it.copy(isSidebarOpen = false, sessionSearchQuery = "") }
+    }
+
+    override fun openSidebar() {
+        _uiState.update { it.copy(isSidebarOpen = true) }
     }
 
     override fun selectModel(modelId: String) {
@@ -263,9 +316,13 @@ class DefaultLitterAppState(
                 setUiError(error.message ?: "Failed to resume session")
             }
             result.onSuccess {
-                _uiState.update { it.copy(isSidebarOpen = false) }
+                _uiState.update { it.copy(isSidebarOpen = false, sessionSearchQuery = "") }
             }
         }
+    }
+
+    override fun updateSessionSearchQuery(value: String) {
+        _uiState.update { it.copy(sessionSearchQuery = value) }
     }
 
     override fun updateDraft(value: String) {
@@ -437,6 +494,7 @@ class DefaultLitterAppState(
                 _uiState.update {
                     it.copy(
                         isSidebarOpen = false,
+                        sessionSearchQuery = "",
                         directoryPicker =
                             it.directoryPicker.copy(
                                 isVisible = false,
@@ -456,12 +514,6 @@ class DefaultLitterAppState(
         val snapshot = _uiState.value
         val prompt = snapshot.draft.trim()
         if (prompt.isEmpty() || snapshot.isSending) {
-            return
-        }
-
-        if (parseSlashCommandName(prompt) == "new") {
-            _uiState.update { it.copy(draft = "") }
-            openNewSessionPicker()
             return
         }
 
@@ -490,6 +542,74 @@ class DefaultLitterAppState(
                 setUiError(error.message ?: "Failed to interrupt turn")
             }
         }
+    }
+
+    override fun updateComposerPermissions(
+        approvalPolicy: String,
+        sandboxMode: String,
+    ) {
+        val normalizedApproval = approvalPolicy.trim().ifEmpty { "never" }
+        val normalizedSandbox = sandboxMode.trim().ifEmpty { "workspace-write" }
+        _uiState.update {
+            it.copy(
+                approvalPolicy = normalizedApproval,
+                sandboxMode = normalizedSandbox,
+            )
+        }
+        serverManager.updateComposerPermissions(
+            approvalPolicy = normalizedApproval,
+            sandboxMode = normalizedSandbox,
+        )
+    }
+
+    override fun startReview(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.startReviewOnActiveThread { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to start review")
+            }
+            onComplete(result)
+        }
+    }
+
+    override fun renameActiveThread(
+        name: String,
+        onComplete: (Result<Unit>) -> Unit,
+    ) {
+        serverManager.renameActiveThread(name) { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to rename thread")
+            }
+            onComplete(result)
+        }
+    }
+
+    override fun listExperimentalFeatures(onComplete: (Result<List<ExperimentalFeature>>) -> Unit) {
+        serverManager.listExperimentalFeatures(onComplete = onComplete)
+    }
+
+    override fun setExperimentalFeatureEnabled(
+        featureName: String,
+        enabled: Boolean,
+        onComplete: (Result<Unit>) -> Unit,
+    ) {
+        serverManager.setExperimentalFeatureEnabled(
+            featureName = featureName,
+            enabled = enabled,
+            onComplete = onComplete,
+        )
+    }
+
+    override fun listSkills(
+        cwd: String?,
+        forceReload: Boolean,
+        onComplete: (Result<List<SkillMetadata>>) -> Unit,
+    ) {
+        val normalizedCwd = cwd?.trim()?.takeIf { it.isNotEmpty() }
+        serverManager.listSkills(
+            cwds = normalizedCwd?.let { listOf(it) },
+            forceReload = forceReload,
+            onComplete = onComplete,
+        )
     }
 
     override fun openSettings() {
@@ -580,6 +700,7 @@ class DefaultLitterAppState(
             it.copy(
                 discovery = it.discovery.copy(isVisible = true),
                 isSidebarOpen = false,
+                sessionSearchQuery = "",
                 showSettings = false,
                 showAccount = false,
                 accountOpenedFromSettings = false,
@@ -1248,18 +1369,6 @@ class DefaultLitterAppState(
             return connectedServerIds.first()
         }
         return connectedServerIds.first()
-    }
-
-    private fun parseSlashCommandName(text: String): String? {
-        val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
-        if (!firstLine.startsWith("/")) {
-            return null
-        }
-        val command = firstLine.substringAfter('/').substringBefore(' ').trim()
-        if (command.isEmpty() || command.contains('/')) {
-            return null
-        }
-        return command.lowercase()
     }
 
     private fun shouldAutoOpenAccountSheet(

@@ -165,6 +165,24 @@ data class ModelSelection(
     val reasoningEffort: String? = "medium",
 )
 
+data class ExperimentalFeature(
+    val name: String,
+    val stage: String,
+    val displayName: String?,
+    val description: String?,
+    val announcement: String?,
+    val enabled: Boolean,
+    val defaultEnabled: Boolean,
+)
+
+data class SkillMetadata(
+    val name: String,
+    val description: String,
+    val path: String,
+    val scope: String,
+    val enabled: Boolean,
+)
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: MessageRole,
