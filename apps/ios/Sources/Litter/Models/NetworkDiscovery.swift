@@ -8,6 +8,11 @@ private struct DiscoveryCandidate: Hashable {
     let source: ServerSource
 }
 
+private struct CandidateReachability: Sendable {
+    let candidate: DiscoveryCandidate
+    let codexPort: UInt16?
+}
+
 @MainActor
 final class NetworkDiscovery: ObservableObject {
     @Published var servers: [DiscoveredServer] = []
@@ -15,6 +20,7 @@ final class NetworkDiscovery: ObservableObject {
 
     private var scanTask: Task<Void, Never>?
     private var activeScanID = UUID()
+    private static let codexDiscoveryPorts: [UInt16] = [8390, 4222]
 
     func startScanning() {
         stopScanning()
@@ -60,19 +66,20 @@ final class NetworkDiscovery: ObservableObject {
             Array((await bonjourCandidates) + (await tailscaleCandidates)),
             excluding: localIPv4
         )
-        let reachable = await Self.filterCandidatesWithOpenSSH(merged, timeout: 1.0)
+        let reachable = await Self.filterCandidatesWithOpenServices(merged, timeout: 1.0)
         guard !Task.isCancelled, activeScanID == scanID else { return }
 
-        for candidate in reachable.sorted(by: Self.candidateSortOrder) {
+        for state in reachable.sorted(by: { Self.candidateSortOrder(lhs: $0.candidate, rhs: $1.candidate) }) {
+            let candidate = state.candidate
             let id = "\(candidate.source.rawString)-\(candidate.ip)"
             guard !servers.contains(where: { $0.id == id }) else { continue }
             servers.append(DiscoveredServer(
                 id: id,
                 name: candidate.name ?? candidate.ip,
                 hostname: candidate.ip,
-                port: nil,
+                port: state.codexPort,
                 source: candidate.source,
-                hasCodexServer: false
+                hasCodexServer: state.codexPort != nil
             ))
         }
     }
@@ -146,23 +153,31 @@ final class NetworkDiscovery: ObservableObject {
         }
     }
 
-    nonisolated private static func filterCandidatesWithOpenSSH(
+    nonisolated private static func filterCandidatesWithOpenServices(
         _ candidates: [DiscoveryCandidate],
         timeout: TimeInterval
-    ) async -> [DiscoveryCandidate] {
-        await withTaskGroup(of: DiscoveryCandidate?.self) { group in
+    ) async -> [CandidateReachability] {
+        await withTaskGroup(of: CandidateReachability?.self) { group in
             for candidate in candidates {
                 group.addTask {
-                    guard await isPortOpen(host: candidate.ip, port: 22, timeout: timeout) else {
+                    let hasSSH = await isPortOpen(host: candidate.ip, port: 22, timeout: timeout)
+                    var codexPort: UInt16?
+                    for port in codexDiscoveryPorts {
+                        if await isPortOpen(host: candidate.ip, port: port, timeout: timeout) {
+                            codexPort = port
+                            break
+                        }
+                    }
+                    guard hasSSH || codexPort != nil else {
                         return nil
                     }
-                    return candidate
+                    return CandidateReachability(candidate: candidate, codexPort: codexPort)
                 }
             }
-            var reachable: [DiscoveryCandidate] = []
-            for await candidate in group {
-                if let candidate {
-                    reachable.append(candidate)
+            var reachable: [CandidateReachability] = []
+            for await state in group {
+                if let state {
+                    reachable.append(state)
                 }
             }
             return reachable

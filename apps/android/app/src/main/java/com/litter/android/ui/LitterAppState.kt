@@ -9,6 +9,7 @@ import com.litter.android.state.AccountState
 import com.litter.android.state.AppState
 import com.litter.android.state.AuthStatus
 import com.litter.android.state.ChatMessage
+import com.litter.android.state.FuzzyFileSearchResult
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ModelSelection
 import com.litter.android.state.SavedSshCredential
@@ -36,13 +37,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.Closeable
+import java.util.concurrent.atomic.AtomicInteger
 
 data class DirectoryPickerUiState(
     val isVisible: Boolean = false,
+    val selectedServerId: String? = null,
     val currentPath: String = "",
     val entries: List<String> = emptyList(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
+    val searchQuery: String = "",
+    val showHiddenDirectories: Boolean = false,
 )
 
 data class UiDiscoveredServer(
@@ -129,6 +134,12 @@ interface LitterAppState : Closeable {
 
     fun dismissDirectoryPicker()
 
+    fun updateDirectoryPickerServer(serverId: String)
+
+    fun updateDirectorySearchQuery(value: String)
+
+    fun updateShowHiddenDirectories(value: Boolean)
+
     fun navigateDirectoryInto(entry: String)
 
     fun navigateDirectoryUp()
@@ -189,6 +200,11 @@ interface LitterAppState : Closeable {
 
     fun connectSshServer()
 
+    fun searchComposerFiles(
+        query: String,
+        onComplete: (Result<List<FuzzyFileSearchResult>>) -> Unit,
+    )
+
     fun removeServer(serverId: String)
 
     fun clearUiError()
@@ -205,6 +221,7 @@ class DefaultLitterAppState(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lastObservedAuthStatusByServerId = mutableMapOf<String, AuthStatus>()
+    private val directoryPickerRequestVersion = AtomicInteger(0)
 
     private val observerHandle: Closeable =
         serverManager.observe { backend ->
@@ -269,92 +286,165 @@ class DefaultLitterAppState(
     }
 
     override fun openNewSessionPicker() {
-        val current = _uiState.value.currentCwd.trim()
+        val snapshot = _uiState.value
+        val selectedServerId =
+            resolveDirectoryPickerDefaultServerId(
+                connectedServers = snapshot.connectedServers,
+                activeServerId = snapshot.activeServerId,
+            )
+
+        if (selectedServerId == null) {
+            openDiscovery()
+            return
+        }
+
         _uiState.update {
             it.copy(
                 directoryPicker =
                     it.directoryPicker.copy(
                         isVisible = true,
-                        currentPath = if (current.isNotEmpty()) current else it.directoryPicker.currentPath,
+                        selectedServerId = selectedServerId,
+                        currentPath = "",
+                        entries = emptyList(),
+                        isLoading = true,
                         errorMessage = null,
+                        searchQuery = "",
+                        showHiddenDirectories = false,
                     ),
             )
         }
-
-        val targetPath =
-            if (current.isNotEmpty()) {
-                current
-            } else {
-                _uiState.value.directoryPicker.currentPath.trim()
-            }
-
-        if (targetPath.isNotEmpty()) {
-            loadDirectory(targetPath)
-            return
-        }
-
-        serverManager.resolveHomeDirectory { result ->
-            result.onFailure {
-                loadDirectory("/")
-            }
-            result.onSuccess { home ->
-                loadDirectory(home.ifBlank { "/" })
-            }
-        }
+        reloadDirectoryPickerFromHome(selectedServerId)
     }
 
     override fun dismissDirectoryPicker() {
+        directoryPickerRequestVersion.incrementAndGet()
         _uiState.update {
             it.copy(
                 directoryPicker =
                     it.directoryPicker.copy(
                         isVisible = false,
+                        selectedServerId = null,
                         errorMessage = null,
                         isLoading = false,
+                        searchQuery = "",
+                        showHiddenDirectories = false,
                     ),
             )
         }
     }
 
+    override fun updateDirectoryPickerServer(serverId: String) {
+        val picker = _uiState.value.directoryPicker
+        if (!picker.isVisible || picker.selectedServerId == serverId) {
+            return
+        }
+        clearDirectorySearchIfNeeded()
+        _uiState.update {
+            it.copy(
+                directoryPicker =
+                    it.directoryPicker.copy(
+                        selectedServerId = serverId,
+                        currentPath = "",
+                        entries = emptyList(),
+                        isLoading = true,
+                        errorMessage = null,
+                    ),
+            )
+        }
+        reloadDirectoryPickerFromHome(serverId)
+    }
+
+    override fun updateDirectorySearchQuery(value: String) {
+        _uiState.update {
+            it.copy(
+                directoryPicker = it.directoryPicker.copy(searchQuery = value),
+            )
+        }
+    }
+
+    override fun updateShowHiddenDirectories(value: Boolean) {
+        _uiState.update {
+            it.copy(
+                directoryPicker = it.directoryPicker.copy(showHiddenDirectories = value),
+            )
+        }
+    }
+
     override fun navigateDirectoryInto(entry: String) {
-        val current = _uiState.value.directoryPicker.currentPath.ifBlank { "/" }
+        clearDirectorySearchIfNeeded()
+        val picker = _uiState.value.directoryPicker
+        val serverId = picker.selectedServerId
+        if (serverId.isNullOrBlank()) {
+            setUiError("No server selected for directory picker")
+            return
+        }
+        val current = picker.currentPath.ifBlank { "/" }
         val target =
             if (current == "/") {
                 "/$entry"
             } else {
                 "$current/$entry"
             }
-        loadDirectory(target)
+        loadDirectory(path = target, serverId = serverId)
     }
 
     override fun navigateDirectoryUp() {
-        val current = _uiState.value.directoryPicker.currentPath.ifBlank { "/" }
+        clearDirectorySearchIfNeeded()
+        val picker = _uiState.value.directoryPicker
+        val serverId = picker.selectedServerId
+        if (serverId.isNullOrBlank()) {
+            setUiError("No server selected for directory picker")
+            return
+        }
+        val current = picker.currentPath.ifBlank { "/" }
         if (current == "/") {
-            loadDirectory("/")
+            loadDirectory(path = "/", serverId = serverId)
             return
         }
         val trimmed = current.trimEnd('/')
         val up = trimmed.substringBeforeLast('/', "/").ifBlank { "/" }
-        loadDirectory(up)
+        loadDirectory(path = up, serverId = serverId)
     }
 
     override fun confirmStartSessionFromPicker() {
         val snapshot = _uiState.value
-        val cwd = snapshot.directoryPicker.currentPath.ifBlank { snapshot.currentCwd }
+        val serverId = snapshot.directoryPicker.selectedServerId
+        if (serverId.isNullOrBlank()) {
+            setUiError("No server selected for new session")
+            return
+        }
+        val pickerPath = snapshot.directoryPicker.currentPath
+        if (pickerPath.isBlank()) {
+            setUiError("Directory listing is still loading")
+            return
+        }
+        val cwd = pickerPath
         val modelSelection =
             ModelSelection(
                 modelId = snapshot.selectedModelId,
                 reasoningEffort = snapshot.selectedReasoningEffort,
             )
-        serverManager.startThread(cwd = cwd, modelSelection = modelSelection) { result ->
+        serverManager.startThread(
+            cwd = cwd,
+            modelSelection = modelSelection,
+            serverId = serverId,
+        ) { result ->
             result.onFailure { error ->
                 setUiError(error.message ?: "Failed to start session")
             }
             result.onSuccess {
+                directoryPickerRequestVersion.incrementAndGet()
                 _uiState.update {
                     it.copy(
                         isSidebarOpen = false,
-                        directoryPicker = it.directoryPicker.copy(isVisible = false, errorMessage = null),
+                        directoryPicker =
+                            it.directoryPicker.copy(
+                                isVisible = false,
+                                selectedServerId = null,
+                                errorMessage = null,
+                                searchQuery = "",
+                                showHiddenDirectories = false,
+                            ),
                     )
                 }
                 refreshSessions()
@@ -366,6 +456,12 @@ class DefaultLitterAppState(
         val snapshot = _uiState.value
         val prompt = snapshot.draft.trim()
         if (prompt.isEmpty() || snapshot.isSending) {
+            return
+        }
+
+        if (parseSlashCommandName(prompt) == "new") {
+            _uiState.update { it.copy(draft = "") }
+            openNewSessionPicker()
             return
         }
 
@@ -857,6 +953,19 @@ class DefaultLitterAppState(
         }
     }
 
+    override fun searchComposerFiles(
+        query: String,
+        onComplete: (Result<List<FuzzyFileSearchResult>>) -> Unit,
+    ) {
+        val searchRoot = _uiState.value.currentCwd.trim().ifEmpty { "/" }
+        serverManager.fuzzyFileSearch(
+            query = query,
+            roots = listOf(searchRoot),
+            cancellationToken = "android-composer-file-search",
+            onComplete = onComplete,
+        )
+    }
+
     override fun removeServer(serverId: String) {
         serverManager.removeServer(serverId)
         if (_uiState.value.connectedServers.size <= 1) {
@@ -931,13 +1040,18 @@ class DefaultLitterAppState(
         }
     }
 
-    private fun loadDirectory(path: String) {
+    private fun loadDirectory(
+        path: String,
+        serverId: String,
+        requestVersion: Int = directoryPickerRequestVersion.incrementAndGet(),
+    ) {
         val normalized = path.trim().ifEmpty { "/" }
         _uiState.update {
             it.copy(
                 directoryPicker =
                     it.directoryPicker.copy(
                         isVisible = true,
+                        selectedServerId = serverId,
                         currentPath = normalized,
                         isLoading = true,
                         errorMessage = null,
@@ -946,13 +1060,17 @@ class DefaultLitterAppState(
             )
         }
 
-        serverManager.listDirectories(normalized) { result ->
+        serverManager.listDirectories(path = normalized, serverId = serverId) { result ->
+            if (!isDirectoryPickerRequestCurrent(requestVersion, serverId)) {
+                return@listDirectories
+            }
             result.onFailure { error ->
                 _uiState.update {
                     it.copy(
                         directoryPicker =
                             it.directoryPicker.copy(
                                 isVisible = true,
+                                selectedServerId = serverId,
                                 currentPath = normalized,
                                 isLoading = false,
                                 entries = emptyList(),
@@ -967,6 +1085,7 @@ class DefaultLitterAppState(
                         directoryPicker =
                             it.directoryPicker.copy(
                                 isVisible = true,
+                                selectedServerId = serverId,
                                 currentPath = normalized,
                                 isLoading = false,
                                 entries = directories,
@@ -978,10 +1097,65 @@ class DefaultLitterAppState(
         }
     }
 
+    private fun reloadDirectoryPickerFromHome(serverId: String) {
+        val requestVersion = directoryPickerRequestVersion.incrementAndGet()
+        _uiState.update {
+            it.copy(
+                directoryPicker =
+                    it.directoryPicker.copy(
+                        isVisible = true,
+                        selectedServerId = serverId,
+                        currentPath = "",
+                        entries = emptyList(),
+                        isLoading = true,
+                        errorMessage = null,
+                    ),
+            )
+        }
+
+        serverManager.resolveHomeDirectory(serverId = serverId) { result ->
+            if (!isDirectoryPickerRequestCurrent(requestVersion, serverId)) {
+                return@resolveHomeDirectory
+            }
+            val home =
+                result
+                    .getOrDefault("/")
+                    .trim()
+                    .ifEmpty { "/" }
+            loadDirectory(path = home, serverId = serverId, requestVersion = requestVersion)
+        }
+    }
+
+    private fun isDirectoryPickerRequestCurrent(
+        requestVersion: Int,
+        serverId: String,
+    ): Boolean {
+        if (directoryPickerRequestVersion.get() != requestVersion) {
+            return false
+        }
+        val picker = _uiState.value.directoryPicker
+        return picker.isVisible && picker.selectedServerId == serverId
+    }
+
+    private fun clearDirectorySearchIfNeeded() {
+        _uiState.update { current ->
+            val picker = current.directoryPicker
+            if (picker.searchQuery.isEmpty()) {
+                current
+            } else {
+                current.copy(
+                    directoryPicker = picker.copy(searchQuery = ""),
+                )
+            }
+        }
+    }
+
     private fun mergeBackendState(backend: AppState) {
         val activeThread = backend.activeThread
         val activeServerId = backend.activeServerId ?: backend.activeThreadKey?.serverId ?: backend.servers.firstOrNull()?.id
         val accountState = backend.activeAccount
+        var pickerFallbackServerId: String? = null
+        var shouldClosePickerForNoServers = false
         _uiState.update { current ->
             val shouldAutoOpenAccount =
                 shouldAutoOpenAccountSheet(
@@ -990,6 +1164,41 @@ class DefaultLitterAppState(
                     connectionStatus = backend.connectionStatus,
                     previousConnectionStatus = current.connectionStatus,
                 )
+            var nextDirectoryPicker = current.directoryPicker
+            if (nextDirectoryPicker.isVisible) {
+                val resolvedServerId =
+                    resolveDirectoryPickerDefaultServerId(
+                        connectedServers = backend.servers,
+                        activeServerId = activeServerId,
+                        preferredServerId = nextDirectoryPicker.selectedServerId,
+                    )
+                if (resolvedServerId == null) {
+                    shouldClosePickerForNoServers = true
+                    nextDirectoryPicker =
+                        nextDirectoryPicker.copy(
+                            isVisible = false,
+                            selectedServerId = null,
+                            currentPath = "",
+                            entries = emptyList(),
+                            isLoading = false,
+                            errorMessage = null,
+                            searchQuery = "",
+                            showHiddenDirectories = false,
+                        )
+                } else if (resolvedServerId != nextDirectoryPicker.selectedServerId) {
+                    pickerFallbackServerId = resolvedServerId
+                    nextDirectoryPicker =
+                        nextDirectoryPicker.copy(
+                            selectedServerId = resolvedServerId,
+                            currentPath = "",
+                            entries = emptyList(),
+                            isLoading = true,
+                            errorMessage = null,
+                            searchQuery = "",
+                            showHiddenDirectories = false,
+                        )
+                }
+            }
             current.copy(
                 connectionStatus = backend.connectionStatus,
                 connectionError = backend.connectionError,
@@ -1008,8 +1217,49 @@ class DefaultLitterAppState(
                 showSettings = if (shouldAutoOpenAccount) false else current.showSettings,
                 showAccount = current.showAccount || shouldAutoOpenAccount,
                 accountOpenedFromSettings = if (shouldAutoOpenAccount) false else current.accountOpenedFromSettings,
+                directoryPicker = nextDirectoryPicker,
             )
         }
+
+        if (shouldClosePickerForNoServers) {
+            directoryPickerRequestVersion.incrementAndGet()
+            setUiError("No connected server available for new session")
+            openDiscovery()
+            return
+        }
+
+        pickerFallbackServerId?.let { fallbackServerId ->
+            reloadDirectoryPickerFromHome(fallbackServerId)
+        }
+    }
+
+    private fun resolveDirectoryPickerDefaultServerId(
+        connectedServers: List<ServerConfig>,
+        activeServerId: String?,
+        preferredServerId: String? = null,
+    ): String? {
+        val connectedServerIds = connectedServers.map { it.id }
+        if (connectedServerIds.isEmpty()) {
+            return null
+        }
+        preferredServerId?.takeIf { connectedServerIds.contains(it) }?.let { return it }
+        activeServerId?.takeIf { connectedServerIds.contains(it) }?.let { return it }
+        if (connectedServerIds.size == 1) {
+            return connectedServerIds.first()
+        }
+        return connectedServerIds.first()
+    }
+
+    private fun parseSlashCommandName(text: String): String? {
+        val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+        if (!firstLine.startsWith("/")) {
+            return null
+        }
+        val command = firstLine.substringAfter('/').substringBefore(' ').trim()
+        if (command.isEmpty() || command.contains('/')) {
+            return null
+        }
+        return command.lowercase()
     }
 
     private fun shouldAutoOpenAccountSheet(

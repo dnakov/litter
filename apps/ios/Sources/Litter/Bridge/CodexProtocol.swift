@@ -105,7 +105,26 @@ struct ThreadStartResponse: Decodable {
 
 struct UserInput: Encodable {
     let type: String
-    let text: String
+    var text: String?
+    var path: String?
+    var name: String?
+    var imageURL: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case path
+        case name
+        case imageURL = "image_url"
+    }
+
+    init(type: String, text: String? = nil, path: String? = nil, name: String? = nil, imageURL: String? = nil) {
+        self.type = type
+        self.text = text
+        self.path = path
+        self.name = name
+        self.imageURL = imageURL
+    }
 }
 
 struct TurnStartParams: Encodable {
@@ -121,6 +140,34 @@ struct TurnStartResponse: Decodable {
 
 struct TurnInterruptParams: Encodable {
     let threadId: String
+}
+
+// MARK: - Review
+
+struct ReviewStartParams: Encodable {
+    let threadId: String
+    let target: ReviewTarget
+    var delivery: String?
+}
+
+enum ReviewTarget: Encodable {
+    case uncommittedChanges
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .uncommittedChanges:
+            try container.encode("uncommittedChanges", forKey: .type)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+    }
+}
+
+struct ReviewStartResponse: Decodable {
+    let reviewThreadId: String?
 }
 
 // MARK: - Events (notifications from server)
@@ -207,6 +254,13 @@ struct ThreadResumeResponse: Decodable {
     let model: String
     let cwd: String
 }
+
+struct ThreadSetNameParams: Encodable {
+    let threadId: String
+    let name: String
+}
+
+struct ThreadSetNameResponse: Decodable {}
 
 struct ResumedThread: Decodable {
     let id: String
@@ -584,6 +638,111 @@ struct CommandExecResponse: Decodable {
     let exitCode: Int32
     let stdout: String
     let stderr: String
+}
+
+// MARK: - Config
+
+struct ConfigReadParams: Encodable {
+    let includeLayers: Bool
+    var cwd: String?
+}
+
+struct ConfigReadResponse: Decodable {
+    let config: AnyCodable
+}
+
+struct ConfigValueWriteParams<Value: Encodable>: Encodable {
+    let keyPath: String
+    let value: Value
+    let mergeStrategy: String
+    var filePath: String?
+    var expectedVersion: String?
+}
+
+struct ConfigWriteResponse: Decodable {
+    let status: String
+    let version: String
+    let filePath: String
+}
+
+// MARK: - Experimental Features
+
+struct ExperimentalFeatureListParams: Encodable {
+    var cursor: String?
+    var limit: Int?
+}
+
+struct ExperimentalFeatureListResponse: Decodable {
+    let data: [ExperimentalFeature]
+    let nextCursor: String?
+}
+
+struct ExperimentalFeature: Decodable, Identifiable {
+    let name: String
+    let stage: String
+    let displayName: String?
+    let description: String?
+    let announcement: String?
+    let enabled: Bool
+    let defaultEnabled: Bool
+
+    var id: String { name }
+}
+
+// MARK: - Skills
+
+struct SkillsListParams: Encodable {
+    var cwds: [String]?
+    var forceReload: Bool?
+}
+
+struct SkillsListResponse: Decodable {
+    let data: [SkillsListEntry]
+}
+
+struct SkillsListEntry: Decodable {
+    let cwd: String
+    let skills: [SkillMetadata]
+}
+
+struct SkillMetadata: Decodable, Identifiable {
+    let name: String
+    let description: String
+    let path: String
+    let scope: String
+    let enabled: Bool
+
+    var id: String { "\(path)#\(name)" }
+}
+
+// MARK: - Fuzzy File Search
+
+struct FuzzyFileSearchParams: Encodable {
+    let query: String
+    let roots: [String]
+    var cancellationToken: String?
+}
+
+struct FuzzyFileSearchResponse: Decodable {
+    let files: [FuzzyFileSearchResult]
+}
+
+struct FuzzyFileSearchResult: Decodable, Identifiable {
+    let root: String
+    let path: String
+    let fileName: String
+    let score: Int
+    let indices: [Int]?
+
+    private enum CodingKeys: String, CodingKey {
+        case root
+        case path
+        case fileName = "file_name"
+        case score
+        case indices
+    }
+
+    var id: String { path }
 }
 
 // MARK: - Helpers

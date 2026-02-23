@@ -10,7 +10,9 @@
 .build/
 build/
 DerivedData/
+apps/android/.gradle/
 apps/ios/Frameworks/
+apps/ios/Litter.xcodeproj/Litter.xcodeproj/
 
 # SwiftPM
 Packages/

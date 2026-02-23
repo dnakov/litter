@@ -97,36 +97,73 @@ final class ServerConnection: ObservableObject, Identifiable {
         )
     }
 
-    func startThread(cwd: String, model: String? = nil) async throws -> ThreadStartResponse {
+    func startThread(
+        cwd: String,
+        model: String? = nil,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadStartResponse {
+        let preferredSandbox = sandboxMode ?? Self.defaultSandboxMode
         do {
-            return try await startThread(cwd: cwd, model: model, sandbox: Self.defaultSandboxMode)
+            return try await startThread(
+                cwd: cwd,
+                model: model,
+                approvalPolicy: approvalPolicy,
+                sandbox: preferredSandbox
+            )
         } catch {
-            guard shouldRetryWithoutLinuxSandbox(error) else { throw error }
-            return try await startThread(cwd: cwd, model: model, sandbox: Self.fallbackSandboxMode)
+            guard sandboxMode == nil, preferredSandbox == Self.defaultSandboxMode, shouldRetryWithoutLinuxSandbox(error) else { throw error }
+            return try await startThread(
+                cwd: cwd,
+                model: model,
+                approvalPolicy: approvalPolicy,
+                sandbox: Self.fallbackSandboxMode
+            )
         }
     }
 
-    func resumeThread(threadId: String, cwd: String) async throws -> ThreadResumeResponse {
+    func resumeThread(
+        threadId: String,
+        cwd: String,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadResumeResponse {
+        let preferredSandbox = sandboxMode ?? Self.defaultSandboxMode
         do {
-            return try await resumeThread(threadId: threadId, cwd: cwd, sandbox: Self.defaultSandboxMode)
+            return try await resumeThread(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: preferredSandbox
+            )
         } catch {
-            guard shouldRetryWithoutLinuxSandbox(error) else { throw error }
-            return try await resumeThread(threadId: threadId, cwd: cwd, sandbox: Self.fallbackSandboxMode)
+            guard sandboxMode == nil, preferredSandbox == Self.defaultSandboxMode, shouldRetryWithoutLinuxSandbox(error) else { throw error }
+            return try await resumeThread(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: Self.fallbackSandboxMode
+            )
         }
     }
 
-    private func startThread(cwd: String, model: String?, sandbox: String) async throws -> ThreadStartResponse {
+    private func startThread(cwd: String, model: String?, approvalPolicy: String, sandbox: String) async throws -> ThreadStartResponse {
         try await client.sendRequest(
             method: "thread/start",
-            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: "never", sandbox: sandbox),
+            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
             responseType: ThreadStartResponse.self
         )
     }
 
-    private func resumeThread(threadId: String, cwd: String, sandbox: String) async throws -> ThreadResumeResponse {
+    private func resumeThread(
+        threadId: String,
+        cwd: String,
+        approvalPolicy: String,
+        sandbox: String
+    ) async throws -> ThreadResumeResponse {
         try await client.sendRequest(
             method: "thread/resume",
-            params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: "never", sandbox: sandbox),
+            params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
             responseType: ThreadResumeResponse.self
         )
     }
@@ -170,6 +207,66 @@ final class ServerConnection: ObservableObject, Identifiable {
             method: "command/exec",
             params: CommandExecParams(command: command, cwd: cwd),
             responseType: CommandExecResponse.self
+        )
+    }
+
+    func fuzzyFileSearch(query: String, roots: [String], cancellationToken: String?) async throws -> FuzzyFileSearchResponse {
+        try await client.sendRequest(
+            method: "fuzzyFileSearch",
+            params: FuzzyFileSearchParams(query: query, roots: roots, cancellationToken: cancellationToken),
+            responseType: FuzzyFileSearchResponse.self
+        )
+    }
+
+    func listSkills(cwds: [String]?, forceReload: Bool = false) async throws -> SkillsListResponse {
+        try await client.sendRequest(
+            method: "skills/list",
+            params: SkillsListParams(cwds: cwds, forceReload: forceReload),
+            responseType: SkillsListResponse.self
+        )
+    }
+
+    func listExperimentalFeatures(cursor: String? = nil, limit: Int? = 100) async throws -> ExperimentalFeatureListResponse {
+        try await client.sendRequest(
+            method: "experimentalFeature/list",
+            params: ExperimentalFeatureListParams(cursor: cursor, limit: limit),
+            responseType: ExperimentalFeatureListResponse.self
+        )
+    }
+
+    func readConfig(cwd: String?) async throws -> ConfigReadResponse {
+        try await client.sendRequest(
+            method: "config/read",
+            params: ConfigReadParams(includeLayers: false, cwd: cwd),
+            responseType: ConfigReadResponse.self
+        )
+    }
+
+    func writeConfigValue<Value: Encodable>(
+        keyPath: String,
+        value: Value,
+        mergeStrategy: String = "upsert"
+    ) async throws -> ConfigWriteResponse {
+        try await client.sendRequest(
+            method: "config/value/write",
+            params: ConfigValueWriteParams(keyPath: keyPath, value: value, mergeStrategy: mergeStrategy, filePath: nil, expectedVersion: nil),
+            responseType: ConfigWriteResponse.self
+        )
+    }
+
+    func setThreadName(threadId: String, name: String) async throws {
+        let _: ThreadSetNameResponse = try await client.sendRequest(
+            method: "thread/name/set",
+            params: ThreadSetNameParams(threadId: threadId, name: name),
+            responseType: ThreadSetNameResponse.self
+        )
+    }
+
+    func startReview(threadId: String) async throws -> ReviewStartResponse {
+        try await client.sendRequest(
+            method: "review/start",
+            params: ReviewStartParams(threadId: threadId, target: .uncommittedChanges, delivery: "inline"),
+            responseType: ReviewStartResponse.self
         )
     }
 

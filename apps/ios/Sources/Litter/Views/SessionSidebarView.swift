@@ -42,16 +42,31 @@ struct SessionSidebarView: View {
         .onChange(of: serverManager.hasAnyConnection) { _, connected in
             if connected { Task { await loadSessions() } }
         }
+        .onChange(of: connectedServerIds) { _, _ in
+            guard showDirectoryPicker else { return }
+            guard let fallbackServerId = defaultNewSessionServerId(preferredServerId: selectedServerId) else {
+                showDirectoryPicker = false
+                appState.showServerPicker = true
+                return
+            }
+            if selectedServerId != fallbackServerId {
+                selectedServerId = fallbackServerId
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView().environmentObject(serverManager)
         }
         .sheet(isPresented: $showDirectoryPicker) {
             NavigationStack {
                 DirectoryPickerView(
-                    serverId: selectedServerId ?? connectedServerIds.first ?? "",
-                    onDirectorySelected: { cwd in
+                    servers: connectedServerOptions,
+                    selectedServerId: Binding(
+                        get: { selectedServerId ?? defaultNewSessionServerId() ?? "" },
+                        set: { selectedServerId = $0 }
+                    ),
+                    onServerChanged: { selectedServerId = $0 },
+                    onDirectorySelected: { serverId, cwd in
                         showDirectoryPicker = false
-                        let serverId = selectedServerId ?? connectedServerIds.first ?? ""
                         Task { await startNewSession(serverId: serverId, cwd: cwd) }
                     }
                 )
@@ -68,7 +83,37 @@ struct SessionSidebarView: View {
     }
 
     private var connectedServerIds: [String] {
-        serverManager.connections.values.filter { $0.isConnected }.map(\.id)
+        connectedServerOptions.map(\.id)
+    }
+
+    private var connectedServerOptions: [DirectoryPickerServerOption] {
+        serverManager.connections.values
+            .filter { $0.isConnected }
+            .sorted {
+                $0.server.name.localizedCaseInsensitiveCompare($1.server.name) == .orderedAscending
+            }
+            .map {
+                DirectoryPickerServerOption(
+                    id: $0.id,
+                    name: $0.server.name,
+                    sourceLabel: $0.server.source.rawString
+                )
+            }
+    }
+
+    private func defaultNewSessionServerId(preferredServerId: String? = nil) -> String? {
+        let ids = connectedServerIds
+        if ids.isEmpty { return nil }
+        if let preferredServerId, ids.contains(preferredServerId) {
+            return preferredServerId
+        }
+        if let activeServerId = serverManager.activeThreadKey?.serverId, ids.contains(activeServerId) {
+            return activeServerId
+        }
+        if ids.count == 1 {
+            return ids.first
+        }
+        return ids.first
     }
 
     private var settingsRow: some View {
@@ -89,13 +134,8 @@ struct SessionSidebarView: View {
 
     private var newSessionButton: some View {
         Button {
-            let ids = connectedServerIds
-            if ids.count == 1 {
-                selectedServerId = ids.first
-                showDirectoryPicker = true
-            } else if ids.count > 1 {
-                // Default to most recent server used
-                selectedServerId = serverManager.activeThreadKey?.serverId ?? ids.first
+            if let defaultServerId = defaultNewSessionServerId() {
+                selectedServerId = defaultServerId
                 showDirectoryPicker = true
             } else {
                 appState.showServerPicker = true
@@ -228,7 +268,11 @@ struct SessionSidebarView: View {
         resumingKey = thread.key
         workDir = thread.cwd
         appState.currentCwd = thread.cwd
-        await serverManager.viewThread(thread.key)
+        await serverManager.viewThread(
+            thread.key,
+            approvalPolicy: appState.approvalPolicy,
+            sandboxMode: appState.sandboxMode
+        )
         resumingKey = nil
         withAnimation(.easeInOut(duration: 0.25)) { appState.sidebarOpen = false }
     }
@@ -237,7 +281,13 @@ struct SessionSidebarView: View {
         workDir = cwd
         appState.currentCwd = cwd
         let model = appState.selectedModel.isEmpty ? nil : appState.selectedModel
-        _ = await serverManager.startThread(serverId: serverId, cwd: cwd, model: model)
+        _ = await serverManager.startThread(
+            serverId: serverId,
+            cwd: cwd,
+            model: model,
+            approvalPolicy: appState.approvalPolicy,
+            sandboxMode: appState.sandboxMode
+        )
         withAnimation(.easeInOut(duration: 0.25)) { appState.sidebarOpen = false }
     }
 
