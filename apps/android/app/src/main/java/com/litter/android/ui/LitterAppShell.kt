@@ -2120,13 +2120,15 @@ private fun DirectoryPickerSheet(
             }
             Text(path.ifBlank { "/" }, color = LitterTheme.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
+            val canSelect = selectedServer != null && path.isNotBlank() && !isLoading
+            val canGoUp = selectedServer != null && path.isNotBlank()
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onNavigateUp, enabled = selectedServer != null) {
+                OutlinedButton(onClick = onNavigateUp, enabled = canGoUp) {
                     Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Up")
                 }
-                Button(onClick = onSelect, enabled = selectedServer != null) {
+                Button(onClick = onSelect, enabled = canSelect) {
                     Text("Select")
                 }
                 TextButton(onClick = onDismiss) {

@@ -413,7 +413,12 @@ class DefaultLitterAppState(
             setUiError("No server selected for new session")
             return
         }
-        val cwd = snapshot.directoryPicker.currentPath.ifBlank { snapshot.currentCwd }
+        val pickerPath = snapshot.directoryPicker.currentPath
+        if (pickerPath.isBlank()) {
+            setUiError("Directory listing is still loading")
+            return
+        }
+        val cwd = pickerPath
         val modelSelection =
             ModelSelection(
                 modelId = snapshot.selectedModelId,
