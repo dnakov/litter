@@ -29,3 +29,13 @@ apps/android/core/bridge/src/main/jniLibs/*/*.so
 
 # Local screenshots
 Simulator Screenshot*.png
+
+# IDE and Android Environment Defaults
+.idea/
+*.iml
+local.properties
+apps/android/.idea/
+apps/android/build/
+apps/android/app/build/
+apps/android/core/*/build/
+apps/android/feature/*/build/
