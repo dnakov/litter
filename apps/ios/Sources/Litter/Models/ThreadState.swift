@@ -18,6 +18,7 @@ final class ThreadState: ObservableObject, Identifiable {
     @Published var preview: String = ""
     @Published var cwd: String = ""
     @Published var updatedAt: Date = Date()
+    var activeTurnId: String? = nil
 
     var id: ThreadKey { key }
 

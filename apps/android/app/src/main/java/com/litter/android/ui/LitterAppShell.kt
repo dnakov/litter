@@ -51,6 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
@@ -79,6 +80,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -1463,15 +1465,63 @@ private fun InputBar(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(onClick = onAttachImage, enabled = !isSending) {
-                    Icon(Icons.Default.AttachFile, contentDescription = "Attach image", modifier = Modifier.size(16.dp))
-                }
-                OutlinedButton(onClick = onCaptureImage, enabled = !isSending) {
-                    Icon(Icons.Default.CameraAlt, contentDescription = "Capture image", modifier = Modifier.size(16.dp))
+                Box {
+                    var showAttachMenu by remember { mutableStateOf(false) }
+                    IconButton(
+                        onClick = { showAttachMenu = true },
+                        enabled = !isSending,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(LitterTheme.surface, CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "Attach",
+                            tint = LitterTheme.textPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showAttachMenu,
+                        onDismissRequest = { showAttachMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Upload File") },
+                            onClick = {
+                                showAttachMenu = false
+                                onAttachImage()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.AttachFile,
+                                    contentDescription = null,
+                                    tint = LitterTheme.textPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Camera") },
+                            onClick = {
+                                showAttachMenu = false
+                                onCaptureImage()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.CameraAlt,
+                                    contentDescription = null,
+                                    tint = LitterTheme.textPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        )
+                    }
                 }
 
                 OutlinedTextField(
@@ -1482,23 +1532,57 @@ private fun InputBar(
                         refreshComposerPopups(nextValue)
                     },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message litter...") },
+                    placeholder = { Text("Message litter...", color = LitterTheme.textMuted) },
                     minLines = 1,
                     maxLines = 5,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LitterTheme.accent.copy(alpha = 0.5f),
+                        unfocusedBorderColor = LitterTheme.border,
+                        focusedContainerColor = LitterTheme.surface,
+                        unfocusedContainerColor = LitterTheme.surface,
+                        focusedTextColor = LitterTheme.textPrimary,
+                        unfocusedTextColor = LitterTheme.textPrimary,
+                        cursorColor = LitterTheme.accent
+                    )
                 )
 
-                Button(
-                    onClick = {
-                        onSend(composerValue.text)
-                        hideComposerPopups()
-                    },
-                    enabled = (composerValue.text.isNotBlank() || attachedImagePath != null) && !isSending,
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", modifier = Modifier.size(16.dp))
-                }
-
-                OutlinedButton(onClick = onInterrupt, enabled = isSending) {
-                    Icon(Icons.Default.Stop, contentDescription = "Interrupt", modifier = Modifier.size(16.dp))
+                if (isSending) {
+                    IconButton(
+                        onClick = onInterrupt,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(LitterTheme.surface, CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Default.Stop,
+                            contentDescription = "Interrupt",
+                            tint = LitterTheme.textPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                } else {
+                    val canSend = composerValue.text.isNotBlank() || attachedImagePath != null
+                    IconButton(
+                        onClick = {
+                            onSend(composerValue.text)
+                            hideComposerPopups()
+                        },
+                        enabled = canSend,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(
+                                if (canSend) LitterTheme.accent else LitterTheme.surface,
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (canSend) Color.Black else LitterTheme.textMuted,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }

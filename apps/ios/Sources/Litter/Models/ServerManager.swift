@@ -399,7 +399,8 @@ final class ServerManager: ObservableObject {
         thread.status = .thinking
         thread.updatedAt = Date()
         do {
-            try await conn.sendTurn(threadId: key.threadId, text: text, model: model, effort: effort)
+            let response = try await conn.sendTurn(threadId: key.threadId, text: text, model: model, effort: effort)
+            thread.activeTurnId = response.resolvedTurnId
         } catch {
             thread.status = .error(error.localizedDescription)
         }
@@ -437,7 +438,9 @@ final class ServerManager: ObservableObject {
 
     func interrupt() async {
         guard let key = activeThreadKey, let conn = connections[key.serverId] else { return }
-        await conn.interrupt(threadId: key.threadId)
+        let turnId = threads[key]?.activeTurnId
+        await conn.interrupt(threadId: key.threadId, turnId: turnId)
+        threads[key]?.activeTurnId = nil
         threads[key]?.status = .ready
     }
 
@@ -488,9 +491,23 @@ final class ServerManager: ObservableObject {
             connections[serverId]?.handleAccountNotification(method: method, data: data)
 
         case "turn/started":
-            if let threadId = extractThreadId(from: data) {
-                let key = ThreadKey(serverId: serverId, threadId: threadId)
-                threads[key]?.status = .thinking
+            struct TurnStartedParams: Decodable {
+                let threadId: String?
+                let turn: TurnIdContainer?
+                let turnId: String?
+                struct TurnIdContainer: Decodable { let id: String? }
+            }
+            struct TurnStartedNotif: Decodable { let params: TurnStartedParams }
+            if let notif = try? JSONDecoder().decode(TurnStartedNotif.self, from: data) {
+                let p = notif.params
+                if let threadId = p.threadId ?? extractThreadId(from: data) {
+                    let key = ThreadKey(serverId: serverId, threadId: threadId)
+                    threads[key]?.status = .thinking
+                    let turnId = p.turn?.id ?? p.turnId
+                    if let turnId, !turnId.isEmpty {
+                        threads[key]?.activeTurnId = turnId
+                    }
+                }
             }
 
         case "item/agentMessage/delta":
@@ -511,6 +528,7 @@ final class ServerManager: ObservableObject {
             if let threadId = extractThreadId(from: data) {
                 let key = ThreadKey(serverId: serverId, threadId: threadId)
                 threads[key]?.status = .ready
+                threads[key]?.activeTurnId = nil
                 threads[key]?.updatedAt = Date()
                 liveItemMessageIndices[key] = nil
                 liveTurnDiffMessageIndices[key] = nil
@@ -523,6 +541,7 @@ final class ServerManager: ObservableObject {
                 // Fallback: mark any thinking thread on this server as ready
                 for (_, thread) in threads where thread.serverId == serverId && thread.hasTurnActive {
                     thread.status = .ready
+                    thread.activeTurnId = nil
                     thread.updatedAt = Date()
                     liveItemMessageIndices[thread.key] = nil
                     liveTurnDiffMessageIndices[thread.key] = nil

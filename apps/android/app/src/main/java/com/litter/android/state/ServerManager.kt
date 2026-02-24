@@ -1165,7 +1165,8 @@ class ServerManager(
 
         try {
             val response = requireTransport(serverId).request("turn/start", params)
-            val turnId = response.optString("turnId").trim().takeIf { it.isNotEmpty() }
+            val turnId = (response.optJSONObject("turn")?.optString("id")
+                ?: response.optString("turnId")).trim().takeIf { it.isNotEmpty() }
             val latest = threadsByKey[key] ?: return
             threadsByKey[key] =
                 latest.copy(
@@ -1193,9 +1194,11 @@ class ServerManager(
 
     private fun interruptInternal() {
         val key = state.activeThreadKey ?: return
-        val params = JSONObject().put("threadId", key.threadId)
-        requireTransport(key.serverId).request("turn/interrupt", params)
         val existing = threadsByKey[key] ?: return
+        val params = JSONObject()
+            .put("threadId", key.threadId)
+            .put("turnId", existing.activeTurnId ?: JSONObject.NULL)
+        requireTransport(key.serverId).request("turn/interrupt", params)
         threadsByKey[key] =
             existing.copy(
                 status = ThreadStatus.READY,
@@ -1251,7 +1254,8 @@ class ServerManager(
                 val threadId = params.optThreadId()
                 val key = resolveThreadKey(serverId, threadId) ?: return
                 val existing = ensureThreadState(key)
-                val turnId = params?.optString("turnId")?.trim().takeIf { !it.isNullOrEmpty() } ?: existing.activeTurnId
+                val turnId = (params?.optJSONObject("turn")?.optString("id")
+                    ?: params?.optString("turnId"))?.trim().takeIf { !it.isNullOrEmpty() } ?: existing.activeTurnId
                 threadsByKey[key] =
                     existing.copy(
                         status = ThreadStatus.THINKING,

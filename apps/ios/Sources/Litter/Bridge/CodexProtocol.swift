@@ -135,11 +135,20 @@ struct TurnStartParams: Encodable {
 }
 
 struct TurnStartResponse: Decodable {
+    // New shape: { turn: { id } }; old shape: { turnId }
     let turnId: String?
+    let turn: TurnInfo?
+
+    struct TurnInfo: Decodable {
+        let id: String?
+    }
+
+    var resolvedTurnId: String? { turn?.id ?? turnId }
 }
 
 struct TurnInterruptParams: Encodable {
     let threadId: String
+    let turnId: String?
 }
 
 // MARK: - Review
