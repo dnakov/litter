@@ -9,6 +9,7 @@ import android.text.format.DateUtils
 import android.util.Base64
 import android.widget.TextView
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
@@ -82,6 +83,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -96,8 +98,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
@@ -110,6 +121,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.litter.android.core.network.DiscoverySource
 import com.litter.android.state.AccountState
@@ -2791,6 +2804,11 @@ private fun DirectoryPickerSheet(
     }
 }
 
+private enum class ManualField {
+    HOST,
+    PORT,
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun DiscoverySheet(
@@ -2802,9 +2820,423 @@ private fun DiscoverySheet(
     onManualPortChanged: (String) -> Unit,
     onConnectManual: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val configuration = LocalConfiguration.current
+    val useLargeScreenDialog =
+        configuration.screenWidthDp >= 900 || configuration.smallestScreenWidthDp >= 600
+
+    if (useLargeScreenDialog) {
+        val discoveredRowFocusRequester = remember { FocusRequester() }
+        val manualHostFocusRequester = remember { FocusRequester() }
+        val manualPortFocusRequester = remember { FocusRequester() }
+        val manualInlineEditorFocusRequester = remember { FocusRequester() }
+        val manualInlineDoneFocusRequester = remember { FocusRequester() }
+        val manualConnectFocusRequester = remember { FocusRequester() }
+        var editingField by remember { mutableStateOf<ManualField?>(null) }
+        var editingValue by remember { mutableStateOf("") }
+        val canConnect = state.manualHost.isNotBlank() && state.manualPort.isNotBlank()
+        val firstServerId = state.servers.firstOrNull()?.id
+
+        BackHandler(enabled = editingField != null) {
+            editingField = null
+        }
+
+        LaunchedEffect(editingField) {
+            if (editingField != null) {
+                // Avoid auto-opening the on-screen keyboard on TV; users can move up into the field to type.
+                manualInlineDoneFocusRequester.requestFocus()
+            }
+        }
+
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.9f),
+                    color = LitterTheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Connect Server", style = MaterialTheme.typography.titleLarge)
+                                Text(
+                                    "Pick a discovered server or enter one manually",
+                                    color = LitterTheme.textSecondary,
+                                    style = MaterialTheme.typography.labelLarge,
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = onRefresh) {
+                                    Text("Refresh")
+                                }
+                                TextButton(onClick = onDismiss) {
+                                    Text("Close", color = LitterTheme.danger)
+                                }
+                            }
+                        }
+
+                        if (state.errorMessage != null) {
+                            Text(state.errorMessage, color = LitterTheme.danger)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1.35f).fillMaxHeight(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text("Discovered", style = MaterialTheme.typography.titleMedium)
+                                if (state.isLoading) {
+                                    Text("Scanning local network and tailscale...", color = LitterTheme.textSecondary)
+                                }
+
+                                Surface(
+                                    modifier = Modifier.fillMaxSize(),
+                                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                ) {
+                                    if (state.servers.isEmpty() && !state.isLoading) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize().padding(16.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text("No servers discovered", color = LitterTheme.textMuted)
+                                        }
+                                    } else {
+                                        LazyColumn(
+                                            modifier = Modifier.fillMaxSize().padding(8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            items(state.servers, key = { it.id }) { server ->
+                                                Surface(
+                                                    modifier =
+                                                        Modifier
+                                                            .fillMaxWidth()
+                                                            .then(
+                                                                if (server.id == firstServerId) {
+                                                                    Modifier.focusRequester(discoveredRowFocusRequester)
+                                                                } else {
+                                                                    Modifier
+                                                                },
+                                                            )
+                                                            .focusProperties {
+                                                                right = manualHostFocusRequester
+                                                            }.clickable { onConnectDiscovered(server.id) },
+                                                    color = LitterTheme.surfaceLight.copy(alpha = 0.45f),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                        ) {
+                                                            Text(
+                                                                server.name,
+                                                                color = LitterTheme.textPrimary,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                            )
+                                                            Text(
+                                                                discoverySourceLabel(server.source),
+                                                                style = MaterialTheme.typography.labelLarge,
+                                                                color = LitterTheme.textSecondary,
+                                                            )
+                                                        }
+                                                        Text(
+                                                            "${server.host}:${server.port}",
+                                                            color = LitterTheme.textSecondary,
+                                                            style = MaterialTheme.typography.labelLarge,
+                                                        )
+                                                        Text(
+                                                            if (server.hasCodexServer) "codex running" else "ssh only",
+                                                            style = MaterialTheme.typography.labelLarge,
+                                                            color = if (server.hasCodexServer) LitterTheme.accent else LitterTheme.textMuted,
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text("Manual", style = MaterialTheme.typography.titleMedium)
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        if (editingField == ManualField.HOST) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                OutlinedTextField(
+                                                    value = editingValue,
+                                                    onValueChange = {
+                                                        editingValue = it
+                                                        onManualHostChanged(it.trim())
+                                                    },
+                                                    modifier =
+                                                        Modifier
+                                                            .fillMaxWidth()
+                                                            .focusRequester(manualInlineEditorFocusRequester)
+                                                            .focusProperties {
+                                                                down = manualInlineDoneFocusRequester
+                                                                if (state.servers.isNotEmpty()) {
+                                                                    up = discoveredRowFocusRequester
+                                                                }
+                                                            }
+                                                            .onPreviewKeyEvent { event ->
+                                                                if (event.type != KeyEventType.KeyDown) {
+                                                                    return@onPreviewKeyEvent false
+                                                                }
+                                                                when (event.key) {
+                                                                    Key.Back, Key.Escape -> {
+                                                                        editingField = null
+                                                                        true
+                                                                    }
+
+                                                                    Key.DirectionDown -> {
+                                                                        manualInlineDoneFocusRequester.requestFocus()
+                                                                        true
+                                                                    }
+
+                                                                    Key.DirectionUp -> {
+                                                                        if (state.servers.isNotEmpty()) {
+                                                                            discoveredRowFocusRequester.requestFocus()
+                                                                            true
+                                                                        } else {
+                                                                            false
+                                                                        }
+                                                                    }
+
+                                                                    else -> false
+                                                                }
+                                                            },
+                                                    singleLine = true,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                                    label = { Text("Host") },
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                ) {
+                                                    Text(
+                                                        "Editing host",
+                                                        color = LitterTheme.textMuted,
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                    )
+                                                    TextButton(
+                                                        onClick = { editingField = null },
+                                                        modifier =
+                                                            Modifier
+                                                                .focusRequester(manualInlineDoneFocusRequester)
+                                                                .focusProperties {
+                                                                    up = manualInlineEditorFocusRequester
+                                                                    down = manualPortFocusRequester
+                                                                },
+                                                    ) {
+                                                        Text("Done")
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Surface(
+                                                modifier =
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .focusRequester(manualHostFocusRequester)
+                                                        .focusProperties {
+                                                            if (state.servers.isNotEmpty()) {
+                                                                up = discoveredRowFocusRequester
+                                                            }
+                                                            down = manualPortFocusRequester
+                                                        }.clickable {
+                                                            editingField = ManualField.HOST
+                                                            editingValue = state.manualHost
+                                                        },
+                                                color = LitterTheme.surfaceLight.copy(alpha = 0.65f),
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                ) {
+                                                    Text("Host", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                                                    Text(
+                                                        if (state.manualHost.isBlank()) "Set host" else state.manualHost,
+                                                        color = if (state.manualHost.isBlank()) LitterTheme.textMuted else LitterTheme.textPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        if (editingField == ManualField.PORT) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                OutlinedTextField(
+                                                    value = editingValue,
+                                                    onValueChange = {
+                                                        val digitsOnly = it.filter { ch -> ch.isDigit() }
+                                                        editingValue = digitsOnly
+                                                        onManualPortChanged(digitsOnly)
+                                                    },
+                                                    modifier =
+                                                        Modifier
+                                                            .fillMaxWidth()
+                                                            .focusRequester(manualInlineEditorFocusRequester)
+                                                            .focusProperties {
+                                                                up = manualHostFocusRequester
+                                                                down = manualInlineDoneFocusRequester
+                                                            }
+                                                            .onPreviewKeyEvent { event ->
+                                                                if (event.type != KeyEventType.KeyDown) {
+                                                                    return@onPreviewKeyEvent false
+                                                                }
+                                                                when (event.key) {
+                                                                    Key.Back, Key.Escape -> {
+                                                                        editingField = null
+                                                                        true
+                                                                    }
+
+                                                                    Key.DirectionDown -> {
+                                                                        manualInlineDoneFocusRequester.requestFocus()
+                                                                        true
+                                                                    }
+
+                                                                    Key.DirectionUp -> {
+                                                                        manualHostFocusRequester.requestFocus()
+                                                                        true
+                                                                    }
+
+                                                                    else -> false
+                                                                }
+                                                            },
+                                                    singleLine = true,
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                    label = { Text("Port") },
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                ) {
+                                                    Text(
+                                                        "Editing port",
+                                                        color = LitterTheme.textMuted,
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                    )
+                                                    TextButton(
+                                                        onClick = { editingField = null },
+                                                        modifier =
+                                                            Modifier
+                                                                .focusRequester(manualInlineDoneFocusRequester)
+                                                                .focusProperties {
+                                                                    up = manualInlineEditorFocusRequester
+                                                                    down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
+                                                                },
+                                                    ) {
+                                                        Text("Done")
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Surface(
+                                                modifier =
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .focusRequester(manualPortFocusRequester)
+                                                        .focusProperties {
+                                                            up = manualHostFocusRequester
+                                                            down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
+                                                        }.clickable {
+                                                            editingField = ManualField.PORT
+                                                            editingValue = state.manualPort
+                                                        },
+                                                color = LitterTheme.surfaceLight.copy(alpha = 0.65f),
+                                                shape = RoundedCornerShape(8.dp),
+                                                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                                ) {
+                                                    Text("Port", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                                                    Text(
+                                                        if (state.manualPort.isBlank()) "Set port" else state.manualPort,
+                                                        color = if (state.manualPort.isBlank()) LitterTheme.textMuted else LitterTheme.textPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.weight(1f))
+                                Button(
+                                    onClick = onConnectManual,
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .focusRequester(manualConnectFocusRequester)
+                                            .focusProperties {
+                                                up = if (editingField != null) manualInlineEditorFocusRequester else manualPortFocusRequester
+                                            },
+                                    enabled = canConnect,
+                                ) {
+                                    Text("Connect Manual Server")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
@@ -2836,7 +3268,11 @@ private fun DiscoverySheet(
                 Text("No servers discovered", color = LitterTheme.textMuted)
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxWidth().fillMaxHeight(0.4f),
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .heightIn(min = 140.dp, max = 320.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(state.servers, key = { it.id }) { server ->

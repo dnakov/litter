@@ -26,6 +26,7 @@ apps/android/core/bridge/src/main/jniLibs/*/*.so
 # Logs and temp
 *.log
 *.tmp
+tmp/
 
 # Local screenshots
 Simulator Screenshot*.png
