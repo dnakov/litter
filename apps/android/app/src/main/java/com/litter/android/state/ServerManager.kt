@@ -463,6 +463,7 @@ class ServerManager(
 
         val normalizedServer =
             if (server.source == ServerSource.LOCAL) {
+                // Always resolve the active on-device bridge port instead of trusting discovery defaults.
                 ServerConfig.local(codexRpcClient.ensureServerStarted())
             } else {
                 server.copy(host = normalizeServerHost(server.host))

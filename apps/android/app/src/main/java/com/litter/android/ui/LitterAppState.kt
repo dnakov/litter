@@ -2,6 +2,7 @@ package com.litter.android.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import com.litter.android.core.bridge.CodexRuntimeStartupPolicy
 import com.litter.android.core.network.DiscoveredServer
 import com.litter.android.core.network.DiscoverySource
 import com.litter.android.core.network.ServerDiscoveryService
@@ -259,7 +260,6 @@ class DefaultLitterAppState(
     override val uiState: StateFlow<UiShellState> = _uiState.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val lastObservedAuthStatusByServerId = mutableMapOf<String, AuthStatus>()
     private val directoryPickerRequestVersion = AtomicInteger(0)
 
     private val observerHandle: Closeable =
@@ -735,10 +735,12 @@ class DefaultLitterAppState(
             val result = runCatching { discoveryService.discover() }
             result.onFailure { error ->
                 _uiState.update {
+                    if (!it.discovery.isVisible) {
+                        return@update it
+                    }
                     it.copy(
                         discovery =
                             it.discovery.copy(
-                                isVisible = true,
                                 isLoading = false,
                                 errorMessage = error.message ?: "Discovery failed",
                                 servers = emptyList(),
@@ -747,14 +749,24 @@ class DefaultLitterAppState(
                 }
             }
             result.onSuccess { servers ->
+                val hideOnDeviceServer = !CodexRuntimeStartupPolicy.onDeviceBridgeEnabled()
                 _uiState.update {
+                    if (!it.discovery.isVisible) {
+                        return@update it
+                    }
+                    val discoveredServers =
+                        servers
+                            .map { discovered -> discovered.toUi() }
+                            .filterNot { server ->
+                                hideOnDeviceServer &&
+                                    (server.source == DiscoverySource.LOCAL || server.id == "local")
+                            }
                     it.copy(
                         discovery =
                             it.discovery.copy(
-                                isVisible = true,
                                 isLoading = false,
                                 errorMessage = null,
-                                servers = servers.map { discovered -> discovered.toUi() },
+                                servers = discoveredServers,
                             ),
                     )
                 }
@@ -764,6 +776,11 @@ class DefaultLitterAppState(
 
     override fun connectDiscoveredServer(id: String) {
         val discovered = _uiState.value.discovery.servers.firstOrNull { it.id == id } ?: return
+
+        if (discovered.source == DiscoverySource.LOCAL && !CodexRuntimeStartupPolicy.onDeviceBridgeEnabled()) {
+            setUiError("On-device server is disabled for this build flavor")
+            return
+        }
 
         if (!discovered.hasCodexServer) {
             openSshLoginFor(discovered)
@@ -1278,13 +1295,6 @@ class DefaultLitterAppState(
         var pickerFallbackServerId: String? = null
         var shouldClosePickerForNoServers = false
         _uiState.update { current ->
-            val shouldAutoOpenAccount =
-                shouldAutoOpenAccountSheet(
-                    activeServerId = activeServerId,
-                    accountState = accountState,
-                    connectionStatus = backend.connectionStatus,
-                    previousConnectionStatus = current.connectionStatus,
-                )
             var nextDirectoryPicker = current.directoryPicker
             if (nextDirectoryPicker.isVisible) {
                 val resolvedServerId =
@@ -1335,9 +1345,9 @@ class DefaultLitterAppState(
                 isSending = activeThread?.status == ThreadStatus.THINKING,
                 currentCwd = backend.currentCwd,
                 accountState = accountState,
-                showSettings = if (shouldAutoOpenAccount) false else current.showSettings,
-                showAccount = current.showAccount || shouldAutoOpenAccount,
-                accountOpenedFromSettings = if (shouldAutoOpenAccount) false else current.accountOpenedFromSettings,
+                showSettings = current.showSettings,
+                showAccount = current.showAccount,
+                accountOpenedFromSettings = current.accountOpenedFromSettings,
                 directoryPicker = nextDirectoryPicker,
             )
         }
@@ -1371,21 +1381,16 @@ class DefaultLitterAppState(
         return connectedServerIds.first()
     }
 
-    private fun shouldAutoOpenAccountSheet(
-        activeServerId: String?,
-        accountState: AccountState,
-        connectionStatus: ServerConnectionStatus,
-        previousConnectionStatus: ServerConnectionStatus,
-    ): Boolean {
-        val serverId = activeServerId ?: return false
-        val previous = lastObservedAuthStatusByServerId[serverId]
-        lastObservedAuthStatusByServerId[serverId] = accountState.status
-        val justConnected =
-            previousConnectionStatus != ServerConnectionStatus.READY &&
-                connectionStatus == ServerConnectionStatus.READY
-        return connectionStatus == ServerConnectionStatus.READY &&
-            accountState.status == AuthStatus.NOT_LOGGED_IN &&
-            (previous != AuthStatus.NOT_LOGGED_IN || justConnected)
+    private fun parseSlashCommandName(text: String): String? {
+        val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+        if (!firstLine.startsWith("/")) {
+            return null
+        }
+        val command = firstLine.substringAfter('/').substringBefore(' ').trim()
+        if (command.isEmpty() || command.contains('/')) {
+            return null
+        }
+        return command.lowercase()
     }
 
     private fun setUiError(message: String) {

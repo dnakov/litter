@@ -880,7 +880,7 @@ private fun ConversationPanel(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().imePadding(),
+        modifier = Modifier.fillMaxSize(),
     ) {
         LazyColumn(
             state = listState,
@@ -1837,7 +1837,7 @@ private fun InputBar(
     }
 
     Surface(
-        modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+        modifier = Modifier.fillMaxWidth(),
         color = LitterTheme.surface,
     ) {
         Column(
@@ -3229,15 +3229,13 @@ private fun DiscoverySheet(
     }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
         Column(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -3319,35 +3317,37 @@ private fun DiscoverySheet(
                 }
             }
 
-            Text("Manual", style = MaterialTheme.typography.titleMedium)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedTextField(
-                    value = state.manualHost,
-                    onValueChange = onManualHostChanged,
-                    label = { Text("Host") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = state.manualPort,
-                    onValueChange = onManualPortChanged,
-                    label = { Text("Port") },
-                    modifier = Modifier.width(110.dp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                )
-            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Manual", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.manualHost,
+                        onValueChange = onManualHostChanged,
+                        label = { Text("Host") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = state.manualPort,
+                        onValueChange = onManualPortChanged,
+                        label = { Text("Port") },
+                        modifier = Modifier.width(110.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                    )
+                }
 
-            Button(
-                onClick = onConnectManual,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
-            ) {
-                Text("Connect Manual Server")
+                Button(
+                    onClick = onConnectManual,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
+                ) {
+                    Text("Connect Manual Server")
+                }
             }
         }
     }
