@@ -143,48 +143,6 @@ Build Android Rust JNI libs (optional bridge runtime step):
 ./tools/scripts/build-android-rust.sh
 ```
 
-## Play Testing (Android)
-
-Google Play tracks are the Android equivalent of TestFlight:
-- `internal` (fastest QA loop, closest to TestFlight)
-- `closed`
-- `open`
-
-1) Install Fastlane (used for Play upload API):
-
-```bash
-brew install fastlane
-```
-
-2) Validate Play service-account access:
-
-```bash
-PACKAGE_NAME=com.sigkitten.litter.android \
-SERVICE_ACCOUNT_JSON="$HOME/play-service-account.json" \
-./tools/scripts/playstore-setup.sh
-```
-
-3) Build signed AAB and upload to internal testing:
-
-```bash
-PACKAGE_NAME=com.sigkitten.litter.android \
-SERVICE_ACCOUNT_JSON="$HOME/play-service-account.json" \
-KEYSTORE_PATH="$HOME/upload-keystore.jks" \
-KEYSTORE_PASSWORD='<store-password>' \
-KEY_ALIAS='<key-alias>' \
-KEY_PASSWORD='<key-password>' \
-FLAVOR=onDevice \
-TRACK=internal \
-./tools/scripts/playstore-upload.sh
-```
-
-Notes:
-- `playstore-upload.sh` builds `bundle<Flavor>Release` and uploads via `fastlane supply`.
-- Default flavor is `onDevice`; set `FLAVOR=remoteOnly` for remote-only releases.
-- `TRACK=closed` maps to Play track id `alpha`; `TRACK=open` maps to `beta`.
-- You can also pass a custom closed-testing track id directly via `TRACK=<trackId>`.
-- Use `--no-build-aab --aab-path <path>` to upload a prebuilt bundle.
-
 ## TestFlight (iOS)
 
 1) Authenticate `asc` once with your App Store Connect API key:
