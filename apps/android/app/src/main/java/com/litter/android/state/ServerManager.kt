@@ -3,6 +3,7 @@ package com.litter.android.state
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import com.litter.android.core.bridge.CodexRpcClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -1325,8 +1326,9 @@ class ServerManager(
         val normalizedLocalImagePath =
             localImagePath?.trim()?.takeIf { it.isNotEmpty() }
                 ?: embeddedLocalImagePath?.trim()?.takeIf { it.isNotEmpty() }
+        val localImageDataUrl = normalizedLocalImagePath?.let(::encodeLocalImageAsDataUrl)
         val trimmed = cleanedText.trim()
-        if (trimmed.isEmpty() && normalizedLocalImagePath == null) {
+        if (trimmed.isEmpty() && normalizedLocalImagePath == null && localImageDataUrl == null) {
             return
         }
 
@@ -1378,7 +1380,14 @@ class ServerManager(
                     .put("text", trimmed),
             )
         }
-        if (normalizedLocalImagePath != null) {
+        if (localImageDataUrl != null) {
+            input.put(
+                JSONObject()
+                    .put("type", "image")
+                    .put("url", localImageDataUrl),
+            )
+        } else if (normalizedLocalImagePath != null) {
+            // Fallback for cases where we cannot read/encode the local file.
             input.put(
                 JSONObject()
                     .put("type", "localImage")
@@ -1446,6 +1455,29 @@ class ServerManager(
                 ""
             }
         return withoutMarkers.trim() to markerPath
+    }
+
+    private fun encodeLocalImageAsDataUrl(path: String): String? {
+        val file = File(path)
+        if (!file.exists() || !file.isFile) {
+            return null
+        }
+        val mimeType =
+            when (file.extension.lowercase(Locale.US)) {
+                "png" -> "image/png"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "jpg", "jpeg" -> "image/jpeg"
+                else -> "image/jpeg"
+            }
+        return runCatching {
+            val bytes = file.readBytes()
+            if (bytes.isEmpty()) {
+                return null
+            }
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            "data:$mimeType;base64,$encoded"
+        }.getOrNull()
     }
 
     private fun handleNotification(
