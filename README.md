@@ -6,6 +6,16 @@
 
 `litter` is a native iOS + Android client for Codex.
 
+## Screenshots (iPhone 17 Pro)
+
+| Dark (Default) | Light |
+|---|---|
+| ![Dark default](docs/screenshots/iphone17pro/01-dark-default.png) | ![Light mode](docs/screenshots/iphone17pro/02-light.png) |
+
+| Accessibility XXL Text | Dark + High Contrast |
+|---|---|
+| ![Accessibility content size XXXL](docs/screenshots/iphone17pro/03-accessibility-xxxl.png) | ![Dark with high contrast](docs/screenshots/iphone17pro/04-dark-high-contrast.png) |
+
 ## Repository layout
 
 - `apps/ios`: iOS app (`LitterRemote` and `Litter` schemes)
