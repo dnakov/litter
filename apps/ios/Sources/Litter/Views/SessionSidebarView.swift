@@ -284,41 +284,56 @@ struct SessionSidebarView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(groupedFilteredThreads) { group in
-                    folderSectionHeader(group)
-                    ForEach(group.threads) { thread in
-                        Button {
-                            Task { await resumeSession(thread) }
-                        } label: {
-                            sessionRow(thread)
+                    let isExpanded = isSessionFolderExpanded(group.folderPath)
+                    folderSectionHeader(group, isExpanded: isExpanded)
+                    if isExpanded {
+                        ForEach(group.threads) { thread in
+                            Button {
+                                Task { await resumeSession(thread) }
+                            } label: {
+                                sessionRow(thread)
+                            }
+                            .disabled(resumingKey != nil)
+                            Divider().background(Color(hex: "#1E1E1E")).padding(.leading, 16)
                         }
-                        .disabled(resumingKey != nil)
-                        Divider().background(Color(hex: "#1E1E1E")).padding(.leading, 16)
                     }
                 }
             }
         }
     }
 
-    private func folderSectionHeader(_ group: SessionFolderGroup) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "folder")
-                .font(.system(.caption))
-                .foregroundColor(LitterTheme.textSecondary)
-            Text(folderDisplayName(group.folderPath))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(LitterTheme.textSecondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            if folderDisplayName(group.folderPath) != group.folderPath {
-                Text(group.folderPath)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(LitterTheme.textMuted)
+    private func folderSectionHeader(_ group: SessionFolderGroup, isExpanded: Bool) -> some View {
+        Button {
+            guard !isFilteringSessions else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                appState.toggleSessionFolder(group.folderPath)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(.caption, weight: .semibold))
+                    .foregroundColor(LitterTheme.textSecondary)
+                    .frame(width: 10)
+                Image(systemName: "folder")
+                    .font(.system(.caption))
+                    .foregroundColor(LitterTheme.textSecondary)
+                Text(folderDisplayName(group.folderPath))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(LitterTheme.textSecondary)
                     .lineLimit(1)
+                Spacer(minLength: 0)
+                if folderDisplayName(group.folderPath) != group.folderPath {
+                    Text(group.folderPath)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(LitterTheme.textMuted)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 6)
+        .buttonStyle(.plain)
     }
 
     private func sessionRow(_ thread: ThreadState) -> some View {
@@ -437,6 +452,17 @@ struct SessionSidebarView: View {
         }
         let leaf = (path as NSString).lastPathComponent
         return leaf.isEmpty ? path : leaf
+    }
+
+    private var isFilteringSessions: Bool {
+        !trimmedSessionSearchQuery.isEmpty
+    }
+
+    private func isSessionFolderExpanded(_ folderPath: String) -> Bool {
+        if isFilteringSessions {
+            return true
+        }
+        return !appState.isSessionFolderCollapsed(folderPath)
     }
 }
 

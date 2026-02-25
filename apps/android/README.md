@@ -45,5 +45,6 @@ Build and copy JNI artifacts into `core:bridge`:
 ```
 
 Prerequisites:
+
 - Android NDK (`ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT` set)
 - `cargo-ndk` (`cargo install cargo-ndk`)

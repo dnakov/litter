@@ -7,6 +7,7 @@ struct ConversationView: View {
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
+    @FocusState private var composerFocused: Bool
 
     private var messages: [ChatMessage] {
         serverManager.activeThread?.messages ?? []
@@ -21,11 +22,13 @@ struct ConversationView: View {
             ConversationMessageList(
                 messages: messages,
                 threadStatus: threadStatus,
-                activeThreadKey: serverManager.activeThreadKey
+                activeThreadKey: serverManager.activeThreadKey,
+                inputFocused: $composerFocused
             )
             ConversationInputBar(
                 onSend: sendMessage,
-                onFileSearch: searchComposerFiles
+                onFileSearch: searchComposerFiles,
+                inputFocused: $composerFocused
             )
         }
         .enableInjection()
@@ -59,6 +62,7 @@ private struct ConversationMessageList: View {
     let messages: [ChatMessage]
     let threadStatus: ConversationStatus
     let activeThreadKey: ThreadKey?
+    let inputFocused: FocusState<Bool>.Binding
     @State private var pendingScrollWorkItem: DispatchWorkItem?
 
     var body: some View {
@@ -76,6 +80,12 @@ private struct ConversationMessageList: View {
                 }
                 .padding(16)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    inputFocused.wrappedValue = false
+                }
+            )
             .onAppear {
                 scheduleScrollToBottom(proxy, delay: 0)
             }
@@ -128,9 +138,9 @@ private struct ConversationInputBar: View {
 
     let onSend: (String) -> Void
     let onFileSearch: (String) async throws -> [FuzzyFileSearchResult]
+    let inputFocused: FocusState<Bool>.Binding
 
     @State private var inputText = ""
-    @FocusState private var inputFocused: Bool
     @State private var showAttachMenu = false
     @State private var showPhotoPicker = false
     @State private var showCamera = false
@@ -279,7 +289,7 @@ private struct ConversationInputBar: View {
                         .font(.system(.body))
                         .foregroundColor(.white)
                         .lineLimit(1...5)
-                        .focused($inputFocused)
+                        .focused(inputFocused)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                         .padding(.leading, 14)
@@ -294,12 +304,14 @@ private struct ConversationInputBar: View {
                                 inputText = ""
                                 attachedImage = nil
                                 hideComposerPopups()
+                                inputFocused.wrappedValue = false
                                 executeSlashCommand(invocation.command, args: invocation.args)
                                 return
                             }
                             inputText = ""
                             attachedImage = nil
                             hideComposerPopups()
+                            inputFocused.wrappedValue = false
                             onSend(text)
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")

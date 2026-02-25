@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: ./tools/scripts/switch-app-identity.sh --to <sigkitten|your-identifier> [options]
 
-Switches local app identifiers between:
+Switches local app identifiers across Android and iOS between:
   - com.sigkitten.litter(.android|.remote)
   - com.<your-identifier>.litter(.android|.remote)
 
@@ -26,10 +26,10 @@ Options:
   --to <sigkitten|your-identifier>
                             Target app identity prefix.
   --identifier <name>       Required with --to your-identifier.
-                            Example: --identifier makyinc
+                            Example: --identifier sigkitten
   --team-id <id|none>       Set iOS DEVELOPMENT_TEAM in apps/ios/project.yml.
                             Pass "none" to remove DEVELOPMENT_TEAM lines.
-  --no-xcodegen             Skip regenerating apps/ios/Litter.xcodeproj.
+  --no-xcodegen             Skip regenerating apps/ios/Litter.xcodeproj (only when no ID changes).
   -h, --help                Show this help.
 EOF
 }
@@ -97,7 +97,7 @@ case "$TARGET" in
 esac
 
 if ! [[ "$TARGET_IDENTIFIER" =~ ^[a-z][a-z0-9_]*$ ]]; then
-  echo "error: identifier must match ^[a-z][a-z0-9_]*$ (example: makyinc)" >&2
+  echo "error: identifier must match ^[a-z][a-z0-9_]*$ (example: sigkitten)" >&2
   exit 1
 fi
 
@@ -147,12 +147,34 @@ replace_in_tracked_files() {
 CURRENT_IDENTIFIER="$(detect_current_identifier)"
 FROM_PREFIX="com.${CURRENT_IDENTIFIER}.litter"
 TO_PREFIX="com.${TARGET_IDENTIFIER}.litter"
+PREFIX_CHANGED=0
+NEEDS_XCODEGEN=0
 
 if [ "$FROM_PREFIX" = "$TO_PREFIX" ]; then
   echo "Identifier already set to '$TARGET_IDENTIFIER'; no prefix replacement needed"
 else
-  replace_in_tracked_files "$FROM_PREFIX" "$TO_PREFIX"
+  PREFIX_CHANGED=1
 fi
+
+if [ "$PREFIX_CHANGED" -eq 1 ] || [ "$TEAM_ID_SET" -eq 1 ]; then
+  NEEDS_XCODEGEN=1
+fi
+
+preflight_xcodegen_requirements() {
+  if [ "$NEEDS_XCODEGEN" -eq 0 ]; then
+    return
+  fi
+
+  if [ "$RUN_XCODEGEN" -eq 0 ]; then
+    echo "error: --no-xcodegen cannot be used when app identifiers or iOS team settings are changing" >&2
+    exit 1
+  fi
+
+  if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "error: xcodegen not found; install xcodegen to regenerate apps/ios/Litter.xcodeproj" >&2
+    exit 1
+  fi
+}
 
 set_ios_development_team() {
   local team="$1"
@@ -179,25 +201,49 @@ regenerate_xcode_project() {
     return
   fi
 
-  if ! command -v xcodegen >/dev/null 2>&1; then
-    echo "warning: xcodegen not found; skipped regenerating apps/ios/Litter.xcodeproj" >&2
+  if [ "$NEEDS_XCODEGEN" -eq 0 ]; then
+    echo "No iOS project regeneration required"
     return
   fi
 
   (
     cd "$REPO_DIR"
-    xcodegen generate --spec apps/ios/project.yml --project apps/ios/Litter.xcodeproj >/dev/null
+    xcodegen generate --spec apps/ios/project.yml --project apps/ios >/dev/null
   )
   echo "Regenerated apps/ios/Litter.xcodeproj from apps/ios/project.yml"
 }
+
+verify_old_prefix_removed() {
+  local old_prefix="$1"
+  local matches=""
+
+  matches="$(cd "$REPO_DIR" && git grep -n -- "$old_prefix" || true)"
+  if [ -n "$matches" ]; then
+    matches="$(printf '%s\n' "$matches" | grep -v -E "^${THIS_SCRIPT_RELATIVE}:" || true)"
+  fi
+
+  if [ -n "$matches" ]; then
+    echo "error: found remaining '$old_prefix' occurrences after switch:" >&2
+    printf '%s\n' "$matches" >&2
+    exit 1
+  fi
+}
+
+preflight_xcodegen_requirements
+if [ "$PREFIX_CHANGED" -eq 1 ]; then
+  replace_in_tracked_files "$FROM_PREFIX" "$TO_PREFIX"
+fi
 
 if [ "$TEAM_ID_SET" -eq 1 ]; then
   set_ios_development_team "$TEAM_ID"
 fi
 
 regenerate_xcode_project
+if [ "$PREFIX_CHANGED" -eq 1 ]; then
+  verify_old_prefix_removed "$FROM_PREFIX"
+fi
 
 echo "Done."
 echo "Review changes with:"
 echo "  git -C \"$REPO_DIR\" status --short"
-echo "  git -C \"$REPO_DIR\" diff -- apps/android/app/build.gradle.kts apps/ios/project.yml apps/ios/Litter.xcodeproj/project.pbxproj"
+echo "  git -C \"$REPO_DIR\" diff -- apps/android/app/build.gradle.kts apps/ios/project.yml apps/ios/Litter.xcodeproj/project.pbxproj tools/scripts/switch-app-identity.sh"

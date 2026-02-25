@@ -102,6 +102,7 @@ data class UiShellState(
     val sandboxMode: String = "workspace-write",
     val sessions: List<ThreadState> = emptyList(),
     val sessionSearchQuery: String = "",
+    val collapsedSessionFolders: Set<String> = emptySet(),
     val activeThreadKey: ThreadKey? = null,
     val messages: List<ChatMessage> = emptyList(),
     val draft: String = "",
@@ -135,6 +136,8 @@ interface LitterAppState : Closeable {
     fun selectSession(threadKey: ThreadKey)
 
     fun updateSessionSearchQuery(value: String)
+
+    fun toggleSessionFolder(folderPath: String)
 
     fun updateDraft(value: String)
 
@@ -323,6 +326,22 @@ class DefaultLitterAppState(
 
     override fun updateSessionSearchQuery(value: String) {
         _uiState.update { it.copy(sessionSearchQuery = value) }
+    }
+
+    override fun toggleSessionFolder(folderPath: String) {
+        val normalizedFolderPath = folderPath.trim()
+        if (normalizedFolderPath.isEmpty()) {
+            return
+        }
+        _uiState.update { current ->
+            val nextCollapsedFolders =
+                if (current.collapsedSessionFolders.contains(normalizedFolderPath)) {
+                    current.collapsedSessionFolders - normalizedFolderPath
+                } else {
+                    current.collapsedSessionFolders + normalizedFolderPath
+                }
+            current.copy(collapsedSessionFolders = nextCollapsedFolders)
+        }
     }
 
     override fun updateDraft(value: String) {
