@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$REPO_DIR/../.." && pwd)"
 
 SCHEME="${SCHEME:-Litter}"
 CONFIGURATION="${CONFIGURATION:-Release}"
@@ -16,11 +17,15 @@ MARKETING_VERSION="${MARKETING_VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 BETA_GROUP_NAME="${BETA_GROUP_NAME:-Internal Testers}"
 ASSIGN_BETA_GROUP="${ASSIGN_BETA_GROUP:-1}"
-WAIT_FOR_PROCESSING="${WAIT_FOR_PROCESSING:-0}"
+WAIT_FOR_PROCESSING="${WAIT_FOR_PROCESSING:-1}"
 BUILD_POLL_TIMEOUT_SECONDS="${BUILD_POLL_TIMEOUT_SECONDS:-900}"
 BUILD_POLL_INTERVAL_SECONDS="${BUILD_POLL_INTERVAL_SECONDS:-15}"
 WHAT_TO_TEST="${WHAT_TO_TEST:-}"
 WHAT_TO_TEST_LOCALE="${WHAT_TO_TEST_LOCALE:-en-US}"
+WHAT_TO_TEST_FILE="${WHAT_TO_TEST_FILE:-$ROOT_DIR/docs/releases/testflight-whats-new.md}"
+AUTO_GENERATE_WHAT_TO_TEST="${AUTO_GENERATE_WHAT_TO_TEST:-1}"
+WHAT_TO_TEST_MAX_COMMITS="${WHAT_TO_TEST_MAX_COMMITS:-8}"
+AUTO_ASSIGN_ENCRYPTION_DECLARATION="${AUTO_ASSIGN_ENCRYPTION_DECLARATION:-1}"
 
 AUTH_KEY_PATH="${AUTH_KEY_PATH:-${ASC_PRIVATE_KEY_PATH:-}}"
 AUTH_KEY_ID="${AUTH_KEY_ID:-${ASC_KEY_ID:-}}"
@@ -45,6 +50,31 @@ require_cmd xcodegen
 
 mkdir -p "$BUILD_DIR"
 
+resolve_team_from_profile() {
+    local profile_name="$1"
+    local profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+    local profile_path profile_display team_id
+
+    [[ -d "$profile_dir" ]] || return 1
+    for profile_path in "$profile_dir"/*.mobileprovision; do
+        [[ -e "$profile_path" ]] || continue
+        profile_display="$(
+            security cms -D -i "$profile_path" 2>/dev/null |
+                plutil -extract Name raw - 2>/dev/null || true
+        )"
+        [[ "$profile_display" == "$profile_name" ]] || continue
+        team_id="$(
+            security cms -D -i "$profile_path" 2>/dev/null |
+                plutil -extract TeamIdentifier.0 raw - 2>/dev/null || true
+        )"
+        if [[ -n "$team_id" ]]; then
+            echo "$team_id"
+            return 0
+        fi
+    done
+    return 1
+}
+
 if [[ -z "$APP_STORE_APP_ID" ]]; then
     APP_STORE_APP_ID="$(
         asc apps list --bundle-id "$APP_BUNDLE_ID" --output json |
@@ -59,8 +89,18 @@ if [[ -z "$TEAM_ID" ]]; then
     )"
 fi
 
+if [[ -z "$TEAM_ID" ]]; then
+    TEAM_ID="$(resolve_team_from_profile "$PROVISIONING_PROFILE_SPECIFIER" || true)"
+fi
+
 if [[ -z "$APP_STORE_APP_ID" ]]; then
     echo "Unable to resolve App Store Connect app id for bundle id: $APP_BUNDLE_ID" >&2
+    exit 1
+fi
+
+if [[ -z "$TEAM_ID" ]]; then
+    echo "Unable to resolve DEVELOPMENT_TEAM for signing." >&2
+    echo "Set TEAM_ID explicitly or ensure provisioning profile '$PROVISIONING_PROFILE_SPECIFIER' is installed." >&2
     exit 1
 fi
 
@@ -74,6 +114,23 @@ if [[ -z "$BUILD_NUMBER" ]]; then
     else
         BUILD_NUMBER="$(date +%Y%m%d%H%M)"
     fi
+fi
+
+if [[ -z "$WHAT_TO_TEST" && -f "$WHAT_TO_TEST_FILE" ]]; then
+    WHAT_TO_TEST="$(cat "$WHAT_TO_TEST_FILE")"
+fi
+
+if [[ -z "$WHAT_TO_TEST" && "$AUTO_GENERATE_WHAT_TO_TEST" == "1" ]]; then
+    WHAT_TO_TEST="$(
+        git -C "$ROOT_DIR" log --no-merges -n "$WHAT_TO_TEST_MAX_COMMITS" --pretty='- %s' |
+            sed '/^[[:space:]]*$/d'
+    )"
+fi
+
+if [[ -z "$WHAT_TO_TEST" ]]; then
+    echo "Missing TestFlight changelog (What to Test)." >&2
+    echo "Set WHAT_TO_TEST, or populate $WHAT_TO_TEST_FILE." >&2
+    exit 1
 fi
 
 echo "==> Regenerating Xcode project"
@@ -159,9 +216,6 @@ upload_cmd=(
 if [[ "$WAIT_FOR_PROCESSING" == "1" ]]; then
     upload_cmd+=(--wait)
 fi
-if [[ "$WAIT_FOR_PROCESSING" == "1" && -n "$WHAT_TO_TEST" ]]; then
-    upload_cmd+=(--test-notes "$WHAT_TO_TEST" --locale "$WHAT_TO_TEST_LOCALE")
-fi
 
 upload_json="$("${upload_cmd[@]}")"
 echo "$upload_json" >"$BUILD_DIR/upload_result.json"
@@ -190,7 +244,51 @@ if [[ -z "$build_id" && "$ASSIGN_BETA_GROUP" == "1" ]]; then
     done
 fi
 
+if [[ -n "$build_id" && "$AUTO_ASSIGN_ENCRYPTION_DECLARATION" == "1" ]]; then
+    internal_state="$(
+        asc builds build-beta-detail get --build "$build_id" --output json |
+            jq -r '.data.attributes.internalBuildState // empty'
+    )"
+    if [[ "$internal_state" == "MISSING_EXPORT_COMPLIANCE" ]]; then
+        declaration_id="$(
+            asc encryption declarations list --app "$APP_STORE_APP_ID" --output json |
+                jq -r '.data | sort_by(.attributes.createdDate // "") | last | .id // empty'
+        )"
+        if [[ -n "$declaration_id" ]]; then
+            echo "==> Assigning build $build_id to encryption declaration $declaration_id"
+            asc encryption declarations assign-builds \
+                --id "$declaration_id" \
+                --build "$build_id" \
+                --output json >/dev/null || true
+        fi
+    fi
+fi
+
+if [[ -n "$build_id" && -n "$WHAT_TO_TEST" ]]; then
+    echo "==> Ensuring What to Test notes are set for $WHAT_TO_TEST_LOCALE"
+    notes_id="$(
+        asc builds test-notes list --build "$build_id" --output json |
+            jq -r --arg locale "$WHAT_TO_TEST_LOCALE" \
+                '.data[] | select((.attributes.locale // .attributes.localeCode // "") == $locale) | .id' |
+            head -n 1
+    )"
+
+    if [[ -n "$notes_id" ]]; then
+        asc builds test-notes update \
+            --id "$notes_id" \
+            --whats-new "$WHAT_TO_TEST" \
+            --output json >/dev/null
+    else
+        asc builds test-notes create \
+            --build "$build_id" \
+            --locale "$WHAT_TO_TEST_LOCALE" \
+            --whats-new "$WHAT_TO_TEST" \
+            --output json >/dev/null
+    fi
+fi
+
 if [[ "$ASSIGN_BETA_GROUP" == "1" && -n "$build_id" ]]; then
+
     beta_group_id="$(
         asc testflight beta-groups list --app "$APP_STORE_APP_ID" --output json |
             jq -r --arg name "$BETA_GROUP_NAME" '.data[] | select(.attributes.name == $name) | .id' |
@@ -206,7 +304,19 @@ if [[ "$ASSIGN_BETA_GROUP" == "1" && -n "$build_id" ]]; then
 
     if [[ -n "$beta_group_id" ]]; then
         echo "==> Assigning build $build_id to beta group '$BETA_GROUP_NAME'"
-        asc builds add-groups --build "$build_id" --group "$beta_group_id" --output json >/dev/null
+        deadline="$(( $(date +%s) + BUILD_POLL_TIMEOUT_SECONDS ))"
+        assigned=0
+        while [[ "$(date +%s)" -lt "$deadline" ]]; do
+            if asc builds add-groups --build "$build_id" --group "$beta_group_id" --output json >/dev/null 2>&1; then
+                assigned=1
+                break
+            fi
+            sleep "$BUILD_POLL_INTERVAL_SECONDS"
+        done
+        if [[ "$assigned" -ne 1 ]]; then
+            echo "Failed to assign build $build_id to beta group '$BETA_GROUP_NAME' within timeout." >&2
+            exit 1
+        fi
     fi
 fi
 
