@@ -1,6 +1,6 @@
 package com.litter.android
 
-import com.sigkitten.litter.android.BuildConfig
+import com.makyinc.litter.android.BuildConfig
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

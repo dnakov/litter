@@ -134,7 +134,7 @@ ANDROID_SDK_ROOT=/opt/homebrew/share/android-commandlinetools \
   $ANDROID_SDK_ROOT/emulator/emulator -avd litterApi35
 
 adb -e install -r apps/android/app/build/outputs/apk/onDevice/debug/app-onDevice-debug.apk
-adb -e shell am start -n com.sigkitten.litter.android/com.litter.android.MainActivity
+adb -e shell am start -n com.makyinc.litter.android/com.litter.android.MainActivity
 ```
 
 Build Android Rust JNI libs (optional bridge runtime step):

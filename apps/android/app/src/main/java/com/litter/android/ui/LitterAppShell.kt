@@ -145,7 +145,7 @@ import com.litter.android.state.ServerSource
 import com.litter.android.state.SkillMetadata
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
-import com.sigkitten.litter.android.R
+import com.makyinc.litter.android.R
 import io.noties.markwon.Markwon
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
