@@ -2866,7 +2866,10 @@ private fun InputBar(
         onListSkills(currentCwd, false) { result ->
             skillsLoading = false
             result.onSuccess { loaded ->
-                skills = loaded.sortedBy { it.name.lowercase(Locale.ROOT) }
+                val sortedSkills = loaded.sortedBy { it.name.lowercase(Locale.ROOT) }
+                skills = sortedSkills
+                val validPaths = sortedSkills.mapTo(HashSet()) { it.path }
+                mentionSkillPathsByName = mentionSkillPathsByName.filterValues { path -> validPaths.contains(path) }
             }
         }
     }
@@ -2962,7 +2965,10 @@ private fun InputBar(
                 }
             }
             result.onSuccess { loaded ->
-                skills = loaded.sortedBy { it.name.lowercase(Locale.ROOT) }
+                val sortedSkills = loaded.sortedBy { it.name.lowercase(Locale.ROOT) }
+                skills = sortedSkills
+                val validPaths = sortedSkills.mapTo(HashSet()) { it.path }
+                mentionSkillPathsByName = mentionSkillPathsByName.filterValues { path -> validPaths.contains(path) }
             }
         }
     }
@@ -3085,17 +3091,21 @@ private fun InputBar(
         }
 
         val skillsByName = skills.groupBy { it.name.lowercase(Locale.ROOT) }
+        val skillsByPath = skills.groupBy { it.path }
         val seenPaths = HashSet<String>()
         val resolved = ArrayList<SkillMentionInput>()
         for (name in mentionNames) {
             val normalizedName = name.lowercase(Locale.ROOT)
             val selectedPath = mentionSkillPathsByName[normalizedName]
             if (!selectedPath.isNullOrBlank()) {
-                if (seenPaths.add(selectedPath)) {
-                    val canonicalName = skills.firstOrNull { it.path == selectedPath }?.name ?: name
-                    resolved += SkillMentionInput(name = canonicalName, path = selectedPath)
+                val selectedSkill = skillsByPath[selectedPath]?.firstOrNull()
+                if (selectedSkill != null) {
+                    if (seenPaths.add(selectedPath)) {
+                        resolved += SkillMentionInput(name = selectedSkill.name, path = selectedPath)
+                    }
+                    continue
                 }
-                continue
+                mentionSkillPathsByName = mentionSkillPathsByName - normalizedName
             }
 
             val candidates = skillsByName[normalizedName] ?: continue

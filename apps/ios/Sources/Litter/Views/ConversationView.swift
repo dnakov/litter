@@ -1064,6 +1064,7 @@ private struct ConversationInputBar: View {
     private func loadSkills(forceReload: Bool = false, showErrors: Bool) async {
         guard let conn = serverManager.activeConnection, conn.isConnected else {
             skills = []
+            mentionSkillPathsByName = [:]
             if showErrors {
                 slashErrorMessage = "Not connected to a server"
             }
@@ -1073,7 +1074,10 @@ private struct ConversationInputBar: View {
         defer { skillsLoading = false }
         do {
             let response = try await conn.listSkills(cwds: [workDir], forceReload: forceReload)
-            skills = response.data.flatMap(\.skills).sorted { $0.name.lowercased() < $1.name.lowercased() }
+            let loadedSkills = response.data.flatMap(\.skills).sorted { $0.name.lowercased() < $1.name.lowercased() }
+            skills = loadedSkills
+            let validPaths = Set(loadedSkills.map(\.path))
+            mentionSkillPathsByName = mentionSkillPathsByName.filter { _, path in validPaths.contains(path) }
         } catch {
             if showErrors {
                 slashErrorMessage = error.localizedDescription
@@ -1141,16 +1145,19 @@ private struct ConversationInputBar: View {
         guard !mentionNames.isEmpty else { return [] }
 
         let skillsByName = Dictionary(grouping: skills, by: { $0.name.lowercased() })
+        let skillsByPath = Dictionary(grouping: skills, by: \.path)
         var seenPaths = Set<String>()
         var resolved: [SkillMentionSelection] = []
 
         for mentionName in mentionNames {
             let normalizedName = mentionName.lowercased()
             if let selectedPath = mentionSkillPathsByName[normalizedName], !selectedPath.isEmpty {
-                guard seenPaths.insert(selectedPath).inserted else { continue }
-                let resolvedName = skills.first(where: { $0.path == selectedPath })?.name ?? mentionName
-                resolved.append(SkillMentionSelection(name: resolvedName, path: selectedPath))
-                continue
+                if let selectedSkill = skillsByPath[selectedPath]?.first {
+                    guard seenPaths.insert(selectedPath).inserted else { continue }
+                    resolved.append(SkillMentionSelection(name: selectedSkill.name, path: selectedPath))
+                    continue
+                }
+                mentionSkillPathsByName.removeValue(forKey: normalizedName)
             }
 
             guard let candidates = skillsByName[normalizedName], candidates.count == 1 else {

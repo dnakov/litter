@@ -1945,12 +1945,20 @@ class ServerManager(
         threadTurnCounts.remove(threadKey)
         liveItemMessageIndices.remove(threadKey)
         liveTurnDiffMessageIndices.remove(threadKey)
-
-        val currentCwd = state.currentCwd
         updateState {
+            val sortedRemainingThreads = threadsByKey.values.sortedByDescending { thread -> thread.updatedAtEpochMillis }
+            val resolvedActiveKey =
+                it.activeThreadKey?.takeIf { key -> threadsByKey.containsKey(key) }
+                    ?: sortedRemainingThreads.firstOrNull()?.key
+            val resolvedCwd =
+                resolvedActiveKey
+                    ?.let { key -> threadsByKey[key]?.cwd?.trim().orEmpty() }
+                    .orEmpty()
             it.copy(
+                activeThreadKey = resolvedActiveKey,
+                activeServerId = resolvedActiveKey?.serverId ?: it.activeServerId,
                 connectionError = null,
-                currentCwd = currentCwd,
+                currentCwd = resolvedCwd,
             )
         }
     }

@@ -1269,7 +1269,14 @@ struct SessionSidebarView: View {
     private func confirmArchiveSession() async {
         guard let key = archiveTargetKey else { return }
         do {
+            let previousActiveKey = serverManager.activeThreadKey
             try await serverManager.archiveThread(key)
+            let nextActiveKey = serverManager.activeThreadKey
+            if nextActiveKey != previousActiveKey {
+                let nextCwd = serverManager.activeThread?.cwd.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                workDir = nextCwd
+                appState.currentCwd = nextCwd
+            }
         } catch {
             sessionActionErrorMessage = error.localizedDescription
         }
