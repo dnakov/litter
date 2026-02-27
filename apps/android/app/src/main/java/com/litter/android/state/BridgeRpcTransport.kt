@@ -528,7 +528,8 @@ internal class BridgeRpcTransport(
         }
         val result = when (method) {
             "item/commandExecution/requestApproval",
-            "item/fileChange/requestApproval" -> JSONObject().put("decision", "accept")
+            "item/fileChange/requestApproval" ->
+                onServerRequest?.invoke(method, paramsObject) ?: JSONObject().put("decision", "accept")
             else -> onServerRequest?.invoke(method, paramsObject) ?: JSONObject()
         }
 

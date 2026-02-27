@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UserNotifications
 
 struct SkillMentionSelection: Equatable {
     let name: String
@@ -21,6 +22,11 @@ final class ServerManager: ObservableObject {
     private var liveTurnDiffMessageIndices: [ThreadKey: [String: Int]] = [:]
     private var serversUsingItemNotifications: Set<String> = []
     private var threadTurnCounts: [ThreadKey: Int] = [:]
+    private var isAppForeground = true
+    private var backgroundDisconnectTask: Task<Void, Never>?
+    private var notificationLedger: [String: TimeInterval]
+    private let notificationLedgerKey = "litter.notification_ledger"
+    private let notificationPermissionRequestedKey = "litter.notification_permission_requested"
 
     enum ApprovalKind: String, Codable {
         case commandExecution
@@ -53,6 +59,11 @@ final class ServerManager: ObservableObject {
     struct ComposerPrefillRequest: Identifiable, Equatable {
         let id = UUID()
         let text: String
+    }
+
+    init() {
+        notificationLedger = UserDefaults.standard.dictionary(forKey: notificationLedgerKey) as? [String: TimeInterval] ?? [:]
+        pruneNotificationLedger()
     }
 
     /// Call after inserting a new ThreadState into `threads` to forward its changes.
@@ -165,6 +176,53 @@ final class ServerManager: ObservableObject {
                     await self.addServer(server, target: target)
                 }
             }
+        }
+    }
+
+    // MARK: - App Lifecycle
+
+    func handleAppLifecycleChange(isForeground: Bool) async {
+        if isForeground {
+            await handleAppDidBecomeActive()
+        } else {
+            await handleAppDidEnterBackground()
+        }
+    }
+
+    private func handleAppDidBecomeActive() async {
+        isAppForeground = true
+        backgroundDisconnectTask?.cancel()
+        backgroundDisconnectTask = nil
+
+        for connection in connections.values {
+            await connection.resumeFromBackground()
+        }
+        await refreshAllSessions()
+        await syncAllThreadsFromServer()
+    }
+
+    private func handleAppDidEnterBackground() async {
+        isAppForeground = false
+        requestNotificationPermissionIfNeeded()
+        backgroundDisconnectTask?.cancel()
+        backgroundDisconnectTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(25))
+            } catch {
+                return
+            }
+            guard let self, !self.isAppForeground else { return }
+            await self.suspendRealtimeConnections()
+        }
+    }
+
+    private func suspendRealtimeConnections() async {
+        let threadKeys = Array(threads.keys)
+        for key in threadKeys {
+            await connections[key.serverId]?.unsubscribeThread(threadId: key.threadId)
+        }
+        for connection in connections.values {
+            connection.suspendForBackground()
         }
     }
 
@@ -503,6 +561,20 @@ final class ServerManager: ObservableObject {
         }
 
         pendingApprovals.append(pending)
+        if let threadId = pending.threadId, !threadId.isEmpty {
+            let key = ThreadKey(serverId: serverId, threadId: threadId)
+            notifyAwayIfNeeded(
+                key: "approval:\(serverId):\(threadId):\(pending.itemId ?? pending.id)",
+                title: approvalNotificationTitle(for: key),
+                body: pending.reason ?? "Approval required for a tool action."
+            )
+        } else {
+            notifyAwayIfNeeded(
+                key: "approval:\(serverId):\(pending.itemId ?? pending.id)",
+                title: "Codex Approval Required",
+                body: pending.reason ?? "Approval required for a tool action."
+            )
+        }
         return true
     }
 
@@ -688,6 +760,13 @@ final class ServerManager: ObservableObject {
         } catch {}
     }
 
+    private func syncAllThreadsFromServer() async {
+        let keys = Array(threads.keys)
+        for key in keys {
+            await syncThreadFromServer(key)
+        }
+    }
+
     // MARK: - Notification Routing
 
     func handleNotification(serverId: String, method: String, data: Data) {
@@ -719,12 +798,18 @@ final class ServerManager: ObservableObject {
             thread.updatedAt = Date()
 
         case "turn/completed", "codex/event/task_complete":
+            let completedTurnId = extractTurnId(from: data)
             if let threadId = extractThreadId(from: data) {
                 let key = ThreadKey(serverId: serverId, threadId: threadId)
                 threads[key]?.status = .ready
                 threads[key]?.updatedAt = Date()
                 liveItemMessageIndices[key] = nil
                 liveTurnDiffMessageIndices[key] = nil
+                notifyAwayIfNeeded(
+                    key: "final:\(serverId):\(threadId):\(completedTurnId ?? "unknown")",
+                    title: approvalNotificationTitle(for: key),
+                    body: assistantPreview(for: key)
+                )
                 if activeThreadKey == key {
                     Task { @MainActor in
                         await syncThreadFromServer(key)
@@ -737,6 +822,11 @@ final class ServerManager: ObservableObject {
                     thread.updatedAt = Date()
                     liveItemMessageIndices[thread.key] = nil
                     liveTurnDiffMessageIndices[thread.key] = nil
+                    notifyAwayIfNeeded(
+                        key: "final:\(serverId):\(thread.threadId):\(completedTurnId ?? "unknown")",
+                        title: approvalNotificationTitle(for: thread.key),
+                        body: assistantPreview(for: thread.key)
+                    )
                 }
                 if let key = activeThreadKey {
                     Task { @MainActor in
@@ -747,6 +837,25 @@ final class ServerManager: ObservableObject {
 
         case "turn/diff/updated":
             handleTurnDiffNotification(serverId: serverId, data: data)
+
+        case "error":
+            let message = extractErrorMessage(from: data) ?? "A turn failed."
+            if let threadId = extractThreadId(from: data) {
+                let key = ThreadKey(serverId: serverId, threadId: threadId)
+                threads[key]?.status = .error(message)
+                threads[key]?.updatedAt = Date()
+                notifyAwayIfNeeded(
+                    key: "error:\(serverId):\(threadId):\(extractTurnId(from: data) ?? "unknown")",
+                    title: approvalNotificationTitle(for: key),
+                    body: message
+                )
+            } else {
+                notifyAwayIfNeeded(
+                    key: "error:\(serverId):global:\(Date().timeIntervalSince1970)",
+                    title: "Codex Error",
+                    body: message
+                )
+            }
 
         default:
             if method.hasPrefix("item/") {
@@ -1274,6 +1383,83 @@ final class ServerManager: ObservableObject {
         return params.threadId ?? params.conversationId
     }
 
+    private func extractTurnId(from data: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let params = root["params"] as? [String: Any] else {
+            return nil
+        }
+        if let turn = params["turn"] as? [String: Any],
+           let turnId = turn["id"] as? String,
+           !turnId.isEmpty {
+            return turnId
+        }
+        return extractString(params, keys: ["turnId", "turn_id", "id"])
+    }
+
+    private func extractErrorMessage(from data: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let params = root["params"] as? [String: Any] else {
+            return nil
+        }
+        if let error = params["error"] as? [String: Any],
+           let message = extractString(error, keys: ["message"]),
+           !message.isEmpty {
+            return message
+        }
+        return extractString(params, keys: ["message"])
+    }
+
+    private func approvalNotificationTitle(for key: ThreadKey) -> String {
+        let thread = threads[key]
+        let prefix = thread?.serverName.isEmpty == false ? "\(thread?.serverName ?? "Codex")" : "Codex"
+        return "\(prefix): \(thread?.preview.isEmpty == false ? thread?.preview ?? "Thread update" : "Thread update")"
+    }
+
+    private func assistantPreview(for key: ThreadKey) -> String {
+        guard let thread = threads[key] else { return "Assistant replied." }
+        if let latest = thread.messages.reversed().first(where: { $0.role == .assistant }) {
+            let trimmed = latest.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return String(trimmed.prefix(180))
+            }
+        }
+        return "Assistant replied."
+    }
+
+    private func notifyAwayIfNeeded(key: String, title: String, body: String) {
+        guard !isAppForeground else { return }
+        pruneNotificationLedger()
+        guard notificationLedger[key] == nil else { return }
+        requestNotificationPermissionIfNeeded()
+        notificationLedger[key] = Date().timeIntervalSince1970
+        UserDefaults.standard.set(notificationLedger, forKey: notificationLedgerKey)
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "litter.away.\(key)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func requestNotificationPermissionIfNeeded() {
+        if UserDefaults.standard.bool(forKey: notificationPermissionRequestedKey) {
+            return
+        }
+        UserDefaults.standard.set(true, forKey: notificationPermissionRequestedKey)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in }
+    }
+
+    private func pruneNotificationLedger() {
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60).timeIntervalSince1970
+        notificationLedger = notificationLedger.filter { $0.value >= cutoff }
+        UserDefaults.standard.set(notificationLedger, forKey: notificationLedgerKey)
+    }
+
     func syncActiveThreadFromServer() async {
         guard let key = activeThreadKey else { return }
         await syncThreadFromServer(key)
@@ -1284,22 +1470,33 @@ final class ServerManager: ObservableObject {
               let thread = threads[key] else { return }
         if thread.hasTurnActive { return }
 
-        let cwd = thread.cwd.isEmpty ? "/tmp" : thread.cwd
-        guard let response = try? await conn.resumeThread(
-            threadId: key.threadId,
-            cwd: cwd,
-            approvalPolicy: "never",
-            sandboxMode: "workspace-write"
-        ) else { return }
-        let restored = restoredMessages(from: response.thread.turns)
+        var restoredThread: ResumedThread?
+        var resumedMetadata: (model: String, modelProvider: String?)?
+        if let read = try? await conn.readThread(threadId: key.threadId, includeTurns: true) {
+            restoredThread = read.thread
+        } else {
+            let cwd = thread.cwd.isEmpty ? "/tmp" : thread.cwd
+            guard let response = try? await conn.resumeThread(
+                threadId: key.threadId,
+                cwd: cwd,
+                approvalPolicy: "never",
+                sandboxMode: "workspace-write"
+            ) else { return }
+            restoredThread = response.thread
+            resumedMetadata = (model: response.model, modelProvider: response.modelProvider)
+        }
+        guard let restoredThread else { return }
+        let restored = restoredMessages(from: restoredThread.turns)
         guard !messagesEquivalent(thread.messages, restored) else { return }
         if shouldPreferLocalMessages(current: thread.messages, restored: restored) { return }
 
         thread.messages = restored
-        threadTurnCounts[key] = response.thread.turns.count
-        thread.modelProvider = response.modelProvider ?? response.model
-        thread.parentThreadId = sanitizedLineageId(response.thread.parentThreadId) ?? thread.parentThreadId
-        thread.rootThreadId = sanitizedLineageId(response.thread.rootThreadId) ?? thread.rootThreadId
+        threadTurnCounts[key] = restoredThread.turns.count
+        if let metadata = resumedMetadata {
+            thread.modelProvider = metadata.modelProvider ?? metadata.model
+        }
+        thread.parentThreadId = sanitizedLineageId(restoredThread.parentThreadId) ?? thread.parentThreadId
+        thread.rootThreadId = sanitizedLineageId(restoredThread.rootThreadId) ?? thread.rootThreadId
         thread.updatedAt = Date()
         liveItemMessageIndices[key] = nil
         liveTurnDiffMessageIndices[key] = nil

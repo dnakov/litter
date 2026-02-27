@@ -18,6 +18,7 @@ struct LitterApp: App {
 struct ContentView: View {
     @ObserveInjection var inject
     @EnvironmentObject var serverManager: ServerManager
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var appState = AppState()
     @State private var showAccount = false
     @State private var sidebarDragOffset: CGFloat = 0
@@ -66,6 +67,21 @@ struct ContentView: View {
         .onAppear {
             if !serverManager.hasAnyConnection {
                 appState.showServerPicker = true
+            }
+            Task { await serverManager.handleAppLifecycleChange(isForeground: true) }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            Task { @MainActor in
+                switch phase {
+                case .active:
+                    await serverManager.handleAppLifecycleChange(isForeground: true)
+                case .background:
+                    await serverManager.handleAppLifecycleChange(isForeground: false)
+                case .inactive:
+                    break
+                @unknown default:
+                    break
+                }
             }
         }
         .onChange(of: appState.sidebarOpen) { _, isOpen in

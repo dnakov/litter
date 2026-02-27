@@ -96,6 +96,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -384,11 +385,13 @@ fun LitterAppShell(
             SettingsSheet(
                 accountState = uiState.accountState,
                 connectedServers = uiState.connectedServers,
+                backgroundConnectionEnabled = uiState.backgroundConnectionEnabled,
                 onDismiss = appState::dismissSettings,
                 onOpenAccount = appState::openAccount,
                 onCopyBundledLogs = appState::copyBundledLogs,
                 onOpenDiscovery = appState::openDiscovery,
                 onRemoveServer = appState::removeServer,
+                onBackgroundConnectionEnabledChange = appState::updateBackgroundConnectionEnabled,
             )
         }
 
@@ -5658,11 +5661,13 @@ private fun SshLoginSheet(
 private fun SettingsSheet(
     accountState: AccountState,
     connectedServers: List<ServerConfig>,
+    backgroundConnectionEnabled: Boolean,
     onDismiss: () -> Unit,
     onOpenAccount: () -> Unit,
     onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
+    onBackgroundConnectionEnabledChange: (Boolean) -> Unit,
 ) {
     val configuration = LocalConfiguration.current
     val useLargeScreenDialog =
@@ -5686,11 +5691,13 @@ private fun SettingsSheet(
                     SettingsSheetContent(
                         accountState = accountState,
                         connectedServers = connectedServers,
+                        backgroundConnectionEnabled = backgroundConnectionEnabled,
                         onDismiss = onDismiss,
                         onOpenAccount = onOpenAccount,
                         onCopyBundledLogs = onCopyBundledLogs,
                         onOpenDiscovery = onOpenDiscovery,
                         onRemoveServer = onRemoveServer,
+                        onBackgroundConnectionEnabledChange = onBackgroundConnectionEnabledChange,
                         modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
                     )
                 }
@@ -5707,11 +5714,13 @@ private fun SettingsSheet(
         SettingsSheetContent(
             accountState = accountState,
             connectedServers = connectedServers,
+            backgroundConnectionEnabled = backgroundConnectionEnabled,
             onDismiss = null,
             onOpenAccount = onOpenAccount,
             onCopyBundledLogs = onCopyBundledLogs,
             onOpenDiscovery = onOpenDiscovery,
             onRemoveServer = onRemoveServer,
+            onBackgroundConnectionEnabledChange = onBackgroundConnectionEnabledChange,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         )
     }
@@ -5721,11 +5730,13 @@ private fun SettingsSheet(
 private fun SettingsSheetContent(
     accountState: AccountState,
     connectedServers: List<ServerConfig>,
+    backgroundConnectionEnabled: Boolean,
     onDismiss: (() -> Unit)?,
     onOpenAccount: () -> Unit,
     onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
+    onBackgroundConnectionEnabledChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -5790,6 +5801,36 @@ private fun SettingsSheetContent(
                     "Using Berkeley Mono for app typography.",
                     color = LitterTheme.textSecondary,
                     style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+
+        Text("Background", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = LitterTheme.surface.copy(alpha = 0.6f),
+            shape = RoundedCornerShape(8.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text("Keep Connected in Background", color = LitterTheme.textPrimary)
+                    Text(
+                        "Uses a foreground service notification to keep websocket updates live.",
+                        color = LitterTheme.textSecondary,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                Switch(
+                    checked = backgroundConnectionEnabled,
+                    onCheckedChange = onBackgroundConnectionEnabledChange,
                 )
             }
         }

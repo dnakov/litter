@@ -24,6 +24,7 @@ final class ServerConnection: ObservableObject, Identifiable {
     var onNotification: ((String, Data) -> Void)?
     var onServerRequest: ((_ requestId: String, _ method: String, _ data: Data) -> Bool)?
     var onDisconnect: (() -> Void)?
+    private var autoReconnectEnabled = true
 
     init(server: DiscoveredServer, target: ConnectionTarget) {
         self.id = server.id
@@ -86,6 +87,18 @@ final class ServerConnection: ObservableObject, Identifiable {
         Task { await client.disconnect() }
         isConnected = false
         serverURL = nil
+    }
+
+    func suspendForBackground() {
+        autoReconnectEnabled = false
+        disconnect()
+    }
+
+    func resumeFromBackground() async {
+        autoReconnectEnabled = true
+        if !isConnected {
+            await connect()
+        }
     }
 
     // MARK: - RPC Methods
@@ -246,6 +259,25 @@ final class ServerConnection: ObservableObject, Identifiable {
             method: "thread/rollback",
             params: ThreadRollbackParams(threadId: threadId, numTurns: numTurns),
             responseType: ThreadRollbackResponse.self
+        )
+    }
+
+    func readThread(threadId: String, includeTurns: Bool = true) async throws -> ThreadReadResponse {
+        try await client.sendRequest(
+            method: "thread/read",
+            params: ThreadReadParams(threadId: threadId, includeTurns: includeTurns),
+            responseType: ThreadReadResponse.self
+        )
+    }
+
+    func unsubscribeThread(threadId: String) async {
+        struct ThreadUnsubscribeStatusResponse: Decodable {
+            let status: String
+        }
+        _ = try? await client.sendRequest(
+            method: "thread/unsubscribe",
+            params: ThreadUnsubscribeParams(threadId: threadId),
+            responseType: ThreadUnsubscribeStatusResponse.self
         )
     }
 
@@ -549,6 +581,7 @@ final class ServerConnection: ObservableObject, Identifiable {
                 guard let self, self.isConnected else { return }
                 self.isConnected = false
                 self.onDisconnect?()
+                guard self.autoReconnectEnabled else { return }
                 do {
                     try await self.connectAndInitialize()
                     self.isConnected = true

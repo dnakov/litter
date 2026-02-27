@@ -5,6 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.litter.android.core.bridge.CodexRuntimeStartupPolicy
 import com.litter.android.core.network.DiscoveredServer
 import com.litter.android.core.network.DiscoverySource
@@ -125,6 +128,7 @@ data class UiShellState(
     val directoryPicker: DirectoryPickerUiState = DirectoryPickerUiState(),
     val discovery: DiscoveryUiState = DiscoveryUiState(),
     val showSettings: Boolean = false,
+    val backgroundConnectionEnabled: Boolean = false,
     val showAccount: Boolean = false,
     val accountOpenedFromSettings: Boolean = false,
     val accountState: AccountState = AccountState(),
@@ -199,6 +203,8 @@ interface LitterAppState : Closeable {
         approvalPolicy: String,
         sandboxMode: String,
     )
+
+    fun updateBackgroundConnectionEnabled(enabled: Boolean)
 
     fun startReview(
         onComplete: (Result<Unit>) -> Unit,
@@ -324,6 +330,19 @@ class DefaultLitterAppState(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val directoryPickerRequestVersion = AtomicInteger(0)
+    @Volatile private var isForeground = true
+    private val lifecycleObserver =
+        object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                isForeground = true
+                serverManager.onAppForegrounded()
+            }
+
+            override fun onStop(owner: LifecycleOwner) {
+                isForeground = false
+                serverManager.onAppBackgrounded()
+            }
+        }
 
     private val observerHandle: Closeable =
         serverManager.observe { backend ->
@@ -335,11 +354,14 @@ class DefaultLitterAppState(
             approvalPolicy = _uiState.value.approvalPolicy,
             sandboxMode = _uiState.value.sandboxMode,
         )
+        ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
+        serverManager.onAppForegrounded()
         connectAndPrime()
         scope.launch { runForegroundRefreshLoop() }
     }
 
     override fun close() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(lifecycleObserver)
         observerHandle.close()
         runCatching { runBlocking { sshSessionManager.disconnect() } }
         scope.cancel()
@@ -765,6 +787,11 @@ class DefaultLitterAppState(
             approvalPolicy = normalizedApproval,
             sandboxMode = normalizedSandbox,
         )
+    }
+
+    override fun updateBackgroundConnectionEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(backgroundConnectionEnabled = enabled) }
+        serverManager.setBackgroundConnectionEnabled(enabled)
     }
 
     override fun startReview(onComplete: (Result<Unit>) -> Unit) {
@@ -1427,8 +1454,12 @@ class DefaultLitterAppState(
 
     private suspend fun runForegroundRefreshLoop() {
         while (scope.isActive) {
-            serverManager.refreshSessions()
-            delay(8_000)
+            if (isForeground) {
+                serverManager.refreshSessions()
+                delay(8_000)
+            } else {
+                delay(30_000)
+            }
         }
     }
 
@@ -1620,6 +1651,7 @@ class DefaultLitterAppState(
                 currentCwd = backend.currentCwd,
                 accountState = accountState,
                 showSettings = current.showSettings,
+                backgroundConnectionEnabled = backend.backgroundConnectionEnabled,
                 showAccount = current.showAccount,
                 accountOpenedFromSettings = current.accountOpenedFromSettings,
                 directoryPicker = nextDirectoryPicker,

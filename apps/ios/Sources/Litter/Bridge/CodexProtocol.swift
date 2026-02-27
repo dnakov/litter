@@ -397,6 +397,19 @@ struct ThreadArchiveParams: Encodable {
 
 struct ThreadArchiveResponse: Decodable {}
 
+struct ThreadReadParams: Encodable {
+    let threadId: String
+    let includeTurns: Bool
+}
+
+struct ThreadReadResponse: Decodable {
+    let thread: ResumedThread
+}
+
+struct ThreadUnsubscribeParams: Encodable {
+    let threadId: String
+}
+
 struct ResumedThread: Decodable {
     let id: String
     let turns: [ResumedTurn]

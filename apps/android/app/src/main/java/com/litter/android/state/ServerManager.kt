@@ -50,6 +50,8 @@ class ServerManager(
     companion object {
         private const val OPENAI_AUTH_ISSUER = "https://auth.openai.com"
         private const val OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+        private const val RUNTIME_PREFERENCES = "litter_runtime"
+        private const val BACKGROUND_CONNECTION_ENABLED_KEY = "background_connection_enabled"
     }
     private val listeners = CopyOnWriteArrayList<(AppState) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -68,10 +70,26 @@ class ServerManager(
     private val savedServersPreferences by lazy {
         appContext?.getSharedPreferences("litter_saved_servers", Context.MODE_PRIVATE)
     }
+    private val runtimePreferences by lazy {
+        appContext?.getSharedPreferences(RUNTIME_PREFERENCES, Context.MODE_PRIVATE)
+    }
     private val savedServersKey = "servers"
+    private val backgroundConnectionEnabledDefault =
+        runtimePreferences?.getBoolean(BACKGROUND_CONNECTION_ENABLED_KEY, false) ?: false
+    private val awayNotifier = appContext?.let { AwayNotificationHelper(it) }
 
     @Volatile
-    private var state: AppState = AppState(savedServers = loadSavedServersInternal())
+    private var appInForeground = true
+
+    @Volatile
+    private var backgroundConnectionEnabled = backgroundConnectionEnabledDefault
+
+    @Volatile
+    private var state: AppState =
+        AppState(
+            savedServers = loadSavedServersInternal(),
+            backgroundConnectionEnabled = backgroundConnectionEnabledDefault,
+        )
 
     @Volatile
     private var closed = false
@@ -332,6 +350,42 @@ class ServerManager(
         }
     }
 
+    fun setBackgroundConnectionEnabled(enabled: Boolean) {
+        submit {
+            backgroundConnectionEnabled = enabled
+            runtimePreferences?.edit()?.putBoolean(BACKGROUND_CONNECTION_ENABLED_KEY, enabled)?.apply()
+            if (enabled) {
+                startRealtimeConnectionServiceIfNeeded()
+            } else {
+                stopRealtimeConnectionService()
+                if (!appInForeground) {
+                    suspendRealtimeConnectionsInternal()
+                }
+            }
+            updateState { current -> current.copy(backgroundConnectionEnabled = enabled) }
+        }
+    }
+
+    fun onAppForegrounded() {
+        submit {
+            appInForeground = true
+            stopRealtimeConnectionService()
+            runCatching { resumeRealtimeConnectionsInternal() }
+            runCatching { syncAllThreadsFromServerInternal() }
+        }
+    }
+
+    fun onAppBackgrounded() {
+        submit {
+            appInForeground = false
+            if (backgroundConnectionEnabled) {
+                startRealtimeConnectionServiceIfNeeded()
+            } else {
+                runCatching { suspendRealtimeConnectionsInternal() }
+            }
+        }
+    }
+
     fun startThread(
         cwd: String = defaultWorkingDirectory(),
         modelSelection: ModelSelection? = null,
@@ -526,6 +580,7 @@ class ServerManager(
             return
         }
         closed = true
+        stopRealtimeConnectionService()
         runCatching {
             transportsByServerId.values.forEach { it.close() }
             transportsByServerId.clear()
@@ -606,14 +661,16 @@ class ServerManager(
                 connectionError = null,
                 activeServerId = normalizedServer.id,
                 currentCwd = preferredCwd,
-            )
+                )
         }
+        startRealtimeConnectionServiceIfNeeded()
 
         return normalizedServer
     }
 
     private fun disconnectInternal(serverId: String?) {
         if (serverId == null) {
+            stopRealtimeConnectionService()
             transportsByServerId.values.forEach { runCatching { it.close() } }
             transportsByServerId.clear()
             serversById.clear()
@@ -655,6 +712,9 @@ class ServerManager(
         if (removedServer?.source == ServerSource.BUNDLED && serversById.values.none { it.source == ServerSource.BUNDLED }) {
             runCatching { appContext?.stopService(android.content.Intent(appContext, BundledCodexService::class.java)) }
         }
+        if (serversById.isEmpty()) {
+            stopRealtimeConnectionService()
+        }
 
         val nextActiveThread =
             if (state.activeThreadKey?.serverId == serverId) {
@@ -686,6 +746,24 @@ class ServerManager(
             ),
         )
         persistSavedServersInternal()
+    }
+
+    private fun startRealtimeConnectionServiceIfNeeded() {
+        val context = appContext ?: return
+        if (appInForeground || !backgroundConnectionEnabled || serversById.isEmpty()) {
+            return
+        }
+        val intent = Intent(context, RealtimeConnectionService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    private fun stopRealtimeConnectionService() {
+        val context = appContext ?: return
+        runCatching { context.stopService(Intent(context, RealtimeConnectionService::class.java)) }
     }
 
     private fun websocketUrl(server: ServerConfig): String {
@@ -964,8 +1042,39 @@ class ServerManager(
         method: String,
         params: JSONObject?,
     ): JSONObject? {
-        if (method != "account/chatgptAuthTokens/refresh") {
-            return null
+        when (method) {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval" -> {
+                val threadId =
+                    extractString(
+                        params,
+                        "threadId",
+                        "thread_id",
+                        "conversationId",
+                        "conversation_id",
+                    )
+                val itemId = extractString(params, "itemId", "item_id", "callId", "call_id")
+                val reason = extractString(params, "reason")
+                val fallbackTitle = "Codex Approval Required"
+                val title =
+                    if (!threadId.isNullOrBlank()) {
+                        approvalNotificationTitle(ThreadKey(serverId, threadId))
+                    } else {
+                        fallbackTitle
+                    }
+                notifyAwayIfNeeded(
+                    dedupeKey = "approval:$serverId:${threadId ?: "none"}:${itemId ?: "request"}",
+                    title = title,
+                    body = reason ?: "Approval required for a tool action.",
+                )
+                return JSONObject().put("decision", "accept")
+            }
+
+            "account/chatgptAuthTokens/refresh" -> {
+                // Continue below with existing refresh-token path.
+            }
+
+            else -> return null
         }
         if (serversById[serverId]?.source != ServerSource.BUNDLED) {
             throw IllegalStateException("External token refresh is only supported for bundled auth")
@@ -2544,6 +2653,11 @@ class ServerManager(
 
             "turn/completed",
             "codex/event/task_complete" -> {
+                val completedTurnId =
+                    params?.optJSONObject("turn")?.optString("id")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("turnId")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("turn_id")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("id")?.trim().takeIf { !it.isNullOrEmpty() }
                 var activeCompletedKey: ThreadKey? = null
                 val explicitThreadId = extractThreadId(params)
                 if (!explicitThreadId.isNullOrBlank()) {
@@ -2560,6 +2674,11 @@ class ServerManager(
                         )
                     liveItemMessageIndices.remove(key)
                     liveTurnDiffMessageIndices.remove(key)
+                    notifyAwayIfNeeded(
+                        dedupeKey = "final:$serverId:${key.threadId}:${completedTurnId ?: "unknown"}",
+                        title = approvalNotificationTitle(key),
+                        body = assistantPreview(key),
+                    )
                     if (state.activeThreadKey == key) {
                         activeCompletedKey = key
                     }
@@ -2581,6 +2700,11 @@ class ServerManager(
                             )
                         liveItemMessageIndices.remove(key)
                         liveTurnDiffMessageIndices.remove(key)
+                        notifyAwayIfNeeded(
+                            dedupeKey = "final:$serverId:${key.threadId}:${completedTurnId ?: "unknown"}",
+                            title = approvalNotificationTitle(key),
+                            body = assistantPreview(key),
+                        )
                         if (state.activeThreadKey == key) {
                             activeCompletedKey = key
                         }
@@ -2614,8 +2738,18 @@ class ServerManager(
                             messages = finalized,
                             updatedAtEpochMillis = System.currentTimeMillis()
                         )
+                    notifyAwayIfNeeded(
+                        dedupeKey = "error:$serverId:$threadId",
+                        title = approvalNotificationTitle(key),
+                        body = message,
+                    )
                     updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId, connectionError = message) }
                 } else {
+                    notifyAwayIfNeeded(
+                        dedupeKey = "error:$serverId:global:${System.currentTimeMillis() / 60000}",
+                        title = "Codex Error",
+                        body = message,
+                    )
                     updateState { it.copy(connectionError = message) }
                 }
             }
@@ -3291,11 +3425,88 @@ class ServerManager(
         )
     }
 
+    private fun approvalNotificationTitle(key: ThreadKey): String {
+        val thread = threadsByKey[key]
+        val serverName = thread?.serverName?.takeIf { it.isNotBlank() } ?: "Codex"
+        val preview = thread?.preview?.takeIf { it.isNotBlank() } ?: "Thread update"
+        return "$serverName: $preview"
+    }
+
+    private fun assistantPreview(key: ThreadKey): String {
+        val thread = threadsByKey[key] ?: return "Assistant replied."
+        val latest = thread.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.text?.trim().orEmpty()
+        return if (latest.isNotEmpty()) latest.take(180) else "Assistant replied."
+    }
+
+    private fun notifyAwayIfNeeded(
+        dedupeKey: String,
+        title: String,
+        body: String,
+    ) {
+        if (appInForeground) {
+            return
+        }
+        awayNotifier?.notify(dedupeKey = dedupeKey, title = title, body = body)
+    }
+
     private fun syncActiveThreadFromServerInternal() {
         val key = state.activeThreadKey ?: return
-        val changed = syncThreadFromServerInternal(key)
+        val changed = runCatching { syncThreadFromServerInternal(key) }.getOrDefault(false)
         if (changed) {
             updateState { it }
+        }
+    }
+
+    private fun syncAllThreadsFromServerInternal() {
+        val keys = threadsByKey.keys.toList()
+        var changed = false
+        for (key in keys) {
+            val synced = runCatching { syncThreadFromServerInternal(key) }.getOrDefault(false)
+            changed = synced || changed
+        }
+        if (changed) {
+            updateState { it }
+        }
+    }
+
+    private fun suspendRealtimeConnectionsInternal() {
+        val threadKeys = threadsByKey.keys.toList()
+        for (key in threadKeys) {
+            val transport = transportsByServerId[key.serverId] ?: continue
+            runCatching {
+                transport.request(
+                    method = "thread/unsubscribe",
+                    params = JSONObject().put("threadId", key.threadId),
+                    timeoutSeconds = 5,
+                )
+            }
+        }
+        transportsByServerId.values.forEach { transport ->
+            runCatching { transport.close() }
+        }
+        transportsByServerId.clear()
+        updateState { current ->
+            current.copy(
+                connectionStatus = ServerConnectionStatus.DISCONNECTED,
+                connectionError = null,
+            )
+        }
+    }
+
+    private fun resumeRealtimeConnectionsInternal() {
+        if (serversById.isEmpty()) {
+            return
+        }
+        updateState { it.copy(connectionStatus = ServerConnectionStatus.CONNECTING, connectionError = null) }
+        val reconnectTargets = serversById.values.toList()
+        for (server in reconnectTargets) {
+            runCatching { connectServerInternal(server) }
+        }
+        updateState {
+            it.copy(
+                connectionStatus = if (transportsByServerId.isEmpty()) ServerConnectionStatus.ERROR else ServerConnectionStatus.READY,
+                connectionError = if (transportsByServerId.isEmpty()) "Failed to reconnect background sockets" else null,
+            )
         }
     }
 

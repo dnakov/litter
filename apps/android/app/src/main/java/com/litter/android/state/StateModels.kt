@@ -246,6 +246,7 @@ data class AppState(
     val availableModels: List<ModelOption> = emptyList(),
     val accountByServerId: Map<String, AccountState> = emptyMap(),
     val currentCwd: String = defaultWorkingDirectory(),
+    val backgroundConnectionEnabled: Boolean = false,
 ) {
     val activeThread: ThreadState?
         get() = activeThreadKey?.let { key ->
