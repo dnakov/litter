@@ -55,13 +55,17 @@ enum LitterFont {
         preferredFontName(weight: .regular) ?? "SFMono-Regular"
     }
 
-    static func monospaced(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> Font {
-        let pointSize = UIFont.preferredFont(forTextStyle: style.uiTextStyle).pointSize
+    static func monospaced(
+        _ style: Font.TextStyle,
+        weight: Font.Weight = .regular,
+        scale: CGFloat = 1.0
+    ) -> Font {
+        let pointSize = UIFont.preferredFont(forTextStyle: style.uiTextStyle).pointSize * scale
         return monospaced(size: pointSize, weight: weight, relativeTo: style)
     }
 
-    static func monospaced(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        monospaced(size: size, weight: weight, relativeTo: nil)
+    static func monospaced(size: CGFloat, weight: Font.Weight = .regular, scale: CGFloat = 1.0) -> Font {
+        monospaced(size: size * scale, weight: weight, relativeTo: nil)
     }
 
     private static func monospaced(size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle?) -> Font {

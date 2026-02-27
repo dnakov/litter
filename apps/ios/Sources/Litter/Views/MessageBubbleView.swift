@@ -5,6 +5,7 @@ import Inject
 struct MessageBubbleView: View {
     @ObserveInjection var inject
     let message: ChatMessage
+    let textScale: CGFloat
     let actionsDisabled: Bool
     let onEditUserMessage: ((ChatMessage) -> Void)?
     let onForkFromUserMessage: ((ChatMessage) -> Void)?
@@ -19,11 +20,13 @@ struct MessageBubbleView: View {
 
     init(
         message: ChatMessage,
+        textScale: CGFloat = 1.0,
         actionsDisabled: Bool = false,
         onEditUserMessage: ((ChatMessage) -> Void)? = nil,
         onForkFromUserMessage: ((ChatMessage) -> Void)? = nil
     ) {
         self.message = message
+        self.textScale = textScale
         self.actionsDisabled = actionsDisabled
         self.onEditUserMessage = onEditUserMessage
         self.onForkFromUserMessage = onForkFromUserMessage
@@ -81,8 +84,9 @@ struct MessageBubbleView: View {
             }
             if !message.text.isEmpty {
                 Text(message.text)
-                    .font(LitterFont.monospaced(.callout))
+                    .font(LitterFont.monospaced(.callout, scale: textScale))
                     .foregroundColor(.white)
+                    .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 14)
@@ -110,7 +114,7 @@ struct MessageBubbleView: View {
                 switch segment.kind {
                 case .text(let md):
                     Markdown(md)
-                        .markdownTheme(.litter(bodySize: mdBodySize, codeSize: mdCodeSize))
+                        .markdownTheme(.litter(bodySize: mdBodySize * textScale, codeSize: mdCodeSize * textScale))
                         .markdownCodeSyntaxHighlighter(.plain)
                         .textSelection(.enabled)
                 case .image(let uiImage):
@@ -127,8 +131,8 @@ struct MessageBubbleView: View {
 
     private var reasoningContent: some View {
         let (_, body) = extractSystemTitleAndBody(message.text)
-        return Text(body)
-            .font(LitterFont.monospaced(.footnote))
+        return Text(normalizedReasoningText(body))
+            .font(LitterFont.monospaced(.footnote, scale: textScale))
             .italic()
             .foregroundColor(LitterTheme.textSecondary)
             .textSelection(.enabled)
@@ -157,14 +161,14 @@ struct MessageBubbleView: View {
                     .font(.system(.caption2, weight: .semibold))
                     .foregroundColor(LitterTheme.accent)
                 Text(displayTitle.uppercased())
-                    .font(LitterFont.monospaced(.caption2, weight: .bold))
+                    .font(LitterFont.monospaced(.caption2, weight: .bold, scale: textScale))
                     .foregroundColor(LitterTheme.accent)
                 Spacer()
             }
 
             if !markdown.isEmpty {
                 Markdown(markdown)
-                    .markdownTheme(.litterSystem(bodySize: mdSystemBodySize, codeSize: mdSystemCodeSize))
+                    .markdownTheme(.litterSystem(bodySize: mdSystemBodySize * textScale, codeSize: mdSystemCodeSize * textScale))
                     .markdownCodeSyntaxHighlighter(.plain)
                     .textSelection(.enabled)
                     .padding(.top, 8)
@@ -190,6 +194,19 @@ struct MessageBubbleView: View {
         let title = first.dropFirst(4).trimmingCharacters(in: .whitespacesAndNewlines)
         let body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return (title.isEmpty ? nil : title, body)
+    }
+
+    private func normalizedReasoningText(_ body: String) -> String {
+        body
+            .components(separatedBy: .newlines)
+            .map { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("**"), trimmed.hasSuffix("**"), trimmed.count > 4 {
+                    return String(trimmed.dropFirst(2).dropLast(2))
+                }
+                return line
+            }
+            .joined(separator: "\n")
     }
 
     // MARK: - Inline image extraction

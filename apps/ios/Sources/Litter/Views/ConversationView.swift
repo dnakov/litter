@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 import Inject
 
 struct ConversationView: View {
@@ -7,6 +8,7 @@ struct ConversationView: View {
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
+    @AppStorage("conversationTextSizeStep") private var conversationTextSizeStep = ConversationTextSize.medium.rawValue
     @FocusState private var composerFocused: Bool
     @State private var messageActionError: String?
 
@@ -24,6 +26,7 @@ struct ConversationView: View {
                 messages: messages,
                 threadStatus: threadStatus,
                 activeThreadKey: serverManager.activeThreadKey,
+                textSizeStep: $conversationTextSizeStep,
                 inputFocused: $composerFocused,
                 onEditUserMessage: editMessage,
                 onForkFromUserMessage: forkFromMessage
@@ -107,14 +110,49 @@ struct ConversationView: View {
     }
 }
 
+private enum ConversationTextSize: Int, CaseIterable {
+    case xSmall = 0
+    case small = 1
+    case medium = 2
+    case large = 3
+    case xLarge = 4
+
+    var scale: CGFloat {
+        switch self {
+        case .xSmall: return 0.86
+        case .small: return 0.93
+        case .medium: return 1.0
+        case .large: return 1.1
+        case .xLarge: return 1.22
+        }
+    }
+
+    static func clamped(rawValue: Int) -> ConversationTextSize {
+        let bounded = min(max(rawValue, xSmall.rawValue), xLarge.rawValue)
+        return ConversationTextSize(rawValue: bounded) ?? .medium
+    }
+}
+
+private struct BottomMarkerMaxYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct ConversationMessageList: View {
     let messages: [ChatMessage]
     let threadStatus: ConversationStatus
     let activeThreadKey: ThreadKey?
+    @Binding var textSizeStep: Int
     let inputFocused: FocusState<Bool>.Binding
     let onEditUserMessage: (ChatMessage) -> Void
     let onForkFromUserMessage: (ChatMessage) -> Void
     @State private var pendingScrollWorkItem: DispatchWorkItem?
+    @State private var isNearBottom = true
+    @State private var pinchBaseStep: Int?
+    @State private var pinchAppliedDelta = 0
 
     private var messageActionsDisabled: Bool {
         if case .thinking = threadStatus {
@@ -123,52 +161,160 @@ private struct ConversationMessageList: View {
         return false
     }
 
+    private var textScale: CGFloat {
+        ConversationTextSize.clamped(rawValue: textSizeStep).scale
+    }
+
+    private var shouldShowScrollToBottom: Bool {
+        !messages.isEmpty && !isNearBottom
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(messages) { message in
-                        EquatableMessageBubble(
-                            message: message,
-                            messageActionsDisabled: messageActionsDisabled,
-                            onEditUserMessage: onEditUserMessage,
-                            onForkFromUserMessage: onForkFromUserMessage
-                        )
-                            .id(message.id)
+            GeometryReader { viewport in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(messages) { message in
+                                EquatableMessageBubble(
+                                    message: message,
+                                    textScale: textScale,
+                                    messageActionsDisabled: messageActionsDisabled,
+                                    onEditUserMessage: onEditUserMessage,
+                                    onForkFromUserMessage: onForkFromUserMessage
+                                )
+                                    .id(message.id)
+                            }
+                            if case .thinking = threadStatus {
+                                TypingIndicator()
+                            }
+                            Color.clear
+                                .frame(height: 1)
+                                .background(
+                                    GeometryReader { geo in
+                                        Color.clear.preference(
+                                            key: BottomMarkerMaxYPreferenceKey.self,
+                                            value: geo.frame(in: .named("conversationScrollArea")).maxY
+                                        )
+                                    }
+                                )
+                                .id("bottom")
+                        }
+                        .padding(16)
                     }
-                    if case .thinking = threadStatus {
-                        TypingIndicator()
+                    .coordinateSpace(name: "conversationScrollArea")
+                    .scrollDismissesKeyboard(.interactively)
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            inputFocused.wrappedValue = false
+                        }
+                    )
+                    .background(
+                        ScrollPinchCapture { scale, state in
+                            handlePinch(scale: scale, state: state)
+                        }
+                    )
+                    .onPreferenceChange(BottomMarkerMaxYPreferenceKey.self) { markerMaxY in
+                        let distanceFromBottom = markerMaxY - viewport.size.height
+                        let nextNearBottom = distanceFromBottom <= 36
+                        if nextNearBottom != isNearBottom {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                isNearBottom = nextNearBottom
+                            }
+                        }
                     }
-                    Color.clear.frame(height: 1).id("bottom")
+                    .onAppear {
+                        scheduleScrollToBottom(proxy, delay: 0, force: true, animated: false)
+                    }
+                    .onChange(of: activeThreadKey) {
+                        scheduleScrollToBottom(proxy, delay: 0, force: true, animated: false)
+                    }
+                    .onChange(of: messages.count) {
+                        scheduleScrollToBottom(proxy)
+                    }
+                    .onDisappear {
+                        pendingScrollWorkItem?.cancel()
+                        pendingScrollWorkItem = nil
+                    }
+
+                    if shouldShowScrollToBottom {
+                        ScrollToBottomIndicator {
+                            scheduleScrollToBottom(proxy, delay: 0, force: true, animated: true)
+                        }
+                        .padding(.trailing, 14)
+                        .padding(.bottom, 10)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
-                .padding(16)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    inputFocused.wrappedValue = false
-                }
-            )
-            .onAppear {
-                scheduleScrollToBottom(proxy, delay: 0)
-            }
-            .onChange(of: activeThreadKey) {
-                scheduleScrollToBottom(proxy, delay: 0)
-            }
-            .onChange(of: messages.count) {
-                scheduleScrollToBottom(proxy)
-            }
-            .onDisappear {
-                pendingScrollWorkItem?.cancel()
-                pendingScrollWorkItem = nil
             }
         }
     }
 
-    private func scheduleScrollToBottom(_ proxy: ScrollViewProxy, delay: TimeInterval = 0.05) {
+    private func handlePinch(scale: CGFloat, state: UIGestureRecognizer.State) {
+        switch state {
+        case .began:
+            pinchBaseStep = textSizeStep
+            pinchAppliedDelta = 0
+        case .changed:
+            let candidateDelta: Int
+            if scale >= 1.18 {
+                candidateDelta = 2
+            } else if scale >= 1.03 {
+                candidateDelta = 1
+            } else if scale <= 0.86 {
+                candidateDelta = -2
+            } else if scale <= 0.97 {
+                candidateDelta = -1
+            } else {
+                candidateDelta = 0
+            }
+            guard candidateDelta != 0 else { return }
+
+            if pinchAppliedDelta == 0 {
+                pinchAppliedDelta = candidateDelta
+                return
+            }
+
+            let sameDirection = (pinchAppliedDelta > 0 && candidateDelta > 0) || (pinchAppliedDelta < 0 && candidateDelta < 0)
+            if sameDirection {
+                if abs(candidateDelta) > abs(pinchAppliedDelta) {
+                    pinchAppliedDelta = candidateDelta
+                }
+            } else {
+                pinchAppliedDelta = candidateDelta
+            }
+        case .cancelled, .failed, .ended:
+            let baseline = pinchBaseStep ?? textSizeStep
+            let next = ConversationTextSize.clamped(rawValue: baseline + pinchAppliedDelta).rawValue
+            if next != textSizeStep {
+                withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.88)) {
+                    textSizeStep = next
+                }
+            }
+            pinchBaseStep = nil
+            pinchAppliedDelta = 0
+        default:
+            break
+        }
+    }
+
+    private func scheduleScrollToBottom(
+        _ proxy: ScrollViewProxy,
+        delay: TimeInterval = 0.05,
+        force: Bool = false,
+        animated: Bool = true
+    ) {
+        guard force || isNearBottom else { return }
         pendingScrollWorkItem?.cancel()
         let work = DispatchWorkItem {
-            proxy.scrollTo("bottom", anchor: .bottom)
+            if animated {
+                withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            isNearBottom = true
         }
         pendingScrollWorkItem = work
         if delay == 0 {
@@ -181,6 +327,7 @@ private struct ConversationMessageList: View {
 
 private struct EquatableMessageBubble: View, Equatable {
     let message: ChatMessage
+    let textScale: CGFloat
     let messageActionsDisabled: Bool
     let onEditUserMessage: (ChatMessage) -> Void
     let onForkFromUserMessage: (ChatMessage) -> Void
@@ -190,16 +337,153 @@ private struct EquatableMessageBubble: View, Equatable {
         lhs.message.role == rhs.message.role &&
         lhs.message.text == rhs.message.text &&
         lhs.message.images.count == rhs.message.images.count &&
+        lhs.textScale == rhs.textScale &&
         lhs.messageActionsDisabled == rhs.messageActionsDisabled
     }
 
     var body: some View {
         MessageBubbleView(
             message: message,
+            textScale: textScale,
             actionsDisabled: messageActionsDisabled,
             onEditUserMessage: onEditUserMessage,
             onForkFromUserMessage: onForkFromUserMessage
         )
+    }
+}
+
+private struct ScrollToBottomIndicator: View {
+    let action: () -> Void
+    @State private var bob = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down")
+                    .font(.system(.caption, weight: .bold))
+                    .offset(y: bob ? 1.5 : -1.5)
+                Text("Latest")
+                    .font(LitterFont.monospaced(.caption, weight: .semibold))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(LitterTheme.surface.opacity(0.94))
+            .overlay(
+                Capsule().stroke(LitterTheme.border.opacity(0.9), lineWidth: 1)
+            )
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(0.24), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true)) {
+                bob = true
+            }
+        }
+    }
+}
+
+private struct ScrollPinchCapture: UIViewRepresentable {
+    let onPinch: (_ scale: CGFloat, _ state: UIGestureRecognizer.State) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = false
+        context.coordinator.hostView = view
+        context.coordinator.onPinch = onPinch
+        context.coordinator.attachWhenReady()
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.hostView = uiView
+        context.coordinator.onPinch = onPinch
+        context.coordinator.attachWhenReady()
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPinch: onPinch)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        weak var hostView: UIView?
+        weak var attachedScrollView: UIScrollView?
+        let pinchRecognizer = UIPinchGestureRecognizer()
+        var onPinch: (_ scale: CGFloat, _ state: UIGestureRecognizer.State) -> Void
+
+        init(onPinch: @escaping (_ scale: CGFloat, _ state: UIGestureRecognizer.State) -> Void) {
+            self.onPinch = onPinch
+            super.init()
+            pinchRecognizer.delegate = self
+            pinchRecognizer.cancelsTouchesInView = false
+            pinchRecognizer.addTarget(self, action: #selector(handlePinch))
+        }
+
+        func attachWhenReady(retry: Int = 0) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let host = self.hostView, let window = host.window else { return }
+
+                if let current = self.attachedScrollView, current.window != nil {
+                    return
+                }
+
+                if let scroll = self.findBestScrollView(window: window, host: host) {
+                    if self.attachedScrollView !== scroll {
+                        self.detach()
+                        scroll.addGestureRecognizer(self.pinchRecognizer)
+                        self.attachedScrollView = scroll
+                    }
+                } else if retry < 8 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        self.attachWhenReady(retry: retry + 1)
+                    }
+                }
+            }
+        }
+
+        func detach() {
+            if let scroll = attachedScrollView {
+                scroll.removeGestureRecognizer(pinchRecognizer)
+            }
+            attachedScrollView = nil
+        }
+
+        private func findBestScrollView(window: UIView, host: UIView) -> UIScrollView? {
+            let probe = host.convert(CGPoint(x: host.bounds.midX, y: host.bounds.midY), to: window)
+            let candidates = allSubviews(of: window).compactMap { $0 as? UIScrollView }.filter { scroll in
+                let rect = scroll.convert(scroll.bounds, to: window)
+                return rect.contains(probe) && rect.height > 0 && rect.width > 0
+            }
+            return candidates.min { lhs, rhs in
+                (lhs.bounds.width * lhs.bounds.height) < (rhs.bounds.width * rhs.bounds.height)
+            }
+        }
+
+        private func allSubviews(of view: UIView) -> [UIView] {
+            var result: [UIView] = [view]
+            for child in view.subviews {
+                result.append(contentsOf: allSubviews(of: child))
+            }
+            return result
+        }
+
+        @objc private func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            onPinch(recognizer.scale, recognizer.state)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
     }
 }
 

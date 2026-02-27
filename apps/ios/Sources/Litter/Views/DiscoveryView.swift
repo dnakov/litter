@@ -127,8 +127,16 @@ struct DiscoveryView: View {
                 }
             }
         } header: {
-            Text("Network")
-                .foregroundColor(LitterTheme.textSecondary)
+            HStack(spacing: 8) {
+                Text("Network")
+                    .foregroundColor(LitterTheme.textSecondary)
+                Spacer()
+                if discovery.isScanning {
+                    ProgressView()
+                        .tint(LitterTheme.textMuted)
+                        .scaleEffect(0.65)
+                }
+            }
         }
         .listRowBackground(LitterTheme.surface.opacity(0.6))
     }
