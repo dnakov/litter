@@ -84,6 +84,13 @@ android {
         compose = true
         buildConfig = true
     }
+
+    packaging {
+        jniLibs {
+            // Ensure native libs are extracted to a filesystem path so they can be executed.
+            useLegacyPackaging = true
+        }
+    }
 }
 
 play {
@@ -117,4 +124,13 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+}
+
+val downloadBundledAssets by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir
+    commandLine("bash", "scripts/download-bundled-assets.sh")
+}
+
+tasks.named("preBuild") {
+    dependsOn(downloadBundledAssets)
 }

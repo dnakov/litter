@@ -1,17 +1,33 @@
 package com.litter.android.state
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
+import android.net.Uri
 import com.litter.android.core.bridge.CodexRpcClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
+import java.net.URL
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.LinkedHashMap
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -31,6 +47,10 @@ class ServerManager(
         Thread(runnable, "Litter-ServerManager").apply { isDaemon = true }
     },
 ) : Closeable {
+    companion object {
+        private const val OPENAI_AUTH_ISSUER = "https://auth.openai.com"
+        private const val OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+    }
     private val listeners = CopyOnWriteArrayList<(AppState) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val threadsByKey = LinkedHashMap<ThreadKey, ThreadState>()
@@ -42,6 +62,8 @@ class ServerManager(
     private val serversUsingItemNotifications = HashSet<String>()
 
     private val appContext = context?.applicationContext
+    private val bundledAuthStore: BundledAuthStore? =
+        appContext?.let { ctx -> runCatching { BundledAuthStore(ctx) }.getOrNull() }
     private val savedServersPreferences by lazy {
         appContext?.getSharedPreferences("litter_saved_servers", Context.MODE_PRIVATE)
     }
@@ -201,10 +223,17 @@ class ServerManager(
         }
     }
 
+    fun readBundledLogs(onComplete: ((Result<String>) -> Unit)? = null) {
+        submit {
+            val result = runCatching { readBundledLogsInternal() }
+            deliver(onComplete, result)
+        }
+    }
+
     fun loginWithChatGpt(onComplete: ((Result<AccountState>) -> Unit)? = null) {
         submit {
             val result = runCatching {
-                val serverId = resolveServerIdForActiveOperations()
+                val serverId = resolveServerIdForAuthOperations()
                 loginWithChatGptInternal(serverId)
             }
             deliver(onComplete, result)
@@ -217,7 +246,7 @@ class ServerManager(
     ) {
         submit {
             val result = runCatching {
-                val serverId = resolveServerIdForActiveOperations()
+                val serverId = resolveServerIdForAuthOperations()
                 loginWithApiKeyInternal(serverId, apiKey)
             }
             deliver(onComplete, result)
@@ -466,6 +495,9 @@ class ServerManager(
             if (server.source == ServerSource.LOCAL) {
                 // Always resolve the active on-device bridge port instead of trusting discovery defaults.
                 ServerConfig.local(codexRpcClient.ensureServerStarted())
+            } else if (server.source == ServerSource.BUNDLED) {
+                ensureBundledServiceReady()
+                ServerConfig.bundled(BundledCodexService.PORT)
             } else {
                 server.copy(host = normalizeServerHost(server.host))
             }
@@ -477,11 +509,17 @@ class ServerManager(
                     handleNotification(normalizedServer.id, method, params)
                 }
             },
+            onServerRequest = { method, params ->
+                handleServerRequestInternal(normalizedServer.id, method, params)
+            },
         )
 
         try {
             transport.connect(timeoutSeconds = 15)
             sendInitialize(transport)
+            if (normalizedServer.source == ServerSource.BUNDLED) {
+                restoreBundledAuthIfAvailableInternal(serverId = normalizedServer.id, transport = transport)
+            }
         } catch (error: Throwable) {
             transport.close()
             throw error
@@ -494,10 +532,17 @@ class ServerManager(
         persistSavedServersInternal()
 
         updateState {
+            val preferredCwd =
+                if (normalizedServer.source == ServerSource.BUNDLED) {
+                    preferredDirectoryRootForServer(normalizedServer.id)
+                } else {
+                    it.currentCwd
+                }
             it.copy(
                 connectionStatus = ServerConnectionStatus.READY,
                 connectionError = null,
                 activeServerId = normalizedServer.id,
+                currentCwd = preferredCwd,
             )
         }
 
@@ -515,6 +560,7 @@ class ServerManager(
             liveTurnDiffMessageIndices.clear()
             serversUsingItemNotifications.clear()
             runCatching { codexRpcClient.stop() }
+            runCatching { appContext?.stopService(android.content.Intent(appContext, BundledCodexService::class.java)) }
             commitState(
                 state.copy(
                     connectionStatus = ServerConnectionStatus.DISCONNECTED,
@@ -539,6 +585,10 @@ class ServerManager(
 
         if (removedServer?.source == ServerSource.LOCAL && serversById.values.none { it.source == ServerSource.LOCAL }) {
             runCatching { codexRpcClient.stop() }
+        }
+
+        if (removedServer?.source == ServerSource.BUNDLED && serversById.values.none { it.source == ServerSource.BUNDLED }) {
+            runCatching { appContext?.stopService(android.content.Intent(appContext, BundledCodexService::class.java)) }
         }
 
         val nextActiveThread =
@@ -613,6 +663,11 @@ class ServerManager(
                     .put("version", "1.0")
                     .put("title", JSONObject.NULL),
             )
+            .put(
+                "capabilities",
+                JSONObject()
+                    .put("experimentalApi", true),
+            )
         transport.request(method = "initialize", params = params)
     }
 
@@ -648,21 +703,28 @@ class ServerManager(
                     existing?.preview ?: "Session $threadId"
                 }
                 val cwd = item.optString("cwd").trim().ifBlank { existing?.cwd ?: state.currentCwd }
-                val updatedAtRaw =
-                    item.opt("updatedAt").asLongOrNull()
-                        ?: item.opt("updated_at").asLongOrNull()
-                        ?: System.currentTimeMillis()
-                val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
+            val updatedAtRaw =
+                item.opt("updatedAt").asLongOrNull()
+                    ?: item.opt("updated_at").asLongOrNull()
+                    ?: System.currentTimeMillis()
+            val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
+            val remoteStatus = item.optString("status").trim().lowercase(Locale.ROOT)
+            val resolvedStatus =
+                when (remoteStatus) {
+                    "inprogress", "in_progress", "running", "busy" -> ThreadStatus.THINKING
+                    "failed", "error" -> ThreadStatus.ERROR
+                    else -> existing?.status ?: ThreadStatus.READY
+                }
 
-                threadsByKey[key] =
-                    ThreadState(
-                        key = key,
-                        serverName = server.name,
-                        serverSource = server.source,
-                        status = existing?.status ?: ThreadStatus.READY,
-                        messages = existing?.messages ?: emptyList(),
-                        preview = preview,
-                        cwd = cwd,
+            threadsByKey[key] =
+                ThreadState(
+                    key = key,
+                    serverName = server.name,
+                    serverSource = server.source,
+                    status = resolvedStatus,
+                    messages = existing?.messages ?: emptyList(),
+                    preview = preview,
+                    cwd = cwd,
                         updatedAtEpochMillis = maxOf(updatedAtEpochMillis, existing?.updatedAtEpochMillis ?: 0L),
                         activeTurnId = existing?.activeTurnId,
                         lastError = existing?.lastError,
@@ -782,7 +844,117 @@ class ServerManager(
         return accountState
     }
 
+    private fun readBundledLogsInternal(): String {
+        val context = appContext ?: throw IllegalStateException("Android context is unavailable")
+        val activeServerId = state.activeServerId
+        val activeSource = activeServerId?.let { serversById[it]?.source }
+        val diagnostics =
+            buildString {
+                appendLine("Bundled Diagnostics")
+                appendLine("activeServerId=${activeServerId ?: "none"}")
+                appendLine("activeSource=${activeSource ?: "unknown"}")
+                appendLine("connectionStatus=${state.connectionStatus}")
+                appendLine("connectionError=${state.connectionError ?: ""}")
+                appendLine("accountStatus=${state.activeAccount.status}")
+                appendLine("---")
+            }
+        return diagnostics + BundledCodexService.readLogTail(context)
+    }
+
+    private fun restoreBundledAuthIfAvailableInternal(
+        serverId: String,
+        transport: BridgeRpcTransport,
+    ) {
+        val tokens = bundledAuthStore?.load() ?: return
+        runCatching {
+            loginWithBundledTokens(
+                transport = transport,
+                accessToken = tokens.accessToken,
+                chatgptAccountId = tokens.chatgptAccountId,
+                chatgptPlanType = tokens.chatgptPlanType,
+            )
+        }.onFailure {
+            bundledAuthStore?.clear()
+            accountByServerId[serverId] =
+                (accountByServerId[serverId] ?: AccountState(status = AuthStatus.NOT_LOGGED_IN)).copy(
+                    status = AuthStatus.NOT_LOGGED_IN,
+                    oauthUrl = null,
+                    pendingLoginId = null,
+                    lastError = "Session expired. Please log in again.",
+                )
+        }
+    }
+
+    private fun handleServerRequestInternal(
+        serverId: String,
+        method: String,
+        params: JSONObject?,
+    ): JSONObject? {
+        if (method != "account/chatgptAuthTokens/refresh") {
+            return null
+        }
+        if (serversById[serverId]?.source != ServerSource.BUNDLED) {
+            throw IllegalStateException("External token refresh is only supported for bundled auth")
+        }
+
+        return runCatching {
+            val existing = bundledAuthStore?.load() ?: throw IllegalStateException("No stored bundled auth tokens")
+            val refreshToken = existing.refreshToken ?: throw IllegalStateException("No refresh token available")
+            val refreshed = exchangeRefreshToken(refreshToken)
+            val idClaims = decodeJwtClaims(refreshed.idToken)
+            val accessClaims = decodeJwtClaims(refreshed.accessToken)
+            val info = resolveBundledAccountInfo(idClaims, accessClaims)
+            val previousAccountId = params?.optString("previousAccountId")?.trim().orEmpty().ifEmpty { null }
+            if (previousAccountId != null && previousAccountId != info.accountId) {
+                throw IllegalStateException("Refreshed token account mismatch")
+            }
+
+            bundledAuthStore?.save(
+                BundledAuthTokens(
+                    accessToken = refreshed.accessToken,
+                    idToken = refreshed.idToken,
+                    refreshToken = refreshed.refreshToken ?: refreshToken,
+                    chatgptAccountId = info.accountId,
+                    chatgptPlanType = info.planType,
+                ),
+            )
+
+            JSONObject()
+                .put("accessToken", refreshed.accessToken)
+                .put("chatgptAccountId", info.accountId)
+                .put("chatgptPlanType", info.planType ?: JSONObject.NULL)
+        }.getOrElse { error ->
+            bundledAuthStore?.clear()
+            accountByServerId[serverId] =
+                (accountByServerId[serverId] ?: AccountState(status = AuthStatus.NOT_LOGGED_IN)).copy(
+                    status = AuthStatus.NOT_LOGGED_IN,
+                    oauthUrl = null,
+                    pendingLoginId = null,
+                    lastError = "Session expired. Please log in again.",
+                )
+            updateState {
+                it.copy(
+                    accountByServerId = LinkedHashMap(accountByServerId),
+                    activeServerId = serverId,
+                    connectionError = "Session expired. Please log in again.",
+                )
+            }
+            throw IllegalStateException(error.message ?: "Failed to refresh ChatGPT tokens")
+        }
+    }
+
     private fun loginWithChatGptInternal(serverId: String): AccountState {
+        if (serversById[serverId]?.source == ServerSource.BUNDLED) {
+            return loginWithChatGptViaAndroidOauthInternal(serverId)
+        }
+
+        val existing = accountByServerId[serverId]
+        val existingPendingId = existing?.pendingLoginId?.trim().takeIf { !it.isNullOrEmpty() }
+        val existingOauthUrl = existing?.oauthUrl?.trim().takeIf { !it.isNullOrEmpty() }
+        if (existingPendingId != null && existingOauthUrl != null) {
+            return existing ?: AccountState()
+        }
+
         val response =
             requireTransport(serverId).request(
                 method = "account/login/start",
@@ -808,10 +980,321 @@ class ServerManager(
         return next
     }
 
+    private fun loginWithChatGptViaAndroidOauthInternal(serverId: String): AccountState {
+        val context = appContext ?: throw IllegalStateException("Android context is unavailable")
+        val callbackPort = 1455
+        val redirectUri = "http://localhost:$callbackPort/auth/callback"
+        val stateToken = UUID.randomUUID().toString()
+        val codeVerifier = generatePkceCodeVerifier()
+        val codeChallenge = generatePkceCodeChallenge(codeVerifier)
+        val scopes = "openid profile email offline_access"
+
+        val authUrl =
+            Uri.parse("$OPENAI_AUTH_ISSUER/oauth/authorize").buildUpon()
+                .appendQueryParameter("response_type", "code")
+                .appendQueryParameter("client_id", OPENAI_CODEX_CLIENT_ID)
+                .appendQueryParameter("redirect_uri", redirectUri)
+                .appendQueryParameter("scope", scopes)
+                .appendQueryParameter("code_challenge", codeChallenge)
+                .appendQueryParameter("code_challenge_method", "S256")
+                .appendQueryParameter("state", stateToken)
+                .appendQueryParameter("id_token_add_organizations", "true")
+                .appendQueryParameter("codex_cli_simplified_flow", "true")
+                .build()
+                .toString()
+
+        accountByServerId[serverId] =
+            (accountByServerId[serverId] ?: AccountState()).copy(
+                oauthUrl = authUrl,
+                pendingLoginId = "android-oauth",
+                lastError = null,
+            )
+        updateState {
+            it.copy(accountByServerId = LinkedHashMap(accountByServerId), activeServerId = serverId)
+        }
+
+        openBrowserForUrl(context, authUrl)
+
+        val callback = awaitOAuthCallback(callbackPort = callbackPort, expectedState = stateToken, timeoutMs = 10 * 60 * 1000L)
+        if (callback.error != null) {
+            throw IllegalStateException(callback.error)
+        }
+        val code = callback.code ?: throw IllegalStateException("Missing authorization code")
+
+        val tokenResponse = exchangeAuthorizationCode(code = code, codeVerifier = codeVerifier, redirectUri = redirectUri)
+        val idClaims = decodeJwtClaims(tokenResponse.idToken)
+        val accessClaims = decodeJwtClaims(tokenResponse.accessToken)
+        val accountInfo = resolveBundledAccountInfo(idClaims, accessClaims)
+        loginWithBundledTokens(
+            transport = requireTransport(serverId),
+            accessToken = tokenResponse.accessToken,
+            chatgptAccountId = accountInfo.accountId,
+            chatgptPlanType = accountInfo.planType,
+        )
+        bundledAuthStore?.save(
+            BundledAuthTokens(
+                accessToken = tokenResponse.accessToken,
+                idToken = tokenResponse.idToken,
+                refreshToken = tokenResponse.refreshToken,
+                chatgptAccountId = accountInfo.accountId,
+                chatgptPlanType = accountInfo.planType,
+            ),
+        )
+
+        accountByServerId[serverId] =
+            (accountByServerId[serverId] ?: AccountState()).copy(
+                oauthUrl = null,
+                pendingLoginId = null,
+                lastError = null,
+            )
+        updateState {
+            it.copy(accountByServerId = LinkedHashMap(accountByServerId), activeServerId = serverId)
+        }
+        return refreshAccountStateInternal(serverId)
+    }
+
+    private fun openBrowserForUrl(context: Context, url: String) {
+        val intent =
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        context.startActivity(intent)
+    }
+
+    private data class OAuthCallbackResult(
+        val code: String?,
+        val error: String?,
+    )
+
+    private fun awaitOAuthCallback(
+        callbackPort: Int,
+        expectedState: String,
+        timeoutMs: Long,
+    ): OAuthCallbackResult {
+        val server = ServerSocket()
+        server.reuseAddress = true
+        server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), callbackPort))
+        server.soTimeout = timeoutMs.toInt().coerceAtMost(Int.MAX_VALUE)
+        return server.use { socketServer ->
+            val socket = socketServer.accept()
+            socket.use { client ->
+                val input = client.getInputStream().bufferedReader()
+                val requestLine = input.readLine().orEmpty()
+                val pathWithQuery = requestLine.substringAfter(' ', "").substringBefore(' ')
+                val query = pathWithQuery.substringAfter('?', "")
+                val params = parseQueryParams(query)
+                val responseBody = "<html><body><h3>Login complete</h3><p>You can return to Litter.</p></body></html>"
+                client.getOutputStream().bufferedWriter().use { writer ->
+                    writer.write("HTTP/1.1 200 OK\r\n")
+                    writer.write("Content-Type: text/html; charset=UTF-8\r\n")
+                    writer.write("Connection: close\r\n")
+                    writer.write("Content-Length: ${responseBody.toByteArray(StandardCharsets.UTF_8).size}\r\n")
+                    writer.write("\r\n")
+                    writer.write(responseBody)
+                    writer.flush()
+                }
+
+                val returnedState = params["state"].orEmpty()
+                if (returnedState != expectedState) {
+                    return OAuthCallbackResult(code = null, error = "OAuth state mismatch")
+                }
+                val error = params["error"]?.ifBlank { null }
+                if (error != null) {
+                    val description = params["error_description"]?.ifBlank { null }
+                    return OAuthCallbackResult(code = null, error = "OAuth error: ${description ?: error}")
+                }
+                val code = params["code"]?.ifBlank { null }
+                return OAuthCallbackResult(code = code, error = if (code == null) "Missing authorization code" else null)
+            }
+        }
+    }
+
+    private fun parseQueryParams(query: String): Map<String, String> {
+        if (query.isBlank()) {
+            return emptyMap()
+        }
+        val out = LinkedHashMap<String, String>()
+        query.split('&').forEach { pair ->
+            val key = pair.substringBefore('=', "").trim()
+            if (key.isBlank()) return@forEach
+            val value = pair.substringAfter('=', "")
+            out[URLDecoder.decode(key, StandardCharsets.UTF_8)] =
+                URLDecoder.decode(value, StandardCharsets.UTF_8)
+        }
+        return out
+    }
+
+    private data class OAuthTokenResponse(
+        val accessToken: String,
+        val idToken: String,
+        val refreshToken: String?,
+    )
+
+    private fun exchangeAuthorizationCode(
+        code: String,
+        codeVerifier: String,
+        redirectUri: String,
+    ): OAuthTokenResponse {
+        val body =
+            "grant_type=authorization_code" +
+                "&code=${urlEncode(code)}" +
+                "&redirect_uri=${urlEncode(redirectUri)}" +
+                "&client_id=${urlEncode(OPENAI_CODEX_CLIENT_ID)}" +
+                "&code_verifier=${urlEncode(codeVerifier)}"
+
+        val connection = (URL("$OPENAI_AUTH_ISSUER/oauth/token").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 20_000
+            readTimeout = 20_000
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        }
+        try {
+            OutputStreamWriter(connection.outputStream, StandardCharsets.UTF_8).use { writer ->
+                writer.write(body)
+                writer.flush()
+            }
+
+            val status = connection.responseCode
+            val responseText =
+                runCatching {
+                    val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                    stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                }.getOrDefault("")
+            if (status !in 200..299) {
+                throw IllegalStateException("OAuth token exchange failed ($status): ${responseText.take(300)}")
+            }
+            val json = JSONObject(responseText)
+            val accessToken = json.optString("access_token").trim()
+            val idToken = json.optString("id_token").trim()
+            if (accessToken.isBlank() || idToken.isBlank()) {
+                throw IllegalStateException("OAuth token exchange returned missing tokens")
+            }
+            return OAuthTokenResponse(
+                accessToken = accessToken,
+                idToken = idToken,
+                refreshToken = json.optString("refresh_token").trim().ifBlank { null },
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun exchangeRefreshToken(refreshToken: String): OAuthTokenResponse {
+        val body =
+            "grant_type=refresh_token" +
+                "&refresh_token=${urlEncode(refreshToken)}" +
+                "&client_id=${urlEncode(OPENAI_CODEX_CLIENT_ID)}"
+
+        val connection = (URL("$OPENAI_AUTH_ISSUER/oauth/token").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 20_000
+            readTimeout = 20_000
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        }
+        try {
+            OutputStreamWriter(connection.outputStream, StandardCharsets.UTF_8).use { writer ->
+                writer.write(body)
+                writer.flush()
+            }
+            val status = connection.responseCode
+            val responseText =
+                runCatching {
+                    val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                    stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                }.getOrDefault("")
+            if (status !in 200..299) {
+                throw IllegalStateException("OAuth refresh failed ($status): ${responseText.take(300)}")
+            }
+            val json = JSONObject(responseText)
+            val accessToken = json.optString("access_token").trim()
+            val idToken = json.optString("id_token").trim()
+            if (accessToken.isBlank() || idToken.isBlank()) {
+                throw IllegalStateException("OAuth refresh returned missing tokens")
+            }
+            return OAuthTokenResponse(
+                accessToken = accessToken,
+                idToken = idToken,
+                refreshToken = json.optString("refresh_token").trim().ifBlank { null },
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private data class BundledAccountInfo(
+        val accountId: String,
+        val planType: String?,
+    )
+
+    private fun resolveBundledAccountInfo(
+        idClaims: JSONObject,
+        accessClaims: JSONObject,
+    ): BundledAccountInfo {
+        val accountId =
+            idClaims.optString("chatgpt_account_id").trim().ifBlank {
+                accessClaims.optString("chatgpt_account_id").trim().ifBlank {
+                    idClaims.optString("organization_id").trim().ifBlank {
+                        accessClaims.optString("organization_id").trim().ifBlank {
+                            throw IllegalStateException("OAuth token missing chatgpt_account_id claim")
+                        }
+                    }
+                }
+            }
+        val planType =
+            accessClaims.optString("chatgpt_plan_type").trim().ifBlank {
+                idClaims.optString("chatgpt_plan_type").trim().ifBlank { null }
+            }
+        return BundledAccountInfo(accountId = accountId, planType = planType)
+    }
+
+    private fun loginWithBundledTokens(
+        transport: BridgeRpcTransport,
+        accessToken: String,
+        chatgptAccountId: String,
+        chatgptPlanType: String?,
+    ) {
+        transport.request(
+            method = "account/login/start",
+            params =
+                JSONObject()
+                    .put("type", "chatgptAuthTokens")
+                    .put("accessToken", accessToken)
+                    .put("chatgptAccountId", chatgptAccountId)
+                    .put("chatgptPlanType", chatgptPlanType ?: JSONObject.NULL),
+        )
+    }
+
+    private fun decodeJwtClaims(jwt: String): JSONObject {
+        val payload = jwt.split('.').getOrNull(1) ?: return JSONObject()
+        val decoded = Base64.decode(payload, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        val jsonText = String(decoded, StandardCharsets.UTF_8)
+        val root = runCatching { JSONObject(jsonText) }.getOrDefault(JSONObject())
+        val authClaims = root.optJSONObject("https://api.openai.com/auth")
+        return authClaims ?: root
+    }
+
+    private fun generatePkceCodeVerifier(): String {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun generatePkceCodeChallenge(codeVerifier: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(codeVerifier.toByteArray(StandardCharsets.UTF_8))
+        return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun urlEncode(value: String): String = java.net.URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+
     private fun loginWithApiKeyInternal(
         serverId: String,
         apiKey: String,
     ): AccountState {
+        if (serversById[serverId]?.source == ServerSource.BUNDLED) {
+            bundledAuthStore?.clear()
+        }
         requireTransport(serverId).request(
             method = "account/login/start",
             params = JSONObject().put("type", "apiKey").put("apiKey", apiKey),
@@ -824,6 +1307,9 @@ class ServerManager(
             method = "account/logout",
             params = JSONObject(),
         )
+        if (serversById[serverId]?.source == ServerSource.BUNDLED) {
+            bundledAuthStore?.clear()
+        }
         val next = AccountState(status = AuthStatus.NOT_LOGGED_IN)
         accountByServerId[serverId] = next
         updateState {
@@ -855,20 +1341,32 @@ class ServerManager(
             connectLocalDefaultServerInternal()
         }
         val targetServerId = resolveServerIdForRequestedOperation(serverId)
+        if (serversById[targetServerId]?.source == ServerSource.BUNDLED) {
+            return preferredDirectoryRootForServer(targetServerId)
+        }
+        val shellCandidates = shellCommandCandidatesForServer(targetServerId)
+        val fallbackHome = preferredDirectoryRootForServer(targetServerId)
+
         return runCatching {
-            val result = executeCommandInternal(
-                serverId = targetServerId,
-                command = listOf("/bin/sh", "-lc", "printf %s \"${'$'}HOME\""),
-                cwd = "/tmp",
-            )
-            val exitCode = result.optInt("exitCode", 0)
-            val stdout = result.optString("stdout", "").trim()
-            if (exitCode == 0 && stdout.isNotEmpty()) {
-                stdout
-            } else {
-                "/"
+            for (shell in shellCandidates) {
+                val result =
+                    executeCommandInternal(
+                        serverId = targetServerId,
+                        command = listOf(shell, "-lc", "printf %s \"${'$'}HOME\""),
+                        cwd = fallbackHome,
+                    )
+                val exitCode = result.optInt("exitCode", 0)
+                val stdout = result.optString("stdout", "").trim()
+                if (exitCode == 0 && stdout.isNotEmpty()) {
+                    return@runCatching stdout
+                }
+                val stderr = result.optString("stderr", "").trim()
+                if (!isMissingExecutable(exitCode, stderr)) {
+                    break
+                }
             }
-        }.getOrDefault("/")
+            fallbackHome
+        }.getOrDefault(fallbackHome)
     }
 
     private fun listDirectoriesInternal(
@@ -879,30 +1377,49 @@ class ServerManager(
             connectLocalDefaultServerInternal()
         }
         val targetServerId = resolveServerIdForRequestedOperation(serverId)
-        val normalized = path.trim().ifEmpty { "/" }
-        val result = executeCommandInternal(
-            serverId = targetServerId,
-            command = listOf("/bin/ls", "-1ap", normalized),
-            cwd = normalized,
-        )
-        val exitCode = result.optInt("exitCode", 0)
-        if (exitCode != 0) {
-            val stderr = result.optString("stderr", "").trim()
-            if (stderr.isNotEmpty()) {
-                throw IllegalStateException(stderr)
+        val fallbackRoot = preferredDirectoryRootForServer(targetServerId)
+        if (serversById[targetServerId]?.source == ServerSource.BUNDLED) {
+            return listLocalDirectoriesInternal(path = path, fallbackRoot = fallbackRoot)
+        }
+        val rawPath = path.trim()
+        val normalized =
+            when {
+                rawPath.isEmpty() -> fallbackRoot
+                rawPath == "/" && isLocalOrBundledServer(targetServerId) -> fallbackRoot
+                else -> rawPath
             }
-            throw IllegalStateException("ls failed with code $exitCode")
+        val execCwd = if (normalized == "/") fallbackRoot else normalized
+        val listCandidates = listCommandCandidatesForServer(targetServerId)
+        var fallbackError: String? = null
+
+        for (binary in listCandidates) {
+            val result =
+                executeCommandInternal(
+                    serverId = targetServerId,
+                    command = listOf(binary, "-1ap", normalized),
+                    cwd = execCwd,
+                )
+            val exitCode = result.optInt("exitCode", 0)
+            if (exitCode == 0) {
+                val stdout = result.optString("stdout", "")
+                return stdout
+                    .lineSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .filter { it.endsWith("/") && it != "./" && it != "../" }
+                    .map { it.removeSuffix("/") }
+                    .sortedWith(compareBy<String> { it.lowercase(Locale.ROOT) }.thenBy { it })
+                    .toList()
+            }
+            val stderr = result.optString("stderr", "").trim()
+            if (isMissingExecutable(exitCode, stderr)) {
+                continue
+            }
+            fallbackError = if (stderr.isNotEmpty()) stderr else "ls failed with code $exitCode"
+            break
         }
 
-        val stdout = result.optString("stdout", "")
-        return stdout
-            .lineSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .filter { it.endsWith("/") && it != "./" && it != "../" }
-            .map { it.removeSuffix("/") }
-            .sortedWith(compareBy<String> { it.lowercase(Locale.ROOT) }.thenBy { it })
-            .toList()
+        throw IllegalStateException(fallbackError ?: "ls executable is unavailable on the selected server")
     }
 
     private fun fuzzyFileSearchInternal(
@@ -1338,6 +1855,7 @@ class ServerManager(
 
         val key = state.activeThreadKey ?: startThreadInternal(cwd, modelSelection)
         val serverId = key.serverId
+        ensureAuthenticatedForTurns(serverId)
         val existing = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve active thread")
         val now = System.currentTimeMillis()
         val localImageName = normalizedLocalImagePath?.let { File(it).name }.orEmpty()
@@ -1395,16 +1913,20 @@ class ServerManager(
             )
         }
 
-        val params =
+        fun buildTurnStartParams(threadId: String): JSONObject =
             JSONObject()
-                .put("threadId", key.threadId)
+                .put("threadId", threadId)
+                .put("threadID", threadId)
                 .put("input", input)
                 .put("model", modelSelection.modelId ?: JSONObject.NULL)
                 .put("effort", modelSelection.reasoningEffort ?: JSONObject.NULL)
 
         try {
-            val response = requireTransport(serverId).request("turn/start", params)
-            val turnId = response.optString("turnId").trim().takeIf { it.isNotEmpty() }
+            val response = requireTransport(serverId).request("turn/start", buildTurnStartParams(key.threadId))
+            val turnId =
+                response.optJSONObject("turn")?.optString("id")?.trim().takeIf { !it.isNullOrEmpty() }
+                    ?: response.optString("turnId").trim().takeIf { it.isNotEmpty() }
+                    ?: response.optString("turnID").trim().takeIf { it.isNotEmpty() }
             val latest = threadsByKey[key] ?: return
             threadsByKey[key] =
                 latest.copy(
@@ -1414,6 +1936,53 @@ class ServerManager(
                 )
             updateState { it }
         } catch (error: Throwable) {
+            if (isMissingRolloutForThread(error)) {
+                val replacementKey = startThreadInternal(cwd, modelSelection, serverId = serverId)
+                val replacementBase = threadsByKey[replacementKey]
+                if (replacementBase != null) {
+                    threadsByKey[replacementKey] =
+                        replacementBase.copy(
+                            status = ThreadStatus.THINKING,
+                            messages = withUserMessage.messages,
+                            preview = withUserMessage.preview,
+                            cwd = cwd,
+                            updatedAtEpochMillis = System.currentTimeMillis(),
+                            lastError = null,
+                        )
+                    if (replacementKey != key) {
+                        threadsByKey.remove(key)
+                        liveItemMessageIndices.remove(key)
+                        liveTurnDiffMessageIndices.remove(key)
+                    }
+                    updateState {
+                        it.copy(
+                            activeThreadKey = replacementKey,
+                            activeServerId = serverId,
+                            currentCwd = cwd,
+                            connectionError = null,
+                        )
+                    }
+                    val retryResponse =
+                        requireTransport(serverId).request(
+                            "turn/start",
+                            buildTurnStartParams(replacementKey.threadId),
+                        )
+                    val retryTurnId =
+                        retryResponse.optJSONObject("turn")?.optString("id")?.trim().takeIf { !it.isNullOrEmpty() }
+                            ?: retryResponse.optString("turnId").trim().takeIf { it.isNotEmpty() }
+                            ?: retryResponse.optString("turnID").trim().takeIf { it.isNotEmpty() }
+                    val latestReplacement = threadsByKey[replacementKey] ?: return
+                    threadsByKey[replacementKey] =
+                        latestReplacement.copy(
+                            status = ThreadStatus.THINKING,
+                            activeTurnId = retryTurnId,
+                            updatedAtEpochMillis = System.currentTimeMillis(),
+                        )
+                    updateState { it }
+                    return
+                }
+            }
+
             val latest = threadsByKey[key] ?: return
             threadsByKey[key] =
                 latest.copy(
@@ -1430,9 +1999,42 @@ class ServerManager(
         }
     }
 
+    private fun isMissingRolloutForThread(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            val message = current.message?.lowercase(Locale.ROOT).orEmpty()
+            if (message.contains("no rollout found for thread id") || message.contains("no rollout found")) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun ensureAuthenticatedForTurns(serverId: String) {
+        val source = serversById[serverId]?.source
+        val status =
+            if (source == ServerSource.BUNDLED) {
+                accountByServerId[serverId]?.status ?: AuthStatus.UNKNOWN
+            } else {
+                runCatching { refreshAccountStateInternal(serverId).status }
+                    .getOrElse { accountByServerId[serverId]?.status ?: AuthStatus.UNKNOWN }
+            }
+
+        if (status == AuthStatus.NOT_LOGGED_IN) {
+            throw IllegalStateException("Bundled server requires login. Open Settings > Account and sign in (ChatGPT or API key).")
+        }
+    }
+
     private fun interruptInternal() {
         val key = state.activeThreadKey ?: return
-        val params = JSONObject().put("threadId", key.threadId)
+        val activeTurnId = threadsByKey[key]?.activeTurnId?.trim().takeIf { !it.isNullOrEmpty() }
+        val params =
+            JSONObject()
+                .put("threadId", key.threadId)
+                .put("threadID", key.threadId)
+                .put("turnId", activeTurnId ?: JSONObject.NULL)
+                .put("turnID", activeTurnId ?: JSONObject.NULL)
         requireTransport(key.serverId).request("turn/interrupt", params)
         val existing = threadsByKey[key] ?: return
         threadsByKey[key] =
@@ -1487,14 +2089,26 @@ class ServerManager(
     ) {
         when (method) {
             "account/login/completed" -> {
+                val current = accountByServerId[serverId] ?: AccountState()
+                val currentPendingId = current.pendingLoginId?.trim().takeIf { !it.isNullOrEmpty() }
+                val notificationLoginId =
+                    params?.optString("loginId")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("login_id")?.trim().takeIf { !it.isNullOrEmpty() }
+
+                if (
+                    notificationLoginId != null &&
+                    currentPendingId != null &&
+                    notificationLoginId != currentPendingId
+                ) {
+                    return
+                }
+
                 val success = params?.optBoolean("success", false) ?: false
                 if (success) {
-                    val current = accountByServerId[serverId] ?: AccountState()
                     accountByServerId[serverId] = current.copy(oauthUrl = null, pendingLoginId = null, lastError = null)
                     runCatching { refreshAccountStateInternal(serverId) }
                 } else {
                     val message = params?.optString("error")?.trim().orEmpty().ifBlank { "Login failed" }
-                    val current = accountByServerId[serverId] ?: AccountState()
                     accountByServerId[serverId] = current.copy(lastError = message)
                     updateState {
                         it.copy(
@@ -1513,7 +2127,11 @@ class ServerManager(
                 val threadId = params.optThreadId()
                 val key = resolveThreadKey(serverId, threadId) ?: return
                 val existing = ensureThreadState(key)
-                val turnId = params?.optString("turnId")?.trim().takeIf { !it.isNullOrEmpty() } ?: existing.activeTurnId
+                val turnId =
+                    params?.optJSONObject("turn")?.optString("id")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("turnId")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: params?.optString("turnID")?.trim().takeIf { !it.isNullOrEmpty() }
+                        ?: existing.activeTurnId
                 threadsByKey[key] =
                     existing.copy(
                         status = ThreadStatus.THINKING,
@@ -1602,12 +2220,38 @@ class ServerManager(
                         }
                     }
                 }
-                activeCompletedKey?.let { syncThreadFromServerInternal(it) }
+                val fallbackKey =
+                    activeCompletedKey
+                        ?: state.activeThreadKey?.takeIf { it.serverId == serverId }
+                        ?: threadsByKey.values.firstOrNull { it.key.serverId == serverId }?.key
+                fallbackKey?.let { syncThreadFromServerInternal(it) }
                 updateState { it }
             }
 
             "turn/diff/updated" -> {
                 handleTurnDiffNotification(serverId = serverId, params = params)
+            }
+
+            "error" -> {
+                val errorObj = params?.optJSONObject("error")
+                val message = errorObj?.optString("message")?.takeIf { it.isNotBlank() } ?: "An error occurred"
+                val threadId = extractThreadId(params)
+                if (!threadId.isNullOrBlank()) {
+                    val key = resolveThreadKey(serverId, threadId) ?: return
+                    val existing = ensureThreadState(key)
+                    val finalized = finalizeStreaming(existing.messages)
+                    threadsByKey[key] =
+                        existing.copy(
+                            status = ThreadStatus.ERROR,
+                            lastError = message,
+                            activeTurnId = null,
+                            messages = finalized,
+                            updatedAtEpochMillis = System.currentTimeMillis()
+                        )
+                    updateState { it.copy(activeThreadKey = key, activeServerId = key.serverId, connectionError = message) }
+                } else {
+                    updateState { it.copy(connectionError = message) }
+                }
             }
 
             "codex/event/turn_diff" -> {
@@ -1635,7 +2279,10 @@ class ServerManager(
         val key = resolveThreadKey(serverId, extractThreadId(params)) ?: return
         val existing = ensureThreadState(key)
         val itemType = item.optString("type").trim()
-        if (itemType == "agentMessage" || itemType == "userMessage") {
+        if (itemType == "userMessage") {
+            return
+        }
+        if (itemType == "agentMessage" && method == "item/started") {
             return
         }
 
@@ -2234,8 +2881,10 @@ class ServerManager(
         return extractString(
             params,
             "threadId",
+            "threadID",
             "thread_id",
             "conversationId",
+            "conversationID",
             "conversation_id",
         )
     }
@@ -2367,7 +3016,7 @@ class ServerManager(
 
             "agentMessage",
             "assistantMessage" -> {
-                val text = item.optString("text").trim()
+                val text = parseAgentMessageText(item)
                 if (text.isEmpty()) null else ChatMessage(role = MessageRole.ASSISTANT, text = text)
             }
 
@@ -2653,6 +3302,31 @@ class ServerManager(
         return parts.joinToString(separator = "\n")
     }
 
+    private fun parseAgentMessageText(item: JSONObject): String {
+        val direct = item.optString("text").trim()
+        if (direct.isNotEmpty()) {
+            return direct
+        }
+        val content = item.optJSONArray("content") ?: return ""
+        val parts = ArrayList<String>()
+        for (index in 0 until content.length()) {
+            val piece = content.optJSONObject(index) ?: continue
+            when (piece.optString("type")) {
+                "text", "output_text" -> {
+                    val text = piece.optString("text").trim()
+                    if (text.isNotEmpty()) {
+                        parts += text
+                    }
+                }
+
+                "image", "output_image" -> {
+                    parts += "[Image]"
+                }
+            }
+        }
+        return parts.joinToString(separator = "\n").trim()
+    }
+
     private fun parseReasoningEfforts(array: JSONArray?): List<ReasoningEffortOption> {
         if (array == null) {
             return emptyList()
@@ -2817,6 +3491,129 @@ class ServerManager(
         )
     }
 
+    private fun ensureBundledServiceReady() {
+        val context = appContext ?: throw IllegalStateException("Bundled server requires Android application context")
+        val intent = Intent(context, BundledCodexService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+
+        val deadline = SystemClock.elapsedRealtime() + 60_000L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (isLocalPortReachable(BundledCodexService.PORT)) {
+                return
+            }
+            val serviceError = BundledCodexService.lastError?.takeIf { it.isNotBlank() }
+            if (serviceError != null) {
+                throw IllegalStateException(serviceError)
+            }
+            Thread.sleep(150L)
+        }
+
+        val serviceError = BundledCodexService.lastError?.takeIf { it.isNotBlank() }
+        throw IllegalStateException(
+            serviceError
+                ?: "Bundled server did not become ready on ws://127.0.0.1:${BundledCodexService.PORT}",
+        )
+    }
+
+    private fun isLocalPortReachable(
+        port: Int,
+        timeoutMs: Int = 250,
+    ): Boolean {
+        return runCatching {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun shellCommandCandidatesForServer(serverId: String): List<String> {
+        val source = serversById[serverId]?.source
+        return when (source) {
+            ServerSource.LOCAL, ServerSource.BUNDLED -> listOf("/system/bin/sh", "/bin/sh", "sh")
+            else -> listOf("/bin/sh", "/usr/bin/sh", "sh")
+        }
+    }
+
+    private fun listCommandCandidatesForServer(serverId: String): List<String> {
+        val source = serversById[serverId]?.source
+        return when (source) {
+            ServerSource.LOCAL, ServerSource.BUNDLED -> listOf("/system/bin/ls", "/bin/ls", "ls")
+            else -> listOf("/bin/ls", "/usr/bin/ls", "ls")
+        }
+    }
+
+    private fun preferredDirectoryRootForServer(serverId: String): String {
+        val source = serversById[serverId]?.source
+        return when (source) {
+            ServerSource.BUNDLED -> {
+                appContext?.let(::bundledWorkspaceDir)?.absolutePath?.trim().orEmpty().ifEmpty { defaultWorkingDirectory() }
+            }
+            ServerSource.LOCAL -> {
+                appContext?.filesDir?.absolutePath?.trim().orEmpty().ifEmpty { defaultWorkingDirectory() }
+            }
+            else -> "/"
+        }
+    }
+
+    private fun bundledWorkspaceDir(context: Context): File {
+        val dir = File(context.filesDir, "workspace")
+        dir.mkdirs()
+        return dir
+    }
+
+    private fun listLocalDirectoriesInternal(
+        path: String,
+        fallbackRoot: String,
+    ): List<String> {
+        val rawPath = path.trim()
+        val normalized =
+            when {
+                rawPath.isEmpty() -> fallbackRoot
+                rawPath == "/" -> fallbackRoot
+                else -> rawPath
+            }
+        val rootFile = File(fallbackRoot).canonicalFile
+        val target = runCatching { File(normalized).canonicalFile }.getOrElse { rootFile }
+        val safeTarget =
+            if (target.path.startsWith(rootFile.path)) {
+                target
+            } else {
+                rootFile
+            }
+        if (!safeTarget.exists()) {
+            return emptyList()
+        }
+        return safeTarget
+            .listFiles()
+            .orEmpty()
+            .filter { it.isDirectory }
+            .map { it.name }
+            .sortedWith(compareBy<String> { it.lowercase(Locale.ROOT) }.thenBy { it })
+    }
+
+    private fun isLocalOrBundledServer(serverId: String): Boolean {
+        return when (serversById[serverId]?.source) {
+            ServerSource.LOCAL, ServerSource.BUNDLED -> true
+            else -> false
+        }
+    }
+
+    private fun isMissingExecutable(
+        exitCode: Int,
+        stderr: String,
+    ): Boolean {
+        if (exitCode == 127) {
+            return true
+        }
+        val lower = stderr.lowercase(Locale.ROOT)
+        return lower.contains("not found") || lower.contains("no such file or directory")
+    }
+
     private fun requireTransport(serverId: String): BridgeRpcTransport =
         transportsByServerId[serverId]
             ?: throw IllegalStateException("Codex bridge transport is not connected for server '$serverId'")
@@ -2829,6 +3626,36 @@ class ServerManager(
             ?: state.activeServerId
             ?: serversById.keys.firstOrNull()
             ?: throw IllegalStateException("No connected server")
+    }
+
+    private fun resolveServerIdForAuthOperations(): String {
+        val activeServer = state.activeServerId?.let { serversById[it] }
+        if (activeServer?.source == ServerSource.BUNDLED) {
+            return activeServer.id
+        }
+
+        val connectedBundled = serversById.values.firstOrNull { it.source == ServerSource.BUNDLED }
+        if (connectedBundled != null) {
+            updateState { it.copy(activeServerId = connectedBundled.id) }
+            return connectedBundled.id
+        }
+
+        val context = appContext
+        if (context != null) {
+            val bundledServer =
+                runCatching {
+                    val connected = connectServerInternal(ServerConfig.bundled(BundledCodexService.PORT))
+                    refreshSessionsInternal(connected.id)
+                    loadModelsInternal(connected.id)
+                    refreshAccountStateInternal(connected.id)
+                    connected
+                }.getOrNull()
+            if (bundledServer != null) {
+                return bundledServer.id
+            }
+        }
+
+        return resolveServerIdForActiveOperations()
     }
 
     private fun resolveServerIdForRequestedOperation(serverId: String?): String {
@@ -3009,7 +3836,7 @@ private fun JSONObject?.optThreadId(): String? {
     if (this == null) {
         return null
     }
-    val keys = arrayOf("threadId", "thread_id", "conversationId", "conversation_id")
+    val keys = arrayOf("threadId", "threadID", "thread_id", "conversationId", "conversationID", "conversation_id")
     for (key in keys) {
         if (!has(key)) {
             continue

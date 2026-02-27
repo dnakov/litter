@@ -45,3 +45,4 @@ apps/android/feature/*/build/
 
 # Local schema snapshots
 docs/codex-schema/
+apps/android/app/src/main/assets/bundled_env/

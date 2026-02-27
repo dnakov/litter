@@ -26,6 +26,7 @@ enum class ServerConnectionStatus {
 
 enum class ServerSource {
     LOCAL,
+    BUNDLED,
     BONJOUR,
     SSH,
     TAILSCALE,
@@ -36,6 +37,7 @@ enum class ServerSource {
     fun rawValue(): String =
         when (this) {
             LOCAL -> "local"
+            BUNDLED -> "bundled"
             BONJOUR -> "bonjour"
             SSH -> "ssh"
             TAILSCALE -> "tailscale"
@@ -47,6 +49,7 @@ enum class ServerSource {
         fun from(raw: String?): ServerSource =
             when (raw?.trim()?.lowercase()) {
                 "local" -> LOCAL
+                "bundled" -> BUNDLED
                 "bonjour" -> BONJOUR
                 "ssh" -> SSH
                 "tailscale" -> TAILSCALE
@@ -85,6 +88,16 @@ data class ServerConfig(
                 host = "127.0.0.1",
                 port = port,
                 source = ServerSource.LOCAL,
+                hasCodexServer = true,
+            )
+
+        fun bundled(port: Int): ServerConfig =
+            ServerConfig(
+                id = "bundled",
+                name = "Bundled Server",
+                host = "127.0.0.1",
+                port = port,
+                source = ServerSource.BUNDLED,
                 hasCodexServer = true,
             )
     }

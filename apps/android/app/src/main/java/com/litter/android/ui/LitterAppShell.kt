@@ -314,14 +314,17 @@ fun LitterAppShell(appState: LitterAppState) {
                 connectedServers = uiState.connectedServers,
                 onDismiss = appState::dismissSettings,
                 onOpenAccount = appState::openAccount,
+                onCopyBundledLogs = appState::copyBundledLogs,
                 onOpenDiscovery = appState::openDiscovery,
                 onRemoveServer = appState::removeServer,
             )
         }
 
         if (uiState.showAccount) {
+            val activeServer = uiState.connectedServers.firstOrNull { it.id == uiState.activeServerId }
             AccountSheet(
                 accountState = uiState.accountState,
+                activeServerSource = activeServer?.source,
                 apiKeyDraft = uiState.apiKeyDraft,
                 isWorking = uiState.isAuthWorking,
                 onDismiss = appState::dismissAccount,
@@ -330,6 +333,7 @@ fun LitterAppShell(appState: LitterAppState) {
                 onLoginWithApiKey = appState::loginWithApiKey,
                 onLogout = appState::logoutAccount,
                 onCancelLogin = appState::cancelLogin,
+                onCopyBundledLogs = appState::copyBundledLogs,
             )
         }
 
@@ -3664,6 +3668,7 @@ private fun SettingsSheet(
     connectedServers: List<ServerConfig>,
     onDismiss: () -> Unit,
     onOpenAccount: () -> Unit,
+    onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
 ) {
@@ -3691,6 +3696,7 @@ private fun SettingsSheet(
                         connectedServers = connectedServers,
                         onDismiss = onDismiss,
                         onOpenAccount = onOpenAccount,
+                        onCopyBundledLogs = onCopyBundledLogs,
                         onOpenDiscovery = onOpenDiscovery,
                         onRemoveServer = onRemoveServer,
                         modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
@@ -3711,6 +3717,7 @@ private fun SettingsSheet(
             connectedServers = connectedServers,
             onDismiss = null,
             onOpenAccount = onOpenAccount,
+            onCopyBundledLogs = onCopyBundledLogs,
             onOpenDiscovery = onOpenDiscovery,
             onRemoveServer = onRemoveServer,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -3724,6 +3731,7 @@ private fun SettingsSheetContent(
     connectedServers: List<ServerConfig>,
     onDismiss: (() -> Unit)?,
     onOpenAccount: () -> Unit,
+    onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -3735,6 +3743,24 @@ private fun SettingsSheetContent(
         if (onDismiss == null) {
             Text("Settings", style = MaterialTheme.typography.titleMedium)
         } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Settings", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = LitterTheme.danger)
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = onCopyBundledLogs,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Bundled Debug")
+        }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -3817,6 +3843,7 @@ private fun SettingsSheetContent(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun AccountSheet(
     accountState: AccountState,
+    activeServerSource: ServerSource?,
     apiKeyDraft: String,
     isWorking: Boolean,
     onDismiss: () -> Unit,
@@ -3825,6 +3852,7 @@ private fun AccountSheet(
     onLoginWithApiKey: () -> Unit,
     onLogout: () -> Unit,
     onCancelLogin: () -> Unit,
+    onCopyBundledLogs: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
 
@@ -3859,6 +3887,8 @@ private fun AccountSheet(
                         if (subtitle != null) {
                             Text(subtitle, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
                         }
+                        val sourceLabel = activeServerSource?.let { serverSourceLabel(it) } ?: "none"
+                        Text("Server: $sourceLabel", color = LitterTheme.textMuted, style = MaterialTheme.typography.labelLarge)
                     }
                     if (accountState.status == AuthStatus.API_KEY || accountState.status == AuthStatus.CHATGPT) {
                         TextButton(onClick = onLogout, enabled = !isWorking) {
@@ -3921,6 +3951,13 @@ private fun AccountSheet(
             if (accountState.lastError != null) {
                 Text(accountState.lastError, color = LitterTheme.danger, style = MaterialTheme.typography.labelLarge)
             }
+
+            OutlinedButton(
+                onClick = onCopyBundledLogs,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Copy Bundled Logs")
+            }
         }
     }
 }
@@ -3945,6 +3982,7 @@ private fun accountStatusColor(status: AuthStatus): Color =
 private fun serverSourceLabel(source: ServerSource): String =
     when (source) {
         ServerSource.LOCAL -> "local"
+        ServerSource.BUNDLED -> "bundled"
         ServerSource.BONJOUR -> "bonjour"
         ServerSource.SSH -> "ssh"
         ServerSource.TAILSCALE -> "tailscale"
@@ -3955,6 +3993,7 @@ private fun serverSourceLabel(source: ServerSource): String =
 private fun serverSourceAccentColor(source: ServerSource): Color =
     when (source) {
         ServerSource.LOCAL -> LitterTheme.accent
+        ServerSource.BUNDLED -> LitterTheme.accent
         ServerSource.BONJOUR -> LitterTheme.accent
         ServerSource.SSH -> LitterTheme.accent
         ServerSource.TAILSCALE -> LitterTheme.accent
@@ -3986,6 +4025,7 @@ private fun normalizeFolderPath(path: String): String {
 private fun discoverySourceLabel(source: DiscoverySource): String =
     when (source) {
         DiscoverySource.LOCAL -> "local"
+        DiscoverySource.BUNDLED -> "bundled"
         DiscoverySource.BONJOUR -> "bonjour"
         DiscoverySource.SSH -> "ssh"
         DiscoverySource.TAILSCALE -> "tailscale"
