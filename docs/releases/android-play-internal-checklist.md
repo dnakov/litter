@@ -1,7 +1,7 @@
 # Android Play Internal Checklist
 
 ## One-time Setup
-1. In Play Console, create app `com.litter.android`.
+1. In Play Console, create app `com.sigkitten.litter.android`.
 2. Create a Service Account in Google Cloud and grant it Play Console access to the app.
 3. Download the service-account JSON key.
 4. Create an upload keystore (or use your existing Play upload key).

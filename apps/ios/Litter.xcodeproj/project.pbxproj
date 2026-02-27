@@ -10,7 +10,6 @@
 		03B99F932AFF887324B15968 /* OnDeviceCodexFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93677A51659C08505EA4CE10 /* OnDeviceCodexFeature.swift */; };
 		04176A364FBEB96BDD0DE31D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 6D0691FAFC50FF36F1893995 /* Citadel */; };
 		04743D5A1900185832682235 /* SSHLoginSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9876F2929290D47ED57D77 /* SSHLoginSheet.swift */; };
-		08E721DA8890A50138EB51B0 /* AppIntentsLinking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB43BF7090A5ACD473222D62 /* AppIntentsLinking.swift */; };
 		092994BBC35FD41C78FDBAF5 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70018F0EA2A62B64DA5334B /* MarkdownUI */; };
 		0AC3B09D832DD47A0C781EE5 /* LitterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359F3DCDC22C81682DAA7B0D /* LitterApp.swift */; };
 		0B70CD891000542F8F109E18 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = 543D34C5D486ED8912358C4B /* Highlightr */; };
@@ -32,7 +31,6 @@
 		2DBCCE766D2356AB34EA47CF /* brand_logo.png in Resources */ = {isa = PBXBuildFile; fileRef = 17BD69B0550C63596995AC18 /* brand_logo.png */; };
 		2EB6769DBEBF50F7C5A2B89A /* ios_system.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A9C36495A1AD0AC9AC6DBA4 /* ios_system.xcframework */; };
 		2F3CAA82F0FC204D70DF24C9 /* ConnectionTarget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4925417F70C546B80DBD9EFF /* ConnectionTarget.swift */; };
-		2F92EACF2DFD53E126AB8CC5 /* AppIntentsLinking.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB43BF7090A5ACD473222D62 /* AppIntentsLinking.swift */; };
 		31EB5932CBEDDB0E7FFB1158 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1959956ABBEC98793B97B468 /* MessageBubbleView.swift */; };
 		3219634AC7C74A6FC4116F12 /* codex_bridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F030F0A7CE69F1ABD3D30F06 /* codex_bridge.xcframework */; };
 		35D5ED036168E1DF8EE63CB5 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1641427B3606638F140B4E9A /* SystemConfiguration.framework */; };
@@ -205,7 +203,6 @@
 		9DEE7E6F96B1BE1235356947 /* CodexIOSTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CodexIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A32EC379763C60302C66E8F3 /* JSONRPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONRPCClient.swift; sourceTree = "<group>"; };
 		AA4A8B1B0E48B3DDC9F44D90 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
-		BB43BF7090A5ACD473222D62 /* AppIntentsLinking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntentsLinking.swift; sourceTree = "<group>"; };
 		BF245554F39E59E68B72EB22 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		C361CBF40ED3D35C44D46880 /* BrandLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandLogo.swift; sourceTree = "<group>"; };
 		CECEF29277C1DB1AD1EF304D /* text.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = text.xcframework; path = Frameworks/ios_system/text.xcframework; sourceTree = "<group>"; };
@@ -300,7 +297,6 @@
 		8A5145ADC197C85E48796B1B /* Litter */ = {
 			isa = PBXGroup;
 			children = (
-				BB43BF7090A5ACD473222D62 /* AppIntentsLinking.swift */,
 				35949923355BB19A7209FD65 /* Assets.xcassets */,
 				101538FB7758F2441ED27F40 /* Extensions.swift */,
 				E518CD2A67CEB8B41545D0D2 /* Info.plist */,
@@ -560,7 +556,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				ADA061B4E1F520DB54601B39 /* AccountView.swift in Sources */,
-				2F92EACF2DFD53E126AB8CC5 /* AppIntentsLinking.swift in Sources */,
 				F5DC89787AAD41A2462541CD /* AppState.swift in Sources */,
 				D2AB8A7F991FD28255C56CD3 /* BrandLogo.swift in Sources */,
 				176D9DB2C19A759EE50DFE57 /* ChatTypes.swift in Sources */,
@@ -602,7 +597,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				5128C7E1A7C94802C9F677BA /* AccountView.swift in Sources */,
-				08E721DA8890A50138EB51B0 /* AppIntentsLinking.swift in Sources */,
 				7E7B4AC85F18366192E98E8B /* AppState.swift in Sources */,
 				E41F675D5DA4CB9AAF30EDC4 /* BrandLogo.swift in Sources */,
 				5342E9DEE1FB318F01E27F7E /* ChatTypes.swift in Sources */,

@@ -164,8 +164,8 @@ import com.litter.android.state.SkillMentionInput
 import com.litter.android.state.SkillMetadata
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
-import com.litter.android.BuildConfig
-import com.litter.android.R
+import com.sigkitten.litter.android.BuildConfig
+import com.sigkitten.litter.android.R
 import io.noties.markwon.Markwon
 import io.noties.markwon.syntax.Prism4jThemeDarkula
 import io.noties.markwon.syntax.SyntaxHighlightPlugin

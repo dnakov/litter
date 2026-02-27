@@ -17,11 +17,11 @@ val uploadKeyPassword = projectPropOrEnv("LITTER_UPLOAD_KEY_PASSWORD")
 val hasUploadSigning = listOf(uploadStoreFile, uploadStorePassword, uploadKeyAlias, uploadKeyPassword).all { !it.isNullOrBlank() }
 
 android {
-    namespace = "com.litter.android"
+    namespace = "com.sigkitten.litter.android"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.litter.android"
+        applicationId = "com.sigkitten.litter.android"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

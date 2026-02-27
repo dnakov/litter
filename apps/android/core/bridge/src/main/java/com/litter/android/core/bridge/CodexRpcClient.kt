@@ -651,7 +651,7 @@ class CodexRpcClient {
 }
 
 object CodexRuntimeStartupPolicy {
-    private const val APP_BUILD_CONFIG_CLASS = "com.litter.android.BuildConfig"
+    private const val APP_BUILD_CONFIG_CLASS = "com.sigkitten.litter.android.BuildConfig"
     private const val BUILD_CONFIG_FLAG = "ENABLE_ON_DEVICE_BRIDGE"
     private const val SYSTEM_PROPERTY = "litter.android.on_device_bridge.enabled"
     private const val ENV_VARIABLE = "LITTER_ANDROID_ON_DEVICE_BRIDGE_ENABLED"
