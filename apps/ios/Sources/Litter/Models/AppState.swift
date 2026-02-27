@@ -9,6 +9,9 @@ final class AppState: ObservableObject {
     @Published var currentCwd = ""
     @Published var showServerPicker = false
     @Published var collapsedSessionFolders: Set<String> = []
+    @Published var sessionSidebarSelectedServerFilterId: String?
+    @Published var sessionSidebarShowOnlyForks = false
+    @Published var sessionSidebarWorkspaceSortModeRaw = "mostRecent"
     @Published var selectedModel = ""
     @Published var reasoningEffort = "medium"
     @Published var approvalPolicy: String {

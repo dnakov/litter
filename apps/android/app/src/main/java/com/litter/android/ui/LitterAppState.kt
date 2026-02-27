@@ -110,6 +110,9 @@ data class UiShellState(
     val sandboxMode: String = "workspace-write",
     val sessions: List<ThreadState> = emptyList(),
     val sessionSearchQuery: String = "",
+    val sessionServerFilterId: String? = null,
+    val sessionShowOnlyForks: Boolean = false,
+    val sessionWorkspaceSortModeRaw: String = "MOST_RECENT",
     val collapsedSessionFolders: Set<String> = emptySet(),
     val activeThreadKey: ThreadKey? = null,
     val messages: List<ChatMessage> = emptyList(),
@@ -144,6 +147,14 @@ interface LitterAppState : Closeable {
     fun selectSession(threadKey: ThreadKey)
 
     fun updateSessionSearchQuery(value: String)
+
+    fun updateSessionServerFilter(serverId: String?)
+
+    fun updateSessionShowOnlyForks(value: Boolean)
+
+    fun updateSessionWorkspaceSortMode(rawValue: String)
+
+    fun clearSessionFilters()
 
     fun toggleSessionFolder(folderPath: String)
 
@@ -369,6 +380,49 @@ class DefaultLitterAppState(
 
     override fun updateSessionSearchQuery(value: String) {
         _uiState.update { it.copy(sessionSearchQuery = value) }
+    }
+
+    override fun updateSessionServerFilter(serverId: String?) {
+        _uiState.update { current ->
+            if (current.sessionServerFilterId == serverId) {
+                current
+            } else {
+                current.copy(sessionServerFilterId = serverId)
+            }
+        }
+    }
+
+    override fun updateSessionShowOnlyForks(value: Boolean) {
+        _uiState.update { current ->
+            if (current.sessionShowOnlyForks == value) {
+                current
+            } else {
+                current.copy(sessionShowOnlyForks = value)
+            }
+        }
+    }
+
+    override fun updateSessionWorkspaceSortMode(rawValue: String) {
+        _uiState.update { current ->
+            if (current.sessionWorkspaceSortModeRaw == rawValue) {
+                current
+            } else {
+                current.copy(sessionWorkspaceSortModeRaw = rawValue)
+            }
+        }
+    }
+
+    override fun clearSessionFilters() {
+        _uiState.update { current ->
+            if (current.sessionServerFilterId == null && !current.sessionShowOnlyForks) {
+                current
+            } else {
+                current.copy(
+                    sessionServerFilterId = null,
+                    sessionShowOnlyForks = false,
+                )
+            }
+        }
     }
 
     override fun toggleSessionFolder(folderPath: String) {

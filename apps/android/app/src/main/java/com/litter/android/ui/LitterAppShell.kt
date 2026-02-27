@@ -59,7 +59,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -77,9 +76,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
@@ -300,9 +299,16 @@ fun LitterAppShell(
                 sessions = uiState.sessions,
                 isSidebarOpen = uiState.isSidebarOpen,
                 sessionSearchQuery = uiState.sessionSearchQuery,
+                selectedServerFilterId = uiState.sessionServerFilterId,
+                showOnlyForks = uiState.sessionShowOnlyForks,
+                workspaceSortModeRaw = uiState.sessionWorkspaceSortModeRaw,
                 activeThreadKey = uiState.activeThreadKey,
                 onSessionSelected = appState::selectSession,
                 onSessionSearchQueryChange = appState::updateSessionSearchQuery,
+                onSessionServerFilterChange = appState::updateSessionServerFilter,
+                onSessionShowOnlyForksChange = appState::updateSessionShowOnlyForks,
+                onSessionWorkspaceSortModeChange = appState::updateSessionWorkspaceSortMode,
+                onClearSessionFilters = appState::clearSessionFilters,
                 onNewSession = {
                     appState.dismissSidebar()
                     appState.openNewSessionPicker()
@@ -625,9 +631,16 @@ private fun SessionSidebar(
     sessions: List<ThreadState>,
     isSidebarOpen: Boolean,
     sessionSearchQuery: String,
+    selectedServerFilterId: String?,
+    showOnlyForks: Boolean,
+    workspaceSortModeRaw: String,
     activeThreadKey: ThreadKey?,
     onSessionSelected: (ThreadKey) -> Unit,
     onSessionSearchQueryChange: (String) -> Unit,
+    onSessionServerFilterChange: (String?) -> Unit,
+    onSessionShowOnlyForksChange: (Boolean) -> Unit,
+    onSessionWorkspaceSortModeChange: (String) -> Unit,
+    onClearSessionFilters: () -> Unit,
     onNewSession: () -> Unit,
     onRefresh: () -> Unit,
     onForkConversation: () -> Unit,
@@ -638,11 +651,8 @@ private fun SessionSidebar(
     onOpenSettings: () -> Unit,
 ) {
     DebugRecomposeCheckpoint(name = "SessionSidebar")
-    var showOnlyForks by rememberSaveable { mutableStateOf(false) }
-    var selectedServerFilterId by rememberSaveable { mutableStateOf<String?>(null) }
     var isServerFilterMenuOpen by remember { mutableStateOf(false) }
     var isSortMenuOpen by remember { mutableStateOf(false) }
-    var workspaceSortModeRaw by rememberSaveable { mutableStateOf(WorkspaceSortMode.MOST_RECENT.name) }
     val workspaceSortMode = remember(workspaceSortModeRaw) { WorkspaceSortMode.fromRaw(workspaceSortModeRaw) }
     val collapsedWorkspaceIdsSaver =
         remember {
@@ -674,7 +684,7 @@ private fun SessionSidebar(
 
     LaunchedEffect(connectedServers, selectedServerFilterId) {
         if (selectedServerFilterId != null && connectedServers.none { it.id == selectedServerFilterId }) {
-            selectedServerFilterId = null
+            onSessionServerFilterChange(null)
         }
     }
 
@@ -856,15 +866,8 @@ private fun SessionSidebar(
                             Text("Fork")
                         }
                     }
-                    IconButton(
-                        onClick = onRefresh,
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh sessions",
-                            tint = LitterTheme.textSecondary,
-                        )
+                    TextButton(onClick = onRefresh) {
+                        Text("Refresh")
                     }
                 }
             }
@@ -910,7 +913,7 @@ private fun SessionSidebar(
                             DropdownMenuItem(
                                 text = { Text("All servers") },
                                 onClick = {
-                                    selectedServerFilterId = null
+                                    onSessionServerFilterChange(null)
                                     isServerFilterMenuOpen = false
                                 },
                             )
@@ -918,7 +921,7 @@ private fun SessionSidebar(
                                 DropdownMenuItem(
                                     text = { Text(server.name) },
                                     onClick = {
-                                        selectedServerFilterId = server.id
+                                        onSessionServerFilterChange(server.id)
                                         isServerFilterMenuOpen = false
                                     },
                                 )
@@ -927,7 +930,7 @@ private fun SessionSidebar(
                     }
 
                     OutlinedButton(
-                        onClick = { showOnlyForks = !showOnlyForks },
+                        onClick = { onSessionShowOnlyForksChange(!showOnlyForks) },
                         shape = RoundedCornerShape(8.dp),
                     ) {
                         Text(if (showOnlyForks) "Forks only" else "Forks")
@@ -955,7 +958,7 @@ private fun SessionSidebar(
                                 DropdownMenuItem(
                                     text = { Text(mode.title) },
                                     onClick = {
-                                        workspaceSortModeRaw = mode.name
+                                        onSessionWorkspaceSortModeChange(mode.name)
                                         isSortMenuOpen = false
                                     },
                                 )
@@ -965,10 +968,7 @@ private fun SessionSidebar(
 
                     if (selectedServerFilterId != null || showOnlyForks) {
                         TextButton(
-                            onClick = {
-                                selectedServerFilterId = null
-                                showOnlyForks = false
-                            },
+                            onClick = onClearSessionFilters,
                         ) {
                             Text("Clear")
                         }
@@ -1653,7 +1653,7 @@ private enum class WorkspaceSortMode(
     }
 }
 
-private fun workspaceSortModeIcon(): ImageVector = Icons.AutoMirrored.Filled.Sort
+private fun workspaceSortModeIcon(): ImageVector = Icons.Filled.SwapVert
 
 private data class WorkspaceGroupSection(
     val id: String,

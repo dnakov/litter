@@ -15,9 +15,6 @@ struct SessionSidebarView: View {
     @State private var resumingKey: ThreadKey?
     @State private var showSettings = false
     @State private var directoryPickerSheet: DirectoryPickerSheetModel?
-    @State private var selectedServerFilterId: String?
-    @State private var showOnlyForks = false
-    @State private var workspaceSortMode: WorkspaceSortMode = .mostRecent
     @State private var sessionSearchQuery = ""
     @State private var debouncedSessionSearchQuery = ""
     @State private var isForkingActiveThread = false
@@ -56,62 +53,112 @@ struct SessionSidebarView: View {
             .background(.ultraThinMaterial)
             .enableInjection()
 
-        let lifecycle = base
-            .task { await loadSessions() }
-            .onAppear {
-                scheduleActiveSessionScrollIfNeeded()
-            }
-            .onChange(of: serverManager.hasAnyConnection) { _, connected in
-                if connected { Task { await loadSessions() } }
-            }
-            .onChange(of: serverManager.activeThreadKey) { _, _ in
-                scheduleActiveSessionScrollIfNeeded()
-            }
-            .onChange(of: appState.sidebarOpen) { _, isOpen in
-                if isOpen {
-                    scheduleActiveSessionScrollIfNeeded()
-                } else {
-                    sessionSearchQuery = ""
-                    debouncedSessionSearchQuery = ""
-                    pendingActiveSessionScroll = false
-                }
-            }
-            .onChange(of: connectedServerIds) { _, ids in
-                guard let pickerSheet = directoryPickerSheet else {
-                    if let selectedServerFilterId, !ids.contains(selectedServerFilterId) {
-                        self.selectedServerFilterId = nil
+        let lifecycle = attachLifecycleHandlers(to: base, derived: derived)
+        let alerts = attachSheetAndAlerts(to: lifecycle)
+
+        return alerts.sheet(item: $directoryPickerSheet) { _ in
+            NavigationStack {
+                DirectoryPickerView(
+                    servers: connectedServerOptions,
+                    selectedServerId: Binding(
+                        get: { directoryPickerSheet?.selectedServerId ?? defaultNewSessionServerId() ?? "" },
+                        set: { nextServerId in
+                            guard var sheet = directoryPickerSheet else { return }
+                            sheet.selectedServerId = nextServerId
+                            directoryPickerSheet = sheet
+                        }
+                    ),
+                    onServerChanged: { nextServerId in
+                        guard var sheet = directoryPickerSheet else { return }
+                        sheet.selectedServerId = nextServerId
+                        directoryPickerSheet = sheet
+                    },
+                    onDirectorySelected: { serverId, cwd in
+                        directoryPickerSheet = nil
+                        Task { await startNewSession(serverId: serverId, cwd: cwd) }
+                    },
+                    onDismissRequested: {
+                        directoryPickerSheet = nil
                     }
-                    return
-                }
-                guard let fallbackServerId = defaultNewSessionServerId(preferredServerId: pickerSheet.selectedServerId) else {
-                    directoryPickerSheet = nil
-                    appState.showServerPicker = true
-                    return
-                }
-                if pickerSheet.selectedServerId != fallbackServerId {
-                    var nextSheet = pickerSheet
-                    nextSheet.selectedServerId = fallbackServerId
-                    directoryPickerSheet = nextSheet
-                }
-                if let selectedServerFilterId, !ids.contains(selectedServerFilterId) {
-                    self.selectedServerFilterId = nil
-                }
+                )
+                .environmentObject(serverManager)
             }
-            .onChange(of: sessionSearchQuery) { _, next in
-                scheduleSessionSearchDebounce(for: next)
-            }
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    private func attachLifecycleHandlers<Content: View>(
+        to content: Content,
+        derived: SessionSidebarDerivedData
+    ) -> some View {
+        let primaryLifecycle = AnyView(
+            content
+                .task { await loadSessions() }
+                .onAppear {
+                    scheduleActiveSessionScrollIfNeeded()
+                }
+                .onChange(of: serverManager.hasAnyConnection) { _, connected in
+                    if connected { Task { await loadSessions() } }
+                }
+                .onChange(of: serverManager.activeThreadKey) { _, _ in
+                    scheduleActiveSessionScrollIfNeeded()
+                }
+                .onChange(of: appState.sidebarOpen) { _, isOpen in
+                    if isOpen {
+                        scheduleActiveSessionScrollIfNeeded()
+                    } else {
+                        sessionSearchQuery = ""
+                        debouncedSessionSearchQuery = ""
+                        pendingActiveSessionScroll = false
+                    }
+                }
+        )
+
+        let secondaryLifecycle = AnyView(
+            primaryLifecycle
+                .onChange(of: connectedServerIds) { _, ids in
+                    guard let pickerSheet = directoryPickerSheet else {
+                        if let filterId = selectedServerFilterId, !ids.contains(filterId) {
+                            selectedServerFilterId = nil
+                        }
+                        return
+                    }
+                    guard let fallbackServerId = defaultNewSessionServerId(preferredServerId: pickerSheet.selectedServerId) else {
+                        directoryPickerSheet = nil
+                        appState.showServerPicker = true
+                        return
+                    }
+                    if pickerSheet.selectedServerId != fallbackServerId {
+                        var nextSheet = pickerSheet
+                        nextSheet.selectedServerId = fallbackServerId
+                        directoryPickerSheet = nextSheet
+                    }
+                    if let filterId = selectedServerFilterId, !ids.contains(filterId) {
+                        selectedServerFilterId = nil
+                    }
+                }
+                .onChange(of: sessionSearchQuery) { _, next in
+                    scheduleSessionSearchDebounce(for: next)
+                }
+        )
+
+        return secondaryLifecycle
             .onChange(of: derived.workspaceGroupIDs) { _, ids in
-                collapsedWorkspaceGroupIDs = collapsedWorkspaceGroupIDs.intersection(Set(ids))
+                let idSet: Set<String> = Set(ids)
+                collapsedWorkspaceGroupIDs = collapsedWorkspaceGroupIDs.intersection(idSet)
             }
             .onChange(of: derived.allThreadKeys) { _, keys in
-                collapsedSessionNodeKeys = collapsedSessionNodeKeys.intersection(Set(keys))
+                let keySet: Set<ThreadKey> = Set(keys)
+                collapsedSessionNodeKeys = collapsedSessionNodeKeys.intersection(keySet)
             }
             .onDisappear {
                 sessionSearchDebounceTask?.cancel()
                 sessionSearchDebounceTask = nil
             }
+    }
 
-        let alerts = lifecycle
+    private func attachSheetAndAlerts<Content: View>(to content: Content) -> some View {
+        content
             .sheet(isPresented: $showSettings) {
                 SettingsView().environmentObject(serverManager)
             }
@@ -149,7 +196,7 @@ struct SessionSidebarView: View {
                     get: { archiveTargetKey != nil },
                     set: { if !$0 { archiveTargetKey = nil } }
                 ),
-                titleVisibility: .visible,
+                titleVisibility: Visibility.visible,
                 presenting: archiveTargetThread
             ) { thread in
                 Button("Delete \"\(sessionTitle(thread))\"", role: .destructive) {
@@ -159,36 +206,6 @@ struct SessionSidebarView: View {
             } message: { _ in
                 Text("This removes the session from the list.")
             }
-
-        return alerts.sheet(item: $directoryPickerSheet) { _ in
-            NavigationStack {
-                DirectoryPickerView(
-                    servers: connectedServerOptions,
-                    selectedServerId: Binding(
-                        get: { directoryPickerSheet?.selectedServerId ?? defaultNewSessionServerId() ?? "" },
-                        set: { nextServerId in
-                            guard var sheet = directoryPickerSheet else { return }
-                            sheet.selectedServerId = nextServerId
-                            directoryPickerSheet = sheet
-                        }
-                    ),
-                    onServerChanged: { nextServerId in
-                        guard var sheet = directoryPickerSheet else { return }
-                        sheet.selectedServerId = nextServerId
-                        directoryPickerSheet = sheet
-                    },
-                    onDirectorySelected: { serverId, cwd in
-                        directoryPickerSheet = nil
-                        Task { await startNewSession(serverId: serverId, cwd: cwd) }
-                    },
-                    onDismissRequested: {
-                        directoryPickerSheet = nil
-                    }
-                )
-                .environmentObject(serverManager)
-            }
-            .preferredColorScheme(.dark)
-        }
     }
 
     private func sidebarLayout(derived: SessionSidebarDerivedData) -> some View {
@@ -228,6 +245,21 @@ struct SessionSidebarView: View {
             Divider().background(LitterTheme.separator)
             settingsRow
         }
+    }
+
+    private var selectedServerFilterId: String? {
+        get { appState.sessionSidebarSelectedServerFilterId }
+        nonmutating set { appState.sessionSidebarSelectedServerFilterId = newValue }
+    }
+
+    private var showOnlyForks: Bool {
+        get { appState.sessionSidebarShowOnlyForks }
+        nonmutating set { appState.sessionSidebarShowOnlyForks = newValue }
+    }
+
+    private var workspaceSortMode: WorkspaceSortMode {
+        get { WorkspaceSortMode(rawValue: appState.sessionSidebarWorkspaceSortModeRaw) ?? .mostRecent }
+        nonmutating set { appState.sessionSidebarWorkspaceSortModeRaw = newValue.rawValue }
     }
 
     private var connectedServerIds: [String] {
@@ -607,7 +639,8 @@ struct SessionSidebarView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.leading, 4)
+                .padding(.trailing, 8)
                 .padding(.vertical, 4)
             }
             .onAppear {
