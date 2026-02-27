@@ -138,7 +138,3 @@ val downloadBundledAssets by tasks.registering(Exec::class) {
     workingDir = rootProject.projectDir
     commandLine("bash", "scripts/download-bundled-assets.sh")
 }
-
-tasks.named("preBuild") {
-    dependsOn(downloadBundledAssets)
-}
