@@ -1285,7 +1285,12 @@ final class ServerManager: ObservableObject {
         if thread.hasTurnActive { return }
 
         let cwd = thread.cwd.isEmpty ? "/tmp" : thread.cwd
-        guard let response = try? await conn.resumeThread(threadId: key.threadId, cwd: cwd) else { return }
+        guard let response = try? await conn.resumeThread(
+            threadId: key.threadId,
+            cwd: cwd,
+            approvalPolicy: "never",
+            sandboxMode: "workspace-write"
+        ) else { return }
         let restored = restoredMessages(from: response.thread.turns)
         guard !messagesEquivalent(thread.messages, restored) else { return }
         if shouldPreferLocalMessages(current: thread.messages, restored: restored) { return }

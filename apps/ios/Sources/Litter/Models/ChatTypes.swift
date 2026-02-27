@@ -6,7 +6,7 @@ enum MessageRole: Equatable {
     case system
 }
 
-struct ChatMessage: Identifiable {
+struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: MessageRole
     var text: String
@@ -17,7 +17,7 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
-struct ChatImage: Identifiable {
+struct ChatImage: Identifiable, Equatable {
     let id = UUID()
     let data: Data
 }

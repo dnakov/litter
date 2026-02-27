@@ -498,6 +498,10 @@ class CodexRpcClient {
                             .put("name", "Litter")
                             .put("version", "1.0")
                             .put("title", JSONObject.NULL)
+                    ).put(
+                        "capabilities",
+                        JSONObject()
+                            .put("experimentalApi", true)
                     )
             )
         }.getOrElse { error ->
@@ -521,6 +525,10 @@ class CodexRpcClient {
                             .put("name", "Litter")
                             .put("version", "1.0")
                             .put("title", JSONObject.NULL)
+                    ).put(
+                        "capabilities",
+                        JSONObject()
+                            .put("experimentalApi", true)
                     )
             )
         }

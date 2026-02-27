@@ -566,21 +566,11 @@ final class ServerConnection: ObservableObject, Identifiable {
         await client.addRequestHandler { [weak self] id, method, data in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.onServerRequest?(id, method, data) == true {
-                    return
+                let handled = self.onServerRequest?(id, method, data) ?? false
+                if !handled {
+                    await self.client.sendResult(id: id, result: [:] as [String: String])
                 }
-                self.handleServerRequest(id: id, method: method)
             }
-        }
-    }
-
-    private func handleServerRequest(id: String, method: String) {
-        switch method {
-        case "item/commandExecution/requestApproval",
-             "item/fileChange/requestApproval":
-            Task { await client.sendResult(id: id, result: ["decision": "accept"]) }
-        default:
-            Task { await client.sendResult(id: id, result: [:] as [String: String]) }
         }
     }
 

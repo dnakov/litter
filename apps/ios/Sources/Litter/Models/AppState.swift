@@ -2,8 +2,8 @@ import SwiftUI
 
 @MainActor
 final class AppState: ObservableObject {
-    private static let approvalPolicyKey = "composer_approval_policy"
-    private static let sandboxModeKey = "composer_sandbox_mode"
+    private static let approvalPolicyKey = "litter.approvalPolicy"
+    private static let sandboxModeKey = "litter.sandboxMode"
 
     @Published var sidebarOpen = false
     @Published var currentCwd = ""

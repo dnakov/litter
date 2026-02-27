@@ -1,5 +1,8 @@
 package com.litter.android.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import com.litter.android.core.bridge.CodexRuntimeStartupPolicy
@@ -264,6 +267,8 @@ interface LitterAppState : Closeable {
 
     fun cancelLogin()
 
+    fun copyBundledLogs()
+
     fun openDiscovery()
 
     fun dismissDiscovery()
@@ -307,6 +312,7 @@ interface LitterAppState : Closeable {
 }
 
 class DefaultLitterAppState(
+    private val appContext: Context,
     private val serverManager: ServerManager,
     private val discoveryService: ServerDiscoveryService = ServerDiscoveryService(),
     private val sshSessionManager: SshSessionManager = SshSessionManager(),
@@ -449,11 +455,6 @@ class DefaultLitterAppState(
         serverManager.refreshSessions { result ->
             result.onFailure { error ->
                 setUiError(error.message ?: "Failed to refresh sessions")
-            }
-        }
-        serverManager.syncActiveThreadFromServer { result ->
-            result.onFailure { error ->
-                setUiError(error.message ?: "Failed to sync active thread")
             }
         }
     }
@@ -961,6 +962,19 @@ class DefaultLitterAppState(
         }
     }
 
+    override fun copyBundledLogs() {
+        serverManager.readBundledLogs { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to read bundled logs")
+            }
+            result.onSuccess { logs ->
+                val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Bundled Codex Logs", logs))
+                setUiError("Bundled logs copied to clipboard. Paste them here and I can debug quickly.")
+            }
+        }
+    }
+
     override fun openDiscovery() {
         _uiState.update {
             it.copy(
@@ -1414,7 +1428,6 @@ class DefaultLitterAppState(
     private suspend fun runForegroundRefreshLoop() {
         while (scope.isActive) {
             serverManager.refreshSessions()
-            serverManager.syncActiveThreadFromServer()
             delay(8_000)
         }
     }
@@ -1711,6 +1724,7 @@ class DefaultLitterAppState(
     private fun DiscoverySource.toStateSource(): ServerSource =
         when (this) {
             DiscoverySource.LOCAL -> ServerSource.LOCAL
+            DiscoverySource.BUNDLED -> ServerSource.BUNDLED
             DiscoverySource.BONJOUR -> ServerSource.BONJOUR
             DiscoverySource.SSH -> ServerSource.SSH
             DiscoverySource.TAILSCALE -> ServerSource.TAILSCALE
@@ -1738,6 +1752,7 @@ fun rememberLitterAppState(
     val appState =
         androidx.compose.runtime.remember(serverManager, discoveryService, sshSessionManager, sshCredentialStore, recentDirectoryStore) {
             DefaultLitterAppState(
+                appContext = appContext,
                 serverManager = serverManager,
                 discoveryService = discoveryService,
                 sshSessionManager = sshSessionManager,

@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class BridgeRpcTransport(
     private val url: String,
     private val onNotification: (method: String, params: JSONObject?) -> Unit,
+    private val onServerRequest: ((method: String, params: JSONObject?) -> JSONObject?)? = null,
 ) : Closeable {
     private val requestCounter = AtomicInteger(1)
     private val connectionEpochCounter = AtomicInteger(0)
@@ -270,6 +271,11 @@ internal class BridgeRpcTransport(
                     .put("version", "1.0")
                     .put("title", JSONObject.NULL),
             )
+            .put(
+                "capabilities",
+                JSONObject()
+                    .put("experimentalApi", true),
+            )
 
     private fun performHandshake(
         socket: Socket,
@@ -514,10 +520,16 @@ internal class BridgeRpcTransport(
     private fun handleServerRequest(envelope: JSONObject) {
         val idValue = envelope.opt("id") ?: return
         val method = envelope.optString("method")
+        val params = envelope.opt("params")
+        val paramsObject = when (params) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> params
+            else -> JSONObject().put("value", params)
+        }
         val result = when (method) {
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval" -> JSONObject().put("decision", "accept")
-            else -> JSONObject()
+            else -> onServerRequest?.invoke(method, paramsObject) ?: JSONObject()
         }
 
         val response = JSONObject()

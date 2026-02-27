@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit
  */
 enum class DiscoverySource {
     LOCAL,
+    BUNDLED,
     BONJOUR,
     SSH,
     TAILSCALE,
@@ -61,6 +62,16 @@ class ServerDiscoveryService(
                 hasCodexServer = true,
             )
 
+        results["bundled"] =
+            DiscoveredServer(
+                id = "bundled",
+                name = "Bundled Server",
+                host = "127.0.0.1",
+                port = 4500,
+                source = DiscoverySource.BUNDLED,
+                hasCodexServer = true,
+            )
+
         for (candidate in discoverBonjourCandidates()) {
             val server = probeCandidate(candidate)
             if (server != null) {
@@ -89,11 +100,12 @@ class ServerDiscoveryService(
     private fun sourceRank(source: DiscoverySource): Int =
         when (source) {
             DiscoverySource.LOCAL -> 0
-            DiscoverySource.BONJOUR -> 1
-            DiscoverySource.TAILSCALE -> 2
-            DiscoverySource.SSH -> 3
-            DiscoverySource.LAN -> 4
-            DiscoverySource.MANUAL -> 5
+            DiscoverySource.BUNDLED -> 1
+            DiscoverySource.BONJOUR -> 2
+            DiscoverySource.TAILSCALE -> 3
+            DiscoverySource.SSH -> 4
+            DiscoverySource.LAN -> 5
+            DiscoverySource.MANUAL -> 6
         }
 
     private fun probeCandidate(candidate: DiscoveryCandidate): DiscoveredServer? {

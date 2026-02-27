@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <TargetConditionals.h>
+#include <Foundation/Foundation.h>
 
 #if TARGET_OS_SIMULATOR
 // ── Simulator path ──────────────────────────────────────────────────────────
@@ -72,9 +73,54 @@ int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t
 extern int ios_system(const char *cmd);
 extern void ios_setStreams(FILE *in_stream, FILE *out_stream, FILE *err_stream);
 extern void initializeEnvironment(void);
+extern NSError *addCommandList(NSString *fileLocation);
+
+static NSString *codex_find_command_plist(NSString *name) {
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    NSMutableArray<NSString *> *candidates = [NSMutableArray arrayWithCapacity:4];
+    NSString *path = [mainBundle pathForResource:name ofType:@"plist"];
+    if (path.length > 0) {
+        [candidates addObject:path];
+    }
+    path = [mainBundle pathForResource:name ofType:@"plist" inDirectory:@"ios_system"];
+    if (path.length > 0) {
+        [candidates addObject:path];
+    }
+    path = [mainBundle pathForResource:name ofType:@"plist" inDirectory:@"Resources/ios_system"];
+    if (path.length > 0) {
+        [candidates addObject:path];
+    }
+    NSString *resourceRoot = [mainBundle resourcePath];
+    if (resourceRoot.length > 0) {
+        path = [resourceRoot stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", name]];
+        [candidates addObject:path];
+    }
+    for (NSString *path in candidates) {
+        if (path != nil && path.length > 0) {
+            return path;
+        }
+    }
+    return nil;
+}
+
+static void codex_load_command_list(NSString *name) {
+    NSString *path = codex_find_command_plist(name);
+    if (path == nil) {
+        NSLog(@"[codex-ios] %@.plist not found in app bundle", name);
+        return;
+    }
+    NSError *error = addCommandList(path);
+    if (error != nil) {
+        NSLog(@"[codex-ios] failed to load %@.plist: %@", name, error.localizedDescription);
+    } else {
+        NSLog(@"[codex-ios] loaded %@.plist", name);
+    }
+}
 
 void codex_ios_system_init(void) {
     initializeEnvironment();
+    codex_load_command_list(@"commandDictionary");
+    codex_load_command_list(@"extraCommandsDictionary");
 }
 
 int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t *output_len) {

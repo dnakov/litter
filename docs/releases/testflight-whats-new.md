@@ -1,0 +1,3 @@
+- Push-style iOS sidebar transition with edge swipe to open.
+- Improved conversation text selection behavior on iOS.
+- Assistant/system messages now preserve MarkdownUI rendering while supporting selection.

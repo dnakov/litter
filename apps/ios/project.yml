@@ -1,6 +1,6 @@
 name: Litter
 options:
-  bundleIdPrefix: com.litter
+  bundleIdPrefix: com.makyinc
   deploymentTarget:
     iOS: "26.0"
   xcodeVersion: "16.0"
@@ -41,6 +41,9 @@ targets:
       - path: Sources/Litter
         excludes:
           - "**/*.h"
+    resources:
+      - path: Sources/Litter/Resources/ios_system/commandDictionary.plist
+      - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
     dependencies:
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
@@ -59,6 +62,7 @@ targets:
         embed: true
     settings:
       base:
+        DEVELOPMENT_TEAM: Q2U52GWC83
         PRODUCT_BUNDLE_IDENTIFIER: com.makyinc.litter.remote
         INFOPLIST_FILE: Sources/Litter/Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
@@ -75,6 +79,9 @@ targets:
       - path: Sources/Litter
         excludes:
           - "**/*.h"
+    resources:
+      - path: Sources/Litter/Resources/ios_system/commandDictionary.plist
+      - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
     dependencies:
       - framework: Frameworks/codex_bridge.xcframework
         embed: false
@@ -95,6 +102,7 @@ targets:
         embed: true
     settings:
       base:
+        DEVELOPMENT_TEAM: Q2U52GWC83
         PRODUCT_BUNDLE_IDENTIFIER: com.makyinc.litter
         INFOPLIST_FILE: Sources/Litter/Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h

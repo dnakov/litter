@@ -3,7 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.kapt")
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
+    id("com.github.triplet.play")
 }
+
+fun projectPropOrEnv(name: String): String? =
+    (findProperty(name) as? String)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+
+val uploadStoreFile = projectPropOrEnv("LITTER_UPLOAD_STORE_FILE")
+val uploadStorePassword = projectPropOrEnv("LITTER_UPLOAD_STORE_PASSWORD")
+val uploadKeyAlias = projectPropOrEnv("LITTER_UPLOAD_KEY_ALIAS")
+val uploadKeyPassword = projectPropOrEnv("LITTER_UPLOAD_KEY_PASSWORD")
+val hasUploadSigning = listOf(uploadStoreFile, uploadStorePassword, uploadKeyAlias, uploadKeyPassword).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.makyinc.litter.android"
@@ -37,6 +48,17 @@ android {
         }
     }
 
+    if (hasUploadSigning) {
+        signingConfigs {
+            create("upload") {
+                storeFile = file(uploadStoreFile!!)
+                storePassword = uploadStorePassword
+                keyAlias = uploadKeyAlias
+                keyPassword = uploadKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -44,6 +66,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasUploadSigning) {
+                signingConfig = signingConfigs.getByName("upload")
+            }
         }
     }
 
@@ -59,6 +84,22 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    packaging {
+        jniLibs {
+            // Ensure native libs are extracted to a filesystem path so they can be executed.
+            useLegacyPackaging = true
+        }
+    }
+}
+
+play {
+    defaultToAppBundles.set(true)
+    track.set(projectPropOrEnv("LITTER_PLAY_TRACK") ?: "internal")
+    val serviceAccountPath = projectPropOrEnv("LITTER_PLAY_SERVICE_ACCOUNT_JSON")
+    if (!serviceAccountPath.isNullOrBlank()) {
+        serviceAccountCredentials.set(file(serviceAccountPath))
     }
 }
 
@@ -91,4 +132,13 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+}
+
+val downloadBundledAssets by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir
+    commandLine("bash", "scripts/download-bundled-assets.sh")
+}
+
+tasks.named("preBuild") {
+    dependsOn(downloadBundledAssets)
 }
