@@ -91,7 +91,7 @@ actor JSONRPCClient {
                     do {
                         try await self.sendText(String(data: data, encoding: .utf8)!)
                     } catch {
-                        if let c = await self.removePending(id: id) {
+                        if let c = self.removePending(id: id) {
                             c.resume(throwing: error)
                         }
                     }
@@ -113,20 +113,19 @@ actor JSONRPCClient {
 
     private func waitUntilReady(_ conn: NWConnection) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var resolved = false
+            let resolved = ContinuationResolutionFlag()
             conn.stateUpdateHandler = { state in
-                guard !resolved else { return }
                 switch state {
                 case .ready:
-                    resolved = true
+                    guard resolved.tryResolve() else { return }
                     conn.stateUpdateHandler = nil
                     cont.resume(returning: ())
                 case .failed(let err):
-                    resolved = true
+                    guard resolved.tryResolve() else { return }
                     conn.stateUpdateHandler = nil
                     cont.resume(throwing: err)
                 case .cancelled:
-                    resolved = true
+                    guard resolved.tryResolve() else { return }
                     conn.stateUpdateHandler = nil
                     cont.resume(throwing: URLError(.networkConnectionLost))
                 default:
@@ -407,6 +406,19 @@ enum JSONRPCClientError: LocalizedError {
         case .serverError(_, let message): return message
         case .decodingFailed(let error): return error.localizedDescription
         }
+    }
+}
+
+private final class ContinuationResolutionFlag: @unchecked Sendable {
+    private var resolved = false
+    private let lock = NSLock()
+
+    func tryResolve() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if resolved { return false }
+        resolved = true
+        return true
     }
 }
 

@@ -60,6 +60,7 @@ class ServerManager(
     private val liveItemMessageIndices = LinkedHashMap<ThreadKey, MutableMap<String, Int>>()
     private val liveTurnDiffMessageIndices = LinkedHashMap<ThreadKey, MutableMap<String, Int>>()
     private val serversUsingItemNotifications = HashSet<String>()
+    private val threadTurnCounts = LinkedHashMap<ThreadKey, Int>()
 
     private val appContext = context?.applicationContext
     private val bundledAuthStore: BundledAuthStore? =
@@ -387,6 +388,7 @@ class ServerManager(
         cwd: String? = null,
         modelSelection: ModelSelection? = null,
         localImagePath: String? = null,
+        skillMentions: List<SkillMentionInput> = emptyList(),
         onComplete: ((Result<Unit>) -> Unit)? = null,
     ) {
         submit {
@@ -396,6 +398,7 @@ class ServerManager(
                     cwd = cwd ?: state.currentCwd,
                     modelSelection = modelSelection ?: state.selectedModel,
                     localImagePath = localImagePath,
+                    skillMentions = skillMentions,
                 )
             }
             deliver(onComplete, result)
@@ -422,6 +425,66 @@ class ServerManager(
     ) {
         submit {
             val result = runCatching { renameActiveThreadInternal(name) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun renameThread(
+        threadKey: ThreadKey,
+        name: String,
+        onComplete: ((Result<Unit>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { renameThreadInternal(threadKey, name) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun editMessage(
+        messageId: String,
+        onComplete: ((Result<Unit>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { editMessageInternal(messageId) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun forkConversation(
+        onComplete: ((Result<ThreadKey>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { forkConversationInternal() }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun forkThread(
+        threadKey: ThreadKey,
+        onComplete: ((Result<ThreadKey>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { forkThreadByKeyInternal(threadKey) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun forkConversationFromMessage(
+        messageId: String,
+        onComplete: ((Result<ThreadKey>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { forkConversationFromMessageInternal(messageId) }
+            deliver(onComplete, result)
+        }
+    }
+
+    fun archiveThread(
+        threadKey: ThreadKey,
+        onComplete: ((Result<Unit>) -> Unit)? = null,
+    ) {
+        submit {
+            val result = runCatching { archiveThreadInternal(threadKey) }
             deliver(onComplete, result)
         }
     }
@@ -559,6 +622,7 @@ class ServerManager(
             liveItemMessageIndices.clear()
             liveTurnDiffMessageIndices.clear()
             serversUsingItemNotifications.clear()
+            threadTurnCounts.clear()
             runCatching { codexRpcClient.stop() }
             runCatching { appContext?.stopService(android.content.Intent(appContext, BundledCodexService::class.java)) }
             commitState(
@@ -582,6 +646,7 @@ class ServerManager(
         liveItemMessageIndices.keys.removeAll { it.serverId == serverId }
         liveTurnDiffMessageIndices.keys.removeAll { it.serverId == serverId }
         serversUsingItemNotifications.remove(serverId)
+        threadTurnCounts.keys.removeAll { it.serverId == serverId }
 
         if (removedServer?.source == ServerSource.LOCAL && serversById.values.none { it.source == ServerSource.LOCAL }) {
             runCatching { codexRpcClient.stop() }
@@ -700,35 +765,44 @@ class ServerManager(
                 val key = ThreadKey(server.id, threadId)
                 val existing = threadsByKey[key]
                 val preview = item.optString("preview").trim().ifBlank {
-                    existing?.preview ?: "Session $threadId"
+                    item.optString("name").trim().ifBlank {
+                        existing?.preview ?: "Session $threadId"
+                    }
                 }
                 val cwd = item.optString("cwd").trim().ifBlank { existing?.cwd ?: state.currentCwd }
-            val updatedAtRaw =
-                item.opt("updatedAt").asLongOrNull()
-                    ?: item.opt("updated_at").asLongOrNull()
-                    ?: System.currentTimeMillis()
-            val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
-            val remoteStatus = item.optString("status").trim().lowercase(Locale.ROOT)
-            val resolvedStatus =
-                when (remoteStatus) {
-                    "inprogress", "in_progress", "running", "busy" -> ThreadStatus.THINKING
-                    "failed", "error" -> ThreadStatus.ERROR
-                    else -> existing?.status ?: ThreadStatus.READY
-                }
+                val modelProvider = parseModelProvider(item).ifBlank { existing?.modelProvider.orEmpty() }
+                val parentThreadId = parseParentThreadId(item) ?: existing?.parentThreadId
+                val rootThreadId = parseRootThreadId(item) ?: existing?.rootThreadId
+                val updatedAtRaw =
+                    item.opt("updatedAt").asLongOrNull()
+                        ?: item.opt("updated_at").asLongOrNull()
+                        ?: System.currentTimeMillis()
+                val updatedAtEpochMillis = normalizeEpochMillis(updatedAtRaw)
+                val remoteStatus = item.optString("status").trim().lowercase(Locale.ROOT)
+                val resolvedStatus =
+                    when (remoteStatus) {
+                        "inprogress", "in_progress", "running", "busy" -> ThreadStatus.THINKING
+                        "failed", "error" -> ThreadStatus.ERROR
+                        else -> existing?.status ?: ThreadStatus.READY
+                    }
 
-            threadsByKey[key] =
-                ThreadState(
-                    key = key,
-                    serverName = server.name,
-                    serverSource = server.source,
-                    status = resolvedStatus,
-                    messages = existing?.messages ?: emptyList(),
-                    preview = preview,
-                    cwd = cwd,
+                threadsByKey[key] =
+                    ThreadState(
+                        key = key,
+                        serverName = server.name,
+                        serverSource = server.source,
+                        status = resolvedStatus,
+                        messages = existing?.messages ?: emptyList(),
+                        preview = preview,
+                        cwd = cwd,
+                        modelProvider = modelProvider,
+                        parentThreadId = parentThreadId,
+                        rootThreadId = rootThreadId,
                         updatedAtEpochMillis = maxOf(updatedAtEpochMillis, existing?.updatedAtEpochMillis ?: 0L),
                         activeTurnId = existing?.activeTurnId,
                         lastError = existing?.lastError,
                     )
+                threadTurnCounts[key] = threadTurnCounts[key] ?: inferredTurnCountFromMessages(existing?.messages.orEmpty())
             }
         }
 
@@ -1533,6 +1607,8 @@ class ServerManager(
         val key = ThreadKey(server.id, threadId)
         val existing = threadsByKey[key]
         val now = System.currentTimeMillis()
+        val responseModelProvider = parseModelProvider(response)
+        val threadObj = response.optJSONObject("thread")
         threadsByKey[key] =
             ThreadState(
                 key = key,
@@ -1542,10 +1618,14 @@ class ServerManager(
                 messages = existing?.messages ?: emptyList(),
                 preview = existing?.preview ?: "",
                 cwd = cwd,
+                modelProvider = responseModelProvider.ifBlank { existing?.modelProvider.orEmpty() },
+                parentThreadId = parseParentThreadId(threadObj) ?: existing?.parentThreadId,
+                rootThreadId = parseRootThreadId(threadObj) ?: existing?.rootThreadId,
                 updatedAtEpochMillis = now,
                 activeTurnId = null,
                 lastError = null,
             )
+        threadTurnCounts[key] = 0
         liveItemMessageIndices.remove(key)
         liveTurnDiffMessageIndices.remove(key)
 
@@ -1628,19 +1708,25 @@ class ServerManager(
             val threadObj = response.optJSONObject("thread") ?: JSONObject()
             val restored = restoreMessages(threadObj)
             val now = System.currentTimeMillis()
+            val responseModelProvider = parseModelProvider(response)
+            val threadModelProvider = parseModelProvider(threadObj)
             threadsByKey[key] =
                 ThreadState(
                     key = key,
                     serverName = server.name,
                     serverSource = server.source,
                     status = ThreadStatus.READY,
-                    messages = restored,
-                    preview = derivePreview(restored, existing?.preview),
+                    messages = restored.messages,
+                    preview = derivePreview(restored.messages, existing?.preview),
                     cwd = cwd,
+                    modelProvider = responseModelProvider.ifBlank { threadModelProvider.ifBlank { existing?.modelProvider.orEmpty() } },
+                    parentThreadId = parseParentThreadId(threadObj) ?: existing?.parentThreadId,
+                    rootThreadId = parseRootThreadId(threadObj) ?: existing?.rootThreadId,
                     updatedAtEpochMillis = now,
                     activeTurnId = null,
                     lastError = null,
                 )
+            threadTurnCounts[key] = restored.turnCount
             liveItemMessageIndices.remove(key)
             liveTurnDiffMessageIndices.remove(key)
             updateState {
@@ -1719,6 +1805,17 @@ class ServerManager(
             throw IllegalArgumentException("Thread name is required")
         }
         val key = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        renameThreadInternal(key, trimmed)
+    }
+
+    private fun renameThreadInternal(
+        key: ThreadKey,
+        name: String,
+    ) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            throw IllegalArgumentException("Thread name is required")
+        }
         requireTransport(key.serverId).request(
             method = "thread/name/set",
             params = JSONObject().put("threadId", key.threadId).put("name", trimmed),
@@ -1731,6 +1828,236 @@ class ServerManager(
                 updatedAtEpochMillis = System.currentTimeMillis(),
             )
         updateState { it }
+    }
+
+    private fun editMessageInternal(messageId: String) {
+        val key = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        val thread = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve active thread")
+        if (thread.hasTurnActive) {
+            throw IllegalStateException("Wait for the active turn to finish before editing")
+        }
+        val message = thread.messages.firstOrNull { it.id == messageId }
+            ?: throw IllegalArgumentException("Selected message was not found")
+        if (message.role != MessageRole.USER || !message.isFromUserTurnBoundary) {
+            throw IllegalArgumentException("Only user messages can be edited")
+        }
+
+        val rollbackDepth = rollbackDepthForMessage(key, message)
+        if (rollbackDepth > 0) {
+            rollbackThreadAndApply(key, rollbackDepth)
+        }
+    }
+
+    private fun forkConversationInternal(): ThreadKey {
+        val key = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        val thread = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve active thread")
+        if (thread.hasTurnActive) {
+            throw IllegalStateException("Wait for the active turn to finish before forking")
+        }
+        return forkThreadInternal(key, thread)
+    }
+
+    private fun forkThreadByKeyInternal(threadKey: ThreadKey): ThreadKey {
+        val thread = threadsByKey[threadKey] ?: throw IllegalStateException("Unable to resolve thread")
+        if (thread.hasTurnActive) {
+            throw IllegalStateException("Wait for the active turn to finish before forking")
+        }
+        return forkThreadInternal(threadKey, thread)
+    }
+
+    private fun forkConversationFromMessageInternal(messageId: String): ThreadKey {
+        val sourceKey = state.activeThreadKey ?: throw IllegalStateException("No active thread")
+        val sourceThread = threadsByKey[sourceKey] ?: throw IllegalStateException("Unable to resolve active thread")
+        if (sourceThread.hasTurnActive) {
+            throw IllegalStateException("Wait for the active turn to finish before forking")
+        }
+        val message = sourceThread.messages.firstOrNull { it.id == messageId }
+            ?: throw IllegalArgumentException("Selected message was not found")
+        if (message.role != MessageRole.USER || !message.isFromUserTurnBoundary) {
+            throw IllegalArgumentException("Fork from here is only supported for user messages")
+        }
+
+        val rollbackDepth = rollbackDepthForMessage(sourceKey, message)
+        val forkKey = forkThreadInternal(sourceKey, sourceThread)
+        if (rollbackDepth > 0) {
+            rollbackThreadAndApply(forkKey, rollbackDepth)
+        }
+        return forkKey
+    }
+
+    private fun forkThreadInternal(
+        sourceKey: ThreadKey,
+        sourceThread: ThreadState,
+    ): ThreadKey {
+        val server = ensureConnectedServer(sourceKey.serverId)
+        val sourceCwd = sourceThread.cwd.ifBlank { defaultWorkingDirectory() }
+        val response = forkThreadWithFallback(server.id, sourceKey.threadId, sourceCwd)
+        val threadObj = response.optJSONObject("thread") ?: JSONObject()
+        val forkedThreadId = threadObj.optString("id").trim()
+        if (forkedThreadId.isEmpty()) {
+            throw IllegalStateException("thread/fork returned no thread id")
+        }
+
+        val restored = restoreMessages(threadObj)
+        val forkedKey = ThreadKey(server.id, forkedThreadId)
+        val now = System.currentTimeMillis()
+        val resolvedCwd = response.optString("cwd").trim().ifEmpty { sourceCwd }
+        val responseModelProvider = parseModelProvider(response)
+        val threadModelProvider = parseModelProvider(threadObj)
+        val lineageParentId = parseParentThreadId(threadObj)
+        val lineageRootId = parseRootThreadId(threadObj)
+        threadsByKey[forkedKey] =
+            ThreadState(
+                key = forkedKey,
+                serverName = server.name,
+                serverSource = server.source,
+                status = ThreadStatus.READY,
+                messages = restored.messages,
+                preview = derivePreview(restored.messages, sourceThread.preview),
+                cwd = resolvedCwd,
+                modelProvider = responseModelProvider.ifBlank { threadModelProvider.ifBlank { sourceThread.modelProvider } },
+                parentThreadId = lineageParentId ?: sourceKey.threadId,
+                rootThreadId = lineageRootId ?: sourceThread.rootThreadId ?: sourceThread.parentThreadId ?: sourceKey.threadId,
+                updatedAtEpochMillis = now,
+                activeTurnId = null,
+                lastError = null,
+            )
+        threadTurnCounts[forkedKey] = restored.turnCount
+        liveItemMessageIndices.remove(forkedKey)
+        liveTurnDiffMessageIndices.remove(forkedKey)
+        updateState {
+            it.copy(
+                activeThreadKey = forkedKey,
+                activeServerId = server.id,
+                currentCwd = resolvedCwd,
+                connectionError = null,
+            )
+        }
+        return forkedKey
+    }
+
+    private fun archiveThreadInternal(threadKey: ThreadKey) {
+        requireTransport(threadKey.serverId).request(
+            method = "thread/archive",
+            params = JSONObject().put("threadId", threadKey.threadId),
+        )
+        threadsByKey.remove(threadKey)
+        threadTurnCounts.remove(threadKey)
+        liveItemMessageIndices.remove(threadKey)
+        liveTurnDiffMessageIndices.remove(threadKey)
+        updateState {
+            val sortedRemainingThreads = threadsByKey.values.sortedByDescending { thread -> thread.updatedAtEpochMillis }
+            val resolvedActiveKey =
+                it.activeThreadKey?.takeIf { key -> threadsByKey.containsKey(key) }
+                    ?: sortedRemainingThreads.firstOrNull()?.key
+            val resolvedCwd =
+                resolvedActiveKey
+                    ?.let { key -> threadsByKey[key]?.cwd?.trim().orEmpty() }
+                    .orEmpty()
+            it.copy(
+                activeThreadKey = resolvedActiveKey,
+                activeServerId = resolvedActiveKey?.serverId ?: it.activeServerId,
+                connectionError = null,
+                currentCwd = resolvedCwd,
+            )
+        }
+    }
+
+    private fun forkThreadWithFallback(
+        serverId: String,
+        threadId: String,
+        cwd: String,
+    ): JSONObject {
+        val approvalPolicy = composerApprovalPolicy
+        val sandbox = composerSandboxMode
+        if (sandbox != "workspace-write") {
+            return forkThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox)
+        }
+        return try {
+            forkThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox = "workspace-write")
+        } catch (error: Throwable) {
+            if (!shouldRetryWithoutLinuxSandbox(error)) {
+                throw error
+            }
+            forkThreadWithSandbox(serverId, threadId, cwd, approvalPolicy, sandbox = "danger-full-access")
+        }
+    }
+
+    private fun forkThreadWithSandbox(
+        serverId: String,
+        threadId: String,
+        cwd: String,
+        approvalPolicy: String,
+        sandbox: String,
+    ): JSONObject {
+        val params =
+            JSONObject()
+                .put("threadId", threadId)
+                .put("cwd", cwd)
+                .put("approvalPolicy", approvalPolicy)
+                .put("sandbox", sandbox)
+        return requireTransport(serverId).request("thread/fork", params)
+    }
+
+    private fun rollbackThreadAndApply(
+        key: ThreadKey,
+        numTurns: Int,
+    ) {
+        if (numTurns <= 0) {
+            return
+        }
+        val response =
+            requireTransport(key.serverId).request(
+                method = "thread/rollback",
+                params = JSONObject().put("threadId", key.threadId).put("numTurns", numTurns),
+            )
+        val threadObj = response.optJSONObject("thread") ?: JSONObject()
+        val restored = restoreMessages(threadObj)
+        val existing = threadsByKey[key] ?: throw IllegalStateException("Unable to resolve thread")
+        threadsByKey[key] =
+            existing.copy(
+                status = ThreadStatus.READY,
+                activeTurnId = null,
+                messages = restored.messages,
+                preview = derivePreview(restored.messages, existing.preview),
+                updatedAtEpochMillis = System.currentTimeMillis(),
+                lastError = null,
+            )
+        threadTurnCounts[key] = restored.turnCount
+        liveItemMessageIndices.remove(key)
+        liveTurnDiffMessageIndices.remove(key)
+        updateState {
+            it.copy(
+                activeThreadKey = key,
+                activeServerId = key.serverId,
+                currentCwd = threadsByKey[key]?.cwd ?: it.currentCwd,
+                connectionError = null,
+            )
+        }
+    }
+
+    private fun rollbackDepthForMessage(
+        key: ThreadKey,
+        message: ChatMessage,
+    ): Int {
+        val selectedTurnIndex = message.sourceTurnIndex
+            ?: throw IllegalArgumentException("Message is missing turn metadata")
+        val totalTurns = threadTurnCounts[key] ?: inferredTurnCountFromMessages(threadsByKey[key]?.messages.orEmpty())
+        if (totalTurns <= 0) {
+            throw IllegalStateException("No turn history available")
+        }
+        if (selectedTurnIndex !in 0 until totalTurns) {
+            throw IllegalStateException("Message is outside available turn history")
+        }
+        return maxOf(totalTurns - selectedTurnIndex - 1, 0)
+    }
+
+    private fun inferredTurnCountFromMessages(messages: List<ChatMessage>): Int {
+        val maxTurn = messages.mapNotNull { it.sourceTurnIndex }.maxOrNull()
+        if (maxTurn != null) {
+            return maxTurn + 1
+        }
+        return messages.count { it.role == MessageRole.USER && it.isFromUserTurnBoundary }
     }
 
     private fun listExperimentalFeaturesInternal(limit: Int): List<ExperimentalFeature> {
@@ -1838,6 +2165,7 @@ class ServerManager(
         cwd: String,
         modelSelection: ModelSelection,
         localImagePath: String? = null,
+        skillMentions: List<SkillMentionInput> = emptyList(),
     ) {
         val (cleanedText, embeddedLocalImagePath) = extractLocalImageMarker(text)
         val normalizedLocalImagePath =
@@ -1874,7 +2202,7 @@ class ServerManager(
         val withUserMessage =
             existing.copy(
                 status = ThreadStatus.THINKING,
-                messages = existing.messages + ChatMessage(role = MessageRole.USER, text = userVisibleText),
+                messages = existing.messages + ChatMessage(role = MessageRole.USER, text = userVisibleText, isFromUserTurnBoundary = true),
                 preview = userVisibleText.take(120),
                 cwd = cwd,
                 updatedAtEpochMillis = now,
@@ -1910,6 +2238,19 @@ class ServerManager(
                 JSONObject()
                     .put("type", "localImage")
                     .put("path", normalizedLocalImagePath),
+            )
+        }
+        for (mention in skillMentions) {
+            val name = mention.name.trim()
+            val path = mention.path.trim()
+            if (name.isEmpty() || path.isEmpty()) {
+                continue
+            }
+            input.put(
+                JSONObject()
+                    .put("type", "skill")
+                    .put("name", name)
+                    .put("path", path),
             )
         }
 
@@ -2123,6 +2464,31 @@ class ServerManager(
                 runCatching { refreshAccountStateInternal(serverId) }
             }
 
+            "sessionConfigured" -> {
+                val threadId =
+                    extractString(
+                        params,
+                        "sessionId",
+                        "session_id",
+                        "threadId",
+                        "thread_id",
+                    ) ?: return
+                val key = ThreadKey(serverId = serverId, threadId = threadId)
+                val existing = ensureThreadState(key)
+                threadsByKey[key] =
+                    existing.copy(
+                        preview =
+                            extractString(params, "threadName", "thread_name")
+                                ?.take(120)
+                                ?.ifBlank { existing.preview }
+                                ?: existing.preview,
+                        modelProvider = parseModelProvider(params).ifBlank { existing.modelProvider },
+                        parentThreadId = parseParentThreadId(params) ?: existing.parentThreadId,
+                        rootThreadId = parseRootThreadId(params) ?: existing.rootThreadId,
+                    )
+                updateState { it }
+            }
+
             "turn/started" -> {
                 val threadId = params.optThreadId()
                 val key = resolveThreadKey(serverId, threadId) ?: return
@@ -2286,7 +2652,7 @@ class ServerManager(
             return
         }
 
-        val message = chatMessageFromItem(item) ?: return
+        val message = chatMessageFromItem(item, sourceTurnId = null, sourceTurnIndex = null) ?: return
         val itemId = extractString(item, "id")
         val updatedMessages =
             when {
@@ -2868,6 +3234,42 @@ class ServerManager(
         return null
     }
 
+    private fun parseModelProvider(obj: JSONObject?): String {
+        return extractString(
+            obj,
+            "modelProvider",
+            "model_provider",
+            "modelProviderId",
+            "model_provider_id",
+            "model",
+        ).orEmpty()
+    }
+
+    private fun parseParentThreadId(obj: JSONObject?): String? {
+        val direct =
+            extractString(
+                obj,
+                "parentThreadId",
+                "parent_thread_id",
+                "forkedFromId",
+                "forked_from_id",
+            )
+        if (!direct.isNullOrBlank()) {
+            return direct
+        }
+        val source = obj?.opt("source")
+        if (source !is JSONObject) {
+            return null
+        }
+        val subAgent = source.opt("subAgent") as? JSONObject ?: return null
+        val threadSpawn = subAgent.opt("thread_spawn") as? JSONObject ?: return null
+        return extractString(threadSpawn, "parent_thread_id", "parentThreadId")
+    }
+
+    private fun parseRootThreadId(obj: JSONObject?): String? {
+        return extractString(obj, "rootThreadId", "root_thread_id")
+    }
+
     private fun prettyJson(value: Any?): String? {
         return when (value) {
             null, JSONObject.NULL -> null
@@ -2907,10 +3309,12 @@ class ServerManager(
         val response = runCatching { resumeThreadWithFallback(key.serverId, key.threadId, cwd) }.getOrNull() ?: return false
         val threadObj = response.optJSONObject("thread") ?: return false
         val restored = restoreMessages(threadObj)
-        if (messagesEquivalent(thread.messages, restored)) {
+        val responseModelProvider = parseModelProvider(response)
+        val threadModelProvider = parseModelProvider(threadObj)
+        if (messagesEquivalent(thread.messages, restored.messages)) {
             return false
         }
-        if (shouldPreferLocalMessages(thread.messages, restored)) {
+        if (shouldPreferLocalMessages(thread.messages, restored.messages)) {
             return false
         }
 
@@ -2918,11 +3322,15 @@ class ServerManager(
             thread.copy(
                 status = ThreadStatus.READY,
                 activeTurnId = null,
-                messages = restored,
-                preview = derivePreview(restored, thread.preview),
+                messages = restored.messages,
+                preview = derivePreview(restored.messages, thread.preview),
+                modelProvider = responseModelProvider.ifBlank { threadModelProvider.ifBlank { thread.modelProvider } },
+                parentThreadId = parseParentThreadId(threadObj) ?: thread.parentThreadId,
+                rootThreadId = parseRootThreadId(threadObj) ?: thread.rootThreadId,
                 updatedAtEpochMillis = System.currentTimeMillis(),
                 lastError = null,
             )
+        threadTurnCounts[key] = restored.turnCount
         liveItemMessageIndices.remove(key)
         liveTurnDiffMessageIndices.remove(key)
         return true
@@ -2939,6 +3347,15 @@ class ServerManager(
             val lhs = left[index]
             val rhs = right[index]
             if (lhs.role != rhs.role || lhs.text != rhs.text) {
+                return false
+            }
+            if (lhs.sourceTurnId != rhs.sourceTurnId) {
+                return false
+            }
+            if (lhs.sourceTurnIndex != rhs.sourceTurnIndex) {
+                return false
+            }
+            if (lhs.isFromUserTurnBoundary != rhs.isFromUserTurnBoundary) {
                 return false
             }
         }
@@ -2976,83 +3393,156 @@ class ServerManager(
         return firstLine.removePrefix("### ").trim().ifEmpty { null }
     }
 
-    private fun restoreMessages(threadObject: JSONObject): List<ChatMessage> {
+    private data class RestoredMessages(
+        val messages: List<ChatMessage>,
+        val turnCount: Int,
+    )
+
+    private fun restoreMessages(threadObject: JSONObject): RestoredMessages {
         val restored = ArrayList<ChatMessage>()
         val turns = threadObject.optJSONArray("turns")
         if (turns != null) {
             for (index in 0 until turns.length()) {
                 val turn = turns.optJSONObject(index) ?: continue
+                val turnId = turn.optString("id").trim().ifEmpty { null }
                 val items = turn.optJSONArray("items") ?: continue
-                parseItemsInto(restored, items)
+                parseItemsInto(
+                    out = restored,
+                    items = items,
+                    sourceTurnId = turnId,
+                    sourceTurnIndex = index,
+                )
             }
-            return restored
+            return RestoredMessages(messages = restored, turnCount = turns.length())
         }
 
         val legacyItems = threadObject.optJSONArray("items")
         if (legacyItems != null) {
-            parseItemsInto(restored, legacyItems)
+            parseItemsInto(
+                out = restored,
+                items = legacyItems,
+                sourceTurnId = null,
+                sourceTurnIndex = null,
+            )
         }
-        return restored
+        return RestoredMessages(
+            messages = restored,
+            turnCount = inferredTurnCountFromMessages(restored),
+        )
     }
 
     private fun parseItemsInto(
         out: MutableList<ChatMessage>,
         items: JSONArray,
+        sourceTurnId: String?,
+        sourceTurnIndex: Int?,
     ) {
         for (index in 0 until items.length()) {
             val item = items.optJSONObject(index) ?: continue
-            val message = chatMessageFromItem(item) ?: continue
+            val message = chatMessageFromItem(item, sourceTurnId, sourceTurnIndex) ?: continue
             out += message
         }
     }
 
-    private fun chatMessageFromItem(item: JSONObject): ChatMessage? {
+    private fun chatMessageFromItem(
+        item: JSONObject,
+        sourceTurnId: String?,
+        sourceTurnIndex: Int?,
+    ): ChatMessage? {
         return when (item.optString("type")) {
             "userMessage" -> {
                 val content = item.optJSONArray("content")
                 val text = parseUserMessageText(content, item.optString("text"))
-                if (text.isBlank()) null else ChatMessage(role = MessageRole.USER, text = text)
+                if (text.isBlank()) {
+                    null
+                } else {
+                    ChatMessage(
+                        role = MessageRole.USER,
+                        text = text,
+                        sourceTurnId = sourceTurnId,
+                        sourceTurnIndex = sourceTurnIndex,
+                        isFromUserTurnBoundary = true,
+                    )
+                }
             }
 
             "agentMessage",
             "assistantMessage" -> {
                 val text = parseAgentMessageText(item)
-                if (text.isEmpty()) null else ChatMessage(role = MessageRole.ASSISTANT, text = text)
+                if (text.isEmpty()) {
+                    null
+                } else {
+                    ChatMessage(
+                        role = MessageRole.ASSISTANT,
+                        text = text,
+                        sourceTurnId = sourceTurnId,
+                        sourceTurnIndex = sourceTurnIndex,
+                    )
+                }
             }
 
             "plan" -> {
                 val text = item.optString("text").trim()
-                if (text.isEmpty()) null else systemMessage("Plan", text)
+                withTurnMetadata(
+                    if (text.isEmpty()) null else systemMessage("Plan", text),
+                    sourceTurnId = sourceTurnId,
+                    sourceTurnIndex = sourceTurnIndex,
+                )
             }
 
             "reasoning" -> {
                 val summary = readStringArray(item.opt("summary"))
                 val content = readStringArray(item.opt("content"))
                 val body = (summary + content).joinToString(separator = "\n\n").trim()
-                if (body.isEmpty()) null else ChatMessage(role = MessageRole.REASONING, text = body)
+                if (body.isEmpty()) {
+                    null
+                } else {
+                    ChatMessage(
+                        role = MessageRole.REASONING,
+                        text = body,
+                        sourceTurnId = sourceTurnId,
+                        sourceTurnIndex = sourceTurnIndex,
+                    )
+                }
             }
 
-            "commandExecution" -> parseCommandExecutionMessage(item)
-            "fileChange" -> parseFileChangeMessage(item)
-            "mcpToolCall" -> parseMcpToolCallMessage(item)
-            "collabAgentToolCall" -> parseCollabMessage(item)
-            "webSearch" -> parseWebSearchMessage(item)
+            "commandExecution" -> withTurnMetadata(parseCommandExecutionMessage(item), sourceTurnId, sourceTurnIndex)
+            "fileChange" -> withTurnMetadata(parseFileChangeMessage(item), sourceTurnId, sourceTurnIndex)
+            "mcpToolCall" -> withTurnMetadata(parseMcpToolCallMessage(item), sourceTurnId, sourceTurnIndex)
+            "collabAgentToolCall" -> withTurnMetadata(parseCollabMessage(item), sourceTurnId, sourceTurnIndex)
+            "webSearch" -> withTurnMetadata(parseWebSearchMessage(item), sourceTurnId, sourceTurnIndex)
             "imageView" -> {
                 val path = item.optString("path").trim()
-                if (path.isEmpty()) null else systemMessage("Image View", "Path: $path")
+                withTurnMetadata(
+                    if (path.isEmpty()) null else systemMessage("Image View", "Path: $path"),
+                    sourceTurnId = sourceTurnId,
+                    sourceTurnIndex = sourceTurnIndex,
+                )
             }
 
             "enteredReviewMode" -> {
                 val review = item.optString("review").trim()
-                systemMessage("Review Mode", "Entered review: $review")
+                withTurnMetadata(
+                    systemMessage("Review Mode", "Entered review: $review"),
+                    sourceTurnId = sourceTurnId,
+                    sourceTurnIndex = sourceTurnIndex,
+                )
             }
 
             "exitedReviewMode" -> {
                 val review = item.optString("review").trim()
-                systemMessage("Review Mode", "Exited review: $review")
+                withTurnMetadata(
+                    systemMessage("Review Mode", "Exited review: $review"),
+                    sourceTurnId = sourceTurnId,
+                    sourceTurnIndex = sourceTurnIndex,
+                )
             }
 
-            "contextCompaction" -> systemMessage("Context", "Context compaction occurred.")
+            "contextCompaction" -> withTurnMetadata(
+                systemMessage("Context", "Context compaction occurred."),
+                sourceTurnId = sourceTurnId,
+                sourceTurnIndex = sourceTurnIndex,
+            )
             else -> null
         }
     }
@@ -3240,6 +3730,20 @@ class ServerManager(
         return ChatMessage(role = MessageRole.SYSTEM, text = "### $title\n$trimmed")
     }
 
+    private fun withTurnMetadata(
+        message: ChatMessage?,
+        sourceTurnId: String?,
+        sourceTurnIndex: Int?,
+    ): ChatMessage? {
+        if (message == null) {
+            return null
+        }
+        return message.copy(
+            sourceTurnId = sourceTurnId,
+            sourceTurnIndex = sourceTurnIndex,
+        )
+    }
+
     private fun parseUserMessageText(
         content: JSONArray?,
         fallback: String,
@@ -3361,6 +3865,7 @@ class ServerManager(
                 status = ThreadStatus.READY,
             )
         threadsByKey[key] = created
+        threadTurnCounts[key] = threadTurnCounts[key] ?: 0
         return created
     }
 

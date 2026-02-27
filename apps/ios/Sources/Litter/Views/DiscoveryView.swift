@@ -12,6 +12,14 @@ struct DiscoveryView: View {
     @State private var connectingServer: DiscoveredServer?
     @State private var connectError: String?
 
+    private var localServers: [DiscoveredServer] {
+        discovery.servers.filter { $0.source == .local }
+    }
+
+    private var networkServers: [DiscoveredServer] {
+        discovery.servers.filter { $0.source != .local }
+    }
+
     var body: some View {
         ZStack {
             LitterTheme.backgroundGradient.ignoresSafeArea()
@@ -25,7 +33,7 @@ struct DiscoveryView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
-                if discovery.servers.contains(where: { $0.source == .local }) {
+                if !localServers.isEmpty {
                     localSection
                 }
                 networkSection
@@ -86,7 +94,7 @@ struct DiscoveryView: View {
 
     private var localSection: some View {
         Section {
-            ForEach(discovery.servers.filter { $0.source == .local }) { server in
+            ForEach(localServers) { server in
                 serverRow(server)
             }
         } header: {
@@ -98,19 +106,18 @@ struct DiscoveryView: View {
 
     private var networkSection: some View {
         Section {
-            let networkServers = discovery.servers.filter { $0.source != .local }
             if networkServers.isEmpty {
                 if discovery.isScanning {
                     HStack {
                         ProgressView().tint(LitterTheme.textMuted).scaleEffect(0.7)
                         Text("Scanning Bonjour + Tailscale...")
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(LitterFont.monospaced(.footnote))
                             .foregroundColor(LitterTheme.textMuted)
                     }
                     .listRowBackground(LitterTheme.surface.opacity(0.6))
                 } else {
                     Text("No IPv4 Codex/SSH hosts found via Bonjour/Tailscale")
-                        .font(.system(.footnote, design: .monospaced))
+                        .font(LitterFont.monospaced(.footnote))
                         .foregroundColor(LitterTheme.textMuted)
                         .listRowBackground(LitterTheme.surface.opacity(0.6))
                 }
@@ -135,7 +142,7 @@ struct DiscoveryView: View {
                     Image(systemName: "plus.circle")
                         .foregroundColor(LitterTheme.accent)
                     Text("Add Server")
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                         .foregroundColor(LitterTheme.accent)
                 }
             }
@@ -155,16 +162,16 @@ struct DiscoveryView: View {
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(server.name)
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                         .foregroundColor(.white)
                     Text(serverSubtitle(server))
-                        .font(.system(.caption, design: .monospaced))
+                        .font(LitterFont.monospaced(.caption))
                         .foregroundColor(LitterTheme.textSecondary)
                 }
                 Spacer()
                 if serverManager.connections[server.id]?.isConnected == true {
                     Text("connected")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(LitterFont.monospaced(.caption2))
                         .foregroundColor(LitterTheme.accent)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -240,12 +247,12 @@ struct DiscoveryView: View {
                 Form {
                     Section {
                         TextField("hostname or IP", text: $manualHost)
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(LitterFont.monospaced(.footnote))
                             .foregroundColor(.white)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
                         TextField("port", text: $manualPort)
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(LitterFont.monospaced(.footnote))
                             .foregroundColor(.white)
                             .keyboardType(.numberPad)
                     }
@@ -263,7 +270,7 @@ struct DiscoveryView: View {
                             Task { await connectToServer(server) }
                         }
                         .foregroundColor(LitterTheme.accent)
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                     }
                     .listRowBackground(LitterTheme.surface.opacity(0.6))
                 }

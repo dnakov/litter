@@ -159,23 +159,23 @@ private struct ApprovalPromptView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Text(title)
-                    .font(.system(.headline, design: .monospaced))
+                    .font(LitterFont.monospaced(.headline))
                     .foregroundColor(LitterTheme.textPrimary)
 
                 if let reason = approval.reason, !reason.isEmpty {
                     Text(reason)
-                        .font(.system(.footnote, design: .monospaced))
+                        .font(LitterFont.monospaced(.footnote))
                         .foregroundColor(LitterTheme.textSecondary)
                 }
 
                 if let command = approval.command, !command.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Command")
-                            .font(.system(.caption, design: .monospaced))
+                            .font(LitterFont.monospaced(.caption))
                             .foregroundColor(LitterTheme.textMuted)
                         ScrollView(.horizontal, showsIndicators: false) {
                             Text(command)
-                                .font(.system(.footnote, design: .monospaced))
+                                .font(LitterFont.monospaced(.footnote))
                                 .foregroundColor(LitterTheme.textBody)
                                 .padding(10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -187,13 +187,13 @@ private struct ApprovalPromptView: View {
 
                 if let cwd = approval.cwd, !cwd.isEmpty {
                     Text("CWD: \(cwd)")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(LitterFont.monospaced(.caption))
                         .foregroundColor(LitterTheme.textMuted)
                 }
 
                 if let grantRoot = approval.grantRoot, !grantRoot.isEmpty {
                     Text("Grant Root: \(grantRoot)")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(LitterFont.monospaced(.caption))
                         .foregroundColor(LitterTheme.textMuted)
                 }
 
@@ -218,7 +218,7 @@ private struct ApprovalPromptView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                .font(.system(.callout, design: .monospaced))
+                .font(LitterFont.monospaced(.callout))
             }
             .padding(16)
             .modifier(GlassRectModifier(cornerRadius: 14))
@@ -239,7 +239,7 @@ struct LaunchView: View {
             VStack(spacing: 24) {
                 BrandLogo(size: 132)
                 Text("AI coding agent on iOS")
-                    .font(.system(.body, design: .monospaced))
+                    .font(LitterFont.monospaced(.body))
                     .foregroundColor(LitterTheme.textMuted)
             }
         }

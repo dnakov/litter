@@ -47,10 +47,10 @@ struct AccountView: View {
         .sheet(isPresented: $showOAuth) {
             oauthSheet
         }
-        .onChange(of: conn?.oauthURL) { url in
+        .onChange(of: conn?.oauthURL) { _, url in
             showOAuth = url != nil
         }
-        .onChange(of: conn?.loginCompleted) { completed in
+        .onChange(of: conn?.loginCompleted) { _, completed in
             if completed == true {
                 showOAuth = false
                 conn?.loginCompleted = false
@@ -61,7 +61,7 @@ struct AccountView: View {
     private var currentAccountSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("CURRENT ACCOUNT")
-                .font(.system(.caption, design: .monospaced))
+                .font(LitterFont.monospaced(.caption))
                 .foregroundColor(LitterTheme.textMuted)
                 .padding(.horizontal, 20)
 
@@ -71,11 +71,11 @@ struct AccountView: View {
                     .frame(width: 10, height: 10)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(authTitle)
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                         .foregroundColor(.white)
                     if let sub = authSubtitle {
                         Text(sub)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(LitterFont.monospaced(.caption))
                             .foregroundColor(LitterTheme.textSecondary)
                     }
                 }
@@ -84,7 +84,7 @@ struct AccountView: View {
                     Button("Logout") {
                         Task { await conn?.logout() }
                     }
-                    .font(.system(.footnote, design: .monospaced))
+                    .font(LitterFont.monospaced(.footnote))
                     .foregroundColor(Color(hex: "#FF5555"))
                 }
             }
@@ -99,7 +99,7 @@ struct AccountView: View {
     private var loginSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("LOGIN")
-                .font(.system(.caption, design: .monospaced))
+                .font(LitterFont.monospaced(.caption))
                 .foregroundColor(LitterTheme.textMuted)
                 .padding(.horizontal, 20)
 
@@ -117,7 +117,7 @@ struct AccountView: View {
                     }
                     Image(systemName: "person.crop.circle.badge.checkmark")
                     Text("Login with ChatGPT")
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                 }
                 .foregroundColor(Color(hex: "#0D0D0D"))
                 .frame(maxWidth: .infinity)
@@ -129,13 +129,13 @@ struct AccountView: View {
             .disabled(isWorking)
 
             Text("— or use an API key —")
-                .font(.system(.caption, design: .monospaced))
+                .font(LitterFont.monospaced(.caption))
                 .foregroundColor(LitterTheme.textMuted)
                 .frame(maxWidth: .infinity)
 
             VStack(alignment: .leading, spacing: 8) {
                 SecureField("sk-...", text: $apiKey)
-                    .font(.system(.subheadline, design: .monospaced))
+                    .font(LitterFont.monospaced(.subheadline))
                     .foregroundColor(.white)
                     .padding(12)
                     .background(LitterTheme.surface)
@@ -154,7 +154,7 @@ struct AccountView: View {
                     }
                 } label: {
                     Text("Save API Key")
-                        .font(.system(.subheadline, design: .monospaced))
+                        .font(LitterFont.monospaced(.subheadline))
                         .foregroundColor(LitterTheme.accent)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)

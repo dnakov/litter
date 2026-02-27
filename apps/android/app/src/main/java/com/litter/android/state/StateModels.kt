@@ -196,12 +196,20 @@ data class SkillMetadata(
     val enabled: Boolean,
 )
 
+data class SkillMentionInput(
+    val name: String,
+    val path: String,
+)
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: MessageRole,
     val text: String,
     val timestampEpochMillis: Long = System.currentTimeMillis(),
     val isStreaming: Boolean = false,
+    val sourceTurnId: String? = null,
+    val sourceTurnIndex: Int? = null,
+    val isFromUserTurnBoundary: Boolean = false,
 )
 
 data class ThreadState(
@@ -212,12 +220,18 @@ data class ThreadState(
     val messages: List<ChatMessage> = emptyList(),
     val preview: String = "",
     val cwd: String = "",
+    val modelProvider: String = "",
+    val parentThreadId: String? = null,
+    val rootThreadId: String? = null,
     val updatedAtEpochMillis: Long = System.currentTimeMillis(),
     val activeTurnId: String? = null,
     val lastError: String? = null,
 ) {
     val hasTurnActive: Boolean
         get() = status == ThreadStatus.THINKING
+
+    val isFork: Boolean
+        get() = !parentThreadId.isNullOrBlank()
 }
 
 data class AppState(

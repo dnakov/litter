@@ -402,7 +402,7 @@ final class NetworkDiscovery: ObservableObject {
 }
 
 @MainActor
-private final class BonjourServiceDiscoverer: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     private struct ServiceRecord {
         let name: String
         let codexPortHint: UInt16?

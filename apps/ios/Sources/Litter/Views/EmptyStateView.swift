@@ -26,7 +26,7 @@ struct EmptyStateView: View {
             VStack(spacing: 20) {
                 BrandLogo(size: 112)
                 Text("Open the sidebar to start a session")
-                    .font(.system(.body, design: .monospaced))
+                    .font(LitterFont.monospaced(.body))
                     .foregroundColor(LitterTheme.textMuted)
                 if !connectedServerNames.isEmpty {
                     HStack(spacing: 8) {
@@ -34,7 +34,7 @@ struct EmptyStateView: View {
                             .fill(LitterTheme.accent)
                             .frame(width: 8, height: 8)
                         Text(connectionSummary)
-                            .font(.system(.footnote, design: .monospaced))
+                            .font(LitterFont.monospaced(.footnote))
                             .foregroundColor(LitterTheme.accent)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
@@ -44,7 +44,7 @@ struct EmptyStateView: View {
                     Button("Connect to Server") {
                         appState.showServerPicker = true
                     }
-                    .font(.system(.body, design: .monospaced))
+                    .font(LitterFont.monospaced(.body))
                     .foregroundColor(LitterTheme.accent)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)

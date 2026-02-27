@@ -29,17 +29,17 @@ cargo rustc --release --target x86_64-apple-ios --crate-type staticlib
 echo "==> Creating fat simulator lib..."
 mkdir -p target/ios-sim-fat/release
 lipo -create \
-    target/aarch64-apple-ios-sim/release/libcodex_bridge.a \
-    target/x86_64-apple-ios/release/libcodex_bridge.a \
-    -output target/ios-sim-fat/release/libcodex_bridge.a
+  target/aarch64-apple-ios-sim/release/libcodex_bridge.a \
+  target/x86_64-apple-ios/release/libcodex_bridge.a \
+  -output target/ios-sim-fat/release/libcodex_bridge.a
 
 echo "==> Creating xcframework..."
 rm -rf "$FRAMEWORKS_DIR/codex_bridge.xcframework"
 xcodebuild -create-xcframework \
-    -library target/aarch64-apple-ios/release/libcodex_bridge.a \
-    -headers include/ \
-    -library target/ios-sim-fat/release/libcodex_bridge.a \
-    -headers include/ \
-    -output "$FRAMEWORKS_DIR/codex_bridge.xcframework"
+  -library target/aarch64-apple-ios/release/libcodex_bridge.a \
+  -headers include/ \
+  -library target/ios-sim-fat/release/libcodex_bridge.a \
+  -headers include/ \
+  -output "$FRAMEWORKS_DIR/codex_bridge.xcframework"
 
 echo "==> Done: $FRAMEWORKS_DIR/codex_bridge.xcframework"

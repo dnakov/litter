@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 extension Color {
     init(hex: String) {
@@ -16,6 +17,7 @@ extension Color {
 
 enum LitterTheme {
     static let accent       = Color(hex: "#B0B0B0")
+    static let accentStrong = Color(hex: "#00FF9C")
     static let textPrimary  = Color.white
     static let textSecondary = Color(hex: "#888888")
     static let textMuted    = Color(hex: "#555555")
@@ -24,6 +26,11 @@ enum LitterTheme {
     static let surface      = Color(hex: "#1A1A1A")
     static let surfaceLight = Color(hex: "#2A2A2A")
     static let border       = Color(hex: "#333333")
+    static let separator    = Color(hex: "#1E1E1E")
+    static let danger       = Color(hex: "#FF5555")
+    static let success      = Color(hex: "#6EA676")
+    static let warning      = Color(hex: "#E2A644")
+    static let overlayScrim = Color.black.opacity(0.5)
 
     static let gradientColors: [Color] = [
         Color(hex: "#0A0A0A"),
@@ -37,6 +44,47 @@ enum LitterTheme {
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
+    }
+}
+
+enum LitterFont {
+    static var markdownFontName: String {
+        "SFMono-Regular"
+    }
+
+    static func monospaced(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> Font {
+        let pointSize = UIFont.preferredFont(forTextStyle: style.uiTextStyle).pointSize
+        return monospaced(size: pointSize, weight: weight, relativeTo: style)
+    }
+
+    static func monospaced(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        monospaced(size: size, weight: weight, relativeTo: nil)
+    }
+
+    private static func monospaced(size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle?) -> Font {
+        if let style {
+            return .system(style, design: .monospaced, weight: weight)
+        }
+        return .system(size: size, weight: weight, design: .monospaced)
+    }
+}
+
+private extension Font.TextStyle {
+    var uiTextStyle: UIFont.TextStyle {
+        switch self {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .subheadline: return .subheadline
+        case .body: return .body
+        case .callout: return .callout
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        @unknown default: return .body
+        }
     }
 }
 

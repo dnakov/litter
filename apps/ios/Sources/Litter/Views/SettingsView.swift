@@ -5,6 +5,14 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showAccount = false
 
+    private var connectedServers: [ServerConnection] {
+        serverManager.connections.values
+            .filter { $0.isConnected }
+            .sorted { lhs, rhs in
+                lhs.server.name.localizedCaseInsensitiveCompare(rhs.server.name) == .orderedAscending
+            }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -18,9 +26,9 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Account")
                                         .foregroundColor(.white)
-                                        .font(.system(.subheadline, design: .monospaced))
+                                        .font(LitterFont.monospaced(.subheadline))
                                     Text(accountSummary)
-                                        .font(.system(.caption, design: .monospaced))
+                                        .font(LitterFont.monospaced(.caption))
                                         .foregroundColor(LitterTheme.textSecondary)
                                 }
                                 Spacer()
@@ -36,31 +44,30 @@ struct SettingsView: View {
                     }
 
                     Section {
-                        let connected = serverManager.connections.values.filter { $0.isConnected }
-                        if connected.isEmpty {
+                        if connectedServers.isEmpty {
                             Text("No servers connected")
-                                .font(.system(.footnote, design: .monospaced))
+                                .font(LitterFont.monospaced(.footnote))
                                 .foregroundColor(LitterTheme.textMuted)
                                 .listRowBackground(LitterTheme.surface.opacity(0.6))
                         } else {
-                            ForEach(Array(connected), id: \.id) { conn in
+                            ForEach(connectedServers, id: \.id) { conn in
                                 HStack {
                                     Image(systemName: serverIconName(for: conn.server.source))
                                         .foregroundColor(LitterTheme.accent)
                                         .frame(width: 20)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(conn.server.name)
-                                            .font(.system(.footnote, design: .monospaced))
+                                            .font(LitterFont.monospaced(.footnote))
                                             .foregroundColor(.white)
                                         Text(conn.isConnected ? "Connected" : "Disconnected")
-                                            .font(.system(.caption, design: .monospaced))
+                                            .font(LitterFont.monospaced(.caption))
                                             .foregroundColor(conn.isConnected ? LitterTheme.accent : LitterTheme.textSecondary)
                                     }
                                     Spacer()
                                     Button("Remove") {
                                         serverManager.removeServer(id: conn.id)
                                     }
-                                    .font(.system(.caption, design: .monospaced))
+                                    .font(LitterFont.monospaced(.caption))
                                     .foregroundColor(Color(hex: "#FF5555"))
                                 }
                                 .listRowBackground(LitterTheme.surface.opacity(0.6))
@@ -68,6 +75,21 @@ struct SettingsView: View {
                         }
                     } header: {
                         Text("Servers")
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+
+                    Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Custom Font")
+                                .font(LitterFont.monospaced(.subheadline))
+                                .foregroundColor(.white)
+                            Text("Berkeley Mono is not bundled. Please upload your own licensed .otf or .ttf monospace font.")
+                                .font(LitterFont.monospaced(.caption))
+                                .foregroundColor(LitterTheme.textSecondary)
+                        }
+                        .listRowBackground(LitterTheme.surface.opacity(0.6))
+                    } header: {
+                        Text("Typography")
                             .foregroundColor(LitterTheme.textSecondary)
                     }
                 }

@@ -11,6 +11,9 @@ struct ChatMessage: Identifiable, Equatable {
     let role: MessageRole
     var text: String
     var images: [ChatImage] = []
+    var sourceTurnId: String? = nil
+    var sourceTurnIndex: Int? = nil
+    var isFromUserTurnBoundary: Bool = false
     let timestamp = Date()
 }
 

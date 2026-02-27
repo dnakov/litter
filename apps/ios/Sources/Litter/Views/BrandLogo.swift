@@ -18,7 +18,7 @@ struct BrandLogo: View {
                 .accessibilityHidden(true)
         } else {
             Text("litter")
-                .font(.system(size: size * 0.32, weight: .bold, design: .monospaced))
+                .font(LitterFont.monospaced(size: size * 0.32, weight: .bold))
                 .foregroundColor(LitterTheme.accent)
         }
     }

@@ -23,7 +23,6 @@ require_tool() {
 require_tool curl
 require_tool npm
 require_tool tar
-require_tool ar
 
 NODEJS_INDEX_URL="https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/"
 NODEJS_DEB_NAME="$(
@@ -102,8 +101,27 @@ if [[ ! -f "$ASSETS_DIR/bin/node" || "$existing_node_package" != "$NODEJS_PACKAG
     trap 'rm -rf "$TMP_NODE_DIR"' EXIT
     pushd "$TMP_NODE_DIR" >/dev/null
     curl -fL --retry 3 --retry-delay 1 "$NODEJS_PACKAGE_URL" -o nodejs.deb
-    ar x nodejs.deb
-    tar -xJf data.tar.xz "./data/data/com.termux/files/usr/bin/node"
+    # GNU ar works on Linux, while BSD ar on macOS can fail for some .deb member names.
+    # Some BSD ar versions still return exit code 0 on failure, so verify outputs exist.
+    if command -v ar >/dev/null 2>&1; then
+        ar x nodejs.deb || true
+    fi
+    if [[ ! -f data.tar.xz && ! -f data.tar.gz && ! -f data.tar.zst && ! -f data.tar ]]; then
+        tar -xf nodejs.deb
+    fi
+
+    DATA_ARCHIVE=""
+    for candidate in data.tar.xz data.tar.gz data.tar.zst data.tar; do
+        if [[ -f "$candidate" ]]; then
+            DATA_ARCHIVE="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$DATA_ARCHIVE" ]]; then
+        echo "Unable to locate data archive inside nodejs.deb" >&2
+        exit 1
+    fi
+    tar -xf "$DATA_ARCHIVE" "./data/data/com.termux/files/usr/bin/node"
     cp "./data/data/com.termux/files/usr/bin/node" "$ASSETS_DIR/bin/node"
     popd >/dev/null
     rm -rf "$TMP_NODE_DIR"

@@ -148,6 +148,31 @@ final class ServerConnection: ObservableObject, Identifiable {
         }
     }
 
+    func forkThread(
+        threadId: String,
+        cwd: String? = nil,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadForkResponse {
+        let preferredSandbox = sandboxMode ?? Self.defaultSandboxMode
+        do {
+            return try await forkThread(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: preferredSandbox
+            )
+        } catch {
+            guard sandboxMode == nil, preferredSandbox == Self.defaultSandboxMode, shouldRetryWithoutLinuxSandbox(error) else { throw error }
+            return try await forkThread(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: Self.fallbackSandboxMode
+            )
+        }
+    }
+
     private func startThread(cwd: String, model: String?, approvalPolicy: String, sandbox: String) async throws -> ThreadStartResponse {
         try await client.sendRequest(
             method: "thread/start",
@@ -169,6 +194,19 @@ final class ServerConnection: ObservableObject, Identifiable {
         )
     }
 
+    private func forkThread(
+        threadId: String,
+        cwd: String?,
+        approvalPolicy: String,
+        sandbox: String
+    ) async throws -> ThreadForkResponse {
+        try await client.sendRequest(
+            method: "thread/fork",
+            params: ThreadForkParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
+            responseType: ThreadForkResponse.self
+        )
+    }
+
     private func shouldRetryWithoutLinuxSandbox(_ error: Error) -> Bool {
         guard case let JSONRPCClientError.serverError(_, message) = error else {
             return false
@@ -178,10 +216,18 @@ final class ServerConnection: ObservableObject, Identifiable {
             lower.contains("missing codex-linux-sandbox executable path")
     }
 
-    func sendTurn(threadId: String, text: String, model: String? = nil, effort: String? = nil) async throws {
+    func sendTurn(
+        threadId: String,
+        text: String,
+        model: String? = nil,
+        effort: String? = nil,
+        additionalInput: [UserInput] = []
+    ) async throws {
+        var inputs: [UserInput] = [UserInput(type: "text", text: text)]
+        inputs.append(contentsOf: additionalInput)
         let _: TurnStartResponse = try await client.sendRequest(
             method: "turn/start",
-            params: TurnStartParams(threadId: threadId, input: [UserInput(type: "text", text: text)], model: model, effort: effort),
+            params: TurnStartParams(threadId: threadId, input: inputs, model: model, effort: effort),
             responseType: TurnStartResponse.self
         )
     }
@@ -192,6 +238,22 @@ final class ServerConnection: ObservableObject, Identifiable {
             method: "turn/interrupt",
             params: TurnInterruptParams(threadId: threadId),
             responseType: Empty.self
+        )
+    }
+
+    func rollbackThread(threadId: String, numTurns: Int) async throws -> ThreadRollbackResponse {
+        try await client.sendRequest(
+            method: "thread/rollback",
+            params: ThreadRollbackParams(threadId: threadId, numTurns: numTurns),
+            responseType: ThreadRollbackResponse.self
+        )
+    }
+
+    func archiveThread(threadId: String) async throws {
+        let _: ThreadArchiveResponse = try await client.sendRequest(
+            method: "thread/archive",
+            params: ThreadArchiveParams(threadId: threadId),
+            responseType: ThreadArchiveResponse.self
         )
     }
 

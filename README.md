@@ -46,10 +46,13 @@ Bootstrap them locally before building:
 
 - Xcode.app (full install, not only CLT)
 - Rust + iOS targets:
+
   ```bash
   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
   ```
+
 - `xcodegen` (for regenerating `Litter.xcodeproj`):
+
   ```bash
   brew install xcodegen
   ```
@@ -156,14 +159,14 @@ asc auth login \
   --network
 ```
 
-2) Bootstrap TestFlight defaults (internal group, optional review contact metadata):
+1) Bootstrap TestFlight defaults (internal group, optional review contact metadata):
 
 ```bash
 APP_BUNDLE_ID=<BUNDLE_ID> \
 ./apps/ios/scripts/testflight-setup.sh
 ```
 
-3) Build and upload to TestFlight:
+1) Build and upload to TestFlight:
 
 ```bash
 APP_BUNDLE_ID=<BUNDLE_ID> \
@@ -177,6 +180,7 @@ MARKETING_VERSION=1.0.0 \
 ```
 
 Notes:
+
 - `testflight-upload.sh` auto-increments build number from the latest App Store Connect build.
 - It archives, exports an IPA, uploads via `asc builds upload`, and assigns the build to `Internal Testers` by default.
 - Override `SCHEME` to `LitterRemote` if you are shipping the remote-only target.

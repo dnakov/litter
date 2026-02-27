@@ -1,18 +1,26 @@
 import Foundation
 import Combine
 
+struct SkillMentionSelection: Equatable {
+    let name: String
+    let path: String
+}
+
 @MainActor
 final class ServerManager: ObservableObject {
     @Published var connections: [String: ServerConnection] = [:]
     @Published var threads: [ThreadKey: ThreadState] = [:]
     @Published var activeThreadKey: ThreadKey?
     @Published var pendingApprovals: [PendingApproval] = []
+    @Published var composerPrefillRequest: ComposerPrefillRequest?
 
+    private var connectionSubscriptions: [String: AnyCancellable] = [:]
     private let savedServersKey = "codex_saved_servers"
     private var threadSubscriptions: [ThreadKey: AnyCancellable] = [:]
     private var liveItemMessageIndices: [ThreadKey: [String: Int]] = [:]
     private var liveTurnDiffMessageIndices: [ThreadKey: [String: Int]] = [:]
     private var serversUsingItemNotifications: Set<String> = []
+    private var threadTurnCounts: [ThreadKey: Int] = [:]
 
     enum ApprovalKind: String, Codable {
         case commandExecution
@@ -42,9 +50,22 @@ final class ServerManager: ObservableObject {
         let createdAt: Date
     }
 
+    struct ComposerPrefillRequest: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+    }
+
     /// Call after inserting a new ThreadState into `threads` to forward its changes.
     private func observeThread(_ thread: ThreadState) {
         threadSubscriptions[thread.key] = thread.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+    /// Forward nested connection changes so views observing ServerManager refresh when
+    /// connection-owned published values (auth/models/oauth) change.
+    private func observeConnection(_ connection: ServerConnection, serverId: String) {
+        connectionSubscriptions[serverId] = connection.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
     }
@@ -94,6 +115,7 @@ final class ServerManager: ObservableObject {
     }
 
     private func configureConnectionCallbacks(_ conn: ServerConnection, serverId: String) {
+        observeConnection(conn, serverId: serverId)
         conn.onNotification = { [weak self] method, data in
             self?.handleNotification(serverId: serverId, method: method, data: data)
         }
@@ -114,11 +136,13 @@ final class ServerManager: ObservableObject {
     func removeServer(id: String) {
         connections[id]?.disconnect()
         connections.removeValue(forKey: id)
+        connectionSubscriptions.removeValue(forKey: id)
         removePendingApprovals(forServerId: id)
         for key in threads.keys where key.serverId == id {
             threadSubscriptions.removeValue(forKey: key)
             liveItemMessageIndices.removeValue(forKey: key)
             liveTurnDiffMessageIndices.removeValue(forKey: key)
+            threadTurnCounts.removeValue(forKey: key)
         }
         serversUsingItemNotifications.remove(id)
         threads = threads.filter { $0.key.serverId != id }
@@ -170,8 +194,10 @@ final class ServerManager: ObservableObject {
                 serverSource: conn.server.source
             )
             state.cwd = cwd
+            state.modelProvider = resp.modelProvider ?? resp.model
             state.updatedAt = Date()
             threads[key] = state
+            threadTurnCounts[key] = 0
             liveItemMessageIndices[key] = nil
             liveTurnDiffMessageIndices[key] = nil
             observeThread(state)
@@ -208,9 +234,13 @@ final class ServerManager: ObservableObject {
                 sandboxMode: sandboxMode
             )
             state.messages = restoredMessages(from: resp.thread.turns)
+            threadTurnCounts[key] = resp.thread.turns.count
             liveItemMessageIndices[key] = nil
             liveTurnDiffMessageIndices[key] = nil
             state.cwd = cwd
+            state.modelProvider = resp.modelProvider ?? resp.model
+            state.parentThreadId = sanitizedLineageId(resp.thread.parentThreadId)
+            state.rootThreadId = sanitizedLineageId(resp.thread.rootThreadId)
             state.status = .ready
             state.updatedAt = Date()
             activeThreadKey = key
@@ -238,6 +268,138 @@ final class ServerManager: ObservableObject {
         } else {
             activeThreadKey = key
         }
+    }
+
+    func forkThread(
+        _ sourceKey: ThreadKey,
+        cwd: String? = nil,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadKey {
+        guard let sourceThread = threads[sourceKey] else {
+            throw NSError(domain: "Litter", code: 1010, userInfo: [NSLocalizedDescriptionKey: "Source thread not found"])
+        }
+        guard !sourceThread.hasTurnActive else {
+            throw NSError(domain: "Litter", code: 1011, userInfo: [NSLocalizedDescriptionKey: "Wait for the active turn to finish before forking"])
+        }
+        guard let conn = connections[sourceKey.serverId] else {
+            throw NSError(domain: "Litter", code: 1012, userInfo: [NSLocalizedDescriptionKey: "No active server connection for this thread"])
+        }
+
+        let preferredCwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let forkCwd = (preferredCwd?.isEmpty == false) ? preferredCwd : sourceThread.cwd
+        let response = try await conn.forkThread(
+            threadId: sourceKey.threadId,
+            cwd: forkCwd,
+            approvalPolicy: approvalPolicy,
+            sandboxMode: sandboxMode
+        )
+        let forkKey = ThreadKey(serverId: sourceKey.serverId, threadId: response.thread.id)
+        let forkedState = threads[forkKey] ?? ThreadState(
+            serverId: sourceKey.serverId,
+            threadId: response.thread.id,
+            serverName: conn.server.name,
+            serverSource: conn.server.source
+        )
+        forkedState.messages = restoredMessages(from: response.thread.turns)
+        threadTurnCounts[forkKey] = response.thread.turns.count
+        liveItemMessageIndices[forkKey] = nil
+        liveTurnDiffMessageIndices[forkKey] = nil
+        forkedState.cwd = response.cwd
+        forkedState.preview = sourceThread.preview
+        forkedState.modelProvider = response.modelProvider ?? response.model
+        forkedState.parentThreadId = sanitizedLineageId(response.thread.parentThreadId) ?? sourceKey.threadId
+        forkedState.rootThreadId = sanitizedLineageId(response.thread.rootThreadId)
+            ?? sourceThread.rootThreadId
+            ?? sourceThread.parentThreadId
+            ?? sourceKey.threadId
+        forkedState.status = .ready
+        forkedState.updatedAt = Date()
+        threads[forkKey] = forkedState
+        observeThread(forkedState)
+        activeThreadKey = forkKey
+        return forkKey
+    }
+
+    func forkActiveThread(
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadKey {
+        guard let key = activeThreadKey,
+              let thread = threads[key] else {
+            throw NSError(domain: "Litter", code: 1013, userInfo: [NSLocalizedDescriptionKey: "No active thread to fork"])
+        }
+        return try await forkThread(
+            key,
+            cwd: thread.cwd,
+            approvalPolicy: approvalPolicy,
+            sandboxMode: sandboxMode
+        )
+    }
+
+    func forkFromMessage(
+        _ message: ChatMessage,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async throws -> ThreadKey {
+        guard let sourceKey = activeThreadKey,
+              let sourceThread = threads[sourceKey] else {
+            throw NSError(domain: "Litter", code: 1014, userInfo: [NSLocalizedDescriptionKey: "No active thread to fork"])
+        }
+        guard !sourceThread.hasTurnActive else {
+            throw NSError(domain: "Litter", code: 1015, userInfo: [NSLocalizedDescriptionKey: "Wait for the active turn to finish before forking"])
+        }
+        guard message.role == .user, message.isFromUserTurnBoundary else {
+            throw NSError(domain: "Litter", code: 1016, userInfo: [NSLocalizedDescriptionKey: "Fork from here is only supported for user messages"])
+        }
+
+        let rollbackDepth = try rollbackDepthForMessage(message, in: sourceKey)
+        let forkKey = try await forkThread(
+            sourceKey,
+            cwd: sourceThread.cwd,
+            approvalPolicy: approvalPolicy,
+            sandboxMode: sandboxMode
+        )
+        guard rollbackDepth > 0 else { return forkKey }
+        guard let forkConn = connections[forkKey.serverId],
+              let forkThreadState = threads[forkKey] else {
+            throw NSError(domain: "Litter", code: 1017, userInfo: [NSLocalizedDescriptionKey: "Forked thread unavailable"])
+        }
+
+        let rollbackResponse = try await forkConn.rollbackThread(threadId: forkKey.threadId, numTurns: rollbackDepth)
+        forkThreadState.messages = restoredMessages(from: rollbackResponse.thread.turns)
+        threadTurnCounts[forkKey] = rollbackResponse.thread.turns.count
+        forkThreadState.status = .ready
+        forkThreadState.updatedAt = Date()
+        liveItemMessageIndices[forkKey] = nil
+        liveTurnDiffMessageIndices[forkKey] = nil
+        return forkKey
+    }
+
+    func editMessage(_ message: ChatMessage) async throws {
+        guard let key = activeThreadKey,
+              let thread = threads[key],
+              let conn = connections[key.serverId] else {
+            throw NSError(domain: "Litter", code: 1018, userInfo: [NSLocalizedDescriptionKey: "No active thread to edit"])
+        }
+        guard !thread.hasTurnActive else {
+            throw NSError(domain: "Litter", code: 1019, userInfo: [NSLocalizedDescriptionKey: "Wait for the active turn to finish before editing"])
+        }
+        guard message.role == .user, message.isFromUserTurnBoundary else {
+            throw NSError(domain: "Litter", code: 1020, userInfo: [NSLocalizedDescriptionKey: "Only user messages can be edited"])
+        }
+
+        let rollbackDepth = try rollbackDepthForMessage(message, in: key)
+        if rollbackDepth > 0 {
+            let response = try await conn.rollbackThread(threadId: key.threadId, numTurns: rollbackDepth)
+            thread.messages = restoredMessages(from: response.thread.turns)
+            threadTurnCounts[key] = response.thread.turns.count
+            thread.status = .ready
+            thread.updatedAt = Date()
+            liveItemMessageIndices[key] = nil
+            liveTurnDiffMessageIndices[key] = nil
+        }
+        composerPrefillRequest = ComposerPrefillRequest(text: message.text)
     }
 
     // MARK: - Approvals
@@ -376,6 +538,7 @@ final class ServerManager: ObservableObject {
 
     func send(
         _ text: String,
+        skillMentions: [SkillMentionSelection] = [],
         cwd: String,
         model: String? = nil,
         effort: String? = nil,
@@ -395,11 +558,20 @@ final class ServerManager: ObservableObject {
             }
         }
         guard let key, let thread = threads[key], let conn = connections[key.serverId] else { return }
-        thread.messages.append(ChatMessage(role: .user, text: text))
+        thread.messages.append(ChatMessage(role: .user, text: text, isFromUserTurnBoundary: true))
         thread.status = .thinking
         thread.updatedAt = Date()
         do {
-            try await conn.sendTurn(threadId: key.threadId, text: text, model: model, effort: effort)
+            let skillInputs = skillMentions.map { mention in
+                UserInput(type: "skill", path: mention.path, name: mention.name)
+            }
+            try await conn.sendTurn(
+                threadId: key.threadId,
+                text: text,
+                model: model,
+                effort: effort,
+                additionalInput: skillInputs
+            )
         } catch {
             thread.status = .error(error.localizedDescription)
         }
@@ -435,6 +607,35 @@ final class ServerManager: ObservableObject {
         thread.updatedAt = Date()
     }
 
+    func renameThread(_ key: ThreadKey, to newName: String) async throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw NSError(domain: "Litter", code: 1030, userInfo: [NSLocalizedDescriptionKey: "Thread name cannot be empty"])
+        }
+        guard let thread = threads[key],
+              let conn = connections[key.serverId] else {
+            throw NSError(domain: "Litter", code: 1031, userInfo: [NSLocalizedDescriptionKey: "Thread unavailable"])
+        }
+        try await conn.setThreadName(threadId: key.threadId, name: trimmed)
+        thread.preview = trimmed
+        thread.updatedAt = Date()
+    }
+
+    func archiveThread(_ key: ThreadKey) async throws {
+        guard let conn = connections[key.serverId] else {
+            throw NSError(domain: "Litter", code: 1032, userInfo: [NSLocalizedDescriptionKey: "Server unavailable"])
+        }
+        try await conn.archiveThread(threadId: key.threadId)
+        threads.removeValue(forKey: key)
+        threadSubscriptions.removeValue(forKey: key)
+        threadTurnCounts.removeValue(forKey: key)
+        liveItemMessageIndices.removeValue(forKey: key)
+        liveTurnDiffMessageIndices.removeValue(forKey: key)
+        if activeThreadKey == key {
+            activeThreadKey = sortedThreads.first?.key
+        }
+    }
+
     func interrupt() async {
         guard let key = activeThreadKey, let conn = connections[key.serverId] else { return }
         await conn.interrupt(threadId: key.threadId)
@@ -462,6 +663,9 @@ final class ServerManager: ObservableObject {
                 if let existing = threads[key] {
                     existing.preview = summary.preview
                     existing.cwd = summary.cwd
+                    existing.modelProvider = summary.modelProvider
+                    existing.parentThreadId = sanitizedLineageId(summary.parentThreadId) ?? existing.parentThreadId
+                    existing.rootThreadId = sanitizedLineageId(summary.rootThreadId) ?? existing.rootThreadId
                     existing.updatedAt = Date(timeIntervalSince1970: TimeInterval(summary.updatedAt))
                 } else {
                     let state = ThreadState(
@@ -472,8 +676,12 @@ final class ServerManager: ObservableObject {
                     )
                     state.preview = summary.preview
                     state.cwd = summary.cwd
+                    state.modelProvider = summary.modelProvider
+                    state.parentThreadId = sanitizedLineageId(summary.parentThreadId)
+                    state.rootThreadId = sanitizedLineageId(summary.rootThreadId)
                     state.updatedAt = Date(timeIntervalSince1970: TimeInterval(summary.updatedAt))
                     threads[key] = state
+                    threadTurnCounts[key] = threadTurnCounts[key] ?? 0
                     observeThread(state)
                 }
             }
@@ -486,6 +694,9 @@ final class ServerManager: ObservableObject {
         switch method {
         case "account/login/completed", "account/updated":
             connections[serverId]?.handleAccountNotification(method: method, data: data)
+
+        case "sessionConfigured":
+            handleSessionConfiguredNotification(serverId: serverId, data: data)
 
         case "turn/started":
             if let threadId = extractThreadId(from: data) {
@@ -549,6 +760,41 @@ final class ServerManager: ObservableObject {
         }
     }
 
+    private func handleSessionConfiguredNotification(serverId: String, data: Data) {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let params = root["params"] as? [String: Any],
+              let sessionId = extractString(params, keys: ["sessionId", "session_id", "threadId", "thread_id"]),
+              !sessionId.isEmpty else { return }
+
+        guard let conn = connections[serverId] else { return }
+        let key = ThreadKey(serverId: serverId, threadId: sessionId)
+        let thread = threads[key] ?? ThreadState(
+            serverId: serverId,
+            threadId: sessionId,
+            serverName: conn.server.name,
+            serverSource: conn.server.source
+        )
+        let parentId = extractString(
+            params,
+            keys: ["forkedFromId", "forked_from_id", "parentThreadId", "parent_thread_id"]
+        )
+        let rootId = extractString(params, keys: ["rootThreadId", "root_thread_id"])
+        let title = extractString(params, keys: ["threadName", "thread_name"])
+        let modelProvider = extractString(params, keys: ["modelProvider", "model_provider", "modelProviderId", "model_provider_id"])
+
+        thread.parentThreadId = sanitizedLineageId(parentId) ?? thread.parentThreadId
+        thread.rootThreadId = sanitizedLineageId(rootId) ?? thread.rootThreadId
+        if let title, !title.isEmpty {
+            thread.preview = title
+        }
+        if let modelProvider, !modelProvider.isEmpty {
+            thread.modelProvider = modelProvider
+        }
+
+        threads[key] = thread
+        observeThread(thread)
+    }
+
     private func handleItemNotification(serverId: String, method: String, data: Data) {
         // Format: item/started or item/completed → params.item has the ThreadItem with "type"
         //         item/agentMessage/delta handled separately in handleNotification.
@@ -571,7 +817,7 @@ final class ServerManager: ObservableObject {
             }
             guard let itemData = try? JSONSerialization.data(withJSONObject: itemDict),
                   let item = try? JSONDecoder().decode(ResumedThreadItem.self, from: itemData),
-                  let msg = chatMessage(from: item) else { return }
+                  let msg = chatMessage(from: item, sourceTurnId: nil, sourceTurnIndex: nil) else { return }
             let itemId = extractString(itemDict, keys: ["id"])
             if method == "item/started", let itemId {
                 upsertLiveItemMessage(msg, itemId: itemId, key: key, thread: thread)
@@ -621,6 +867,12 @@ final class ServerManager: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func sanitizedLineageId(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func upsertLiveItemMessage(_ message: ChatMessage, itemId: String, key: ThreadKey, thread: ThreadState) {
@@ -860,6 +1112,42 @@ final class ServerManager: ObservableObject {
             }
             thread.updatedAt = Date()
 
+        case "web_search_begin":
+            let itemId = extractString(eventPayload, keys: ["call_id", "callId", "item_id", "itemId"])
+            let query = extractString(eventPayload, keys: ["query"]) ?? ""
+
+            var lines: [String] = ["Status: inProgress"]
+            if !query.isEmpty { lines.append("Query: \(query)") }
+            let body = lines.joined(separator: "\n")
+
+            guard let msg = systemMessage(title: "Web Search", body: body) else { return }
+            if let itemId {
+                upsertLiveItemMessage(msg, itemId: itemId, key: key, thread: thread)
+            } else {
+                thread.messages.append(msg)
+            }
+            thread.updatedAt = Date()
+
+        case "web_search_end":
+            let itemId = extractString(eventPayload, keys: ["call_id", "callId", "item_id", "itemId"])
+            let query = extractString(eventPayload, keys: ["query"]) ?? ""
+            let status = extractString(eventPayload, keys: ["status"]) ?? "completed"
+
+            var lines: [String] = ["Status: \(status)"]
+            if !query.isEmpty { lines.append("Query: \(query)") }
+            var body = lines.joined(separator: "\n")
+            if let action = eventPayload["action"], let pretty = prettyJSON(action) {
+                body += "\n\nAction:\n```json\n\(pretty)\n```"
+            }
+
+            guard let msg = systemMessage(title: "Web Search", body: body) else { return }
+            if let itemId {
+                completeLiveItemMessage(msg, itemId: itemId, key: key, thread: thread)
+            } else {
+                thread.messages.append(msg)
+            }
+            thread.updatedAt = Date()
+
         case "patch_apply_begin":
             let itemId = extractString(eventPayload, keys: ["call_id", "callId"])
             let changeSummary = legacyPatchChangeBody(from: eventPayload["changes"])
@@ -1008,9 +1296,34 @@ final class ServerManager: ObservableObject {
         if shouldPreferLocalMessages(current: thread.messages, restored: restored) { return }
 
         thread.messages = restored
+        threadTurnCounts[key] = response.thread.turns.count
+        thread.modelProvider = response.modelProvider ?? response.model
+        thread.parentThreadId = sanitizedLineageId(response.thread.parentThreadId) ?? thread.parentThreadId
+        thread.rootThreadId = sanitizedLineageId(response.thread.rootThreadId) ?? thread.rootThreadId
         thread.updatedAt = Date()
         liveItemMessageIndices[key] = nil
         liveTurnDiffMessageIndices[key] = nil
+    }
+
+    private func rollbackDepthForMessage(_ message: ChatMessage, in key: ThreadKey) throws -> Int {
+        guard let selectedTurnIndex = message.sourceTurnIndex else {
+            throw NSError(domain: "Litter", code: 1021, userInfo: [NSLocalizedDescriptionKey: "Message is missing turn metadata"])
+        }
+        let totalTurns = threadTurnCounts[key] ?? inferredTurnCount(from: threads[key]?.messages ?? [])
+        guard totalTurns > 0 else {
+            throw NSError(domain: "Litter", code: 1022, userInfo: [NSLocalizedDescriptionKey: "No turn history available"])
+        }
+        guard selectedTurnIndex >= 0, selectedTurnIndex < totalTurns else {
+            throw NSError(domain: "Litter", code: 1023, userInfo: [NSLocalizedDescriptionKey: "Message is outside available turn history"])
+        }
+        return max(totalTurns - selectedTurnIndex - 1, 0)
+    }
+
+    private func inferredTurnCount(from messages: [ChatMessage]) -> Int {
+        if let maxTurnIndex = messages.compactMap(\.sourceTurnIndex).max() {
+            return maxTurnIndex + 1
+        }
+        return messages.filter { $0.role == .user && $0.isFromUserTurnBoundary }.count
     }
 
     private func shouldPreferLocalMessages(current: [ChatMessage], restored: [ChatMessage]) -> Bool {
@@ -1051,6 +1364,9 @@ final class ServerManager: ObservableObject {
         guard lhs.count == rhs.count else { return false }
         for (left, right) in zip(lhs, rhs) {
             guard left.role == right.role, left.text == right.text else { return false }
+            guard left.sourceTurnId == right.sourceTurnId else { return false }
+            guard left.sourceTurnIndex == right.sourceTurnIndex else { return false }
+            guard left.isFromUserTurnBoundary == right.isFromUserTurnBoundary else { return false }
             guard left.images.count == right.images.count else { return false }
             for (leftImage, rightImage) in zip(left.images, right.images) {
                 guard leftImage.data == rightImage.data else { return false }
@@ -1090,9 +1406,13 @@ final class ServerManager: ObservableObject {
     func restoredMessages(from turns: [ResumedTurn]) -> [ChatMessage] {
         var restored: [ChatMessage] = []
         restored.reserveCapacity(turns.count * 3)
-        for turn in turns {
+        for (turnIndex, turn) in turns.enumerated() {
             for item in turn.items {
-                if let msg = chatMessage(from: item) {
+                if let msg = chatMessage(
+                    from: item,
+                    sourceTurnId: turn.id,
+                    sourceTurnIndex: turnIndex
+                ) {
                     restored.append(msg)
                 }
             }
@@ -1100,18 +1420,38 @@ final class ServerManager: ObservableObject {
         return restored
     }
 
-    private func chatMessage(from item: ResumedThreadItem) -> ChatMessage? {
+    private func chatMessage(
+        from item: ResumedThreadItem,
+        sourceTurnId: String?,
+        sourceTurnIndex: Int?
+    ) -> ChatMessage? {
         switch item {
         case .userMessage(let content):
             let (text, images) = renderUserInput(content)
             if text.isEmpty && images.isEmpty { return nil }
-            return ChatMessage(role: .user, text: text, images: images)
+            return ChatMessage(
+                role: .user,
+                text: text,
+                images: images,
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex,
+                isFromUserTurnBoundary: true
+            )
         case .agentMessage(let text, _):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { return nil }
-            return ChatMessage(role: .assistant, text: trimmed)
+            return ChatMessage(
+                role: .assistant,
+                text: trimmed,
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .plan(let text):
-            return systemMessage(title: "Plan", body: text.trimmingCharacters(in: .whitespacesAndNewlines))
+            return withTurnMetadata(
+                systemMessage(title: "Plan", body: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .reasoning(let summary, let content):
             let summaryText = summary
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1124,7 +1464,11 @@ final class ServerManager: ObservableObject {
             var sections: [String] = []
             if !summaryText.isEmpty { sections.append(summaryText) }
             if !detailText.isEmpty { sections.append(detailText) }
-            return systemMessage(title: "Reasoning", body: sections.joined(separator: "\n\n"))
+            return withTurnMetadata(
+                systemMessage(title: "Reasoning", body: sections.joined(separator: "\n\n")),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .commandExecution(let command, let cwd, let status, let output, let exitCode, let durationMs):
             var lines: [String] = ["Status: \(status)"]
             if !cwd.isEmpty { lines.append("Directory: \(cwd)") }
@@ -1136,10 +1480,18 @@ final class ServerManager: ObservableObject {
                 let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { body += "\n\nOutput:\n```text\n\(trimmed)\n```" }
             }
-            return systemMessage(title: "Command Execution", body: body)
+            return withTurnMetadata(
+                systemMessage(title: "Command Execution", body: body),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .fileChange(let changes, let status):
             if changes.isEmpty {
-                return systemMessage(title: "File Change", body: "Status: \(status)")
+                return withTurnMetadata(
+                    systemMessage(title: "File Change", body: "Status: \(status)"),
+                    sourceTurnId: sourceTurnId,
+                    sourceTurnIndex: sourceTurnIndex
+                )
             }
             var parts: [String] = []
             for change in changes {
@@ -1148,7 +1500,11 @@ final class ServerManager: ObservableObject {
                 if !diff.isEmpty { body += "\n\n```diff\n\(diff)\n```" }
                 parts.append(body)
             }
-            return systemMessage(title: "File Change", body: "Status: \(status)\n\n" + parts.joined(separator: "\n\n---\n\n"))
+            return withTurnMetadata(
+                systemMessage(title: "File Change", body: "Status: \(status)\n\n" + parts.joined(separator: "\n\n---\n\n")),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .mcpToolCall(let server, let tool, let status, let result, let error, let durationMs):
             var lines: [String] = ["Status: \(status)"]
             if !server.isEmpty || !tool.isEmpty {
@@ -1168,7 +1524,11 @@ final class ServerManager: ObservableObject {
                     body += "\n\nResult:\n```json\n\(pretty)\n```"
                 }
             }
-            return systemMessage(title: "MCP Tool Call", body: body)
+            return withTurnMetadata(
+                systemMessage(title: "MCP Tool Call", body: body),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .collabAgentToolCall(let tool, let status, let receiverThreadIds, let prompt):
             var lines: [String] = ["Status: \(status)", "Tool: \(tool)"]
             if !receiverThreadIds.isEmpty {
@@ -1182,29 +1542,73 @@ final class ServerManager: ObservableObject {
                     lines.append(trimmed)
                 }
             }
-            return systemMessage(title: "Collaboration", body: lines.joined(separator: "\n"))
+            return withTurnMetadata(
+                systemMessage(title: "Collaboration", body: lines.joined(separator: "\n")),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .webSearch(let query, let action):
-            var lines: [String] = []
+            var lines: [String] = ["Status: completed"]
             if !query.isEmpty { lines.append("Query: \(query)") }
             if let action, let pretty = prettyJSON(action.value) {
                 lines.append("")
                 lines.append("Action:")
                 lines.append("```json\n\(pretty)\n```")
             }
-            return systemMessage(title: "Web Search", body: lines.joined(separator: "\n"))
+            return withTurnMetadata(
+                systemMessage(title: "Web Search", body: lines.joined(separator: "\n")),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .imageView(let path):
-            return systemMessage(title: "Image View", body: "Path: \(path)")
+            return withTurnMetadata(
+                systemMessage(title: "Image View", body: "Path: \(path)"),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .enteredReviewMode(let review):
-            return systemMessage(title: "Review Mode", body: "Entered review: \(review)")
+            return withTurnMetadata(
+                systemMessage(title: "Review Mode", body: "Entered review: \(review)"),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .exitedReviewMode(let review):
-            return systemMessage(title: "Review Mode", body: "Exited review: \(review)")
+            return withTurnMetadata(
+                systemMessage(title: "Review Mode", body: "Exited review: \(review)"),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .contextCompaction:
-            return systemMessage(title: "Context", body: "Context compaction occurred.")
+            return withTurnMetadata(
+                systemMessage(title: "Context", body: "Context compaction occurred."),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .unknown(let type):
-            return systemMessage(title: "Event", body: "Unhandled item type: \(type)")
+            return withTurnMetadata(
+                systemMessage(title: "Event", body: "Unhandled item type: \(type)"),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
         case .ignored:
             return nil
         }
+    }
+
+    private func withTurnMetadata(
+        _ message: ChatMessage?,
+        sourceTurnId: String?,
+        sourceTurnIndex: Int?
+    ) -> ChatMessage? {
+        guard let message else { return nil }
+        return ChatMessage(
+            role: message.role,
+            text: message.text,
+            images: message.images,
+            sourceTurnId: sourceTurnId,
+            sourceTurnIndex: sourceTurnIndex,
+            isFromUserTurnBoundary: message.isFromUserTurnBoundary
+        )
     }
 
     private func systemMessage(title: String, body: String) -> ChatMessage? {
