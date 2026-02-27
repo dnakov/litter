@@ -3761,17 +3761,6 @@ private fun SettingsSheetContent(
         ) {
             Text("Bundled Debug")
         }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("Settings", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onDismiss) {
-                    Text("Close", color = LitterTheme.danger)
-                }
-            }
-        }
 
         Text("Authentication", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
         Surface(
