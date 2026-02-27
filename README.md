@@ -57,7 +57,7 @@ Bootstrap them locally before building:
   brew install xcodegen
   ```
 
-## Connect to a Mac over SSH from Litter (Codex app-server)
+## Connect Your Mac to Litter Over SSH
 
 Use this flow to make Codex sessions from your Mac visible in the iOS/Android app.
 
