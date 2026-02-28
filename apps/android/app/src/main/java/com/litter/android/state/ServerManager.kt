@@ -2,7 +2,6 @@ package com.litter.android.state
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -3999,11 +3998,13 @@ class ServerManager(
     private fun ensureBundledServiceReady() {
         val context = appContext ?: throw IllegalStateException("Bundled server requires Android application context")
         val intent = Intent(context, BundledCodexService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
-        }
+        runCatching { context.startService(intent) }
+            .getOrElse { error ->
+                throw IllegalStateException(
+                    "Bundled runtime can only be started while the app is in the foreground.",
+                    error,
+                )
+            }
 
         val deadline = SystemClock.elapsedRealtime() + 60_000L
         while (SystemClock.elapsedRealtime() < deadline) {

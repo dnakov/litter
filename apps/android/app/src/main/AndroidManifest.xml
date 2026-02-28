@@ -4,8 +4,6 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
@@ -33,8 +31,7 @@
 
         <service
             android:name="com.litter.android.state.BundledCodexService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:exported="false" />
     </application>
 
 </manifest>

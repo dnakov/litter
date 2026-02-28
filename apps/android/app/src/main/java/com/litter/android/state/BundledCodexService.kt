@@ -1,16 +1,11 @@
 package com.litter.android.state
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -29,8 +24,6 @@ class BundledCodexService : Service() {
         const val PORT = 4500
         private const val PROXY_PORT = 8080
         private const val STARTUP_TIMEOUT_MS = 60_000L
-        private const val NOTIFICATION_ID = 1001
-        private const val NOTIFICATION_CHANNEL_ID = "bundled_codex_channel"
         private const val LOG_FILE_NAME = "bundled-codex.log"
         private const val MAX_LOG_FILE_BYTES = 1_000_000L
 
@@ -113,7 +106,6 @@ class BundledCodexService : Service() {
             appendLogLine(applicationContext, "")
             appendLogLine(applicationContext, "========== BundledCodexService start @ ${System.currentTimeMillis()} ==========")
         }
-        startForegroundNotification()
         isRunning = true
         isReady = false
         lastError = null
@@ -129,7 +121,7 @@ class BundledCodexService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -145,24 +137,9 @@ class BundledCodexService : Service() {
         codexProcess = null
     }
 
-    private fun startForegroundNotification() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "Bundled Codex Server",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-        }
-
-        val notification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Litter Local Server")
-            .setContentText("Codex app-server is running locally")
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
-            .build()
-
-        startForeground(NOTIFICATION_ID, notification)
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun setupAndRun() {

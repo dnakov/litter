@@ -24,7 +24,7 @@ android {
         applicationId = "com.sigkitten.litter.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = 5
         versionName = "0.1.0"
     }
 
@@ -97,6 +97,7 @@ android {
 play {
     defaultToAppBundles.set(true)
     track.set(projectPropOrEnv("LITTER_PLAY_TRACK") ?: "internal")
+    releaseStatus.set(com.github.triplet.gradle.androidpublisher.ReleaseStatus.DRAFT)
     val serviceAccountPath = projectPropOrEnv("LITTER_PLAY_SERVICE_ACCOUNT_JSON")
     if (!serviceAccountPath.isNullOrBlank()) {
         serviceAccountCredentials.set(file(serviceAccountPath))
