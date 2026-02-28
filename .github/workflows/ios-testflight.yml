@@ -19,11 +19,6 @@ on:
         required: true
         default: "com.sigkitten.litter"
         type: string
-      marketing_version:
-        description: "Marketing version (for manual runs)"
-        required: false
-        default: "1.0.0"
-        type: string
       beta_group_name:
         description: "TestFlight beta group"
         required: false
@@ -182,7 +177,6 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             SCHEME="${{ inputs.scheme }}"
             APP_BUNDLE_ID="${{ inputs.app_bundle_id }}"
-            MARKETING_VERSION="${{ inputs.marketing_version }}"
             BETA_GROUP_NAME="${{ inputs.beta_group_name }}"
             if [[ "${{ inputs.wait_for_processing }}" == "true" ]]; then
               WAIT_FOR_PROCESSING="1"
@@ -192,14 +186,11 @@ jobs:
           else
             SCHEME="Litter"
             APP_BUNDLE_ID="com.sigkitten.litter"
-            MARKETING_VERSION="${GITHUB_REF_NAME#v}"
             BETA_GROUP_NAME="Internal Testers"
             WAIT_FOR_PROCESSING="1"
           fi
 
-          if [[ -z "$MARKETING_VERSION" ]]; then
-            MARKETING_VERSION="1.0.0"
-          fi
+          MARKETING_VERSION="1.0.0"
 
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
           echo "APP_BUNDLE_ID=$APP_BUNDLE_ID" >> "$GITHUB_ENV"
