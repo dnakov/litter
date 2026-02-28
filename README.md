@@ -57,6 +57,49 @@ Bootstrap them locally before building:
   brew install xcodegen
   ```
 
+## Connect Your Mac to Litter Over SSH
+
+Use this flow to make Codex sessions from your Mac visible in the iOS/Android app.
+
+1) Enable SSH on the Mac.
+
+- Preferred (UI): `System Settings` -> `General` -> `Sharing` -> enable `Remote Login`.
+- CLI option:
+  ```bash
+  sudo systemsetup -setremotelogin on
+  sudo systemsetup -getremotelogin
+  ```
+- If you get `setremotelogin: Turning Remote Login on or off requires Full Disk Access privileges`, grant Full Disk Access to your terminal app in:
+  `System Settings` -> `Privacy & Security` -> `Full Disk Access`, then fully restart terminal and retry.
+
+2) Verify SSH and Codex binaries from a non-interactive SSH shell.
+
+```bash
+ssh <mac-user>@<mac-host-or-ip> 'echo ok'
+ssh <mac-user>@<mac-host-or-ip> 'command -v codex || command -v codex-app-server'
+```
+
+If the second command prints nothing, install Codex and/or fix shell PATH startup files (`.zprofile`, `.zshrc`, `.profile`).
+
+3) Connect from the Litter app.
+
+- Keep phone and Mac on the same LAN (or same Tailnet if using Tailscale).
+- In Discovery:
+  - If host shows `codex running`, tap to connect directly.
+  - If host shows `SSH`, tap and enter SSH credentials; Litter will start remote server via SSH and connect.
+
+4) Fallback: run app-server manually on Mac and add server manually in app.
+
+```bash
+codex app-server --listen ws://0.0.0.0:8390
+```
+
+Then in app choose `Add Server` and enter `<mac-ip>` + `8390`.
+
+5) Session visibility note.
+
+Thread/session listing is `cwd`-scoped. If expected sessions are missing, choose the same working directory used when those sessions were created.
+
 ## Codex source (submodule + patch)
 
 This repo now vendors upstream Codex as a submodule:
