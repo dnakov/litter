@@ -1,0 +1,11 @@
+Litter is a focused coding companion for teams that want reliable, fast AI-assisted development.
+
+Use Litter to run assistant sessions against local or remote runtimes, switch models quickly, and keep every thread organized in one place.
+
+What you can do:
+- Connect to local and remote servers from one app
+- Start, resume, and manage coding threads
+- Render markdown, code blocks, and reasoning output clearly
+- Keep account, model, and runtime controls in one streamlined workspace
+
+Built for engineers who value speed, clarity, and control.

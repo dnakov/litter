@@ -46,6 +46,9 @@ import kotlinx.coroutines.flow.update
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicInteger
 
+private const val UI_PREFERENCES_NAME = "litter_ui_prefs"
+private const val CONVERSATION_TEXT_SIZE_STEP_KEY = "conversation_text_size_step"
+
 data class DirectoryPickerUiState(
     val isVisible: Boolean = false,
     val selectedServerId: String? = null,
@@ -119,6 +122,7 @@ data class UiShellState(
     val collapsedSessionFolders: Set<String> = emptySet(),
     val activeThreadKey: ThreadKey? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val conversationTextSizeStep: Int = ConversationTextSizing.DEFAULT_STEP,
     val draft: String = "",
     val isSending: Boolean = false,
     val currentCwd: String = "/",
@@ -162,6 +166,8 @@ interface LitterAppState : Closeable {
     fun toggleSessionFolder(folderPath: String)
 
     fun updateDraft(value: String)
+
+    fun updateConversationTextSizeStep(step: Int)
 
     fun refreshSessions()
 
@@ -319,11 +325,26 @@ class DefaultLitterAppState(
     private val sshCredentialStore: SshCredentialStore? = null,
     private val recentDirectoryStore: RecentDirectoryStore? = null,
 ) : LitterAppState {
-    private val _uiState = MutableStateFlow(UiShellState())
+    private val uiPreferences by lazy {
+        appContext.getSharedPreferences(UI_PREFERENCES_NAME, Context.MODE_PRIVATE)
+    }
+    private val _uiState =
+        MutableStateFlow(
+            UiShellState(
+                conversationTextSizeStep =
+                    ConversationTextSizing.clampStep(
+                        uiPreferences.getInt(
+                            CONVERSATION_TEXT_SIZE_STEP_KEY,
+                            ConversationTextSizing.DEFAULT_STEP,
+                        ),
+                    ),
+            ),
+        )
     override val uiState: StateFlow<UiShellState> = _uiState.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val directoryPickerRequestVersion = AtomicInteger(0)
+    private val discoveryScanVersion = AtomicInteger(0)
 
     private val observerHandle: Closeable =
         serverManager.observe { backend ->
@@ -449,6 +470,21 @@ class DefaultLitterAppState(
 
     override fun updateDraft(value: String) {
         _uiState.update { it.copy(draft = value) }
+    }
+
+    override fun updateConversationTextSizeStep(step: Int) {
+        val clamped = ConversationTextSizing.clampStep(step)
+        _uiState.update { current ->
+            if (current.conversationTextSizeStep == clamped) {
+                current
+            } else {
+                current.copy(conversationTextSizeStep = clamped)
+            }
+        }
+        uiPreferences
+            .edit()
+            .putInt(CONVERSATION_TEXT_SIZE_STEP_KEY, clamped)
+            .apply()
     }
 
     override fun refreshSessions() {
@@ -991,6 +1027,7 @@ class DefaultLitterAppState(
     }
 
     override fun dismissDiscovery() {
+        discoveryScanVersion.incrementAndGet()
         _uiState.update {
             it.copy(
                 discovery = it.discovery.copy(isVisible = false, errorMessage = null),
@@ -1000,6 +1037,7 @@ class DefaultLitterAppState(
     }
 
     override fun refreshDiscovery() {
+        val currentVersion = discoveryScanVersion.incrementAndGet()
         _uiState.update {
             it.copy(
                 discovery =
@@ -1007,15 +1045,44 @@ class DefaultLitterAppState(
                         isVisible = true,
                         isLoading = true,
                         errorMessage = null,
+                        servers = emptyList(),
                     ),
             )
         }
 
         scope.launch {
-            val result = runCatching { discoveryService.discover() }
+            val hideOnDeviceServer = !CodexRuntimeStartupPolicy.onDeviceBridgeEnabled()
+
+            fun mapServers(servers: List<DiscoveredServer>): List<UiDiscoveredServer> =
+                servers
+                    .map { discovered -> discovered.toUi() }
+                    .filterNot { server ->
+                        hideOnDeviceServer &&
+                            (server.source == DiscoverySource.LOCAL || server.id == "local")
+                    }
+
+            val result =
+                runCatching {
+                    discoveryService.discoverProgressive { servers ->
+                        _uiState.update { state ->
+                            if (!state.discovery.isVisible || currentVersion != discoveryScanVersion.get()) {
+                                return@update state
+                            }
+                            state.copy(
+                                discovery =
+                                    state.discovery.copy(
+                                        isLoading = true,
+                                        errorMessage = null,
+                                        servers = mapServers(servers),
+                                    ),
+                            )
+                        }
+                    }
+                }
+
             result.onFailure { error ->
                 _uiState.update {
-                    if (!it.discovery.isVisible) {
+                    if (!it.discovery.isVisible || currentVersion != discoveryScanVersion.get()) {
                         return@update it
                     }
                     it.copy(
@@ -1029,24 +1096,16 @@ class DefaultLitterAppState(
                 }
             }
             result.onSuccess { servers ->
-                val hideOnDeviceServer = !CodexRuntimeStartupPolicy.onDeviceBridgeEnabled()
                 _uiState.update {
-                    if (!it.discovery.isVisible) {
+                    if (!it.discovery.isVisible || currentVersion != discoveryScanVersion.get()) {
                         return@update it
                     }
-                    val discoveredServers =
-                        servers
-                            .map { discovered -> discovered.toUi() }
-                            .filterNot { server ->
-                                hideOnDeviceServer &&
-                                    (server.source == DiscoverySource.LOCAL || server.id == "local")
-                            }
                     it.copy(
                         discovery =
                             it.discovery.copy(
                                 isLoading = false,
                                 errorMessage = null,
-                                servers = discoveredServers,
+                                servers = mapServers(servers),
                             ),
                     )
                 }

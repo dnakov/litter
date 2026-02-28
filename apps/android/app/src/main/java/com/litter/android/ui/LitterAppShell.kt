@@ -23,6 +23,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -56,6 +59,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -85,6 +89,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -128,6 +133,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -145,6 +151,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -235,6 +242,8 @@ fun LitterAppShell(
             } else {
                 ConversationPanel(
                     messages = uiState.messages,
+                    activeThreadKey = uiState.activeThreadKey,
+                    conversationTextSizeStep = uiState.conversationTextSizeStep,
                     draft = uiState.draft,
                     isSending = uiState.isSending,
                     models = uiState.models,
@@ -245,6 +254,7 @@ fun LitterAppShell(
                     currentCwd = uiState.currentCwd,
                     activeThreadPreview = uiState.sessions.firstOrNull { it.key == uiState.activeThreadKey }?.preview.orEmpty(),
                     onDraftChange = appState::updateDraft,
+                    onConversationTextSizeStepChanged = appState::updateConversationTextSizeStep,
                     onFileSearch = appState::searchComposerFiles,
                     onSelectModel = appState::selectModel,
                     onSelectReasoningEffort = appState::selectReasoningEffort,
@@ -1852,6 +1862,8 @@ private fun ServerSourceBadge(
 @Composable
 private fun ConversationPanel(
     messages: List<ChatMessage>,
+    activeThreadKey: ThreadKey?,
+    conversationTextSizeStep: Int,
     draft: String,
     isSending: Boolean,
     models: List<ModelOption>,
@@ -1862,6 +1874,7 @@ private fun ConversationPanel(
     currentCwd: String,
     activeThreadPreview: String,
     onDraftChange: (String) -> Unit,
+    onConversationTextSizeStepChanged: (Int) -> Unit,
     onFileSearch: (String, (Result<List<FuzzyFileSearchResult>>) -> Unit) -> Unit,
     onSelectModel: (String) -> Unit,
     onSelectReasoningEffort: (String) -> Unit,
@@ -1883,9 +1896,33 @@ private fun ConversationPanel(
     val context = LocalContext.current
     val markdownMarkwon = remember(context) { Markwon.create(context) }
     val syntaxMarkwon = remember(context) { createSyntaxHighlightMarkwon(context) }
+    val textScale = remember(conversationTextSizeStep) { ConversationTextSizing.scaleForStep(conversationTextSizeStep) }
     var attachedImagePath by remember { mutableStateOf<String?>(null) }
     var attachmentError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val nearBottomThresholdPx = with(LocalContext.current.resources.displayMetrics) { (36 * density).toInt() }
+    var wasNearBottom by remember { mutableStateOf(true) }
+    val isNearBottom by remember(listState, nearBottomThresholdPx) {
+        derivedStateOf {
+            val layoutInfo = listState.layoutInfo
+            val totalItems = layoutInfo.totalItemsCount
+            if (totalItems == 0) {
+                true
+            } else {
+                val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+                if (lastVisible.index < totalItems - 1) {
+                    false
+                } else {
+                    val bottomGap = layoutInfo.viewportEndOffset - (lastVisible.offset + lastVisible.size)
+                    bottomGap >= -nearBottomThresholdPx
+                }
+            }
+        }
+    }
+    var pinchBaseStep by remember { mutableStateOf<Int?>(null) }
+    var pinchAppliedDelta by remember { mutableIntStateOf(0) }
+
     val attachmentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent(),
@@ -1917,29 +1954,100 @@ private fun ConversationPanel(
             }
         }
 
+    LaunchedEffect(isNearBottom) {
+        wasNearBottom = isNearBottom
+    }
+
+    LaunchedEffect(activeThreadKey) {
+        listState.scrollToItem(messages.size)
+        wasNearBottom = true
+    }
+
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+        if ((isNearBottom || wasNearBottom) && listState.layoutInfo.totalItemsCount > 0) {
+            listState.animateScrollToItem(messages.size)
         }
     }
 
     Column(
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-        ) {
-            items(items = messages, key = { it.id }) { message ->
-                MessageRow(
-                    message = message,
-                    markdownMarkwon = markdownMarkwon,
-                    syntaxMarkwon = syntaxMarkwon,
-                    messageActionsEnabled = !isSending,
-                    onEditMessage = onEditMessage,
-                    onForkFromMessage = onForkFromMessage,
+        Box(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .pointerInput(conversationTextSizeStep) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                pinchBaseStep = conversationTextSizeStep
+                                pinchAppliedDelta = 0
+                                var cumulativeScale = 1f
+                                var keepGoing: Boolean
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val activePointers = event.changes.count { it.pressed }
+                                    if (activePointers >= 2) {
+                                        val zoomChange = event.calculateZoom()
+                                        if (zoomChange.isFinite() && zoomChange > 0f) {
+                                            cumulativeScale *= zoomChange
+                                            val candidateDelta = ConversationTextSizing.pinchDeltaForScale(cumulativeScale)
+                                            if (candidateDelta != 0) {
+                                                if (pinchAppliedDelta == 0) {
+                                                    pinchAppliedDelta = candidateDelta
+                                                } else {
+                                                    val sameDirection =
+                                                        (pinchAppliedDelta > 0 && candidateDelta > 0) ||
+                                                            (pinchAppliedDelta < 0 && candidateDelta < 0)
+                                                    if (!sameDirection || kotlin.math.abs(candidateDelta) > kotlin.math.abs(pinchAppliedDelta)) {
+                                                        pinchAppliedDelta = candidateDelta
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    keepGoing = event.changes.any { it.pressed }
+                                } while (keepGoing)
+
+                                val baseline = pinchBaseStep ?: conversationTextSizeStep
+                                val nextStep = ConversationTextSizing.clampStep(baseline + pinchAppliedDelta)
+                                if (nextStep != conversationTextSizeStep) {
+                                    onConversationTextSizeStepChanged(nextStep)
+                                }
+                                pinchBaseStep = null
+                                pinchAppliedDelta = 0
+                            }
+                        },
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            ) {
+                items(items = messages, key = { it.id }) { message ->
+                    MessageRow(
+                        message = message,
+                        textScale = textScale,
+                        markdownMarkwon = markdownMarkwon,
+                        syntaxMarkwon = syntaxMarkwon,
+                        messageActionsEnabled = !isSending,
+                        onEditMessage = onEditMessage,
+                        onForkFromMessage = onForkFromMessage,
+                    )
+                }
+                item(key = "conversation-bottom-anchor") {
+                    Spacer(modifier = Modifier.height(1.dp))
+                }
+            }
+
+            if (messages.isNotEmpty() && !isNearBottom) {
+                LatestScrollButton(
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 10.dp),
+                    onClick = {
+                        scope.launch {
+                            if (listState.layoutInfo.totalItemsCount > 0) {
+                                listState.animateScrollToItem(messages.size)
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -1987,8 +2095,72 @@ private fun ConversationPanel(
 }
 
 @Composable
+private fun LatestScrollButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    var bob by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        bob = true
+    }
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(99.dp),
+            color = LitterTheme.surface.copy(alpha = 0.94f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border.copy(alpha = 0.9f)),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val transition = rememberInfiniteTransition(label = "latest_button_bob")
+                val offsetY by
+                    transition.animateFloat(
+                        initialValue = -1.5f,
+                        targetValue = 1.5f,
+                        animationSpec =
+                            infiniteRepeatable(
+                                animation = tween(durationMillis = 760),
+                                repeatMode = RepeatMode.Reverse,
+                            ),
+                        label = "latest_button_offset",
+                    )
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = LitterTheme.textPrimary,
+                    modifier = Modifier.size(16.dp).offset(y = if (bob) offsetY.dp else 0.dp),
+                )
+                Text(
+                    text = "Latest",
+                    color = LitterTheme.textPrimary,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+private fun normalizeReasoningText(text: String): String =
+    text
+        .lineSequence()
+        .map { line ->
+            val trimmed = line.trim()
+            if (trimmed.startsWith("**") && trimmed.endsWith("**") && trimmed.length > 4) {
+                trimmed.removePrefix("**").removeSuffix("**")
+            } else {
+                line
+            }
+        }.joinToString(separator = "\n")
+
+@Composable
 private fun MessageRow(
     message: ChatMessage,
+    textScale: Float,
     markdownMarkwon: Markwon,
     syntaxMarkwon: Markwon,
     messageActionsEnabled: Boolean,
@@ -2047,11 +2219,14 @@ private fun MessageRow(
                     color = LitterTheme.surfaceLight,
                     border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
                 ) {
-                    Text(
-                        text = message.text,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        color = LitterTheme.textPrimary,
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = message.text,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            color = LitterTheme.textPrimary,
+                            fontSize = 14.sp * textScale,
+                        )
+                    }
                 }
             }
         }
@@ -2059,6 +2234,7 @@ private fun MessageRow(
         MessageRole.ASSISTANT -> {
             MessageMarkdownContent(
                 markdown = message.text,
+                textScale = textScale,
                 markdownMarkwon = markdownMarkwon,
                 syntaxMarkwon = syntaxMarkwon,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
@@ -2068,6 +2244,7 @@ private fun MessageRow(
         MessageRole.SYSTEM -> {
             SystemMessageCard(
                 message = message,
+                textScale = textScale,
                 markdownMarkwon = markdownMarkwon,
                 syntaxMarkwon = syntaxMarkwon,
             )
@@ -2085,12 +2262,15 @@ private fun MessageRow(
                     tint = LitterTheme.textSecondary,
                     modifier = Modifier.size(16.dp).padding(top = 2.dp),
                 )
-                Text(
-                    text = message.text,
-                    color = LitterTheme.textSecondary,
-                    fontStyle = FontStyle.Italic,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                SelectionContainer {
+                    Text(
+                        text = normalizeReasoningText(message.text),
+                        color = LitterTheme.textSecondary,
+                        fontStyle = FontStyle.Italic,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 13.sp * textScale,
+                    )
+                }
             }
         }
     }
@@ -2099,6 +2279,7 @@ private fun MessageRow(
 @Composable
 private fun MessageMarkdownContent(
     markdown: String,
+    textScale: Float,
     markdownMarkwon: Markwon,
     syntaxMarkwon: Markwon,
     modifier: Modifier = Modifier,
@@ -2114,6 +2295,7 @@ private fun MessageMarkdownContent(
                 is MarkdownBlock.Text ->
                     InlineMediaMarkdown(
                         markdown = block.markdown,
+                        textScale = textScale,
                         markdownMarkwon = markdownMarkwon,
                         textColor = textColor,
                     )
@@ -2121,6 +2303,7 @@ private fun MessageMarkdownContent(
                     CodeBlockCard(
                         language = block.language,
                         code = block.code,
+                        textScale = textScale,
                         syntaxMarkwon = syntaxMarkwon,
                     )
             }
@@ -2131,6 +2314,7 @@ private fun MessageMarkdownContent(
 @Composable
 private fun InlineMediaMarkdown(
     markdown: String,
+    textScale: Float,
     markdownMarkwon: Markwon,
     textColor: Color,
 ) {
@@ -2141,6 +2325,7 @@ private fun InlineMediaMarkdown(
                 is InlineSegment.Text ->
                     AssistantMarkdownText(
                         markdown = segment.value,
+                        textScale = textScale,
                         markwon = markdownMarkwon,
                         textColor = textColor,
                     )
@@ -2187,6 +2372,7 @@ private fun InlineBitmapImage(
 @Composable
 private fun AssistantMarkdownText(
     markdown: String,
+    textScale: Float,
     markwon: Markwon,
     textColor: Color,
     modifier: Modifier = Modifier,
@@ -2196,7 +2382,7 @@ private fun AssistantMarkdownText(
         factory = { context ->
             TextView(context).apply {
                 typeface = context.monospaceTypeface()
-                textSize = 14f
+                textSize = 14f * textScale
                 setTextColor(textColor.toArgb())
                 setLineSpacing(0f, 1.2f)
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -2210,6 +2396,7 @@ private fun AssistantMarkdownText(
 private fun CodeBlockCard(
     language: String,
     code: String,
+    textScale: Float,
     syntaxMarkwon: Markwon,
     modifier: Modifier = Modifier,
 ) {
@@ -2294,7 +2481,7 @@ private fun CodeBlockCard(
                     factory = { context ->
                         TextView(context).apply {
                             typeface = context.monospaceTypeface()
-                            textSize = 12f
+                            textSize = 12f * textScale
                             setLineSpacing(0f, 1.2f)
                             setTextColor(LitterTheme.textBody.toArgb())
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -2341,6 +2528,7 @@ private fun createPrism4jLocator(): GrammarLocator? {
 @Composable
 private fun SystemMessageCard(
     message: ChatMessage,
+    textScale: Float,
     markdownMarkwon: Markwon,
     syntaxMarkwon: Markwon,
 ) {
@@ -2350,11 +2538,13 @@ private fun SystemMessageCard(
             StructuredToolCallCard(
                 messageId = message.id,
                 model = parseResult.model,
+                textScale = textScale,
                 syntaxMarkwon = syntaxMarkwon,
             )
         ToolCallParseResult.Unrecognized ->
             GenericSystemMessageCard(
                 message = message,
+                textScale = textScale,
                 markdownMarkwon = markdownMarkwon,
                 syntaxMarkwon = syntaxMarkwon,
             )
@@ -2364,6 +2554,7 @@ private fun SystemMessageCard(
 @Composable
 private fun GenericSystemMessageCard(
     message: ChatMessage,
+    textScale: Float,
     markdownMarkwon: Markwon,
     syntaxMarkwon: Markwon,
 ) {
@@ -2396,6 +2587,7 @@ private fun GenericSystemMessageCard(
                     text = displayTitle.uppercase(Locale.US),
                     color = LitterTheme.accent,
                     style = MaterialTheme.typography.labelLarge,
+                    fontSize = 11.sp * textScale,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -2405,6 +2597,7 @@ private fun GenericSystemMessageCard(
             if (markdown.isNotBlank()) {
                 MessageMarkdownContent(
                     markdown = markdown,
+                    textScale = textScale,
                     markdownMarkwon = markdownMarkwon,
                     syntaxMarkwon = syntaxMarkwon,
                     modifier = Modifier.fillMaxWidth(),
@@ -2419,6 +2612,7 @@ private fun GenericSystemMessageCard(
 private fun StructuredToolCallCard(
     messageId: String,
     model: ToolCallCardModel,
+    textScale: Float,
     syntaxMarkwon: Markwon,
 ) {
     var expanded by remember(messageId, model.defaultExpanded) { mutableStateOf(model.defaultExpanded) }
@@ -2487,6 +2681,7 @@ private fun StructuredToolCallCard(
                     model.sections.forEach { section ->
                         ToolCallSectionView(
                             section = section,
+                            textScale = textScale,
                             syntaxMarkwon = syntaxMarkwon,
                         )
                     }
@@ -2522,6 +2717,7 @@ private fun ToolCallStatusChip(status: ToolCallStatus) {
 @Composable
 private fun ToolCallSectionView(
     section: ToolCallSection,
+    textScale: Float,
     syntaxMarkwon: Markwon,
 ) {
     when (section) {
@@ -2569,6 +2765,7 @@ private fun ToolCallSectionView(
                 label = section.label,
                 language = section.language,
                 content = section.content,
+                textScale = textScale,
                 syntaxMarkwon = syntaxMarkwon,
             )
         }
@@ -2578,6 +2775,7 @@ private fun ToolCallSectionView(
                 label = section.label,
                 language = "json",
                 content = section.content,
+                textScale = textScale,
                 syntaxMarkwon = syntaxMarkwon,
             )
         }
@@ -2587,6 +2785,7 @@ private fun ToolCallSectionView(
                 label = section.label,
                 language = "diff",
                 content = section.content,
+                textScale = textScale,
                 syntaxMarkwon = syntaxMarkwon,
             )
         }
@@ -2596,6 +2795,7 @@ private fun ToolCallSectionView(
                 label = section.label,
                 language = "text",
                 content = section.content,
+                textScale = textScale,
                 syntaxMarkwon = syntaxMarkwon,
             )
         }
@@ -2683,6 +2883,7 @@ private fun ToolCallCodeLikeSection(
     label: String,
     language: String,
     content: String,
+    textScale: Float,
     syntaxMarkwon: Markwon,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2691,7 +2892,7 @@ private fun ToolCallCodeLikeSection(
             color = LitterTheme.textSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
-        CodeBlockCard(language = language, code = content, syntaxMarkwon = syntaxMarkwon)
+        CodeBlockCard(language = language, code = content, textScale = textScale, syntaxMarkwon = syntaxMarkwon)
     }
 }
 
@@ -5060,6 +5261,13 @@ private fun DiscoverySheet(
                                 )
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (state.isLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = LitterTheme.textMuted,
+                                    )
+                                }
                                 TextButton(onClick = onRefresh) {
                                     Text("Refresh")
                                 }
@@ -5430,8 +5638,20 @@ private fun DiscoverySheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text("Connect Server", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onRefresh) {
-                    Text("Refresh")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = LitterTheme.textMuted,
+                        )
+                    }
+                    TextButton(onClick = onRefresh) {
+                        Text("Refresh")
+                    }
                 }
             }
 
