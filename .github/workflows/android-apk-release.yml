@@ -10,9 +10,50 @@ permissions:
   contents: write
 
 jobs:
+  detect-android-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_release: ${{ steps.filter.outputs.run_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect Android-related changes
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "run_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" || true)"
+          echo "Changed files:"
+          echo "$changed_files"
+
+          run_release=false
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            case "$file" in
+              apps/android/*|.github/workflows/android-apk-release.yml|.github/workflows/android.yml)
+                run_release=true
+                break
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          echo "run_release=$run_release" >> "$GITHUB_OUTPUT"
+
   release-apk:
+    needs: detect-android-changes
+    if: needs.detect-android-changes.outputs.run_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: release
 
     steps:
       - name: Checkout

@@ -1,0 +1,229 @@
+name: iOS TestFlight Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      scheme:
+        description: "Xcode scheme to archive"
+        required: true
+        default: "Litter"
+        type: choice
+        options:
+          - Litter
+          - LitterRemote
+      app_bundle_id:
+        description: "App bundle identifier"
+        required: true
+        default: "com.sigkitten.litter"
+        type: string
+      marketing_version:
+        description: "Marketing version (for manual runs)"
+        required: false
+        default: "1.0.0"
+        type: string
+      beta_group_name:
+        description: "TestFlight beta group"
+        required: false
+        default: "Internal Testers"
+        type: string
+      wait_for_processing:
+        description: "Wait for ASC processing before finishing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  detect-ios-changes:
+    runs-on: macos-15
+    outputs:
+      run_release: ${{ steps.filter.outputs.run_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect iOS-related changes
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "run_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" || true)"
+          echo "Changed files:"
+          echo "$changed_files"
+
+          run_release=false
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            case "$file" in
+              apps/ios/*|shared/rust-bridge/*|patches/codex/*|.github/workflows/ios-testflight.yml|.github/workflows/ios.yml)
+                run_release=true
+                break
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          echo "run_release=$run_release" >> "$GITHUB_OUTPUT"
+
+  upload-testflight:
+    needs: detect-ios-changes
+    if: needs.detect-ios-changes.outputs.run_release == 'true'
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: release
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate required secrets
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_P8_B64: ${{ secrets.ASC_PRIVATE_KEY_P8_B64 }}
+          IOS_APP_STORE_APP_ID: ${{ secrets.IOS_APP_STORE_APP_ID }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          IOS_DIST_CERT_P12_B64: ${{ secrets.IOS_DIST_CERT_P12_B64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_APP_STORE_PROFILE_B64: ${{ secrets.IOS_APP_STORE_PROFILE_B64 }}
+        run: |
+          set -euo pipefail
+          required=(
+            ASC_KEY_ID
+            ASC_ISSUER_ID
+            ASC_PRIVATE_KEY_P8_B64
+            IOS_APP_STORE_APP_ID
+            IOS_TEAM_ID
+            IOS_DIST_CERT_P12_B64
+            IOS_DIST_CERT_PASSWORD
+            IOS_APP_STORE_PROFILE_B64
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          brew install xcodegen jq asc
+          xcodebuild -version
+          asc --version
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Decode App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY_P8_B64: ${{ secrets.ASC_PRIVATE_KEY_P8_B64 }}
+        run: |
+          set -euo pipefail
+          ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          echo "$ASC_PRIVATE_KEY_P8_B64" | base64 --decode > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          echo "ASC_PRIVATE_KEY_PATH=$ASC_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install signing certificate and provisioning profile
+        env:
+          IOS_DIST_CERT_P12_B64: ${{ secrets.IOS_DIST_CERT_P12_B64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_APP_STORE_PROFILE_B64: ${{ secrets.IOS_APP_STORE_PROFILE_B64 }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/dist-cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/app-store.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+          echo "$IOS_DIST_CERT_P12_B64" | base64 --decode > "$CERT_PATH"
+          echo "$IOS_APP_STORE_PROFILE_B64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_UUID="$(security cms -D -i "$PROFILE_PATH" | plutil -extract UUID raw -)"
+          PROFILE_NAME="$(security cms -D -i "$PROFILE_PATH" | plutil -extract Name raw -)"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+          echo "PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME" >> "$GITHUB_ENV"
+
+      - name: Resolve release inputs
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            SCHEME="${{ inputs.scheme }}"
+            APP_BUNDLE_ID="${{ inputs.app_bundle_id }}"
+            MARKETING_VERSION="${{ inputs.marketing_version }}"
+            BETA_GROUP_NAME="${{ inputs.beta_group_name }}"
+            if [[ "${{ inputs.wait_for_processing }}" == "true" ]]; then
+              WAIT_FOR_PROCESSING="1"
+            else
+              WAIT_FOR_PROCESSING="0"
+            fi
+          else
+            SCHEME="Litter"
+            APP_BUNDLE_ID="com.sigkitten.litter"
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}"
+            BETA_GROUP_NAME="Internal Testers"
+            WAIT_FOR_PROCESSING="1"
+          fi
+
+          if [[ -z "$MARKETING_VERSION" ]]; then
+            MARKETING_VERSION="1.0.0"
+          fi
+
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          echo "APP_BUNDLE_ID=$APP_BUNDLE_ID" >> "$GITHUB_ENV"
+          echo "MARKETING_VERSION=$MARKETING_VERSION" >> "$GITHUB_ENV"
+          echo "BETA_GROUP_NAME=$BETA_GROUP_NAME" >> "$GITHUB_ENV"
+          echo "WAIT_FOR_PROCESSING=$WAIT_FOR_PROCESSING" >> "$GITHUB_ENV"
+
+      - name: Build required iOS frameworks
+        run: |
+          set -euo pipefail
+          ./apps/ios/scripts/download-ios-system.sh
+          ./apps/ios/scripts/build-rust.sh
+
+      - name: Upload to TestFlight
+        env:
+          APP_BUNDLE_ID: ${{ env.APP_BUNDLE_ID }}
+          APP_STORE_APP_ID: ${{ secrets.IOS_APP_STORE_APP_ID }}
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          PROVISIONING_PROFILE_SPECIFIER: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ env.ASC_PRIVATE_KEY_PATH }}
+          SCHEME: ${{ env.SCHEME }}
+          MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
+          BETA_GROUP_NAME: ${{ env.BETA_GROUP_NAME }}
+          WAIT_FOR_PROCESSING: ${{ env.WAIT_FOR_PROCESSING }}
+        run: ./apps/ios/scripts/testflight-upload.sh
