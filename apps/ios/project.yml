@@ -2,7 +2,7 @@ name: Litter
 options:
   bundleIdPrefix: com.litter
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
 
@@ -15,7 +15,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
     OTHER_LDFLAGS: "$(inherited) -lc++ -lz"
-    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
 
 packages:
   Citadel:
@@ -35,7 +35,7 @@ targets:
   LitterRemote:
     type: application
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "18.0"
     sources:
       - path: Sources/Litter
         excludes:
@@ -73,7 +73,7 @@ targets:
   Litter:
     type: application
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "18.0"
     sources:
       - path: Sources/Litter
         excludes:
@@ -112,7 +112,7 @@ targets:
   CodexIOSTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "18.0"
     sources:
       - path: Tests/CodexIOSTests
     dependencies:

@@ -28,6 +28,9 @@ jobs:
       - name: Generate project
         run: xcodegen generate --spec apps/ios/project.yml --project apps/ios/Litter.xcodeproj
 
+      - name: Download ios_system frameworks
+        run: ./apps/ios/scripts/download-ios-system.sh
+
       - name: Build (LitterRemote)
         run: |
           xcodebuild \
