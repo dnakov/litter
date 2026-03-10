@@ -45,6 +45,17 @@ struct ContentView: View {
                 .overlay(alignment: .top) {
                     HeaderView(topInset: geometry.safeAreaInsets.top)
                 }
+                .overlay {
+                    if appState.showModelSelector {
+                        Color.black.opacity(0.01)
+                            .ignoresSafeArea()
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    appState.showModelSelector = false
+                                }
+                            }
+                    }
+                }
             .offset(x: sidebarRevealProgress * 284)
             .scaleEffect(1 - (0.04 * sidebarRevealProgress), anchor: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 20 * sidebarRevealProgress, style: .continuous))

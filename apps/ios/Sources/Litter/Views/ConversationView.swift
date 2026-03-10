@@ -655,10 +655,10 @@ private struct ConversationInputBar: View {
                 .ignoresSafeArea()
         }
         .sheet(isPresented: $showModelSelector) {
-            ModelSelectorView()
+            ModelSelectorSheet()
                 .environmentObject(serverManager)
                 .environmentObject(appState)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showPermissionsSheet) {

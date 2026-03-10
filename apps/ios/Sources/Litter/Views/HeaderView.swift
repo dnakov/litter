@@ -7,7 +7,6 @@ struct HeaderView: View {
     @ObserveInjection var inject
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
-    @State private var showModelSelector = false
     @State private var isReloading = false
 
     var topInset: CGFloat = 0
@@ -17,57 +16,77 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    appState.sidebarOpen.toggle()
+        VStack(spacing: 4) {
+            HStack(alignment: .center, spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        appState.sidebarOpen.toggle()
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(Color(hex: "#999999"))
+                        .frame(width: 44, height: 44)
+                        .modifier(GlassCircleModifier())
                 }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(Color(hex: "#999999"))
-                    .frame(width: 44, height: 44)
-                    .modifier(GlassCircleModifier())
-            }
-            .accessibilityIdentifier("header.sidebarButton")
+                .accessibilityIdentifier("header.sidebarButton")
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            VStack(spacing: 2) {
-                HStack(spacing: 6) {
-                    Button { showModelSelector = true } label: {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        appState.showModelSelector.toggle()
+                    }
+                } label: {
+                    VStack(spacing: 2) {
                         HStack(spacing: 6) {
                             Text(sessionModelLabel)
                                 .foregroundColor(.white)
                             Text(sessionReasoningLabel)
                                 .foregroundColor(LitterTheme.textSecondary)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(LitterTheme.textSecondary)
+                                .rotationEffect(.degrees(appState.showModelSelector ? 180 : 0))
                         }
                         .font(LitterFont.monospaced(.subheadline, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
+
+                        HStack(spacing: 6) {
+                            Text(sessionDirectoryLabel)
+                                .font(LitterFont.monospaced(.caption2, weight: .semibold))
+                                .foregroundColor(LitterTheme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            ContextRingView(percent: Int(sessionContextPercent ?? 100), tint: sessionContextTint)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("header.modelPickerButton")
-
-                    ContextRingView(percent: Int(sessionContextPercent ?? 100), tint: sessionContextTint)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .modifier(GlassRectModifier(cornerRadius: 16))
                 }
-                Text(sessionDirectoryLabel)
-                    .font(LitterFont.monospaced(.caption2, weight: .semibold))
-                    .foregroundColor(LitterTheme.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("header.modelPickerButton")
+
+                Spacer(minLength: 0)
+
+                reloadButton
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .modifier(GlassRectModifier(cornerRadius: 16))
+            .padding(.horizontal, 16)
+            .padding(.top, topInset)
+            .padding(.bottom, 4)
 
-            Spacer(minLength: 0)
-
-            reloadButton
+            if appState.showModelSelector {
+                InlineModelSelectorView(onDismiss: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        appState.showModelSelector = false
+                    }
+                })
+                .padding(.horizontal, 16)
+                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, topInset)
-        .padding(.bottom, 4)
         .background(
             LinearGradient(
                 colors: [.black.opacity(0.5), .black.opacity(0.2), .clear],
@@ -96,39 +115,24 @@ struct HeaderView: View {
             await loadModelsIfNeeded()
         }
         .enableInjection()
-        .sheet(isPresented: $showModelSelector) {
-            ModelSelectorView()
-                .environmentObject(serverManager)
-                .environmentObject(appState)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
     }
 
     private var sessionModelLabel: String {
-        let threadModel = serverManager.activeThread?.model.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !threadModel.isEmpty {
-            return threadModel
-        }
+        let selected = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty { return selected }
 
-        let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !selectedModel.isEmpty {
-            return selectedModel
-        }
+        let threadModel = serverManager.activeThread?.model.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !threadModel.isEmpty { return threadModel }
 
         return "litter"
     }
 
     private var sessionReasoningLabel: String {
-        let threadReasoning = serverManager.activeThread?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !threadReasoning.isEmpty {
-            return threadReasoning
-        }
+        let selected = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty { return selected }
 
-        let selectedReasoning = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !selectedReasoning.isEmpty {
-            return selectedReasoning
-        }
+        let threadReasoning = serverManager.activeThread?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !threadReasoning.isEmpty { return threadReasoning }
 
         return "default"
     }
@@ -278,11 +282,10 @@ struct HeaderView: View {
     }
 }
 
-struct ModelSelectorView: View {
+struct InlineModelSelectorView: View {
     @EnvironmentObject var serverManager: ServerManager
     @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) private var dismiss
-    @State private var loadError: String?
+    var onDismiss: () -> Void
 
     private var models: [CodexModel] {
         serverManager.activeConnection?.models ?? []
@@ -294,132 +297,159 @@ struct ModelSelectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("Model")
-                .font(.system(.subheadline, weight: .semibold))
-                .foregroundColor(.white)
-                .padding(.top, 20)
-                .padding(.bottom, 16)
-
-            if models.isEmpty {
-                Spacer()
-                if let err = loadError {
-                    Text(err)
-                        .font(.system(.footnote))
-                        .foregroundColor(LitterTheme.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(20)
-                    Button("Retry") {
-                        loadError = nil
-                        Task { await loadModels() }
-                    }
-                    .font(.system(.subheadline, weight: .medium))
-                    .foregroundColor(LitterTheme.accent)
-                } else {
-                    ProgressView().tint(LitterTheme.accent)
-                }
-                Spacer()
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(models) { model in
-                            Button {
-                                appState.selectedModel = model.id
-                                appState.reasoningEffort = model.defaultReasoningEffort
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(model.displayName)
-                                                .font(.system(.subheadline))
-                                                .foregroundColor(.white)
-                                            if model.isDefault {
-                                                Text("default")
-                                                    .font(.system(.caption2, weight: .medium))
-                                                    .foregroundColor(LitterTheme.accent)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 2)
-                                                    .background(LitterTheme.accent.opacity(0.15))
-                                                    .clipShape(Capsule())
-                                            }
-                                        }
-                                        Text(model.description)
-                                            .font(.system(.caption))
-                                            .foregroundColor(LitterTheme.textSecondary)
-                                    }
-                                    Spacer()
-                                    if model.id == appState.selectedModel {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(.subheadline, weight: .medium))
-                                            .foregroundColor(LitterTheme.accent)
-                                    }
-                                }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 12)
-                            }
-                            Divider().background(Color(hex: "#1E1E1E")).padding(.leading, 20)
-                        }
-
-                        if let info = currentModel, !info.supportedReasoningEfforts.isEmpty {
-                            Text("Reasoning")
-                                .font(.system(.subheadline, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 20)
-                                .padding(.top, 20)
-                                .padding(.bottom, 12)
-
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(info.supportedReasoningEfforts) { effort in
-                                        Button {
-                                            appState.reasoningEffort = effort.reasoningEffort
-                                        } label: {
-                                            Text(effort.reasoningEffort)
-                                                .font(.system(.footnote, weight: .medium))
-                                                .foregroundColor(effort.reasoningEffort == appState.reasoningEffort ? .black : .white)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 8)
-                                                .background(effort.reasoningEffort == appState.reasoningEffort ? LitterTheme.accent : LitterTheme.surfaceLight)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(models) { model in
+                        Button {
+                            appState.selectedModel = model.id
+                            appState.reasoningEffort = model.defaultReasoningEffort
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(model.displayName)
+                                            .font(LitterFont.monospaced(.footnote))
+                                            .foregroundColor(.white)
+                                        if model.isDefault {
+                                            Text("default")
+                                                .font(LitterFont.monospaced(.caption2, weight: .medium))
+                                                .foregroundColor(LitterTheme.accent)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 1)
+                                                .background(LitterTheme.accent.opacity(0.15))
                                                 .clipShape(Capsule())
                                         }
                                     }
+                                    Text(model.description)
+                                        .font(LitterFont.monospaced(.caption2))
+                                        .foregroundColor(LitterTheme.textSecondary)
                                 }
-                                .padding(.horizontal, 20)
+                                Spacer()
+                                if model.id == appState.selectedModel {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(LitterTheme.accent)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                        }
+                        if model.id != models.last?.id {
+                            Divider().background(LitterTheme.separator).padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 320)
+
+            if let info = currentModel, !info.supportedReasoningEfforts.isEmpty {
+                Divider().background(LitterTheme.separator).padding(.horizontal, 12)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(info.supportedReasoningEfforts) { effort in
+                            Button {
+                                appState.reasoningEffort = effort.reasoningEffort
+                            } label: {
+                                Text(effort.reasoningEffort)
+                                    .font(LitterFont.monospaced(.caption2, weight: .medium))
+                                    .foregroundColor(effort.reasoningEffort == appState.reasoningEffort ? .black : .white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(effort.reasoningEffort == appState.reasoningEffort ? LitterTheme.accent : LitterTheme.surfaceLight)
+                                    .clipShape(Capsule())
                             }
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .fixedSize(horizontal: false, vertical: true)
+        .modifier(GlassRectModifier(cornerRadius: 16))
+    }
+}
+
+struct ModelSelectorSheet: View {
+    @EnvironmentObject var serverManager: ServerManager
+    @EnvironmentObject var appState: AppState
+
+    private var models: [CodexModel] {
+        serverManager.activeConnection?.models ?? []
+    }
+
+    private var currentModel: CodexModel? {
+        models.first { $0.id == appState.selectedModel }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(models) { model in
+                Button {
+                    appState.selectedModel = model.id
+                    appState.reasoningEffort = model.defaultReasoningEffort
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(model.displayName)
+                                    .font(LitterFont.monospaced(.footnote))
+                                    .foregroundColor(.white)
+                                if model.isDefault {
+                                    Text("default")
+                                        .font(LitterFont.monospaced(.caption2, weight: .medium))
+                                        .foregroundColor(LitterTheme.accent)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1)
+                                        .background(LitterTheme.accent.opacity(0.15))
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            Text(model.description)
+                                .font(LitterFont.monospaced(.caption2))
+                                .foregroundColor(LitterTheme.textSecondary)
+                        }
+                        Spacer()
+                        if model.id == appState.selectedModel {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(LitterTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                }
+                Divider().background(LitterTheme.separator).padding(.leading, 20)
+            }
+
+            if let info = currentModel, !info.supportedReasoningEfforts.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(info.supportedReasoningEfforts) { effort in
+                            Button {
+                                appState.reasoningEffort = effort.reasoningEffort
+                            } label: {
+                                Text(effort.reasoningEffort)
+                                    .font(LitterFont.monospaced(.caption2, weight: .medium))
+                                    .foregroundColor(effort.reasoningEffort == appState.reasoningEffort ? .black : .white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(effort.reasoningEffort == appState.reasoningEffort ? LitterTheme.accent : LitterTheme.surfaceLight)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
                 }
             }
 
             Spacer()
         }
+        .padding(.top, 20)
         .background(.ultraThinMaterial)
-        .task {
-            if models.isEmpty { await loadModels() }
-        }
-    }
-
-    private func loadModels() async {
-        guard let conn = serverManager.activeConnection, conn.isConnected else {
-            loadError = "Not connected to a server"
-            return
-        }
-        do {
-            let resp = try await conn.listModels()
-            conn.models = resp.data
-            conn.modelsLoaded = true
-            if appState.selectedModel.isEmpty {
-                if let defaultModel = resp.data.first(where: { $0.isDefault }) {
-                    appState.selectedModel = defaultModel.id
-                    appState.reasoningEffort = defaultModel.defaultReasoningEffort
-                } else if let first = resp.data.first {
-                    appState.selectedModel = first.id
-                    appState.reasoningEffort = first.defaultReasoningEffort
-                }
-            }
-        } catch {
-            loadError = error.localizedDescription
-        }
     }
 }
 
@@ -427,12 +457,6 @@ struct ModelSelectorView: View {
 #Preview("Header") {
     LitterPreviewScene {
         HeaderView()
-    }
-}
-
-#Preview("Model Selector") {
-    LitterPreviewScene(includeBackground: false) {
-        ModelSelectorView()
     }
 }
 #endif

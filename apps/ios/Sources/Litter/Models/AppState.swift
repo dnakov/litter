@@ -14,6 +14,7 @@ final class AppState: ObservableObject {
     @Published var sessionSidebarWorkspaceSortModeRaw = "mostRecent"
     @Published var selectedModel = ""
     @Published var reasoningEffort = "medium"
+    @Published var showModelSelector = false
     @Published var approvalPolicy: String {
         didSet {
             UserDefaults.standard.set(approvalPolicy, forKey: Self.approvalPolicyKey)
