@@ -75,8 +75,6 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.10.2"
 
       - name: Decode upload keystore
         env:
@@ -95,7 +93,7 @@ jobs:
           LITTER_UPLOAD_STORE_PASSWORD: ${{ secrets.LITTER_UPLOAD_STORE_PASSWORD }}
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
-        run: gradle -p apps/android :app:assembleOnDeviceRelease
+        run: apps/android/gradlew -p apps/android :app:assembleOnDeviceRelease
 
       - name: Generate checksums
         run: |

@@ -10,6 +10,8 @@ import com.litter.android.core.network.DiscoveredServer
 import com.litter.android.core.network.DiscoverySource
 import com.litter.android.core.network.ServerDiscoveryService
 import com.litter.android.state.AccountState
+import com.litter.android.state.BackendCapabilities
+import com.litter.android.state.BackendKind
 import com.litter.android.state.ApprovalDecision
 import com.litter.android.state.AppState
 import com.litter.android.state.AuthStatus
@@ -18,12 +20,18 @@ import com.litter.android.state.ExperimentalFeature
 import com.litter.android.state.FuzzyFileSearchResult
 import com.litter.android.state.ModelOption
 import com.litter.android.state.ModelSelection
+import com.litter.android.state.OpenCodeAgentOption
+import com.litter.android.state.OpenCodeMcpServer
+import com.litter.android.state.OpenCodeStatusSnapshot
 import com.litter.android.state.PendingApproval
+import com.litter.android.state.PendingInteraction
+import com.litter.android.state.SavedServer
 import com.litter.android.state.SavedSshCredential
 import com.litter.android.state.ServerConfig
 import com.litter.android.state.ServerConnectionStatus
 import com.litter.android.state.ServerManager
 import com.litter.android.state.ServerSource
+import com.litter.android.state.SlashEntry
 import com.litter.android.state.SkillMentionInput
 import com.litter.android.state.SkillMetadata
 import com.litter.android.state.SshAuthMethod
@@ -33,6 +41,7 @@ import com.litter.android.state.SshSessionManager
 import com.litter.android.state.ThreadKey
 import com.litter.android.state.ThreadState
 import com.litter.android.state.ThreadStatus
+import com.litter.android.state.manualServerId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,8 +91,13 @@ data class DiscoveryUiState(
     val isVisible: Boolean = false,
     val isLoading: Boolean = false,
     val servers: List<UiDiscoveredServer> = emptyList(),
+    val reconfiguringServerId: String? = null,
+    val manualBackendKind: BackendKind = BackendKind.CODEX,
     val manualHost: String = "",
     val manualPort: String = "8390",
+    val manualUsername: String = "",
+    val manualPassword: String = "",
+    val manualDirectory: String = "",
     val errorMessage: String? = null,
 )
 
@@ -108,12 +122,18 @@ data class UiShellState(
     val isSidebarOpen: Boolean = false,
     val connectionStatus: ServerConnectionStatus = ServerConnectionStatus.DISCONNECTED,
     val connectionError: String? = null,
+    val activeThreadStatusMessage: String? = null,
     val connectedServers: List<ServerConfig> = emptyList(),
+    val savedServers: List<SavedServer> = emptyList(),
     val activeServerId: String? = null,
+    val activeBackendKind: BackendKind = BackendKind.CODEX,
     val serverCount: Int = 0,
     val models: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
     val selectedReasoningEffort: String? = "medium",
+    val activeSlashEntries: List<SlashEntry> = emptyList(),
+    val activeOpenCodeAgents: List<OpenCodeAgentOption> = emptyList(),
+    val selectedAgentName: String? = null,
     val approvalPolicy: String = "never",
     val sandboxMode: String = "workspace-write",
     val sessions: List<ThreadState> = emptyList(),
@@ -135,7 +155,9 @@ data class UiShellState(
     val showAccount: Boolean = false,
     val accountOpenedFromSettings: Boolean = false,
     val accountState: AccountState = AccountState(),
+    val activeCapabilities: BackendCapabilities = BackendCapabilities(),
     val activePendingApproval: PendingApproval? = null,
+    val activePendingInteraction: PendingInteraction? = null,
     val apiKeyDraft: String = "",
     val isAuthWorking: Boolean = false,
     val sshLogin: SshLoginUiState = SshLoginUiState(),
@@ -154,6 +176,8 @@ interface LitterAppState : Closeable {
     fun selectModel(modelId: String)
 
     fun selectReasoningEffort(effort: String)
+
+    fun selectAgent(name: String?)
 
     fun selectSession(threadKey: ThreadKey)
 
@@ -201,7 +225,10 @@ interface LitterAppState : Closeable {
 
     fun clearRecentDirectories()
 
-    fun sendDraft(skillMentions: List<SkillMentionInput> = emptyList())
+    fun sendDraft(
+        draft: String? = null,
+        skillMentions: List<SkillMentionInput> = emptyList(),
+    )
 
     fun interrupt()
 
@@ -214,6 +241,13 @@ interface LitterAppState : Closeable {
         approvalId: String,
         decision: ApprovalDecision,
     )
+
+    fun respondToPendingQuestion(
+        questionId: String,
+        answers: List<List<String>>,
+    )
+
+    fun rejectPendingQuestion(questionId: String)
 
     fun startReview(
         onComplete: (Result<Unit>) -> Unit,
@@ -264,6 +298,40 @@ interface LitterAppState : Closeable {
         onComplete: (Result<List<SkillMetadata>>) -> Unit,
     )
 
+    fun shareActiveThread(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun unshareActiveThread(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun compactActiveThread(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun undoActiveThread(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun redoActiveThread(
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun executeOpenCodeCommand(
+        command: String,
+        arguments: String,
+        onComplete: (Result<Unit>) -> Unit,
+    )
+
+    fun loadOpenCodeMcpStatus(
+        onComplete: (Result<List<OpenCodeMcpServer>>) -> Unit,
+    )
+
+    fun loadOpenCodeStatus(
+        onComplete: (Result<OpenCodeStatusSnapshot>) -> Unit,
+    )
+
     fun openSettings()
 
     fun dismissSettings()
@@ -296,6 +364,14 @@ interface LitterAppState : Closeable {
 
     fun updateManualPort(value: String)
 
+    fun updateManualBackendKind(value: BackendKind)
+
+    fun updateManualUsername(value: String)
+
+    fun updateManualPassword(value: String)
+
+    fun updateManualDirectory(value: String)
+
     fun connectManualServer()
 
     fun dismissSshLogin()
@@ -322,6 +398,10 @@ interface LitterAppState : Closeable {
     )
 
     fun removeServer(serverId: String)
+
+    fun reconnectSavedServer(serverId: String)
+
+    fun reconfigureSavedServer(serverId: String)
 
     fun clearUiError()
 }
@@ -400,6 +480,10 @@ class DefaultLitterAppState(
 
     override fun selectReasoningEffort(effort: String) {
         serverManager.updateModelSelection(reasoningEffort = effort)
+    }
+
+    override fun selectAgent(name: String?) {
+        serverManager.selectOpenCodeAgent(name)
     }
 
     override fun selectSession(threadKey: ThreadKey) {
@@ -759,9 +843,12 @@ class DefaultLitterAppState(
         }
     }
 
-    override fun sendDraft(skillMentions: List<SkillMentionInput>) {
+    override fun sendDraft(
+        draft: String?,
+        skillMentions: List<SkillMentionInput>,
+    ) {
         val snapshot = _uiState.value
-        val prompt = snapshot.draft.trim()
+        val prompt = (draft ?: snapshot.draft).trim()
         if (prompt.isEmpty() || snapshot.isSending) {
             return
         }
@@ -817,6 +904,17 @@ class DefaultLitterAppState(
         decision: ApprovalDecision,
     ) {
         serverManager.respondToPendingApproval(approvalId = approvalId, decision = decision)
+    }
+
+    override fun respondToPendingQuestion(
+        questionId: String,
+        answers: List<List<String>>,
+    ) {
+        serverManager.respondToPendingQuestion(questionId = questionId, answers = answers)
+    }
+
+    override fun rejectPendingQuestion(questionId: String) {
+        serverManager.rejectPendingQuestion(questionId = questionId)
     }
 
     override fun startReview(onComplete: (Result<Unit>) -> Unit) {
@@ -903,6 +1001,10 @@ class DefaultLitterAppState(
     }
 
     override fun listExperimentalFeatures(onComplete: (Result<List<ExperimentalFeature>>) -> Unit) {
+        if (!_uiState.value.activeCapabilities.supportsExperimentalFeatures) {
+            onComplete(Result.failure(IllegalStateException("Experimental features are not supported for this backend")))
+            return
+        }
         serverManager.listExperimentalFeatures(onComplete = onComplete)
     }
 
@@ -911,6 +1013,10 @@ class DefaultLitterAppState(
         enabled: Boolean,
         onComplete: (Result<Unit>) -> Unit,
     ) {
+        if (!_uiState.value.activeCapabilities.supportsExperimentalFeatures) {
+            onComplete(Result.failure(IllegalStateException("Experimental features are not supported for this backend")))
+            return
+        }
         serverManager.setExperimentalFeatureEnabled(
             featureName = featureName,
             enabled = enabled,
@@ -923,6 +1029,10 @@ class DefaultLitterAppState(
         forceReload: Boolean,
         onComplete: (Result<List<SkillMetadata>>) -> Unit,
     ) {
+        if (!_uiState.value.activeCapabilities.supportsSkillListing) {
+            onComplete(Result.success(emptyList()))
+            return
+        }
         val normalizedCwd = cwd?.trim()?.takeIf { it.isNotEmpty() }
         serverManager.listSkills(
             cwds = normalizedCwd?.let { listOf(it) },
@@ -931,7 +1041,59 @@ class DefaultLitterAppState(
         )
     }
 
+    override fun shareActiveThread(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.shareActiveThread(onComplete = onComplete)
+    }
+
+    override fun unshareActiveThread(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.unshareActiveThread(onComplete = onComplete)
+    }
+
+    override fun compactActiveThread(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.compactActiveThread(onComplete = onComplete)
+    }
+
+    override fun undoActiveThread(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.undoActiveThread(onComplete = onComplete)
+    }
+
+    override fun redoActiveThread(onComplete: (Result<Unit>) -> Unit) {
+        serverManager.redoActiveThread(onComplete = onComplete)
+    }
+
+    override fun executeOpenCodeCommand(
+        command: String,
+        arguments: String,
+        onComplete: (Result<Unit>) -> Unit,
+    ) {
+        val snapshot = _uiState.value
+        val modelSelection =
+            ModelSelection(
+                modelId = snapshot.selectedModelId,
+                reasoningEffort = snapshot.selectedReasoningEffort,
+            )
+        serverManager.executeOpenCodeCommand(
+            command = command,
+            arguments = arguments,
+            cwd = snapshot.currentCwd,
+            modelSelection = modelSelection,
+            onComplete = onComplete,
+        )
+    }
+
+    override fun loadOpenCodeMcpStatus(onComplete: (Result<List<OpenCodeMcpServer>>) -> Unit) {
+        serverManager.loadOpenCodeMcpStatus(onComplete = onComplete)
+    }
+
+    override fun loadOpenCodeStatus(onComplete: (Result<OpenCodeStatusSnapshot>) -> Unit) {
+        serverManager.loadOpenCodeStatus(onComplete = onComplete)
+    }
+
     override fun openSettings() {
+        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
+            setUiError("Settings are not available for this backend")
+            return
+        }
         _uiState.update {
             it.copy(
                 showSettings = true,
@@ -947,6 +1109,10 @@ class DefaultLitterAppState(
     }
 
     override fun openAccount() {
+        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
+            setUiError("Account management is not available for this backend")
+            return
+        }
         _uiState.update { it.copy(showSettings = false, showAccount = true, accountOpenedFromSettings = true) }
         serverManager.refreshAccountState { result ->
             result.onFailure { error ->
@@ -970,6 +1136,10 @@ class DefaultLitterAppState(
     }
 
     override fun loginWithChatGpt() {
+        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
+            setUiError("Account management is not available for this backend")
+            return
+        }
         _uiState.update { it.copy(isAuthWorking = true) }
         serverManager.loginWithChatGpt { result ->
             _uiState.update { it.copy(isAuthWorking = false) }
@@ -980,6 +1150,10 @@ class DefaultLitterAppState(
     }
 
     override fun loginWithApiKey() {
+        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
+            setUiError("Account management is not available for this backend")
+            return
+        }
         val key = _uiState.value.apiKeyDraft.trim()
         if (key.isEmpty()) {
             return
@@ -997,6 +1171,10 @@ class DefaultLitterAppState(
     }
 
     override fun logoutAccount() {
+        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
+            setUiError("Account management is not available for this backend")
+            return
+        }
         _uiState.update { it.copy(isAuthWorking = true) }
         serverManager.logoutAccount { result ->
             _uiState.update { it.copy(isAuthWorking = false) }
@@ -1029,8 +1207,22 @@ class DefaultLitterAppState(
 
     override fun openDiscovery() {
         _uiState.update {
+            val server =
+                it.connectedServers.firstOrNull { cfg ->
+                    cfg.id == it.activeServerId && cfg.source == ServerSource.MANUAL
+                }
             it.copy(
-                discovery = it.discovery.copy(isVisible = true),
+                discovery =
+                    it.discovery.copy(
+                        isVisible = true,
+                        reconfiguringServerId = null,
+                        manualBackendKind = server?.backendKind ?: it.discovery.manualBackendKind,
+                        manualHost = server?.host ?: it.discovery.manualHost,
+                        manualPort = server?.port?.toString() ?: it.discovery.manualPort,
+                        manualUsername = server?.username ?: it.discovery.manualUsername,
+                        manualPassword = server?.password ?: it.discovery.manualPassword,
+                        manualDirectory = server?.directory ?: it.discovery.manualDirectory,
+                    ),
                 isSidebarOpen = false,
                 sessionSearchQuery = "",
                 showSettings = false,
@@ -1046,7 +1238,7 @@ class DefaultLitterAppState(
         discoveryScanVersion.incrementAndGet()
         _uiState.update {
             it.copy(
-                discovery = it.discovery.copy(isVisible = false, errorMessage = null),
+                discovery = it.discovery.copy(isVisible = false, errorMessage = null, reconfiguringServerId = null),
                 sshLogin = it.sshLogin.copy(isVisible = false, isConnecting = false, errorMessage = null),
             )
         }
@@ -1148,7 +1340,7 @@ class DefaultLitterAppState(
             }
             result.onSuccess {
                 _uiState.update {
-                    it.copy(discovery = it.discovery.copy(isVisible = false, errorMessage = null))
+                    it.copy(discovery = it.discovery.copy(isVisible = false, errorMessage = null, reconfiguringServerId = null))
                 }
                 postConnectPrime()
             }
@@ -1171,10 +1363,52 @@ class DefaultLitterAppState(
         }
     }
 
+    override fun updateManualBackendKind(value: BackendKind) {
+        _uiState.update {
+            it.copy(
+                discovery =
+                    it.discovery.copy(
+                        manualBackendKind = value,
+                        manualPort =
+                            if (value == BackendKind.OPENCODE && it.discovery.manualPort == "8390") {
+                                "4096"
+                            } else {
+                                it.discovery.manualPort
+                            },
+                    ),
+            )
+        }
+    }
+
+    override fun updateManualUsername(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualUsername = value),
+            )
+        }
+    }
+
+    override fun updateManualPassword(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualPassword = value),
+            )
+        }
+    }
+
+    override fun updateManualDirectory(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualDirectory = value),
+            )
+        }
+    }
+
     override fun connectManualServer() {
         val snapshot = _uiState.value.discovery
         val host = snapshot.manualHost.trim()
         val port = snapshot.manualPort.trim().toIntOrNull()
+        val reconfiguringServerId = snapshot.reconfiguringServerId?.trim()?.takeIf { it.isNotEmpty() }
         if (host.isEmpty() || port == null || port <= 0) {
             setUiError("Enter a valid host and port")
             return
@@ -1182,27 +1416,38 @@ class DefaultLitterAppState(
 
         val server =
             ServerConfig(
-                id = "manual-$host:$port",
+                id = manualServerId(snapshot.manualBackendKind, host, port),
                 name = host,
                 host = host,
                 port = port,
                 source = ServerSource.MANUAL,
-                hasCodexServer = true,
+                backendKind = snapshot.manualBackendKind,
+                hasCodexServer = snapshot.manualBackendKind == BackendKind.CODEX,
+                username = snapshot.manualUsername.trim().ifBlank { null },
+                password = snapshot.manualPassword.ifBlank { null },
+                directory = snapshot.manualDirectory.trim().ifBlank { null },
             )
 
         serverManager.connectServer(server) { result ->
             result.onFailure { error ->
                 setUiError(error.message ?: "Manual connection failed")
             }
-            result.onSuccess {
+            result.onSuccess { connectedServer ->
+                if (reconfiguringServerId != null && reconfiguringServerId != connectedServer.id) {
+                    serverManager.removeSavedServer(reconfiguringServerId)
+                }
                 _uiState.update {
                     it.copy(
                         discovery =
                             it.discovery.copy(
                                 isVisible = false,
                                 errorMessage = null,
+                                reconfiguringServerId = null,
                                 manualHost = "",
-                                manualPort = "8390",
+                                manualPort = if (snapshot.manualBackendKind == BackendKind.OPENCODE) "4096" else "8390",
+                                manualUsername = "",
+                                manualPassword = "",
+                                manualDirectory = "",
                             ),
                     )
                 }
@@ -1435,7 +1680,7 @@ class DefaultLitterAppState(
                     connectResult.onSuccess {
                         _uiState.update {
                             it.copy(
-                                discovery = it.discovery.copy(isVisible = false, errorMessage = null),
+                                discovery = it.discovery.copy(isVisible = false, errorMessage = null, reconfiguringServerId = null),
                                 sshLogin = SshLoginUiState(),
                             )
                         }
@@ -1463,8 +1708,48 @@ class DefaultLitterAppState(
         serverManager.removeServer(serverId)
         if (_uiState.value.connectedServers.size <= 1) {
             _uiState.update { it.copy(showAccount = false, showSettings = false) }
-            openDiscovery()
+            // Only open discovery if there are no saved servers to show
+            val hasSaved = serverManager.snapshot().savedServers.isNotEmpty()
+            if (!hasSaved) {
+                openDiscovery()
+            }
         }
+    }
+
+    override fun reconnectSavedServer(serverId: String) {
+        val saved = serverManager.snapshot().savedServers.firstOrNull { it.id == serverId } ?: return
+        val server = saved.toServerConfig()
+        serverManager.connectServer(server) { result ->
+            result.onSuccess {
+                postConnectPrime()
+            }
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to reconnect")
+            }
+        }
+    }
+
+    override fun reconfigureSavedServer(serverId: String) {
+        val saved = serverManager.snapshot().savedServers.firstOrNull { it.id == serverId }
+        _uiState.update {
+            it.copy(
+                discovery =
+                    it.discovery.copy(
+                        isVisible = true,
+                        reconfiguringServerId = saved?.id,
+                        manualBackendKind = if (saved != null) BackendKind.from(saved.backendKind) else it.discovery.manualBackendKind,
+                        manualHost = saved?.host ?: it.discovery.manualHost,
+                        manualPort = saved?.port?.toString() ?: it.discovery.manualPort,
+                        manualUsername = saved?.username.orEmpty(),
+                        manualPassword = saved?.password.orEmpty(),
+                        manualDirectory = saved?.directory.orEmpty(),
+                    ),
+                isSidebarOpen = false,
+                showSettings = false,
+                showAccount = false,
+            )
+        }
+        refreshDiscovery()
     }
 
     override fun clearUiError() {
@@ -1474,11 +1759,21 @@ class DefaultLitterAppState(
     private fun connectAndPrime() {
         serverManager.reconnectSavedServers { result ->
             result.onFailure {
-                openDiscovery()
+                // If reconnect threw entirely (no saved servers at all), open discovery
+                val hasSaved = serverManager.snapshot().savedServers.isNotEmpty()
+                if (!hasSaved) {
+                    openDiscovery()
+                }
+                // Otherwise the saved servers are shown in EmptyState with a Reconnect button
             }
             result.onSuccess { connected ->
                 if (connected.isEmpty()) {
-                    openDiscovery()
+                    // There were saved servers but none connected — show them in EmptyState
+                    // Only open discovery if there are no saved servers at all
+                    val hasSaved = serverManager.snapshot().savedServers.isNotEmpty()
+                    if (!hasSaved) {
+                        openDiscovery()
+                    }
                 } else {
                     postConnectPrime()
                 }
@@ -1638,6 +1933,11 @@ class DefaultLitterAppState(
     private fun mergeBackendState(backend: AppState) {
         val activeThread = backend.activeThread
         val activeServerId = backend.activeServerId ?: backend.activeThreadKey?.serverId ?: backend.servers.firstOrNull()?.id
+        val activeBackendKind =
+            backend.servers
+                .firstOrNull { it.id == activeServerId }
+                ?.backendKind
+                ?: BackendKind.CODEX
         val accountState = backend.activeAccount
         var pickerFallbackServerId: String? = null
         var shouldClosePickerForNoServers = false
@@ -1682,12 +1982,18 @@ class DefaultLitterAppState(
             current.copy(
                 connectionStatus = backend.connectionStatus,
                 connectionError = backend.connectionError,
+                activeThreadStatusMessage = activeThread?.lastError ?: backend.connectionError,
                 connectedServers = backend.servers,
+                savedServers = backend.savedServers,
                 activeServerId = activeServerId,
+                activeBackendKind = activeBackendKind,
                 serverCount = backend.servers.size,
                 models = backend.availableModels,
                 selectedModelId = backend.selectedModel.modelId,
                 selectedReasoningEffort = backend.selectedModel.reasoningEffort,
+                activeSlashEntries = backend.activeSlashEntries,
+                activeOpenCodeAgents = backend.activeAgentOptions,
+                selectedAgentName = backend.activeAgentName,
                 sessions = backend.threads,
                 activeThreadKey = backend.activeThreadKey,
                 messages = activeThread?.messages ?: emptyList(),
@@ -1695,7 +2001,9 @@ class DefaultLitterAppState(
                 isSending = activeThread?.status == ThreadStatus.THINKING,
                 currentCwd = backend.currentCwd,
                 accountState = accountState,
+                activeCapabilities = backend.activeCapabilities,
                 activePendingApproval = backend.activePendingApproval,
+                activePendingInteraction = backend.activePendingInteraction,
                 showSettings = current.showSettings,
                 showAccount = current.showAccount,
                 accountOpenedFromSettings = current.accountOpenedFromSettings,

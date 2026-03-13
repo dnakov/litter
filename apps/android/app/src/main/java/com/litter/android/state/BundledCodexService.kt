@@ -550,9 +550,9 @@ class BundledCodexService : Service() {
                 out += b
                 if (b == terminator[matched]) {
                     matched += 1
-                        if (matched == terminator.size) {
-                            break
-                        }
+                    if (matched == terminator.size) {
+                        break
+                    }
                 } else {
                     matched = if (b == terminator[0]) 1 else 0
                 }
