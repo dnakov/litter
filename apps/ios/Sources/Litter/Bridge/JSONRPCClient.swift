@@ -9,8 +9,8 @@ actor JSONRPCClient {
     private var readBuffer = Data()
     private var nextId: Int = 1
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
-    private var notificationHandlers: [(String, Data) -> Void] = []
-    private var requestHandlers: [(String, String, Data) -> Void] = []
+    private var notificationHandler: ((String, Data) -> Void)?
+    private var requestHandler: ((String, String, Data) -> Void)?
     private var onDisconnect: (() -> Void)?
 
     func connect(url: URL) async throws {
@@ -55,12 +55,12 @@ actor JSONRPCClient {
         pending = [:]
     }
 
-    func addNotificationHandler(_ handler: @escaping (String, Data) -> Void) {
-        notificationHandlers.append(handler)
+    func setNotificationHandler(_ handler: @escaping (String, Data) -> Void) {
+        notificationHandler = handler
     }
 
-    func addRequestHandler(_ handler: @escaping (_ id: String, _ method: String, _ data: Data) -> Void) {
-        requestHandlers.append(handler)
+    func setRequestHandler(_ handler: @escaping (_ id: String, _ method: String, _ data: Data) -> Void) {
+        requestHandler = handler
     }
 
     func setDisconnectHandler(_ handler: @escaping () -> Void) {
@@ -68,7 +68,9 @@ actor JSONRPCClient {
     }
 
     func sendResult(id: String, result: Any) {
-        let response: [String: Any] = ["jsonrpc": "2.0", "id": id, "result": result]
+        // Preserve original ID type: if the id is numeric, send as integer (server expects matching type)
+        let idValue: Any = Int(id).map { $0 as Any } ?? id
+        let response: [String: Any] = ["jsonrpc": "2.0", "id": idValue, "result": result]
         guard let data = try? JSONSerialization.data(withJSONObject: response),
               let str = String(data: data, encoding: .utf8) else { return }
         Task { try? await self.sendText(str) }
@@ -360,9 +362,7 @@ actor JSONRPCClient {
             if let s = idValue as? String { idStr = s }
             else if let i = idValue as? Int { idStr = "\(i)" }
             else { return }
-            for handler in requestHandlers {
-                handler(idStr, method, data)
-            }
+            requestHandler?(idStr, method, data)
             return
         }
 
@@ -388,9 +388,7 @@ actor JSONRPCClient {
         if hasMethod && !hasId {
             // Notification (no id, no response expected)
             if let notif = try? JSONDecoder().decode(JSONRPCNotification.self, from: data) {
-                for handler in notificationHandlers {
-                    handler(notif.method, data)
-                }
+                notificationHandler?(notif.method, data)
             }
         }
     }

@@ -118,7 +118,8 @@ final class ServerConnection: ObservableObject, Identifiable {
         cwd: String,
         model: String? = nil,
         approvalPolicy: String = "never",
-        sandboxMode: String? = nil
+        sandboxMode: String? = nil,
+        dynamicTools: [DynamicToolSpec]? = nil
     ) async throws -> ThreadStartResponse {
         let preferredSandbox = sandboxMode ?? Self.defaultSandboxMode
         do {
@@ -126,7 +127,8 @@ final class ServerConnection: ObservableObject, Identifiable {
                 cwd: cwd,
                 model: model,
                 approvalPolicy: approvalPolicy,
-                sandbox: preferredSandbox
+                sandbox: preferredSandbox,
+                dynamicTools: dynamicTools
             )
         } catch {
             guard sandboxMode == nil, preferredSandbox == Self.defaultSandboxMode, shouldRetryWithoutLinuxSandbox(error) else { throw error }
@@ -134,7 +136,8 @@ final class ServerConnection: ObservableObject, Identifiable {
                 cwd: cwd,
                 model: model,
                 approvalPolicy: approvalPolicy,
-                sandbox: Self.fallbackSandboxMode
+                sandbox: Self.fallbackSandboxMode,
+                dynamicTools: dynamicTools
             )
         }
     }
@@ -189,10 +192,10 @@ final class ServerConnection: ObservableObject, Identifiable {
         }
     }
 
-    private func startThread(cwd: String, model: String?, approvalPolicy: String, sandbox: String) async throws -> ThreadStartResponse {
+    private func startThread(cwd: String, model: String?, approvalPolicy: String, sandbox: String, dynamicTools: [DynamicToolSpec]? = nil) async throws -> ThreadStartResponse {
         try await client.sendRequest(
             method: "thread/start",
-            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
+            params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox, dynamicTools: dynamicTools),
             responseType: ThreadStartResponse.self
         )
     }
@@ -584,7 +587,10 @@ final class ServerConnection: ObservableObject, Identifiable {
             group.addTask {
                 try await self.client.sendRequest(
                     method: "initialize",
-                    params: InitializeParams(clientInfo: .init(name: "Litter", version: "1.0", title: nil)),
+                    params: InitializeParams(
+                        clientInfo: .init(name: "Litter", version: "1.0", title: nil),
+                        capabilities: .init(experimentalApi: true)
+                    ),
                     responseType: InitializeResponse.self
                 )
             }
@@ -619,12 +625,12 @@ final class ServerConnection: ObservableObject, Identifiable {
     }
 
     private func setupNotifications() async {
-        await client.addNotificationHandler { [weak self] method, data in
+        await client.setNotificationHandler { [weak self] method, data in
             Task { @MainActor [weak self] in
                 self?.onNotification?(method, data)
             }
         }
-        await client.addRequestHandler { [weak self] id, method, data in
+        await client.setRequestHandler { [weak self] id, method, data in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let handled = self.onServerRequest?(id, method, data) ?? false

@@ -1,25 +1,25 @@
 Summary
 
-- SSH bootstrap now resolves `codex` through a real login shell and explicitly supports Bun-installed Codex binaries.
-- Big iOS UI refresh with liquid glass styling and a full-screen conversation layout.
-- Discovery, auth, and local Codex server flows are more reliable and easier to recover from.
-- New personalization controls for theme, font family, and code block scaling.
-- Added rate-limit visibility and voice transcription in the composer.
+- Theme system with 20+ VS Code-inspired themes, adaptive app icon (light/dark/liquid glass), and Live Activity theming.
+- Fixed semantic colors (success/warning/danger) to stay consistent across themes.
+- Rate limit indicators now correctly show remaining quota instead of used.
+- Bigger app icon with iOS 18+ dark/tinted appearance variants.
+- SSH bootstrap now resolves `codex` through a real login shell.
+- Voice transcription with mic button and waveform in the composer.
 
 What to test
 
-- Verify SSH startup on Macs where `codex` is only available after shell init or installed under `~/.bun/bin`.
-- Try the new mic button and confirm voice transcription inserts cleanly into the composer.
-- Check rate-limit indicators and the updated context placement around the input area.
-- Switch theme/font settings and verify light mode, typography, and code blocks render correctly.
-- Exercise discovery, login, local server startup, and stop/error handling flows.
+- Switch themes in Settings → Appearance and verify the preview updates live without dismissing the screen.
+- Check the app icon adapts to light/dark mode (Settings → Home Screen → Automatic) and liquid glass on iOS 26.
+- Verify rate-limit badges show remaining quota (100 = full, 0 = exhausted) with correct color coding.
+- Confirm success/warning/danger colors stay green/amber/red regardless of selected theme.
+- Check Live Activity lock screen card uses theme-appropriate colors in both light and dark mode.
+- Try voice transcription, SSH connections, and discovery flows still work.
 
-Merged PRs in the last 24 hours
+Merged PRs
 
-- PR #21: iOS voice transcription with mic button and waveform.
-- PR #20: Rate-limit indicators and updated context badge placement.
+- PR #25: Theme system, appearance settings, semantic colors, rate limit fixes, adaptive app icon.
+- PR #22: SSH bootstrap via login shell.
+- PR #21: Voice transcription with mic button and waveform.
+- PR #20: Rate-limit indicators and context badge placement.
 - PR #19: Light mode, font family setting, and code block scaling.
-- PR #18: Keyboard fix, OAuth callback forwarding, and auth UX improvements.
-- PR #17: Local Codex server fixes and bundled TLS root certificates.
-- PR #16: Auth-gated discovery, stop button, clearer errors, and local directory picker.
-- PR #15: Liquid glass UI and full-screen conversation refresh.

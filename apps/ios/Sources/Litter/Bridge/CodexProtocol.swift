@@ -70,11 +70,16 @@ struct JSONRPCNotification: Decodable {
 
 struct InitializeParams: Encodable {
     let clientInfo: ClientInfo
+    let capabilities: InitializeCapabilities?
 
     struct ClientInfo: Encodable {
         let name: String
         let version: String
         let title: String?
+    }
+
+    struct InitializeCapabilities: Encodable {
+        let experimentalApi: Bool
     }
 }
 
@@ -89,6 +94,8 @@ struct ThreadStartParams: Encodable {
     let cwd: String?
     let approvalPolicy: String?
     let sandbox: String?
+    let dynamicTools: [DynamicToolSpec]?
+    let persistExtendedHistory: Bool? = true
 }
 
 struct ThreadStartResponse: Decodable {
@@ -510,6 +517,7 @@ struct ThreadResumeParams: Encodable {
     var cwd: String?
     var approvalPolicy: String?
     var sandbox: String?
+    let persistExtendedHistory: Bool? = true
 }
 
 struct ThreadResumeResponse: Decodable {
@@ -582,6 +590,7 @@ struct ThreadForkParams: Encodable {
     var cwd: String?
     var approvalPolicy: String?
     var sandbox: String?
+    let persistExtendedHistory: Bool? = true
 }
 
 struct ThreadForkResponse: Decodable {
@@ -770,6 +779,13 @@ enum ResumedThreadItem: Decodable {
     case imageView(path: String)
     case enteredReviewMode(review: String)
     case exitedReviewMode(review: String)
+    case dynamicToolCall(
+        tool: String,
+        arguments: AnyCodable?,
+        status: String,
+        contentItems: AnyCodable?,
+        durationMs: Int?
+    )
     case contextCompaction
     case unknown(type: String)
     case ignored
@@ -803,6 +819,8 @@ enum ResumedThreadItem: Decodable {
         case path
         case review
         case source
+        case arguments
+        case contentItems
         case agentId
         case agentIdSnake = "agent_id"
         case agentNickname
@@ -918,6 +936,14 @@ enum ResumedThreadItem: Decodable {
             self = .enteredReviewMode(review: Self.decodeString(container, forKey: .review) ?? "")
         case "exitedReviewMode":
             self = .exitedReviewMode(review: Self.decodeString(container, forKey: .review) ?? "")
+        case "dynamicToolCall":
+            self = .dynamicToolCall(
+                tool: Self.decodeString(container, forKey: .tool) ?? "",
+                arguments: try? container.decodeIfPresent(AnyCodable.self, forKey: .arguments),
+                status: Self.decodeString(container, forKey: .status) ?? "unknown",
+                contentItems: try? container.decodeIfPresent(AnyCodable.self, forKey: .contentItems),
+                durationMs: Self.decodeInt(container, forKey: .durationMs)
+            )
         case "contextCompaction":
             self = .contextCompaction
         default:

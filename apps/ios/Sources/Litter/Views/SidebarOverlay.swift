@@ -28,8 +28,9 @@ struct SidebarOverlay: View {
                     alignment: .topLeading
                 )
                 .background {
-                    ZStack {
-                        LitterTheme.surface
+                    if #available(iOS 26.0, *) {
+                        Rectangle().fill(.ultraThinMaterial).glassEffect(.regular, in: .rect)
+                    } else {
                         Rectangle().fill(.ultraThinMaterial)
                     }
                 }

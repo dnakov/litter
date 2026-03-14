@@ -370,7 +370,8 @@ final class ServerManager: ObservableObject {
         cwd: String,
         model: String? = nil,
         approvalPolicy: String = "never",
-        sandboxMode: String? = nil
+        sandboxMode: String? = nil,
+        dynamicTools: [DynamicToolSpec]? = nil
     ) async throws -> ThreadKey {
         guard let conn = connections[serverId] else {
             throw NSError(domain: "Litter", code: 1, userInfo: [NSLocalizedDescriptionKey: "No connection for server"])
@@ -379,7 +380,8 @@ final class ServerManager: ObservableObject {
             cwd: cwd,
             model: model,
             approvalPolicy: approvalPolicy,
-            sandboxMode: sandboxMode
+            sandboxMode: sandboxMode,
+            dynamicTools: dynamicTools ?? (ExperimentalFeatures.shared.isEnabled(.generativeUI) ? GenerativeUITools.buildDynamicToolSpecs() : nil)
         )
         let threadId = resp.thread.id
         let key = ThreadKey(serverId: serverId, threadId: threadId)
@@ -774,12 +776,82 @@ final class ServerManager: ObservableObject {
                 requesterAgentRole: requester.role,
                 createdAt: Date()
             )
+        case "item/tool/call":
+            return handleDynamicToolCall(serverId: serverId, requestId: requestId, params: params)
         default:
             return false
         }
 
         pendingApprovals.append(pending)
         return true
+    }
+
+    // MARK: - Dynamic Tool Calls
+
+    private func handleDynamicToolCall(serverId: String, requestId: String, params: [String: Any]) -> Bool {
+        guard let toolCallParams = DynamicToolCallParams(from: params) else {
+            return false
+        }
+
+        let threadId = toolCallParams.threadId
+        let key = ThreadKey(serverId: serverId, threadId: threadId)
+
+        switch toolCallParams.tool {
+        case GenerativeUITools.readMeToolName:
+            handleReadMeToolCall(serverId: serverId, requestId: requestId, params: toolCallParams)
+            return true
+        case GenerativeUITools.showWidgetToolName:
+            handleShowWidgetToolCall(serverId: serverId, requestId: requestId, key: key, params: toolCallParams)
+            return true
+        default:
+            connections[serverId]?.respondToServerRequest(
+                id: requestId,
+                result: DynamicToolCallResponse.error("Unknown dynamic tool: \(toolCallParams.tool)").asDictionary
+            )
+            return true
+        }
+    }
+
+    private func handleReadMeToolCall(serverId: String, requestId: String, params: DynamicToolCallParams) {
+        let modulesArg = params.arguments["modules"] as? [String] ?? []
+        let modules = modulesArg.compactMap { WidgetGuidelineModule(rawValue: $0) }
+        let guidelines = WidgetGuidelines.getGuidelines(modules: modules.isEmpty ? [.interactive] : modules)
+        connections[serverId]?.respondToServerRequest(
+            id: requestId,
+            result: DynamicToolCallResponse.text(guidelines).asDictionary
+        )
+    }
+
+    private func handleShowWidgetToolCall(serverId: String, requestId: String, key: ThreadKey, params: DynamicToolCallParams) {
+        guard let thread = threads[key] else {
+            connections[serverId]?.respondToServerRequest(
+                id: requestId,
+                result: DynamicToolCallResponse.error("Thread not found").asDictionary
+            )
+            return
+        }
+
+        let widget = WidgetState.fromArguments(params.arguments, callId: params.callId, isFinalized: true)
+
+        // Use liveItemMessageIndices for O(1) lookup instead of linear scan
+        if let index = liveItemMessageIndices[key]?[params.callId],
+           thread.messages.indices.contains(index) {
+            thread.messages[index].widgetState = widget
+            thread.messages[index].text = "### Widget\nstatus: completed\n\nWidget: \(widget.title)"
+        } else {
+            thread.messages.append(ChatMessage(
+                role: .system,
+                text: "### Widget\nstatus: completed\n\nWidget: \(widget.title)",
+                widgetState: widget
+            ))
+        }
+
+        thread.updatedAt = Date()
+
+        connections[serverId]?.respondToServerRequest(
+            id: requestId,
+            result: DynamicToolCallResponse.text("Widget \"\(widget.title)\" rendered and shown to the user (\(Int(widget.width))x\(Int(widget.height))).").asDictionary
+        )
     }
 
     private func commandString(from params: [String: Any]) -> String? {
@@ -830,7 +902,8 @@ final class ServerManager: ObservableObject {
                     cwd: cwd,
                     model: model,
                     approvalPolicy: approvalPolicy,
-                    sandboxMode: sandboxMode
+                    sandboxMode: sandboxMode,
+                    dynamicTools: ExperimentalFeatures.shared.isEnabled(.generativeUI) ? GenerativeUITools.buildDynamicToolSpecs() : nil
                 )
             } catch {
                 let conn = connections[serverId]
@@ -1014,9 +1087,6 @@ final class ServerManager: ObservableObject {
         if suppressNotifications {
             return
         }
-        if method.contains("turn/") || method.contains("delta") || method.contains("item/") || method.contains("task_complete") {
-            NSLog("[%@ notif] %@ server=%@", ts, method, serverId)
-        }
         switch method {
         case "account/login/completed", "account/updated", "account/rateLimits/updated":
             connections[serverId]?.handleAccountNotification(method: method, data: data)
@@ -1030,12 +1100,12 @@ final class ServerManager: ObservableObject {
         case "turn/started":
             if let threadId = extractThreadId(from: data) {
                 let key = ThreadKey(serverId: serverId, threadId: threadId)
-                NSLog("[%@ notif] turn/started thread=%@", ts, threadId)
                 threads[key]?.status = .thinking
                 threads[key]?.activeTurnId = extractTurnId(from: data)
             }
 
         case "item/agentMessage/delta":
+            serversUsingItemNotifications.insert(serverId)
             struct DeltaParams: Decodable {
                 let delta: String
                 let threadId: String?
@@ -1185,7 +1255,6 @@ final class ServerManager: ObservableObject {
         case "turn/completed", "codex/event/task_complete":
             if let threadId = extractThreadId(from: data) {
                 let key = ThreadKey(serverId: serverId, threadId: threadId)
-                NSLog("[%@ notif] turn/completed thread=%@", ts, threadId)
                 threads[key]?.status = .ready
                 threads[key]?.updatedAt = Date()
                 threads[key]?.activeTurnId = nil
@@ -1194,11 +1263,8 @@ final class ServerManager: ObservableObject {
                 backgroundedTurnKeys.remove(key)
                 endLiveActivity(key: key, phase: .completed)
                 postLocalNotificationIfNeeded(model: threads[key]?.model ?? "", threadPreview: threads[key]?.preview)
-                if activeThreadKey == key {
-                    Task { @MainActor in
-                        await syncThreadFromServer(key)
-                    }
-                }
+                // Skip syncThreadFromServer — client already has all messages from streaming.
+                // Sync happens on thread resume/switch instead.
             } else {
                 for (_, thread) in threads where thread.serverId == serverId && thread.hasTurnActive {
                     thread.status = .ready
@@ -1210,11 +1276,6 @@ final class ServerManager: ObservableObject {
                 }
                 endAllLiveActivities(phase: .completed)
                 postLocalNotificationIfNeeded(model: "", threadPreview: nil)
-                if let key = activeThreadKey {
-                    Task { @MainActor in
-                        await syncThreadFromServer(key)
-                    }
-                }
             }
             Task { await connections[serverId]?.fetchRateLimits() }
 
@@ -1353,10 +1414,44 @@ final class ServerManager: ObservableObject {
         switch method {
         case "item/started", "item/completed":
             guard let itemDict = paramsDict["item"] as? [String: Any] else { return }
+            let itemType = itemDict["type"] as? String ?? "unknown"
             // agentMessage is streamed via delta; userMessage is added locally in send()
-            if let itemType = itemDict["type"] as? String,
-               itemType == "agentMessage" || itemType == "userMessage" {
+            if itemType == "agentMessage" || itemType == "userMessage" {
                 return
+            }
+            // Handle dynamicToolCall for show_widget — create a placeholder widget message
+            if let itemType = itemDict["type"] as? String,
+               itemType == "dynamicToolCall",
+               let toolName = extractString(itemDict, keys: ["tool"]) {
+                if toolName == GenerativeUITools.showWidgetToolName {
+                    let itemId = extractString(itemDict, keys: ["id"]) ?? UUID().uuidString
+
+                    if method == "item/completed" {
+                        // On completion, preserve the existing widget message (already populated
+                        // by handleShowWidgetToolCall). Just finalize and clear live tracking.
+                        if let index = liveItemMessageIndices[key]?[itemId],
+                           thread.messages.indices.contains(index) {
+                            thread.messages[index].widgetState?.isFinalized = true
+                        }
+                        liveItemMessageIndices[key]?[itemId] = nil
+                        thread.updatedAt = Date()
+                        return
+                    }
+
+                    // item/started — create a placeholder widget with spinner
+                    let args = itemDict["arguments"] as? [String: Any] ?? [:]
+                    let widget = WidgetState.fromArguments(args, callId: itemId)
+                    let msg = ChatMessage(
+                        role: .system,
+                        text: "### Widget\nstatus: inProgress\n\nWidget: \(widget.title)",
+                        widgetState: widget
+                    )
+                    upsertLiveItemMessage(msg, itemId: itemId, key: key, thread: thread)
+                    thread.updatedAt = Date()
+                    return
+                }
+                // visualize_read_me is invisible — skip it
+                if toolName == GenerativeUITools.readMeToolName { return }
             }
             if method == "item/started", let itemType = itemDict["type"] as? String {
                 let toolName: String
@@ -2305,12 +2400,16 @@ final class ServerManager: ObservableObject {
             NSLog("[%@ sync] after resume: wasActive=%d hasTurnActive=%d", ts, wasActive ? 1 : 0, thread.hasTurnActive ? 1 : 0)
         }
 
-        let restored = restoredMessages(
+        var restored = restoredMessages(
             from: response.thread.turns,
             serverId: key.serverId,
             defaultAgentNickname: response.thread.agentNickname ?? thread.agentNickname,
             defaultAgentRole: response.thread.agentRole ?? thread.agentRole
         )
+
+        // Suspend forwarding during batch update to avoid N separate objectWillChange publishes
+        threadSubscriptions[key]?.cancel()
+
         thread.cwd = response.cwd
         thread.model = response.model
         thread.modelProvider = response.modelProvider ?? response.model
@@ -2322,11 +2421,36 @@ final class ServerManager: ObservableObject {
         thread.agentRole = sanitizedLineageId(response.thread.agentRole) ?? thread.agentRole
         await refreshThreadContextWindow(for: key, cwd: response.cwd)
         await refreshPersistedContextUsage(for: key)
-        guard !messagesEquivalent(thread.messages, restored) else { return }
-        if shouldPreferLocalMessages(current: thread.messages, restored: restored) { return }
 
-        thread.messages = restored
-        threadTurnCounts[key] = response.thread.turns.count
+        let needsMessageUpdate: Bool
+        if messagesEquivalent(thread.messages, restored) {
+            needsMessageUpdate = false
+        } else if shouldPreferLocalMessages(current: thread.messages, restored: restored) {
+            needsMessageUpdate = false
+        } else {
+            // Preserve IDs from matching existing messages so SwiftUI doesn't destroy/recreate cells
+            let existing = thread.messages
+            for i in restored.indices {
+                if i < existing.count,
+                   existing[i].role == restored[i].role,
+                   existing[i].text == restored[i].text {
+                    restored[i].id = existing[i].id
+                    if restored[i].widgetState == nil, existing[i].widgetState != nil {
+                        restored[i].widgetState = existing[i].widgetState
+                    }
+                }
+            }
+            thread.messages = restored
+            needsMessageUpdate = true
+        }
+
+        if needsMessageUpdate {
+            threadTurnCounts[key] = response.thread.turns.count
+        }
+
+        // Reconnect forwarding and send a single publish
+        observeThread(thread)
+        objectWillChange.send()
         upsertAgentDirectory(
             serverId: key.serverId,
             threadId: response.thread.id,
@@ -3202,6 +3326,30 @@ final class ServerManager: ObservableObject {
         case .exitedReviewMode(let review):
             return withTurnMetadata(
                 systemMessage(title: "Review Mode", body: "Exited review: \(review)"),
+                sourceTurnId: sourceTurnId,
+                sourceTurnIndex: sourceTurnIndex
+            )
+        case .dynamicToolCall(let tool, let arguments, let status, _, let durationMs):
+            if tool == GenerativeUITools.readMeToolName {
+                return nil
+            }
+            if tool == GenerativeUITools.showWidgetToolName {
+                guard let args = arguments?.value as? [String: Any],
+                      let code = args["widget_code"] as? String, !code.isEmpty else { return nil }
+                let widget = WidgetState.fromArguments(args, callId: UUID().uuidString, isFinalized: true)
+                var msg = ChatMessage(
+                    role: .system,
+                    text: "### Widget\nstatus: completed\n\nWidget: \(widget.title)",
+                    widgetState: widget
+                )
+                msg.sourceTurnId = sourceTurnId
+                msg.sourceTurnIndex = sourceTurnIndex
+                return msg
+            }
+            var lines: [String] = ["Status: \(status)", "Tool: \(tool)"]
+            if let durationMs { lines.append("Duration: \(durationMs) ms") }
+            return withTurnMetadata(
+                systemMessage(title: "Dynamic Tool Call", body: lines.joined(separator: "\n")),
                 sourceTurnId: sourceTurnId,
                 sourceTurnIndex: sourceTurnIndex
             )

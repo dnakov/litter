@@ -117,13 +117,7 @@ struct ContentView: View {
                     }
                 }
             .id(themeManager.themeVersion)
-            .offset(x: sidebarRevealProgress * 284)
-            .scaleEffect(1 - (0.04 * sidebarRevealProgress), anchor: .leading)
-            .clipShape(RoundedRectangle(cornerRadius: 20 * sidebarRevealProgress, style: .continuous))
-            .shadow(color: .black.opacity(0.22 * sidebarRevealProgress), radius: 26, x: 8, y: 0)
-            .allowsHitTesting(sidebarRevealProgress < 0.01)
-            .animation(sidebarAnimation, value: appState.sidebarOpen)
-            .animation(sidebarAnimation, value: sidebarDragOffset)
+            .allowsHitTesting(!appState.sidebarOpen)
             .simultaneousGesture(edgeOpenGesture)
 
             SidebarOverlay(dragOffset: $sidebarDragOffset, topInset: geometry.safeAreaInsets.top)

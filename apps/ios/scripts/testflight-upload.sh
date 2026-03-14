@@ -13,6 +13,7 @@ APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.sigkitten.litter}"
 APP_STORE_APP_ID="${APP_STORE_APP_ID:-}"
 TEAM_ID="${TEAM_ID:-}"
 PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_SPECIFIER:-Litter App Store}"
+EXPORT_SIGNING_STYLE="${EXPORT_SIGNING_STYLE:-automatic}"
 MARKETING_VERSION="${MARKETING_VERSION:-1.0.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 BETA_GROUP_NAME="${BETA_GROUP_NAME:-Internal Testers}"
@@ -89,7 +90,7 @@ if [[ -z "$TEAM_ID" ]]; then
     )"
 fi
 
-if [[ -z "$TEAM_ID" ]]; then
+if [[ -z "$TEAM_ID" && "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
     TEAM_ID="$(resolve_team_from_profile "$PROVISIONING_PROFILE_SPECIFIER" || true)"
 fi
 
@@ -100,7 +101,18 @@ fi
 
 if [[ -z "$TEAM_ID" ]]; then
     echo "Unable to resolve DEVELOPMENT_TEAM for signing." >&2
-    echo "Set TEAM_ID explicitly or ensure provisioning profile '$PROVISIONING_PROFILE_SPECIFIER' is installed." >&2
+    echo "Set TEAM_ID explicitly or ensure the project build settings or provisioning profile can resolve it." >&2
+    exit 1
+fi
+
+if [[ "$EXPORT_SIGNING_STYLE" != "automatic" && "$EXPORT_SIGNING_STYLE" != "manual" ]]; then
+    echo "Unsupported EXPORT_SIGNING_STYLE: $EXPORT_SIGNING_STYLE" >&2
+    echo "Expected 'automatic' or 'manual'." >&2
+    exit 1
+fi
+
+if [[ "$EXPORT_SIGNING_STYLE" == "manual" && -z "$PROVISIONING_PROFILE_SPECIFIER" ]]; then
+    echo "Manual export signing requires PROVISIONING_PROFILE_SPECIFIER." >&2
     exit 1
 fi
 
@@ -136,6 +148,15 @@ fi
 echo "==> Regenerating Xcode project"
 xcodegen generate --spec "$REPO_DIR/project.yml" --project "$PROJECT_DIR"
 
+auth_args=()
+if [[ -n "$AUTH_KEY_PATH" && -n "$AUTH_KEY_ID" && -n "$AUTH_ISSUER_ID" ]]; then
+    auth_args=(
+        -authenticationKeyPath "$AUTH_KEY_PATH"
+        -authenticationKeyID "$AUTH_KEY_ID"
+        -authenticationKeyIssuerID "$AUTH_ISSUER_ID"
+    )
+fi
+
 echo "==> Archiving $SCHEME ($MARKETING_VERSION/$BUILD_NUMBER)"
 archive_cmd=(
     xcodebuild
@@ -154,17 +175,13 @@ if [[ -n "$TEAM_ID" ]]; then
     archive_cmd+=(DEVELOPMENT_TEAM="$TEAM_ID")
 fi
 
-if [[ -n "$AUTH_KEY_PATH" && -n "$AUTH_KEY_ID" && -n "$AUTH_ISSUER_ID" ]]; then
-    archive_cmd+=(
-        -authenticationKeyPath "$AUTH_KEY_PATH"
-        -authenticationKeyID "$AUTH_KEY_ID"
-        -authenticationKeyIssuerID "$AUTH_ISSUER_ID"
-    )
+if [[ "${#auth_args[@]}" -gt 0 ]]; then
+    archive_cmd+=("${auth_args[@]}")
 fi
 
 "${archive_cmd[@]}"
 
-cat >"$EXPORT_OPTIONS_PLIST" <<'EOF'
+cat >"$EXPORT_OPTIONS_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -174,7 +191,7 @@ cat >"$EXPORT_OPTIONS_PLIST" <<'EOF'
     <key>method</key>
     <string>app-store-connect</string>
     <key>signingStyle</key>
-    <string>manual</string>
+    <string>${EXPORT_SIGNING_STYLE}</string>
     <key>manageAppVersionAndBuildNumber</key>
     <false/>
     <key>uploadSymbols</key>
@@ -186,14 +203,26 @@ EOF
 if [[ -n "$TEAM_ID" ]]; then
     /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS_PLIST"
 fi
-/usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
-/usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
+    /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+fi
 
-echo "==> Exporting IPA"
-xcodebuild -exportArchive \
-    -archivePath "$ARCHIVE_PATH" \
-    -exportPath "$BUILD_DIR" \
+echo "==> Exporting IPA (signing: $EXPORT_SIGNING_STYLE)"
+export_cmd=(
+    xcodebuild
+    -exportArchive
+    -archivePath "$ARCHIVE_PATH"
+    -exportPath "$BUILD_DIR"
     -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
+    -allowProvisioningUpdates
+)
+
+if [[ "${#auth_args[@]}" -gt 0 ]]; then
+    export_cmd+=("${auth_args[@]}")
+fi
+
+"${export_cmd[@]}"
 
 exported_ipa="$(find "$BUILD_DIR" -maxdepth 1 -name "*.ipa" | head -n 1)"
 if [[ -z "$exported_ipa" ]]; then

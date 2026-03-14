@@ -32,6 +32,7 @@ struct SettingsView: View {
                 Form {
                     appearanceSection
                     fontSection
+                    experimentalSection
                     accountSection
                     serversSection
                 }
@@ -112,6 +113,29 @@ struct SettingsView: View {
             }
         } header: {
             Text("Font")
+                .foregroundColor(LitterTheme.textSecondary)
+        }
+    }
+
+    // MARK: - Experimental Section
+
+    private var experimentalSection: some View {
+        Section {
+            NavigationLink {
+                ExperimentalFeaturesView()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "flask")
+                        .foregroundColor(LitterTheme.accent)
+                        .frame(width: 20)
+                    Text("Experimental Features")
+                        .font(LitterFont.styled(.subheadline))
+                        .foregroundColor(LitterTheme.textPrimary)
+                }
+            }
+            .listRowBackground(LitterTheme.surface.opacity(0.6))
+        } header: {
+            Text("Experimental")
                 .foregroundColor(LitterTheme.textSecondary)
         }
     }

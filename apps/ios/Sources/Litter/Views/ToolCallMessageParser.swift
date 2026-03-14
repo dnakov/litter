@@ -10,6 +10,7 @@ enum ToolCallKind: String, Equatable {
     case webSearch
     case collaboration
     case imageView
+    case widget
 
     var title: String {
         switch self {
@@ -22,6 +23,7 @@ enum ToolCallKind: String, Equatable {
         case .webSearch: return "Web Search"
         case .collaboration: return "Collaboration"
         case .imageView: return "Image View"
+        case .widget: return "Widget"
         }
     }
 
@@ -43,6 +45,8 @@ enum ToolCallKind: String, Equatable {
             return "person.2.fill"
         case .imageView:
             return "photo.fill"
+        case .widget:
+            return "sparkles"
         }
     }
 
@@ -61,6 +65,8 @@ enum ToolCallKind: String, Equatable {
         if normalized.contains("web search") { return .webSearch }
         if normalized.contains("collaboration") || normalized.contains("collab") { return .collaboration }
         if normalized.contains("image view") || normalized == "image" { return .imageView }
+        if normalized.contains("widget") || normalized.contains("show widget") { return .widget }
+        if normalized.contains("dynamic tool call") { return .mcpToolCall }
         return nil
     }
 }
@@ -682,6 +688,8 @@ enum ToolCallMessageParser {
             if let tool = body.metadataValue(for: "tool"), !tool.isEmpty {
                 return tool
             }
+        case .widget:
+            break
         }
 
         if let duration, !duration.isEmpty, status != .unknown {

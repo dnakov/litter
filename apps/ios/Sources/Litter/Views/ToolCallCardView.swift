@@ -100,6 +100,8 @@ struct ToolCallCardView: View {
             return LitterTheme.adaptive(light: "#3D7A30", dark: "#9BCF8E")
         case .imageView:
             return LitterTheme.adaptive(light: "#B5712B", dark: "#E3A66F")
+        case .widget:
+            return LitterTheme.adaptive(light: "#6B3FA0", dark: "#B088D0")
         }
     }
 

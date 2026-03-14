@@ -46,6 +46,7 @@ targets:
       - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
       - path: Sources/Litter/Resources/Fonts
       - path: Sources/Litter/Resources/Themes
+      - path: Sources/Litter/Resources/WidgetGuidelines
     dependencies:
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
@@ -96,6 +97,7 @@ targets:
       - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
       - path: Sources/Litter/Resources/Fonts
       - path: Sources/Litter/Resources/Themes
+      - path: Sources/Litter/Resources/WidgetGuidelines
     dependencies:
       - framework: Frameworks/codex_bridge.xcframework
         embed: false
