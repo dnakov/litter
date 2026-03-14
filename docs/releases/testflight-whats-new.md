@@ -1,25 +1,29 @@
 Summary
 
-- Theme system with 20+ VS Code-inspired themes, adaptive app icon (light/dark/liquid glass), and Live Activity theming.
-- Fixed semantic colors (success/warning/danger) to stay consistent across themes.
-- Rate limit indicators now correctly show remaining quota instead of used.
-- Bigger app icon with iOS 18+ dark/tinted appearance variants.
-- SSH bootstrap now resolves `codex` through a real login shell.
-- Voice transcription with mic button and waveform in the composer.
+- Generative UI: the model can now render interactive widgets (diagrams, charts, interactive explainers) inline in conversations.
+- Enable in Settings → Experimental Features → Generative UI, then start a new thread.
+- Widgets support clickable nodes that send follow-up prompts, and an Expand button for fullscreen view with pinch-to-zoom.
+- Widget history persists across session reloads.
+- Sidebar animation no longer causes UI freezes on conversations with many messages.
+- Scroll-to-bottom "Latest" button is now reliably tappable.
+- Android: OpenCode mobile shell v2 with remote server support.
 
 What to test
 
-- Switch themes in Settings → Appearance and verify the preview updates live without dismissing the screen.
-- Check the app icon adapts to light/dark mode (Settings → Home Screen → Automatic) and liquid glass on iOS 26.
-- Verify rate-limit badges show remaining quota (100 = full, 0 = exhausted) with correct color coding.
-- Confirm success/warning/danger colors stay green/amber/red regardless of selected theme.
-- Check Live Activity lock screen card uses theme-appropriate colors in both light and dark mode.
-- Try voice transcription, SSH connections, and discovery flows still work.
+- Enable Generative UI in Settings → Experimental Features.
+- Start a new thread and ask for a diagram (e.g. "explain how TCP works" or "how does a hash map work").
+- Verify the widget renders inline with theme-appropriate colors.
+- Tap the Expand button — should open fullscreen with scroll and pinch-to-zoom.
+- Tap clickable nodes in diagrams — should send follow-up messages.
+- Switch to another thread and back — widget should still be visible.
+- Kill and relaunch the app, resume the thread — widget should reload from history.
+- Scroll through long conversations with widgets — no freezing.
+- Open/close sidebar — no freezing or jank.
+- Tap the "Latest" button when scrolled up — should scroll to bottom.
 
 Merged PRs
 
+- PR #27: Generative UI widget system with inline rendering, experimental feature gate, widget persistence, sidebar perf fix.
+- PR #26: "Latest" scroll-to-bottom button fix.
+- PR #24: Android OpenCode mobile shell v2.
 - PR #25: Theme system, appearance settings, semantic colors, rate limit fixes, adaptive app icon.
-- PR #22: SSH bootstrap via login shell.
-- PR #21: Voice transcription with mic button and waveform.
-- PR #20: Rate-limit indicators and context badge placement.
-- PR #19: Light mode, font family setting, and code block scaling.
