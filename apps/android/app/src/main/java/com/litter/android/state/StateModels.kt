@@ -117,6 +117,7 @@ data class ServerConfig(
     val username: String? = null,
     val password: String? = null,
     val directory: String? = null,
+    val websocketUrl: String? = null,
 ) {
     companion object {
         fun local(port: Int): ServerConfig =
@@ -154,6 +155,7 @@ data class SavedServer(
     val username: String? = null,
     val password: String? = null,
     val directory: String? = null,
+    val websocketUrl: String? = null,
 ) {
     fun toServerConfig(): ServerConfig =
         ServerConfig(
@@ -167,6 +169,7 @@ data class SavedServer(
             username = username,
             password = password,
             directory = directory,
+            websocketUrl = websocketUrl,
         )
 
     companion object {
@@ -182,6 +185,7 @@ data class SavedServer(
                 username = server.username,
                 password = server.password,
                 directory = server.directory,
+                websocketUrl = server.websocketUrl,
             )
     }
 }

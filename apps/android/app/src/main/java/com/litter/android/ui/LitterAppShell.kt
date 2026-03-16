@@ -444,10 +444,12 @@ fun LitterAppShell(
                 onManualBackendKindChanged = appState::updateManualBackendKind,
                 onManualHostChanged = appState::updateManualHost,
                 onManualPortChanged = appState::updateManualPort,
+                onManualUrlChanged = appState::updateManualUrl,
                 onManualUsernameChanged = appState::updateManualUsername,
                 onManualPasswordChanged = appState::updateManualPassword,
                 onManualDirectoryChanged = appState::updateManualDirectory,
                 onConnectManual = appState::connectManualServer,
+                onConnectManualUrl = appState::connectManualUrl,
             )
         }
 
@@ -6696,10 +6698,12 @@ private fun DiscoverySheet(
     onManualBackendKindChanged: (BackendKind) -> Unit,
     onManualHostChanged: (String) -> Unit,
     onManualPortChanged: (String) -> Unit,
+    onManualUrlChanged: (String) -> Unit,
     onManualUsernameChanged: (String) -> Unit,
     onManualPasswordChanged: (String) -> Unit,
     onManualDirectoryChanged: (String) -> Unit,
     onConnectManual: () -> Unit,
+    onConnectManualUrl: () -> Unit,
 ) {
     val configuration = LocalConfiguration.current
     val useLargeScreenDialog =
@@ -6714,7 +6718,7 @@ private fun DiscoverySheet(
         val manualConnectFocusRequester = remember { FocusRequester() }
         var editingField by remember { mutableStateOf<ManualField?>(null) }
         var editingValue by remember { mutableStateOf("") }
-        val canConnect = state.manualHost.isNotBlank() && state.manualPort.isNotBlank()
+        val canConnect = if (state.manualBackendKind == BackendKind.CODEX) state.manualUrl.isNotBlank() else state.manualHost.isNotBlank() && state.manualPort.isNotBlank()
         val firstServerId = state.servers.firstOrNull()?.id
 
         BackHandler(enabled = editingField != null) {
@@ -6905,7 +6909,21 @@ private fun DiscoverySheet(
                                             }
                                         }
 
-                                        if (editingField == ManualField.HOST) {
+                                        if (state.manualBackendKind == BackendKind.CODEX) {
+                                            OutlinedTextField(
+                                                value = state.manualUrl,
+                                                onValueChange = onManualUrlChanged,
+                                                label = { Text("ws://host:port or wss://...") },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                singleLine = true,
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                            )
+                                            Text(
+                                                "Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = LitterTheme.textMuted,
+                                            )
+                                        } else if (editingField == ManualField.HOST) {
                                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                                 OutlinedTextField(
                                                     value = editingValue,
@@ -7012,102 +7030,104 @@ private fun DiscoverySheet(
                                             }
                                         }
 
-                                        if (editingField == ManualField.PORT) {
-                                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                OutlinedTextField(
-                                                    value = editingValue,
-                                                    onValueChange = {
-                                                        val digitsOnly = it.filter { ch -> ch.isDigit() }
-                                                        editingValue = digitsOnly
-                                                        onManualPortChanged(digitsOnly)
-                                                    },
+                                        if (state.manualBackendKind != BackendKind.CODEX) {
+                                            if (editingField == ManualField.PORT) {
+                                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    OutlinedTextField(
+                                                        value = editingValue,
+                                                        onValueChange = {
+                                                            val digitsOnly = it.filter { ch -> ch.isDigit() }
+                                                            editingValue = digitsOnly
+                                                            onManualPortChanged(digitsOnly)
+                                                        },
+                                                        modifier =
+                                                            Modifier
+                                                                .fillMaxWidth()
+                                                                .focusRequester(manualInlineEditorFocusRequester)
+                                                                .focusProperties {
+                                                                    up = manualHostFocusRequester
+                                                                    down = manualInlineDoneFocusRequester
+                                                                }
+                                                                .onPreviewKeyEvent { event ->
+                                                                    if (event.type != KeyEventType.KeyDown) {
+                                                                        return@onPreviewKeyEvent false
+                                                                    }
+                                                                    when (event.key) {
+                                                                        Key.Back, Key.Escape -> {
+                                                                            editingField = null
+                                                                            true
+                                                                        }
+
+                                                                        Key.DirectionDown -> {
+                                                                            manualInlineDoneFocusRequester.requestFocus()
+                                                                            true
+                                                                        }
+
+                                                                        Key.DirectionUp -> {
+                                                                            manualHostFocusRequester.requestFocus()
+                                                                            true
+                                                                        }
+
+                                                                        else -> false
+                                                                    }
+                                                                },
+                                                        singleLine = true,
+                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                        label = { Text("Port") },
+                                                    )
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                    ) {
+                                                        Text(
+                                                            "Editing port",
+                                                            color = LitterTheme.textMuted,
+                                                            style = MaterialTheme.typography.labelLarge,
+                                                        )
+                                                        TextButton(
+                                                            onClick = { editingField = null },
+                                                            modifier =
+                                                                Modifier
+                                                                    .focusRequester(manualInlineDoneFocusRequester)
+                                                                    .focusProperties {
+                                                                        up = manualInlineEditorFocusRequester
+                                                                        down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
+                                                                    },
+                                                        ) {
+                                                            Text("Done")
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                Surface(
                                                     modifier =
                                                         Modifier
                                                             .fillMaxWidth()
-                                                            .focusRequester(manualInlineEditorFocusRequester)
+                                                            .focusRequester(manualPortFocusRequester)
                                                             .focusProperties {
                                                                 up = manualHostFocusRequester
-                                                                down = manualInlineDoneFocusRequester
-                                                            }
-                                                            .onPreviewKeyEvent { event ->
-                                                                if (event.type != KeyEventType.KeyDown) {
-                                                                    return@onPreviewKeyEvent false
-                                                                }
-                                                                when (event.key) {
-                                                                    Key.Back, Key.Escape -> {
-                                                                        editingField = null
-                                                                        true
-                                                                    }
-
-                                                                    Key.DirectionDown -> {
-                                                                        manualInlineDoneFocusRequester.requestFocus()
-                                                                        true
-                                                                    }
-
-                                                                    Key.DirectionUp -> {
-                                                                        manualHostFocusRequester.requestFocus()
-                                                                        true
-                                                                    }
-
-                                                                    else -> false
-                                                                }
+                                                                down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
+                                                            }.clickable {
+                                                                editingField = ManualField.PORT
+                                                                editingValue = state.manualPort
                                                             },
-                                                    singleLine = true,
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                                    label = { Text("Port") },
-                                                )
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    color = LitterTheme.surfaceLight.copy(alpha = 0.65f),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
                                                 ) {
-                                                    Text(
-                                                        "Editing port",
-                                                        color = LitterTheme.textMuted,
-                                                        style = MaterialTheme.typography.labelLarge,
-                                                    )
-                                                    TextButton(
-                                                        onClick = { editingField = null },
-                                                        modifier =
-                                                            Modifier
-                                                                .focusRequester(manualInlineDoneFocusRequester)
-                                                                .focusProperties {
-                                                                    up = manualInlineEditorFocusRequester
-                                                                    down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
-                                                                },
+                                                    Column(
+                                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp),
                                                     ) {
-                                                        Text("Done")
+                                                        Text("Port", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
+                                                        Text(
+                                                            if (state.manualPort.isBlank()) "Set port" else state.manualPort,
+                                                            color = if (state.manualPort.isBlank()) LitterTheme.textMuted else LitterTheme.textPrimary,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
                                                     }
-                                                }
-                                            }
-                                        } else {
-                                            Surface(
-                                                modifier =
-                                                    Modifier
-                                                        .fillMaxWidth()
-                                                        .focusRequester(manualPortFocusRequester)
-                                                        .focusProperties {
-                                                            up = manualHostFocusRequester
-                                                            down = if (canConnect) manualConnectFocusRequester else manualHostFocusRequester
-                                                        }.clickable {
-                                                            editingField = ManualField.PORT
-                                                            editingValue = state.manualPort
-                                                        },
-                                                color = LitterTheme.surfaceLight.copy(alpha = 0.65f),
-                                                shape = RoundedCornerShape(8.dp),
-                                                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                                                ) {
-                                                    Text("Port", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-                                                    Text(
-                                                        if (state.manualPort.isBlank()) "Set port" else state.manualPort,
-                                                        color = if (state.manualPort.isBlank()) LitterTheme.textMuted else LitterTheme.textPrimary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                    )
                                                 }
                                             }
                                         }
@@ -7139,7 +7159,7 @@ private fun DiscoverySheet(
                                 }
                                 Spacer(modifier = Modifier.weight(1f))
                                 Button(
-                                    onClick = onConnectManual,
+                                    onClick = if (state.manualBackendKind == BackendKind.CODEX) onConnectManualUrl else onConnectManual,
                                     modifier =
                                         Modifier
                                             .fillMaxWidth()
@@ -7149,7 +7169,7 @@ private fun DiscoverySheet(
                                             },
                                     enabled = canConnect,
                                 ) {
-                                    Text("Connect Manual Server")
+                                    Text("Connect")
                                 }
                             }
                         }
@@ -7282,29 +7302,49 @@ private fun DiscoverySheet(
                         Text("OpenCode")
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                if (state.manualBackendKind == BackendKind.CODEX) {
                     OutlinedTextField(
-                        value = state.manualHost,
-                        onValueChange = onManualHostChanged,
-                        label = { Text("Host") },
-                        modifier = Modifier.weight(1f),
+                        value = state.manualUrl,
+                        onValueChange = onManualUrlChanged,
+                        label = { Text("ws://host:port or wss://...") },
+                        modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     )
-                    OutlinedTextField(
-                        value = state.manualPort,
-                        onValueChange = onManualPortChanged,
-                        label = { Text("Port") },
-                        modifier = Modifier.width(110.dp),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
+                    Text(
+                        "Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LitterTheme.textMuted,
                     )
-                }
-
-                if (state.manualBackendKind == BackendKind.OPENCODE) {
+                    Button(
+                        onClick = onConnectManualUrl,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = state.manualUrl.isNotBlank(),
+                    ) {
+                        Text("Connect")
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = state.manualHost,
+                            onValueChange = onManualHostChanged,
+                            label = { Text("Host") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = state.manualPort,
+                            onValueChange = onManualPortChanged,
+                            label = { Text("Port") },
+                            modifier = Modifier.width(110.dp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                        )
+                    }
                     OutlinedTextField(
                         value = state.manualUsername,
                         onValueChange = onManualUsernameChanged,
@@ -7326,16 +7366,14 @@ private fun DiscoverySheet(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
+                    Button(
+                        onClick = onConnectManual,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
+                    ) {
+                        Text("Connect")
+                    }
                 }
-
-                Button(
-                    onClick = onConnectManual,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
-                ) {
-                    Text("Connect Manual Server")
-                }
-            }
         }
     }
 }

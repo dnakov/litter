@@ -97,6 +97,9 @@ final class ServerConnection: Identifiable {
                 }
                 serverURL = url
                 connectionPhase = "remote-url"
+            case .remoteURL(let url):
+                serverURL = url
+                connectionPhase = "remote-url"
             case .sshThenRemote:
                 connectionPhase = "sshThenRemote-not-supported"
                 connectionHealth = .disconnected
@@ -136,7 +139,7 @@ final class ServerConnection: Identifiable {
         switch target {
         case .local:
             Task { _ = try? await URLSession.shared.data(from: url) }
-        case .remote:
+        case .remote, .remoteURL:
             Task {
                 _ = try? await execCommand(["curl", "-s", "-4", "-L", "--max-time", "10", url.absoluteString])
             }
@@ -593,7 +596,7 @@ final class ServerConnection: Identifiable {
 
     private func retryPolicy() -> ConnectionRetryPolicy {
         switch target {
-        case .remote:
+        case .remote, .remoteURL:
             return ConnectionRetryPolicy(
                 maxAttempts: 3,
                 retryDelay: .milliseconds(300),

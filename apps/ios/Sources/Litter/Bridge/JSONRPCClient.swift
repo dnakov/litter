@@ -17,16 +17,24 @@ actor JSONRPCClient {
     private var onHealthChange: ((Bool) -> Void)?
 
     func connect(url: URL) async throws {
-        guard url.scheme == "ws", let host = url.host else {
+        let useTLS = url.scheme == "wss"
+        guard url.scheme == "ws" || useTLS, let host = url.host else {
             throw URLError(.unsupportedURL)
         }
-        guard let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? 80)) else {
+        let defaultPort: UInt16 = useTLS ? 443 : 80
+        guard let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? Int(defaultPort))) else {
             throw URLError(.badURL)
         }
 
         disconnect()
 
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let parameters: NWParameters
+        if useTLS {
+            parameters = NWParameters(tls: .init())
+        } else {
+            parameters = .tcp
+        }
+        let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: parameters)
         connection = conn
 
         do {

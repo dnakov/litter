@@ -1069,10 +1069,12 @@ class ServerManager(
             left.hasCodexServer == right.hasCodexServer &&
             left.username == right.username &&
             left.password == right.password &&
-            left.directory == right.directory
+            left.directory == right.directory &&
+            left.websocketUrl == right.websocketUrl
     }
 
     private fun websocketUrl(server: ServerConfig): String {
+        server.websocketUrl?.let { return it }
         val host = normalizeServerHost(server.host)
         val normalizedHost =
             if (host.contains(':') && !host.startsWith("[") && !host.endsWith("]")) {
@@ -7092,6 +7094,7 @@ class ServerManager(
                     username = mergedCredentials.username,
                     password = mergedCredentials.password,
                     directory = nullableString(item, "directory"),
+                    websocketUrl = nullableString(item, "websocketUrl"),
                 )
         }
         if (migratedLegacyCredentials) {
@@ -7211,6 +7214,7 @@ internal fun buildSavedServersPersistencePayload(
                 .put("backendKind", saved.backendKind)
                 .put("hasCodexServer", saved.hasCodexServer)
                 .put("directory", saved.directory ?: JSONObject.NULL)
+                .put("websocketUrl", saved.websocketUrl ?: JSONObject.NULL)
         if (includeCredentials) {
             encoded
                 .put("username", saved.username ?: JSONObject.NULL)

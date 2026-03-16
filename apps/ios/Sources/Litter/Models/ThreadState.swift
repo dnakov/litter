@@ -77,6 +77,7 @@ struct SavedServer: Codable, Identifiable {
     let hasCodexServer: Bool
     let wakeMAC: String?
     let sshPortForwardingEnabled: Bool?
+    let websocketURL: String?
 
     func toDiscoveredServer() -> DiscoveredServer {
         let codexPort = hasCodexServer ? port : nil
@@ -90,7 +91,8 @@ struct SavedServer: Codable, Identifiable {
             source: ServerSource.from(source),
             hasCodexServer: hasCodexServer,
             wakeMAC: wakeMAC,
-            sshPortForwardingEnabled: sshPortForwardingEnabled ?? false
+            sshPortForwardingEnabled: sshPortForwardingEnabled ?? false,
+            websocketURL: websocketURL
         )
     }
 
@@ -104,7 +106,8 @@ struct SavedServer: Codable, Identifiable {
             source: server.source.rawString,
             hasCodexServer: server.hasCodexServer,
             wakeMAC: server.wakeMAC,
-            sshPortForwardingEnabled: server.sshPortForwardingEnabled
+            sshPortForwardingEnabled: server.sshPortForwardingEnabled,
+            websocketURL: server.websocketURL
         )
     }
 }

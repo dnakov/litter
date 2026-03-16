@@ -38,6 +38,7 @@ struct DiscoveredServer: Identifiable, Hashable {
     let hasCodexServer: Bool
     let wakeMAC: String?
     let sshPortForwardingEnabled: Bool
+    let websocketURL: String?
 
     init(
         id: String,
@@ -48,7 +49,8 @@ struct DiscoveredServer: Identifiable, Hashable {
         source: ServerSource,
         hasCodexServer: Bool,
         wakeMAC: String? = nil,
-        sshPortForwardingEnabled: Bool = false
+        sshPortForwardingEnabled: Bool = false,
+        websocketURL: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -59,10 +61,12 @@ struct DiscoveredServer: Identifiable, Hashable {
         self.hasCodexServer = hasCodexServer
         self.wakeMAC = Self.normalizeWakeMAC(wakeMAC)
         self.sshPortForwardingEnabled = sshPortForwardingEnabled
+        self.websocketURL = websocketURL
     }
 
     var connectionTarget: ConnectionTarget? {
         if source == .local { return .local }
+        if let websocketURL, let url = URL(string: websocketURL) { return .remoteURL(url) }
         if hasCodexServer, let port { return .remote(host: hostname, port: port) }
         return nil
     }

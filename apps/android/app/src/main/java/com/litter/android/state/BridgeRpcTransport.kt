@@ -9,6 +9,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
+import javax.net.ssl.SSLSocketFactory
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -72,13 +73,22 @@ internal class BridgeRpcTransport(
 
             val uri = URI(url)
             val host = uri.host ?: throw IllegalStateException("Invalid websocket host for URL: $url")
-            val port = if (uri.port > 0) uri.port else 80
+            val useTls = uri.scheme?.lowercase() == "wss"
+            val defaultPort = if (useTls) 443 else 80
+            val port = if (uri.port > 0) uri.port else defaultPort
             val path = buildPath(uri)
 
-            val sock = Socket()
+            val sock: Socket = if (useTls) {
+                SSLSocketFactory.getDefault().createSocket(host, port).also {
+                    it.soTimeout = (timeoutSeconds * 1000L).toInt()
+                }
+            } else {
+                Socket().also {
+                    it.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
+                    it.soTimeout = (timeoutSeconds * 1000L).toInt()
+                }
+            }
             try {
-                sock.connect(InetSocketAddress(host, port), (timeoutSeconds * 1000L).toInt())
-                sock.soTimeout = (timeoutSeconds * 1000L).toInt()
                 val inStream = sock.getInputStream()
                 val outStream = sock.getOutputStream()
 
@@ -298,7 +308,7 @@ internal class BridgeRpcTransport(
         val keyBytes = ByteArray(16)
         random.nextBytes(keyBytes)
         val key = Base64.getEncoder().encodeToString(keyBytes)
-        val hostHeader = if (port == 80) host else "$host:$port"
+        val hostHeader = if (port == 80 || port == 443) host else "$host:$port"
         val request = buildString {
             append("GET $path HTTP/1.1\r\n")
             append("Host: $hostHeader\r\n")

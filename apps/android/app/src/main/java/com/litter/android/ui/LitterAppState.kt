@@ -95,6 +95,7 @@ data class DiscoveryUiState(
     val manualBackendKind: BackendKind = BackendKind.CODEX,
     val manualHost: String = "",
     val manualPort: String = "8390",
+    val manualUrl: String = "",
     val manualUsername: String = "",
     val manualPassword: String = "",
     val manualDirectory: String = "",
@@ -364,6 +365,8 @@ interface LitterAppState : Closeable {
 
     fun updateManualPort(value: String)
 
+    fun updateManualUrl(value: String)
+
     fun updateManualBackendKind(value: BackendKind)
 
     fun updateManualUsername(value: String)
@@ -373,6 +376,8 @@ interface LitterAppState : Closeable {
     fun updateManualDirectory(value: String)
 
     fun connectManualServer()
+
+    fun connectManualUrl()
 
     fun dismissSshLogin()
 
@@ -1219,6 +1224,7 @@ class DefaultLitterAppState(
                         manualBackendKind = server?.backendKind ?: it.discovery.manualBackendKind,
                         manualHost = server?.host ?: it.discovery.manualHost,
                         manualPort = server?.port?.toString() ?: it.discovery.manualPort,
+                        manualUrl = server?.websocketUrl ?: if (server?.backendKind == BackendKind.CODEX) "${server.host}:${server.port}" else it.discovery.manualUrl,
                         manualUsername = server?.username ?: it.discovery.manualUsername,
                         manualPassword = server?.password ?: it.discovery.manualPassword,
                         manualDirectory = server?.directory ?: it.discovery.manualDirectory,
@@ -1363,6 +1369,14 @@ class DefaultLitterAppState(
         }
     }
 
+    override fun updateManualUrl(value: String) {
+        _uiState.update {
+            it.copy(
+                discovery = it.discovery.copy(manualUrl = value),
+            )
+        }
+    }
+
     override fun updateManualBackendKind(value: BackendKind) {
         _uiState.update {
             it.copy(
@@ -1448,6 +1462,79 @@ class DefaultLitterAppState(
                                 manualUsername = "",
                                 manualPassword = "",
                                 manualDirectory = "",
+                            ),
+                    )
+                }
+                postConnectPrime()
+            }
+        }
+    }
+
+    override fun connectManualUrl() {
+        val snapshot = _uiState.value.discovery
+        val raw = snapshot.manualUrl.trim()
+        if (raw.isEmpty()) {
+            setUiError("Enter a WebSocket URL or host:port")
+            return
+        }
+
+        val server: ServerConfig
+
+        // Try full ws:// or wss:// URL first
+        val uri = runCatching { java.net.URI(raw) }.getOrNull()
+        val scheme = uri?.scheme?.lowercase()
+        if (uri != null && (scheme == "ws" || scheme == "wss") && !uri.host.isNullOrEmpty()) {
+            val host = uri.host
+            val port = if (uri.port > 0) uri.port else if (scheme == "wss") 443 else 80
+            server = ServerConfig(
+                id = "manual-url-$raw",
+                name = host,
+                host = host,
+                port = port,
+                source = ServerSource.MANUAL,
+                backendKind = BackendKind.CODEX,
+                hasCodexServer = true,
+                websocketUrl = raw,
+            )
+        } else {
+            // Bare host:port (e.g. "192.168.1.5:8390")
+            val parts = raw.split(":", limit = 2)
+            val host: String
+            val port: Int
+            if (parts.size == 2 && parts[1].toIntOrNull() != null) {
+                host = parts[0]
+                port = parts[1].toInt()
+            } else if (parts.size == 1 && parts[0].isNotEmpty()) {
+                host = parts[0]
+                port = 8390
+            } else {
+                setUiError("Enter a ws:// URL or host:port")
+                return
+            }
+            server = ServerConfig(
+                id = manualServerId(BackendKind.CODEX, host, port),
+                name = host,
+                host = host,
+                port = port,
+                source = ServerSource.MANUAL,
+                backendKind = BackendKind.CODEX,
+                hasCodexServer = true,
+            )
+        }
+
+        serverManager.connectServer(server) { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Connection failed")
+            }
+            result.onSuccess {
+                _uiState.update {
+                    it.copy(
+                        discovery =
+                            it.discovery.copy(
+                                isVisible = false,
+                                errorMessage = null,
+                                reconfiguringServerId = null,
+                                manualUrl = "",
                             ),
                     )
                 }
@@ -1740,6 +1827,7 @@ class DefaultLitterAppState(
                         manualBackendKind = if (saved != null) BackendKind.from(saved.backendKind) else it.discovery.manualBackendKind,
                         manualHost = saved?.host ?: it.discovery.manualHost,
                         manualPort = saved?.port?.toString() ?: it.discovery.manualPort,
+                        manualUrl = saved?.websocketUrl.orEmpty(),
                         manualUsername = saved?.username.orEmpty(),
                         manualPassword = saved?.password.orEmpty(),
                         manualDirectory = saved?.directory.orEmpty(),
