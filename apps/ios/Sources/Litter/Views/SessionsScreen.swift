@@ -86,6 +86,7 @@ struct SessionsScreen: View {
                     }
                 )
             }
+            .environment(serverManager)
         }
     }
 

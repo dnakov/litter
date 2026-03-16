@@ -171,9 +171,12 @@ struct ContentView: View {
                     appState.showServerPicker = false
                 })
             }
+            .environment(serverManager)
+            .environment(appState)
         }
         .sheet(isPresented: $bindableAppState.showSettings) {
             SettingsView()
+                .environment(serverManager)
         }
     }
 
@@ -307,6 +310,7 @@ private struct HomeNavigationView: View {
                     }
                 )
             }
+            .environment(serverManager)
         }
         .alert("Home Action Failed", isPresented: Binding(
             get: { actionErrorMessage != nil },
