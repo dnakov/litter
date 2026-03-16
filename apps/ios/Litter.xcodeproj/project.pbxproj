@@ -212,6 +212,7 @@
 		8D3CAAD692101400C18D1A38 /* SafariView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F79D1C06A25D0ABAA5042BA /* SafariView.swift */; };
 		8D4C21469289291B968CBEF0 /* shell.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 874C6CFBD438D4B4909DD1CF /* shell.xcframework */; };
 		8D4D7591F008252C57EB4A1D /* proof-light.json in Resources */ = {isa = PBXBuildFile; fileRef = 9465B38F1CE05DAC59F5A918 /* proof-light.json */; };
+		8DE5B83AFC4137017D540013 /* CodexChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBFAA02EAE1B5EE554721A /* CodexChannel.swift */; };
 		8E7625BCA1A3CBE748954944 /* ThreadState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67AFB81F773863EB4A05235C /* ThreadState.swift */; };
 		908D1C78452B8A0F52C90FC0 /* pierre-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 370F75B42793F9B35D8F4990 /* pierre-dark.json */; };
 		935A6D5F5378F7093E4540BC /* brand_logo.png in Resources */ = {isa = PBXBuildFile; fileRef = 17BD69B0550C63596995AC18 /* brand_logo.png */; };
@@ -306,6 +307,7 @@
 		D512CAC21DF746FA702B10EF /* RecentDirectoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAFD307068C8BB4C5662367 /* RecentDirectoryStore.swift */; };
 		D569ED89037157CD9814D710 /* houston.json in Resources */ = {isa = PBXBuildFile; fileRef = 89172C83E4194291FF873A88 /* houston.json */; };
 		D7EE3FA241DB9E301E99BDE3 /* SessionsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C329A73DFA85F4EB70618DCF /* SessionsModel.swift */; };
+		D93C3DE0D0530A18159ABB58 /* CodexChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBFAA02EAE1B5EE554721A /* CodexChannel.swift */; };
 		D9CE23EE599BE0F7DBFD0930 /* brand_logo.svg in Resources */ = {isa = PBXBuildFile; fileRef = 74E5DF89D0937E6C17F2BB94 /* brand_logo.svg */; };
 		DA19AD6B4C88B468969FA1CF /* BerkeleyMono-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = B0648D501D363553E86BAE63 /* BerkeleyMono-Regular.otf */; };
 		DAF4F996443747E46D41007B /* light-plus.json in Resources */ = {isa = PBXBuildFile; fileRef = CFF9DBA865CCBB3308B5667D /* light-plus.json */; };
@@ -442,6 +444,7 @@
 		075CAE1122242626CE33A93F /* ConversationComposerEntryRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerEntryRowView.swift; sourceTree = "<group>"; };
 		0A19074BE7C1EFD40DB44B0E /* CodexIOSUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CodexIOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A9C36495A1AD0AC9AC6DBA4 /* ios_system.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ios_system.xcframework; path = Frameworks/ios_system/ios_system.xcframework; sourceTree = "<group>"; };
+		0DBBFAA02EAE1B5EE554721A /* CodexChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexChannel.swift; sourceTree = "<group>"; };
 		101538FB7758F2441ED27F40 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		125E05AE5CC346C8D2ED2FED /* ChatTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTypes.swift; sourceTree = "<group>"; };
 		14B7D7A9258301037FB7DBC0 /* night-owl.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "night-owl.json"; sourceTree = "<group>"; };
@@ -965,6 +968,7 @@
 			isa = PBXGroup;
 			children = (
 				94787AD35DEC95D38907632B /* CodexBridge.swift */,
+				0DBBFAA02EAE1B5EE554721A /* CodexChannel.swift */,
 				4F2C91E2BA1A8F93DA7FF4EF /* CodexProtocol.swift */,
 				C4874A6712A57F780064DB0E /* DynamicTools.swift */,
 				3DC848F239F3563C901428AA /* IosSystemBridge.m */,
@@ -1378,6 +1382,7 @@
 				176D9DB2C19A759EE50DFE57 /* ChatTypes.swift in Sources */,
 				5F3B965EDA58D389B2761F05 /* CodeBlockView.swift in Sources */,
 				B2AD11FCB018EFE781CE172F /* CodexBridge.swift in Sources */,
+				D93C3DE0D0530A18159ABB58 /* CodexChannel.swift in Sources */,
 				8B8335F1D0AA1E5584BCAF20 /* CodexProtocol.swift in Sources */,
 				E191D8B64FB04973C18E5D9B /* CodexTurnAttributes.swift in Sources */,
 				2F3CAA82F0FC204D70DF24C9 /* ConnectionTarget.swift in Sources */,
@@ -1464,6 +1469,7 @@
 				5342E9DEE1FB318F01E27F7E /* ChatTypes.swift in Sources */,
 				8445E0A9CDF58E2E9A509018 /* CodeBlockView.swift in Sources */,
 				9F89180D64C6397DBBFA7CED /* CodexBridge.swift in Sources */,
+				8DE5B83AFC4137017D540013 /* CodexChannel.swift in Sources */,
 				B977A1C7C1FF67CCC0B25AEE /* CodexProtocol.swift in Sources */,
 				79979BB2F64E9429CB78709D /* CodexTurnAttributes.swift in Sources */,
 				3BEE4213B5E4E91944903E8C /* CodexTurnLiveActivity.swift in Sources */,

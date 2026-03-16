@@ -1244,6 +1244,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-app-server-client"
+version = "0.0.0"
+dependencies = [
+ "codex-app-server",
+ "codex-app-server-protocol",
+ "codex-arg0",
+ "codex-core",
+ "codex-feedback",
+ "codex-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "codex-app-server-protocol"
 version = "0.0.0"
 dependencies = [
@@ -1342,10 +1359,16 @@ name = "codex-bridge"
 version = "0.1.0"
 dependencies = [
  "codex-app-server",
+ "codex-app-server-client",
+ "codex-app-server-protocol",
+ "codex-arg0",
+ "codex-cloud-requirements",
  "codex-core",
+ "codex-feedback",
  "codex-utils-cli",
  "jni",
  "openssl-sys",
+ "serde_json",
  "tokio",
 ]
 

@@ -52,6 +52,7 @@ final class ServerConnection: Identifiable {
     var rateLimits: RateLimitSnapshot?
 
     @ObservationIgnored let client = JSONRPCClient()
+    @ObservationIgnored private(set) var channelClient: CodexChannel?
     @ObservationIgnored private var serverURL: URL?
     @ObservationIgnored private var pendingLoginId: String?
 
@@ -85,10 +86,20 @@ final class ServerConnection: Identifiable {
                     connectionHealth = .disconnected
                     return
                 }
-                connectionPhase = "local-starting"
-                let port = try await CodexBridge.shared.ensureStarted()
-                serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                connectionPhase = "local-url"
+                connectionPhase = "local-channel-starting"
+                let channel = try await CodexBridge.shared.ensureChannelStarted()
+                channelClient = channel
+                connectionPhase = "local-channel-setup"
+                await setupChannelNotifications(channel)
+                await setupChannelDisconnect(channel)
+                // Initialize handshake already done by Rust in_process::start
+                connectionHealth = .connected
+                connectionPhase = "ready"
+                Task { [weak self] in
+                    await self?.checkAuth()
+                    await self?.fetchRateLimits()
+                }
+                return
             case .remote(let host, let port):
                 guard let url = websocketURL(host: host, port: port) else {
                     connectionPhase = "invalid-url"
@@ -126,6 +137,10 @@ final class ServerConnection: Identifiable {
     }
 
     func disconnect() {
+        if let channelClient {
+            Task { await CodexBridge.shared.disconnectChannelIfCurrent(channelClient) }
+            self.channelClient = nil
+        }
         Task { await client.disconnect() }
         connectionHealth = .disconnected
         serverURL = nil
@@ -148,7 +163,7 @@ final class ServerConnection: Identifiable {
     // MARK: - RPC Methods
 
     func listThreads(cwd: String? = nil, cursor: String? = nil, limit: Int? = 20) async throws -> ThreadListResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/list",
             params: ThreadListParams(cursor: cursor, limit: limit, sortKey: "updated_at", cwd: cwd),
             responseType: ThreadListResponse.self
@@ -234,7 +249,7 @@ final class ServerConnection: Identifiable {
     }
 
     private func startThread(cwd: String, model: String?, approvalPolicy: String, sandbox: String, dynamicTools: [DynamicToolSpec]? = nil) async throws -> ThreadStartResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/start",
             params: ThreadStartParams(model: model, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox, dynamicTools: dynamicTools),
             responseType: ThreadStartResponse.self
@@ -242,7 +257,7 @@ final class ServerConnection: Identifiable {
     }
 
     func readThread(threadId: String) async throws -> ThreadReadResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/read",
             params: ThreadReadParams(threadId: threadId),
             responseType: ThreadReadResponse.self
@@ -255,7 +270,7 @@ final class ServerConnection: Identifiable {
         approvalPolicy: String,
         sandbox: String
     ) async throws -> ThreadResumeResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/resume",
             params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
             responseType: ThreadResumeResponse.self
@@ -268,7 +283,7 @@ final class ServerConnection: Identifiable {
         approvalPolicy: String,
         sandbox: String
     ) async throws -> ThreadForkResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/fork",
             params: ThreadForkParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
             responseType: ThreadForkResponse.self
@@ -296,7 +311,7 @@ final class ServerConnection: Identifiable {
     ) async throws -> TurnStartResponse {
         var inputs: [UserInput] = [UserInput(type: "text", text: text)]
         inputs.append(contentsOf: additionalInput)
-        return try await client.sendRequest(
+        return try await routedSendRequest(
             method: "turn/start",
             params: TurnStartParams(
                 threadId: threadId,
@@ -312,7 +327,7 @@ final class ServerConnection: Identifiable {
 
     func interrupt(threadId: String, turnId: String) async {
         struct Empty: Decodable {}
-        _ = try? await client.sendRequest(
+        _ = try? await routedSendRequest(
             method: "turn/interrupt",
             params: TurnInterruptParams(threadId: threadId, turnId: turnId),
             responseType: Empty.self
@@ -320,7 +335,7 @@ final class ServerConnection: Identifiable {
     }
 
     func rollbackThread(threadId: String, numTurns: Int) async throws -> ThreadRollbackResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "thread/rollback",
             params: ThreadRollbackParams(threadId: threadId, numTurns: numTurns),
             responseType: ThreadRollbackResponse.self
@@ -328,7 +343,7 @@ final class ServerConnection: Identifiable {
     }
 
     func archiveThread(threadId: String) async throws {
-        let _: ThreadArchiveResponse = try await client.sendRequest(
+        let _: ThreadArchiveResponse = try await routedSendRequest(
             method: "thread/archive",
             params: ThreadArchiveParams(threadId: threadId),
             responseType: ThreadArchiveResponse.self
@@ -336,7 +351,7 @@ final class ServerConnection: Identifiable {
     }
 
     func listModels() async throws -> ModelListResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "model/list",
             params: ModelListParams(limit: 50, includeHidden: false),
             responseType: ModelListResponse.self
@@ -344,7 +359,7 @@ final class ServerConnection: Identifiable {
     }
 
     func execCommand(_ command: [String], cwd: String? = nil) async throws -> CommandExecResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "command/exec",
             params: CommandExecParams(command: command, cwd: cwd),
             responseType: CommandExecResponse.self
@@ -352,7 +367,7 @@ final class ServerConnection: Identifiable {
     }
 
     func fuzzyFileSearch(query: String, roots: [String], cancellationToken: String?) async throws -> FuzzyFileSearchResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "fuzzyFileSearch",
             params: FuzzyFileSearchParams(query: query, roots: roots, cancellationToken: cancellationToken),
             responseType: FuzzyFileSearchResponse.self
@@ -360,7 +375,7 @@ final class ServerConnection: Identifiable {
     }
 
     func listSkills(cwds: [String]?, forceReload: Bool = false) async throws -> SkillsListResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "skills/list",
             params: SkillsListParams(cwds: cwds, forceReload: forceReload),
             responseType: SkillsListResponse.self
@@ -369,12 +384,12 @@ final class ServerConnection: Identifiable {
 
     func respondToServerRequest(id: String, result: [String: Any]) {
         Task {
-            await client.sendResult(id: id, result: result)
+            routedSendResult(id: id, result: result)
         }
     }
 
     func listExperimentalFeatures(cursor: String? = nil, limit: Int? = 100) async throws -> ExperimentalFeatureListResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "experimentalFeature/list",
             params: ExperimentalFeatureListParams(cursor: cursor, limit: limit),
             responseType: ExperimentalFeatureListResponse.self
@@ -382,7 +397,7 @@ final class ServerConnection: Identifiable {
     }
 
     func readConfig(cwd: String?) async throws -> ConfigReadResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "config/read",
             params: ConfigReadParams(includeLayers: false, cwd: cwd),
             responseType: ConfigReadResponse.self
@@ -394,7 +409,7 @@ final class ServerConnection: Identifiable {
         value: Value,
         mergeStrategy: String = "upsert"
     ) async throws -> ConfigWriteResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "config/value/write",
             params: ConfigValueWriteParams(keyPath: keyPath, value: value, mergeStrategy: mergeStrategy, filePath: nil, expectedVersion: nil),
             responseType: ConfigWriteResponse.self
@@ -402,7 +417,7 @@ final class ServerConnection: Identifiable {
     }
 
     func setThreadName(threadId: String, name: String) async throws {
-        let _: ThreadSetNameResponse = try await client.sendRequest(
+        let _: ThreadSetNameResponse = try await routedSendRequest(
             method: "thread/name/set",
             params: ThreadSetNameParams(threadId: threadId, name: name),
             responseType: ThreadSetNameResponse.self
@@ -410,7 +425,7 @@ final class ServerConnection: Identifiable {
     }
 
     func startReview(threadId: String) async throws -> ReviewStartResponse {
-        try await client.sendRequest(
+        try await routedSendRequest(
             method: "review/start",
             params: ReviewStartParams(threadId: threadId, target: .uncommittedChanges, delivery: "inline"),
             responseType: ReviewStartResponse.self
@@ -423,7 +438,7 @@ final class ServerConnection: Identifiable {
         do {
             let resp: GetAccountResponse = try await withThrowingTaskGroup(of: GetAccountResponse.self) { group in
                 group.addTask {
-                    try await self.client.sendRequest(
+                    try await self.routedSendRequest(
                         method: "account/read",
                         params: GetAccountParams(refreshToken: false),
                         responseType: GetAccountResponse.self
@@ -453,7 +468,7 @@ final class ServerConnection: Identifiable {
 
     func getAuthToken() async -> (method: String?, token: String?) {
         do {
-            let resp: GetAuthStatusResponse = try await client.sendRequest(
+            let resp: GetAuthStatusResponse = try await routedSendRequest(
                 method: "getAuthStatus",
                 params: GetAuthStatusParams(includeToken: true, refreshToken: false),
                 responseType: GetAuthStatusResponse.self
@@ -466,7 +481,7 @@ final class ServerConnection: Identifiable {
 
     func loginWithChatGPT() async {
         do {
-            let resp: LoginStartResponse = try await client.sendRequest(
+            let resp: LoginStartResponse = try await routedSendRequest(
                 method: "account/login/start",
                 params: LoginStartChatGPTParams(),
                 responseType: LoginStartResponse.self
@@ -481,7 +496,7 @@ final class ServerConnection: Identifiable {
 
     func loginWithApiKey(_ key: String) async {
         do {
-            let _: LoginStartResponse = try await client.sendRequest(
+            let _: LoginStartResponse = try await routedSendRequest(
                 method: "account/login/start",
                 params: LoginStartApiKeyParams(apiKey: key),
                 responseType: LoginStartResponse.self
@@ -493,7 +508,7 @@ final class ServerConnection: Identifiable {
     func logout() async {
         struct Empty: Decodable {}
         struct EmptyParams: Encodable {}
-        _ = try? await client.sendRequest(
+        _ = try? await routedSendRequest(
             method: "account/logout",
             params: EmptyParams(),
             responseType: Empty.self
@@ -506,7 +521,7 @@ final class ServerConnection: Identifiable {
     func cancelLogin() async {
         guard let loginId = pendingLoginId else { return }
         struct Empty: Decodable {}
-        _ = try? await client.sendRequest(
+        _ = try? await routedSendRequest(
             method: "account/login/cancel",
             params: CancelLoginParams(loginId: loginId),
             responseType: Empty.self
@@ -519,7 +534,7 @@ final class ServerConnection: Identifiable {
 
     func fetchRateLimits() async {
         struct EmptyParams: Encodable {}
-        guard let resp = try? await client.sendRequest(
+        guard let resp = try? await routedSendRequest(
             method: "account/rateLimits/read",
             params: EmptyParams(),
             responseType: GetAccountRateLimitsResponse.self
@@ -547,6 +562,55 @@ final class ServerConnection: Identifiable {
             }
         default:
             break
+        }
+    }
+
+    // MARK: - Transport Routing
+
+    /// Routes sendRequest to the channel client (local) or WebSocket client (remote).
+    private func routedSendRequest<P: Encodable, R: Decodable>(
+        method: String, params: P, responseType: R.Type
+    ) async throws -> R {
+        if let channelClient {
+            return try await channelClient.sendRequest(method: method, params: params, responseType: responseType)
+        }
+        return try await client.sendRequest(method: method, params: params, responseType: responseType)
+    }
+
+    /// Routes sendResult to the appropriate client.
+    private func routedSendResult(id: String, result: Any) {
+        if let channelClient {
+            Task { await channelClient.sendResult(id: id, result: result) }
+        } else {
+            Task { await self.client.sendResult(id: id, result: result) }
+        }
+    }
+
+    private func setupChannelNotifications(_ channel: CodexChannel) async {
+        await channel.setNotificationHandler { [weak self] method, data in
+            Task { @MainActor [weak self] in
+                self?.onNotification?(method, data)
+            }
+        }
+        await channel.setRequestHandler { [weak self] id, method, data in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let handled = self.onServerRequest?(id, method, data) ?? false
+                if !handled {
+                    self.routedSendResult(id: id, result: [:] as [String: String])
+                }
+            }
+        }
+    }
+
+    private func setupChannelDisconnect(_ channel: CodexChannel) async {
+        await channel.setDisconnectHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.connectionHealth == .connected || self.connectionHealth == .unresponsive else { return }
+                NSLog("[channel] disconnected, id=%@", self.id)
+                self.connectionHealth = .disconnected
+                self.onDisconnect?()
+            }
         }
     }
 
@@ -703,7 +767,7 @@ final class ServerConnection: Identifiable {
                 guard let self else { return }
                 let handled = self.onServerRequest?(id, method, data) ?? false
                 if !handled {
-                    await self.client.sendResult(id: id, result: [:] as [String: String])
+                    self.routedSendResult(id: id, result: [:] as [String: String])
                 }
             }
         }

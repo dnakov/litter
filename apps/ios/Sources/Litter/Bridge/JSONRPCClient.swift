@@ -467,7 +467,7 @@ private final class ContinuationResolutionFlag: @unchecked Sendable {
     }
 }
 
-private extension Data {
+extension Data {
     func decoded<T: Decodable>(as type: T.Type) throws -> T {
         // The response data contains the full JSON-RPC response; extract "result"
         if let obj = try? JSONSerialization.jsonObject(with: self) as? [String: Any],
