@@ -1505,6 +1505,7 @@ final class ServerManager {
 
         default:
             if method.hasPrefix("item/") {
+                NSLog("[notif] item notification: %@", method)
                 await handleItemNotification(serverId: serverId, method: method, data: data)
             } else if method == "codex/event/turn_diff" {
                 handleLegacyCodexEventNotification(serverId: serverId, method: method, data: data)
@@ -1642,6 +1643,7 @@ final class ServerManager {
         case "item/started", "item/completed":
             guard let itemDict = paramsDict["item"] as? [String: Any] else { return }
             let itemType = itemDict["type"] as? String ?? "unknown"
+            NSLog("[item] %@ type=%@", method, itemType)
             // agentMessage is streamed via delta; userMessage is added locally in send()
             if itemType == "agentMessage" || itemType == "userMessage" {
                 return

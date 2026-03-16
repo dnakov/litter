@@ -15,12 +15,11 @@
 		04743D5A1900185832682235 /* SSHLoginSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9876F2929290D47ED57D77 /* SSHLoginSheet.swift */; };
 		055E4E6F482808FF3A6FE4AD /* LitterPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05E1F150502D4C5682EBBFD /* LitterPalette.swift */; };
 		05A33B94636DAAAD2D3DAF0C /* night-owl.json in Resources */ = {isa = PBXBuildFile; fileRef = 14B7D7A9258301037FB7DBC0 /* night-owl.json */; };
-		092994BBC35FD41C78FDBAF5 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70018F0EA2A62B64DA5334B /* MarkdownUI */; };
+		092994BBC35FD41C78FDBAF5 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = BE888B0B60E5BFE0BBD73AB8 /* Textual */; };
 		09CF276ECAC507A366D8AC10 /* ConversationTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55700E32058BA95A9372AA41 /* ConversationTimelineView.swift */; };
 		0AC3B09D832DD47A0C781EE5 /* LitterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359F3DCDC22C81682DAA7B0D /* LitterApp.swift */; };
 		0AE0806F82A8719DC9185E93 /* linear-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 1725F41F271A5EBF02FD4ECA /* linear-dark.json */; };
 		0B3D7FA5A29A90E2B439DDE7 /* github-dark-high-contrast.json in Resources */ = {isa = PBXBuildFile; fileRef = E1FAA725B26C5805C94EF40E /* github-dark-high-contrast.json */; };
-		0B70CD891000542F8F109E18 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = 543D34C5D486ED8912358C4B /* Highlightr */; };
 		0C650337DE414FC2772FCD57 /* core.md in Resources */ = {isa = PBXBuildFile; fileRef = 39FEE67AD5EE2E6940F2500D /* core.md */; };
 		0C8911DDC605F71148FC7E29 /* ToolCallMessageParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 293EF15BAE7362AAF480EC4A /* ToolCallMessageParser.swift */; };
 		0CBA764F0C300A77014E7DF2 /* color_palette.md in Resources */ = {isa = PBXBuildFile; fileRef = F3089A3C0A4F5F8697D9BCF6 /* color_palette.md */; };
@@ -148,11 +147,10 @@
 		681CFF0789D9D2369F61ECF2 /* IosSystemBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 3DC848F239F3563C901428AA /* IosSystemBridge.m */; };
 		68EDC8C615D0D6DDEB6665CC /* everforest-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 81C9F195FE7B59E6FF611CC4 /* everforest-dark.json */; };
 		69F93A646ED483E203C91800 /* notion-light.json in Resources */ = {isa = PBXBuildFile; fileRef = 99BFC7A01A194E7508C5693C /* notion-light.json */; };
-		6A5FB63A62D487A9B4E53C82 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 26B5133B3787DA6490540164 /* MarkdownUI */; };
+		6A5FB63A62D487A9B4E53C82 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = 9ED1D59C4072FFDA738A082C /* Textual */; };
 		6AC6107CC04A2C18CBFC619E /* charts_chart_js.md in Resources */ = {isa = PBXBuildFile; fileRef = 8EAE71F8300362D819D91D16 /* charts_chart_js.md */; };
 		6AE1441B17A79F8CA5D08BF2 /* DynamicTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4874A6712A57F780064DB0E /* DynamicTools.swift */; };
 		6B6DEAECC59EF7CB0B9500B9 /* brand_logo.svg in Resources */ = {isa = PBXBuildFile; fileRef = 74E5DF89D0937E6C17F2BB94 /* brand_logo.svg */; };
-		6BBF52F233815A7CE387ADAF /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = 13331A31CF6F354C66979963 /* Highlightr */; };
 		6BF63183ECD96F34922779D9 /* everforest-light.json in Resources */ = {isa = PBXBuildFile; fileRef = 88B886829FDF299DFFCC1A86 /* everforest-light.json */; };
 		6C3193DB5555F3191A5CAEDC /* solarized-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 45F4850CDE17E426ECBF4EA5 /* solarized-dark.json */; };
 		6D632FAEAEBDCB35729839B1 /* slack-ochin-CRg.json in Resources */ = {isa = PBXBuildFile; fileRef = 61AB42B6F22D57D2F4BBE008 /* slack-ochin-CRg.json */; };
@@ -637,9 +635,8 @@
 				35D5ED036168E1DF8EE63CB5 /* SystemConfiguration.framework in Frameworks */,
 				CC8E05E303DE114ADA2C409B /* Network.framework in Frameworks */,
 				04176A364FBEB96BDD0DE31D /* Citadel in Frameworks */,
-				6A5FB63A62D487A9B4E53C82 /* MarkdownUI in Frameworks */,
+				6A5FB63A62D487A9B4E53C82 /* Textual in Frameworks */,
 				1B01536D4D970B5E054F9CCA /* Inject in Frameworks */,
-				0B70CD891000542F8F109E18 /* Highlightr in Frameworks */,
 				2EB6769DBEBF50F7C5A2B89A /* ios_system.xcframework in Frameworks */,
 				8D4C21469289291B968CBEF0 /* shell.xcframework in Frameworks */,
 				F32CF5F7E077ABCAB4ECE1C7 /* text.xcframework in Frameworks */,
@@ -656,9 +653,8 @@
 				439364114EC527898BA7FFD7 /* SystemConfiguration.framework in Frameworks */,
 				49EE86930AE61F174F3E0E97 /* Network.framework in Frameworks */,
 				72158718B1E67C9A80C407CC /* Citadel in Frameworks */,
-				092994BBC35FD41C78FDBAF5 /* MarkdownUI in Frameworks */,
+				092994BBC35FD41C78FDBAF5 /* Textual in Frameworks */,
 				D1C2C119E9801D3921F44146 /* Inject in Frameworks */,
-				6BBF52F233815A7CE387ADAF /* Highlightr in Frameworks */,
 				C07B1499364228CD0094A4DB /* ios_system.xcframework in Frameworks */,
 				1DB21F6FFA11CE197FCFDBD5 /* shell.xcframework in Frameworks */,
 				EF8743F1629EB0DCA20AE787 /* text.xcframework in Frameworks */,
@@ -996,9 +992,8 @@
 			name = LitterRemote;
 			packageProductDependencies = (
 				6D0691FAFC50FF36F1893995 /* Citadel */,
-				26B5133B3787DA6490540164 /* MarkdownUI */,
+				9ED1D59C4072FFDA738A082C /* Textual */,
 				0F7D9D75EA37F783857D2A0C /* Inject */,
-				543D34C5D486ED8912358C4B /* Highlightr */,
 			);
 			productName = LitterRemote;
 			productReference = E069F151626700359CAEB33B /* LitterRemote.app */;
@@ -1076,9 +1071,8 @@
 			name = Litter;
 			packageProductDependencies = (
 				5C1CE43F9E12A442D6CAF602 /* Citadel */,
-				A70018F0EA2A62B64DA5334B /* MarkdownUI */,
+				BE888B0B60E5BFE0BBD73AB8 /* Textual */,
 				01C24E4743B6D5566F473864 /* Inject */,
-				13331A31CF6F354C66979963 /* Highlightr */,
 			);
 			productName = Litter;
 			productReference = 55A7968182C0B25044D38C00 /* Litter.app */;
@@ -1128,9 +1122,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				DAEC3C14DB86608283E346AE /* XCRemoteSwiftPackageReference "Citadel" */,
-				4CCFF78E2CFE1683DF9DF75F /* XCRemoteSwiftPackageReference "Highlightr" */,
 				AF6B0A94FF765E17953F7B72 /* XCRemoteSwiftPackageReference "Inject" */,
-				4F6C9060920234B3E9A86BD3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+				CD7C004A2E0D402FE608E656 /* XCRemoteSwiftPackageReference "textual" */,
 			);
 			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
@@ -1972,28 +1965,20 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		4CCFF78E2CFE1683DF9DF75F /* XCRemoteSwiftPackageReference "Highlightr" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/raspu/Highlightr";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.1.0;
-			};
-		};
-		4F6C9060920234B3E9A86BD3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.4.0;
-			};
-		};
 		AF6B0A94FF765E17953F7B72 /* XCRemoteSwiftPackageReference "Inject" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/krzysztofzablocki/Inject";
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 1.5.2;
+			};
+		};
+		CD7C004A2E0D402FE608E656 /* XCRemoteSwiftPackageReference "textual" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/textual";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
 			};
 		};
 		DAEC3C14DB86608283E346AE /* XCRemoteSwiftPackageReference "Citadel" */ = {
@@ -2017,21 +2002,6 @@
 			package = AF6B0A94FF765E17953F7B72 /* XCRemoteSwiftPackageReference "Inject" */;
 			productName = Inject;
 		};
-		13331A31CF6F354C66979963 /* Highlightr */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4CCFF78E2CFE1683DF9DF75F /* XCRemoteSwiftPackageReference "Highlightr" */;
-			productName = Highlightr;
-		};
-		26B5133B3787DA6490540164 /* MarkdownUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4F6C9060920234B3E9A86BD3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
-			productName = MarkdownUI;
-		};
-		543D34C5D486ED8912358C4B /* Highlightr */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4CCFF78E2CFE1683DF9DF75F /* XCRemoteSwiftPackageReference "Highlightr" */;
-			productName = Highlightr;
-		};
 		5C1CE43F9E12A442D6CAF602 /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = DAEC3C14DB86608283E346AE /* XCRemoteSwiftPackageReference "Citadel" */;
@@ -2042,10 +2012,15 @@
 			package = DAEC3C14DB86608283E346AE /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;
 		};
-		A70018F0EA2A62B64DA5334B /* MarkdownUI */ = {
+		9ED1D59C4072FFDA738A082C /* Textual */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 4F6C9060920234B3E9A86BD3 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
-			productName = MarkdownUI;
+			package = CD7C004A2E0D402FE608E656 /* XCRemoteSwiftPackageReference "textual" */;
+			productName = Textual;
+		};
+		BE888B0B60E5BFE0BBD73AB8 /* Textual */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CD7C004A2E0D402FE608E656 /* XCRemoteSwiftPackageReference "textual" */;
+			productName = Textual;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

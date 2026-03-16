@@ -14,39 +14,35 @@ struct CodexTurnLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    litterLogo(size: 20)
+                    litterLogo(size: 18)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(context.attributes.prompt)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                DynamicIslandExpandedRegion(.trailing) {
-                    liveTimer(context: context, size: 12)
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-                DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 6) {
-                        phaseBadge(context.state)
-                        Text(context.attributes.model)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.3))
-                        Spacer()
-                        if context.state.fileChangeCount > 0 {
-                            Label("\(context.state.fileChangeCount)", systemImage: "doc.text")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.3))
-                        }
-                        if context.state.toolCallCount > 0 {
-                            Label("\(context.state.toolCallCount)", systemImage: "chevron.left.forwardslash.chevron.right")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.3))
-                        }
-                        if context.state.contextPercent > 0 {
-                            ctxBadge(context.state.contextPercent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(context.attributes.prompt)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            phaseBadge(context.state)
+                            if context.state.toolCallCount > 0 {
+                                Label("\(context.state.toolCallCount)", systemImage: "chevron.left.forwardslash.chevron.right")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            }
+                            if context.state.fileChangeCount > 0 {
+                                Label("\(context.state.fileChangeCount)", systemImage: "doc.text")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            }
+                            if context.state.contextPercent > 0 {
+                                ctxBadge(context.state.contextPercent)
+                            }
                         }
                     }
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    liveTimer(context: context, size: 11)
+                        .foregroundStyle(.white.opacity(0.4))
                 }
             } compactLeading: {
                 litterLogo(size: 16)

@@ -22,15 +22,12 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel
     from: "0.8.0"
-  MarkdownUI:
-    url: https://github.com/gonzalezreal/swift-markdown-ui
-    from: "2.4.0"
+  Textual:
+    url: https://github.com/gonzalezreal/textual
+    from: "0.1.0"
   Inject:
     url: https://github.com/krzysztofzablocki/Inject
     from: "1.5.2"
-  Highlightr:
-    url: https://github.com/raspu/Highlightr
-    from: "2.1.0"
 
 targets:
   LitterRemote:
@@ -52,9 +49,8 @@ targets:
       - sdk: SystemConfiguration.framework
       - sdk: Network.framework
       - package: Citadel
-      - package: MarkdownUI
+      - package: Textual
       - package: Inject
-      - package: Highlightr
       - framework: Frameworks/ios_system/ios_system.xcframework
         embed: true
       - framework: Frameworks/ios_system/shell.xcframework
@@ -105,9 +101,8 @@ targets:
       - sdk: SystemConfiguration.framework
       - sdk: Network.framework
       - package: Citadel
-      - package: MarkdownUI
+      - package: Textual
       - package: Inject
-      - package: Highlightr
       - framework: Frameworks/ios_system/ios_system.xcframework
         embed: true
       - framework: Frameworks/ios_system/shell.xcframework

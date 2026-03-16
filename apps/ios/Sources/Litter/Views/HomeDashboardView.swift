@@ -25,6 +25,7 @@ struct HomeDashboardView: View {
         .background(LitterTheme.backgroundGradient.ignoresSafeArea())
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button(action: onShowSettings) {

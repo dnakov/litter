@@ -1,12 +1,11 @@
 import Foundation
 import UIKit
-import MarkdownUI
 
 @MainActor
 final class MessageRenderCache {
     struct AssistantSegment: Identifiable {
         enum Kind {
-            case markdown(MarkdownContent, Int)
+            case markdown(String, Int)
             case image(UIImage)
         }
 
@@ -21,11 +20,6 @@ final class MessageRenderCache {
         let agentDirectoryVersion: Int
     }
 
-    private struct MarkdownKey: Hashable {
-        let revision: RevisionKey
-        let fragmentId: String
-    }
-
     static let shared = MessageRenderCache()
 
     private static let decodedImageCache = NSCache<NSString, UIImage>()
@@ -37,14 +31,11 @@ final class MessageRenderCache {
 
     private var assistantCache: [RevisionKey: [AssistantSegment]] = [:]
     private var systemCache: [RevisionKey: ToolCallParseResult] = [:]
-    private var markdownCache: [MarkdownKey: MarkdownContent] = [:]
     private var assistantAccessOrder: [RevisionKey] = []
     private var systemAccessOrder: [RevisionKey] = []
-    private var markdownAccessOrder: [MarkdownKey] = []
 
     var assistantEntryCount: Int { assistantCache.count }
     var systemEntryCount: Int { systemCache.count }
-    var markdownEntryCount: Int { markdownCache.count }
 
     func assistantSegments(
         for message: ChatMessage,
@@ -94,31 +85,11 @@ final class MessageRenderCache {
         return parsed
     }
 
-    func markdownContent(
-        for markdown: String,
-        key: RevisionKey,
-        fragmentId: String
-    ) -> MarkdownContent {
-        let markdownKey = MarkdownKey(revision: key, fragmentId: fragmentId)
-        if let cached = markdownCache[markdownKey] {
-            touch(&markdownAccessOrder, key: markdownKey)
-            return cached
-        }
-
-        let parsed = MarkdownContent(markdown)
-        markdownCache[markdownKey] = parsed
-        touch(&markdownAccessOrder, key: markdownKey)
-        trimIfNeeded(&markdownCache, accessOrder: &markdownAccessOrder)
-        return parsed
-    }
-
     func reset() {
         assistantCache.removeAll(keepingCapacity: false)
         systemCache.removeAll(keepingCapacity: false)
-        markdownCache.removeAll(keepingCapacity: false)
         assistantAccessOrder.removeAll(keepingCapacity: false)
         systemAccessOrder.removeAll(keepingCapacity: false)
-        markdownAccessOrder.removeAll(keepingCapacity: false)
     }
 
     static func makeRevisionKey(
@@ -189,20 +160,14 @@ final class MessageRenderCache {
         if !text.contains("data:image/") {
             return [AssistantSegment(
                 id: "text-0-\(text.count)",
-                kind: .markdown(
-                    markdownContent(for: text, key: key, fragmentId: "assistant-full"),
-                    key.revisionToken
-                )
+                kind: .markdown(text, key.revisionToken)
             )]
         }
 
         guard let regex = Self.inlineImageRegex else {
             return [AssistantSegment(
                 id: "text-0-\(text.count)",
-                kind: .markdown(
-                    markdownContent(for: text, key: key, fragmentId: "assistant-full"),
-                    key.revisionToken
-                )
+                kind: .markdown(text, key.revisionToken)
             )]
         }
 
@@ -223,7 +188,7 @@ final class MessageRenderCache {
                         AssistantSegment(
                             id: "text-\(text.distance(from: text.startIndex, to: lastEnd))-\(matchLower)",
                             kind: .markdown(
-                                markdownContent(for: preceding, key: key, fragmentId: fragmentId),
+                                preceding,
                                 stableFragmentIdentity(key: key, fragmentId: fragmentId)
                             )
                         )
@@ -269,7 +234,7 @@ final class MessageRenderCache {
                     AssistantSegment(
                         id: "text-\(startOffset)-\(text.count)",
                         kind: .markdown(
-                            markdownContent(for: remaining, key: key, fragmentId: fragmentId),
+                            remaining,
                             stableFragmentIdentity(key: key, fragmentId: fragmentId)
                         )
                     )
@@ -280,10 +245,7 @@ final class MessageRenderCache {
         return segments.isEmpty
             ? [AssistantSegment(
                 id: "text-0-\(text.count)",
-                kind: .markdown(
-                    markdownContent(for: text, key: key, fragmentId: "assistant-full"),
-                    key.revisionToken
-                )
+                kind: .markdown(text, key.revisionToken)
             )]
             : segments
     }

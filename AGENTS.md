@@ -26,7 +26,7 @@
 ## Dependencies
 ### iOS (SPM via `apps/ios/project.yml`)
 - **Citadel** — SSH client for remote server connections.
-- **MarkdownUI** — Renders Markdown in assistant/system messages with custom theming.
+- **Textual** — Renders Markdown in assistant/system messages with custom theming (successor to MarkdownUI).
 - **Inject** — Hot reload support for simulator development (Debug builds only).
 ### Android (Gradle)
 - **Compose Material3** — primary Android UI toolkit.

@@ -33,6 +33,7 @@ struct TranscriptTurn: Identifiable, Equatable {
         }
 
         let lastIndex = groupedItems.index(before: groupedItems.endIndex)
+
         let collapseBoundary = max(0, groupedItems.count - expandedRecentTurnCount)
 
         return groupedItems.enumerated().map { index, turnItems in
@@ -71,6 +72,7 @@ struct TranscriptTurn: Identifiable, Equatable {
                     item.isFromUserTurnBoundary ||
                     (
                         item.sourceTurnId != nil &&
+                        currentSourceTurnId != nil &&
                         item.sourceTurnId != currentSourceTurnId
                     )
                 )
@@ -82,7 +84,14 @@ struct TranscriptTurn: Identifiable, Equatable {
                 current.append(item)
             }
 
-            currentSourceTurnId = current.first?.sourceTurnId
+            // Adopt the first non-nil sourceTurnId in the group so that
+            // assistant items following a user-boundary item (which has
+            // sourceTurnId == nil) stay in the same turn.
+            if currentSourceTurnId == nil {
+                currentSourceTurnId = item.sourceTurnId
+            } else if current.count == 1 {
+                currentSourceTurnId = current.first?.sourceTurnId
+            }
         }
 
         if !current.isEmpty {

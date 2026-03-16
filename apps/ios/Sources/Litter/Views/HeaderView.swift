@@ -161,21 +161,21 @@ struct HeaderView: View {
     }
 
     private var sessionModelLabel: String {
-        let threadModel = thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !threadModel.isEmpty { return threadModel }
-
         let pendingModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !pendingModel.isEmpty { return pendingModel }
+
+        let threadModel = thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !threadModel.isEmpty { return threadModel }
 
         return "litter"
     }
 
     private var sessionReasoningLabel: String {
-        let threadReasoning = thread.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !threadReasoning.isEmpty { return threadReasoning }
-
         let pendingReasoning = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
         if !pendingReasoning.isEmpty { return pendingReasoning }
+
+        let threadReasoning = thread.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !threadReasoning.isEmpty { return threadReasoning }
 
         return "default"
     }
@@ -193,9 +193,7 @@ struct HeaderView: View {
         Binding(
             get: {
                 let pending = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !pending.isEmpty {
-                    return pending
-                }
+                if !pending.isEmpty { return pending }
                 return thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
             },
             set: { appState.selectedModel = $0 }
@@ -206,9 +204,7 @@ struct HeaderView: View {
         Binding(
             get: {
                 let pending = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !pending.isEmpty {
-                    return pending
-                }
+                if !pending.isEmpty { return pending }
                 return thread.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             },
             set: { appState.reasoningEffort = $0 }

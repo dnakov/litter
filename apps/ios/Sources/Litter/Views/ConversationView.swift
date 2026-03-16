@@ -213,16 +213,16 @@ private struct ConversationBottomChrome: View {
             .background(.clear, ignoresSafeAreaEdges: .bottom)
         }
         .padding(.bottom, 4)
-        .background(alignment: .top) {
+        .background(
             LinearGradient(
                 colors: Array(LitterTheme.headerScrim.reversed()),
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 60)
-            .offset(y: -30)
+            .padding(.top, -30)
+            .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(false)
-        }
+        )
     }
 }
 
@@ -296,7 +296,21 @@ private struct ConversationMessageList: View {
     @State private var pendingAnimatedTurns: [TranscriptTurn]?
     @State private var turnInsertionAnimationInFlight = false
     @State private var pendingRichRenderPromotion: DispatchWorkItem?
-    private let expandedRecentTurnCount = 1
+    @AppStorage("collapseTurns") private var collapseTurns = false
+    private var expandedRecentTurnCount: Int {
+        collapseTurns ? 1 : .max
+    }
+
+    private var lastTurnIsUserOnly: Bool {
+        guard let lastTurn = displayedTurns.last else { return false }
+        return lastTurn.items.allSatisfy { $0.isUserItem }
+    }
+
+    private var isStreamingLastTurn: Bool {
+        if case .thinking = threadStatus { return true }
+        return displayedTurns.last?.isLive == true
+    }
+
 
     private var messageActionsDisabled: Bool {
         if case .thinking = threadStatus {
@@ -352,10 +366,17 @@ private struct ConversationMessageList: View {
                     VStack(alignment: .leading, spacing: 0) {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             ForEach(displayedTurns) { turn in
+                                let isLastTurn = turn.id == displayedTurns.last?.id
                                 ConversationTurnRow(
                                     turn: turn,
                                     isExpanded: isTurnExpanded(turn),
                                     canCollapse: turn.isCollapsedByDefault,
+                                    isLastTurn: isLastTurn,
+                                    viewportHeight: viewport.size.height,
+                                    showTypingIndicator: isLastTurn && {
+                                        if case .thinking = threadStatus { return true }
+                                        return false
+                                    }(),
                                     renderMode: renderMode(for: turn),
                                     serverId: activeThreadKey.serverId,
                                     agentDirectoryVersion: agentDirectoryVersion,
@@ -370,10 +391,6 @@ private struct ConversationMessageList: View {
                                     onEditUserItem: onEditUserItem,
                                     onForkFromUserItem: onForkFromUserItem
                                 )
-                            }
-
-                            if case .thinking = threadStatus {
-                                TypingIndicator()
                             }
                         }
                         .padding(.horizontal, 16)
@@ -461,6 +478,7 @@ private struct ConversationMessageList: View {
                             )
                         } else {
                             userIsDraggingScroll = false
+                            scheduleScrollToBottom(proxy, delay: 0.1, force: true)
                         }
                     }
                     .onChange(of: followScrollToken) {
@@ -616,12 +634,14 @@ private struct ConversationMessageList: View {
         to nextTurns: [TranscriptTurn],
         resetExpansion: Bool
     ) -> Bool {
-        guard !resetExpansion,
+        guard collapseTurns,
+              !resetExpansion,
               !currentTurns.isEmpty,
               nextTurns.count == currentTurns.count + 1,
               currentTurns.last?.id != nextTurns.last?.id,
-              nextTurns.last?.items.first?.isUserItem == true,
-              nextTurns.last?.items.first?.isFromUserTurnBoundary == true else {
+              let lastTurn = nextTurns.last,
+              lastTurn.items.first?.isUserItem == true,
+              lastTurn.items.first?.isFromUserTurnBoundary == true else {
             return false
         }
 
@@ -653,6 +673,7 @@ private struct ConversationMessageList: View {
             )
         } completion: {
             let turnsToInsert = pendingAnimatedTurns ?? collapsedTurns
+            let newTurnID = turnsToInsert.last?.id
             withAnimation(.smooth(duration: 0.2)) {
                 applyTranscriptTurns(turnsToInsert)
             } completion: {
@@ -689,7 +710,7 @@ private struct ConversationMessageList: View {
     }
 
     private func renderMode(for turn: TranscriptTurn) -> ConversationTurnRenderMode {
-        if turn.isLive || richRenderedTurnIDs.contains(turn.id) {
+        if !collapseTurns || turn.isLive || richRenderedTurnIDs.contains(turn.id) {
             return .rich
         }
         return .lightweight
@@ -765,6 +786,9 @@ private struct ConversationTurnRow: View {
     let turn: TranscriptTurn
     let isExpanded: Bool
     let canCollapse: Bool
+    let isLastTurn: Bool
+    let viewportHeight: CGFloat
+    let showTypingIndicator: Bool
     let renderMode: ConversationTurnRenderMode
     let serverId: String
     let agentDirectoryVersion: Int
@@ -802,6 +826,10 @@ private struct ConversationTurnRow: View {
                 onForkFromUserItem: onForkFromUserItem
             )
 
+            if showTypingIndicator {
+                TypingIndicator()
+            }
+
             if canCollapse {
                 Button("Show Less", systemImage: "chevron.up", action: onToggleExpansion)
                     .font(LitterFont.styled(.caption, weight: .semibold, scale: textScale))
@@ -810,6 +838,8 @@ private struct ConversationTurnRow: View {
                     .padding(.top, 2)
             }
         }
+        .frame(minHeight: isLastTurn ? viewportHeight * 0.75 : 0, alignment: .top)
+        .animation(.smooth(duration: 0.3), value: isLastTurn)
     }
 
     private var collapsedCard: some View {
@@ -962,6 +992,13 @@ private struct ConversationTurnRow: View {
             parts.append("\(turn.preview.imageCount) \(turn.preview.imageCount == 1 ? "image" : "images")")
         }
         return parts.joined(separator: ". ")
+    }
+}
+
+private struct LastTurnHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

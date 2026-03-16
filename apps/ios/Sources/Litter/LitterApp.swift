@@ -3,6 +3,7 @@ import Inject
 import UIKit
 import os
 
+
 class AppDelegate: NSObject, UIApplicationDelegate {
     private var pendingPushToken: Data?
     weak var serverManager: ServerManager? {
@@ -16,7 +17,29 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         application.registerForRemoteNotifications()
+        scheduleKeyboardWarmup()
         return true
+    }
+
+    private func scheduleKeyboardWarmup() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                  let window = scene.keyWindow ?? scene.windows.first else {
+                // Window not ready yet, retry
+                self.scheduleKeyboardWarmup()
+                return
+            }
+            let field = UITextField(frame: CGRect(x: 0, y: 0, width: 200, height: 44))
+            field.autocorrectionType = .no
+            field.autocapitalizationType = .none
+            field.spellCheckingType = .no
+            window.addSubview(field)
+            field.becomeFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                field.resignFirstResponder()
+                field.removeFromSuperview()
+            }
+        }
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -97,17 +120,6 @@ struct ContentView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.container, edges: [.top, .bottom])
-                .overlay {
-                    if appState.showModelSelector {
-                        Color.black.opacity(0.01)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                    appState.showModelSelector = false
-                                }
-                            }
-                    }
-                }
 
                 if let approval = serverManager.activePendingApproval {
                     ApprovalPromptView(approval: approval) { decision in
@@ -398,7 +410,10 @@ private struct HomeNavigationView: View {
               let activeKey else { return }
 
         hasSeededInitialConversationRoute = true
-        navigationPath = [.conversation(activeKey)]
+        Task {
+            await conversationWarmup.prewarmIfNeeded()
+            navigationPath = [.conversation(activeKey)]
+        }
     }
 
     private func openConversation(_ key: ThreadKey) {
@@ -487,19 +502,29 @@ private struct ConversationDestinationScreen: View {
     var body: some View {
         Group {
             if let conversationContext {
-                ConversationView(
-                    connection: conversationContext.connection,
-                    activeThreadKey: threadKey,
-                    serverManager: serverManager,
-                    transcript: screenModel.transcript,
-                    pinnedContextItems: screenModel.pinnedContextItems,
-                    composer: screenModel.composer,
-                    topInset: topInset,
-                    bottomInset: bottomInset,
-                    onOpenConversation: onOpenConversation,
-                    onResumeSessions: onResumeSessions
-                )
-                .overlay(alignment: .top) {
+                ZStack(alignment: .top) {
+                    ConversationView(
+                        connection: conversationContext.connection,
+                        activeThreadKey: threadKey,
+                        serverManager: serverManager,
+                        transcript: screenModel.transcript,
+                        pinnedContextItems: screenModel.pinnedContextItems,
+                        composer: screenModel.composer,
+                        topInset: topInset,
+                        bottomInset: bottomInset,
+                        onOpenConversation: onOpenConversation,
+                        onResumeSessions: onResumeSessions
+                    )
+                    if appState.showModelSelector {
+                        Color.black.opacity(0.01)
+                            .ignoresSafeArea()
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                    appState.showModelSelector = false
+                                }
+                            }
+                            .zIndex(1)
+                    }
                     HeaderView(
                         thread: conversationContext.thread,
                         connection: conversationContext.connection,
@@ -507,6 +532,7 @@ private struct ConversationDestinationScreen: View {
                         onBack: onBack,
                         topInset: topInset
                     )
+                    .zIndex(2)
                 }
                 .task(id: threadKey) {
                     screenModel.bind(

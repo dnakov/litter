@@ -11,7 +11,7 @@ struct ThemeDefinition: Codable {
         case light, dark
     }
 
-    // tokenColors are ignored — we use Highlightr's built-in themes for syntax
+    // tokenColors are ignored — syntax highlighting is handled by Textual
 }
 
 // MARK: - Lightweight index entry for picker UI
@@ -52,8 +52,6 @@ struct ResolvedTheme {
     let textOnAccent: String
     let codeBackground: String
 
-    let highlightrThemeName: String
-
     init(slug: String, definition d: ThemeDefinition) {
         self.slug = slug
         self.name = d.name
@@ -84,41 +82,6 @@ struct ResolvedTheme {
         let accentBright = Self.brightness(of: self.accentStrong)
         self.textOnAccent = accentBright > 0.5 ? "#0D0D0D" : "#FFFFFF"
 
-        self.highlightrThemeName = Self.mapHighlightrTheme(slug: slug, type: d.type)
-    }
-
-    // MARK: - Highlightr theme mapping
-
-    private static func mapHighlightrTheme(slug: String, type: ThemeDefinition.ThemeType) -> String {
-        let mapping: [String: String] = [
-            "dracula": "paraiso-dark",
-            "dracula-soft": "paraiso-dark",
-            "monokai": "monokai",
-            "nord": "nord",
-            "solarized-dark": "solarized-dark",
-            "solarized-light": "solarized-light",
-            "github-dark": "github-dark",
-            "github-dark-default": "github-dark",
-            "github-dark-dimmed": "github-dark-dimmed",
-            "github-light": "github",
-            "github-light-default": "github",
-            "gruvbox-dark-hard": "gruvbox-dark-hard",
-            "gruvbox-dark-medium": "gruvbox-dark-medium",
-            "gruvbox-dark-soft": "gruvbox-dark-soft",
-            "gruvbox-light-hard": "gruvbox-light-hard",
-            "gruvbox-light-medium": "gruvbox-light-medium",
-            "gruvbox-light-soft": "gruvbox-light-soft",
-            "rose-pine-x": "rose-pine",
-            "rose-pine-moon": "rose-pine-moon",
-            "rose-pine-dawn": "rose-pine-dawn",
-            "tokyo-night": "tokyo-night-dark",
-            "one-dark-pro-D": "atom-one-dark",
-            "one-light": "atom-one-light",
-            "night-owl": "night-owl",
-            "poimandres": "panda-syntax-dark",
-        ]
-        if let mapped = mapping[slug] { return mapped }
-        return type == .dark ? "atom-one-dark" : "atom-one-light"
     }
 
     // MARK: - Color utilities

@@ -1,5 +1,5 @@
 import SwiftUI
-import MarkdownUI
+import Textual
 import UIKit
 
 struct ConversationTurnTimeline: View {
@@ -238,7 +238,7 @@ private struct ConversationTimelineItemRow: View {
                let first = parsed.first,
                case .markdown(let content, let identity) = first.kind {
                 AssistantBubble(
-                    markdownContent: content,
+                    markdownString: content,
                     markdownIdentity: identity,
                     label: assistantLabel,
                     textScale: textScale,
@@ -255,10 +255,11 @@ private struct ConversationTimelineItemRow: View {
                         ForEach(parsed) { segment in
                             switch segment.kind {
                             case .markdown(let content, _):
-                                Markdown(content)
-                                    .markdownTheme(.litter(bodySize: 14 * textScale, codeSize: 13 * textScale))
-                                    .markdownCodeSyntaxHighlighter(.plain)
-                                    .textSelection(.enabled)
+                                StructuredText(markdown: content)
+                                    .font(.custom(LitterFont.markdownFontName, size: 14 * textScale))
+                                    .foregroundStyle(LitterTheme.textBody)
+                                    .textual.structuredTextStyle(LitterStructuredStyle(bodySize: 14 * textScale, codeSize: 13 * textScale))
+                                    .textual.textSelection(.enabled)
                             case .image(let image):
                                 Image(uiImage: image)
                                     .resizable()
@@ -544,21 +545,20 @@ private struct ConversationCommandExecutionRow: View {
                 textScale: textScale
             )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var shellLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("$")
-                .font(LitterFont.monospaced(size: 13 * textScale, weight: .semibold))
+                .font(LitterFont.monospaced(size: 12 * textScale, weight: .semibold))
                 .foregroundColor(LitterTheme.warning)
 
             Text(data.command.isEmpty ? "command" : data.command)
-                .font(LitterFont.monospaced(size: 13 * textScale))
+                .font(LitterFont.monospaced(size: 12 * textScale))
                 .foregroundColor(LitterTheme.textSystem)
                 .textSelection(.enabled)
-                .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -581,11 +581,11 @@ private struct ConversationCommandOutputViewport: View {
     private let bottomAnchorId = "command-output-bottom"
 
     private var lineFontSize: CGFloat {
-        12 * textScale
+        11 * textScale
     }
 
     private var viewportHeight: CGFloat {
-        (LitterFont.uiMonoFont(size: lineFontSize).lineHeight * 3) + 20
+        (LitterFont.uiMonoFont(size: lineFontSize).lineHeight * 3) + 16
     }
 
     var body: some View {
@@ -746,10 +746,11 @@ private struct ConversationTodoListRow: View {
                                     .font(LitterFont.styled(.caption, weight: .semibold, scale: textScale))
                                     .foregroundColor(LitterTheme.textMuted)
                                     .padding(.top, 1)
-                                Markdown(step.step)
-                                    .markdownTheme(.litter(bodySize: bodySize * textScale, codeSize: codeSize * textScale))
-                                    .markdownCodeSyntaxHighlighter(.plain)
-                                    .textSelection(.enabled)
+                                StructuredText(markdown: step.step)
+                                    .font(.custom(LitterFont.markdownFontName, size: bodySize * textScale))
+                                    .foregroundStyle(LitterTheme.textBody)
+                                    .textual.structuredTextStyle(LitterStructuredStyle(bodySize: bodySize * textScale, codeSize: codeSize * textScale))
+                                    .textual.textSelection(.enabled)
                                     .strikethrough(step.status == .completed, color: LitterTheme.textMuted)
                                     .opacity(step.status == .completed ? 0.78 : 1.0)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -852,10 +853,11 @@ private struct ConversationProposedPlanRow: View {
                 }
 
                 if renderMode == .rich {
-                    Markdown(trimmedContent)
-                        .markdownTheme(.litterSystem(bodySize: 13 * textScale, codeSize: 12 * textScale))
-                        .markdownCodeSyntaxHighlighter(.plain)
-                        .textSelection(.enabled)
+                    StructuredText(markdown: trimmedContent)
+                        .font(.custom(LitterFont.markdownFontName, size: 13 * textScale))
+                        .foregroundStyle(LitterTheme.textSystem)
+                        .textual.structuredTextStyle(LitterSystemStructuredStyle(bodySize: 13 * textScale, codeSize: 12 * textScale))
+                        .textual.textSelection(.enabled)
                 } else {
                     ConversationPlainTextBlock(
                         text: trimmedContent,
@@ -1031,10 +1033,11 @@ private struct ConversationSystemCardRow: View {
             }
             if !content.isEmpty {
                 if renderMode == .rich {
-                    Markdown(content)
-                        .markdownTheme(.litterSystem(bodySize: 13 * textScale, codeSize: 12 * textScale))
-                        .markdownCodeSyntaxHighlighter(.plain)
-                        .textSelection(.enabled)
+                    StructuredText(markdown: content)
+                        .font(.custom(LitterFont.markdownFontName, size: 13 * textScale))
+                        .foregroundStyle(LitterTheme.textSystem)
+                        .textual.structuredTextStyle(LitterSystemStructuredStyle(bodySize: 13 * textScale, codeSize: 12 * textScale))
+                        .textual.textSelection(.enabled)
                 } else {
                     ConversationPlainTextBlock(
                         text: content,
@@ -1150,10 +1153,11 @@ struct ConversationPinnedContextStrip: View {
                             HStack(alignment: .top, spacing: 8) {
                                 compactTodoStatusView(for: step.status)
                                     .padding(.top, 2)
-                                Markdown(step.step)
-                                    .markdownTheme(.litter(bodySize: 12 * textScale, codeSize: 11 * textScale))
-                                    .markdownCodeSyntaxHighlighter(.plain)
-                                    .textSelection(.enabled)
+                                StructuredText(markdown: step.step)
+                                    .font(.custom(LitterFont.markdownFontName, size: 12 * textScale))
+                                    .foregroundStyle(LitterTheme.textBody)
+                                    .textual.structuredTextStyle(LitterStructuredStyle(bodySize: 12 * textScale, codeSize: 11 * textScale))
+                                    .textual.textSelection(.enabled)
                                     .strikethrough(step.status == .completed, color: LitterTheme.textMuted)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }

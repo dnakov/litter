@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(ServerManager.self) private var serverManager
     @Environment(\.dismiss) private var dismiss
     @AppStorage("fontFamily") private var fontFamily = FontFamilyOption.mono.rawValue
+    @AppStorage("collapseTurns") private var collapseTurns = false
 
     private var connection: ServerConnection? {
         serverManager.activeConnection ?? serverManager.connections.values.first(where: { $0.isConnected })
@@ -23,6 +24,7 @@ struct SettingsView: View {
                 LitterTheme.backgroundGradient.ignoresSafeArea()
                 Form {
                     appearanceSection
+                    conversationSection
                     fontSection
                     experimentalSection
                     accountSection
@@ -60,6 +62,33 @@ struct SettingsView: View {
             .listRowBackground(LitterTheme.surface.opacity(0.6))
         } header: {
             Text("Theme")
+                .foregroundColor(LitterTheme.textSecondary)
+        }
+    }
+
+    // MARK: - Conversation Section
+
+    private var conversationSection: some View {
+        Section {
+            Toggle(isOn: $collapseTurns) {
+                HStack(spacing: 10) {
+                    Image(systemName: "rectangle.compress.vertical")
+                        .foregroundColor(LitterTheme.accent)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Collapse Turns")
+                            .font(LitterFont.styled(.subheadline))
+                            .foregroundColor(LitterTheme.textPrimary)
+                        Text("Collapse previous turns into cards")
+                            .font(LitterFont.styled(.caption))
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+                }
+            }
+            .tint(LitterTheme.accent)
+            .listRowBackground(LitterTheme.surface.opacity(0.6))
+        } header: {
+            Text("Conversation")
                 .foregroundColor(LitterTheme.textSecondary)
         }
     }

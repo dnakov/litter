@@ -1,5 +1,5 @@
 import SwiftUI
-import MarkdownUI
+import Textual
 import Inject
 
 // MARK: - Reusable bubble components
@@ -48,7 +48,7 @@ struct UserBubble: View {
 }
 
 struct AssistantBubble: View, Equatable {
-    let markdownContent: MarkdownContent
+    let markdownString: String
     let markdownIdentity: Int
     var label: String? = nil
     var textScale: CGFloat = 1.0
@@ -67,7 +67,7 @@ struct AssistantBubble: View, Equatable {
         compact: Bool = false,
         themeVersion: Int = 0
     ) {
-        self.markdownContent = MarkdownContent(text)
+        self.markdownString = text
         self.markdownIdentity = text.hashValue
         self.label = label
         self.textScale = textScale
@@ -76,14 +76,14 @@ struct AssistantBubble: View, Equatable {
     }
 
     init(
-        markdownContent: MarkdownContent,
+        markdownString: String,
         markdownIdentity: Int,
         label: String? = nil,
         textScale: CGFloat = 1.0,
         compact: Bool = false,
         themeVersion: Int = 0
     ) {
-        self.markdownContent = markdownContent
+        self.markdownString = markdownString
         self.markdownIdentity = markdownIdentity
         self.label = label
         self.textScale = textScale
@@ -107,10 +107,11 @@ struct AssistantBubble: View, Equatable {
                         .font(LitterFont.styled(.caption2, weight: .semibold, scale: textScale))
                         .foregroundColor(LitterTheme.textSecondary)
                 }
-                Markdown(markdownContent)
-                    .markdownTheme(.litter(bodySize: bodySize, codeSize: codeSize))
-                    .markdownCodeSyntaxHighlighter(.plain)
-                    .textSelection(.enabled)
+                StructuredText(markdown: markdownString)
+                    .font(.custom(LitterFont.markdownFontName, size: bodySize))
+                    .foregroundStyle(LitterTheme.textBody)
+                    .textual.structuredTextStyle(LitterStructuredStyle(bodySize: bodySize, codeSize: codeSize))
+                    .textual.textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -132,13 +133,9 @@ struct StreamingAssistantBubble: View {
 
     private let flushInterval: TimeInterval = 0.06
 
-    private var renderedContent: MarkdownContent {
-        MarkdownContent(renderedText)
-    }
-
     var body: some View {
         AssistantBubble(
-            markdownContent: renderedContent,
+            markdownString: renderedText,
             markdownIdentity: renderedText.hashValue,
             label: label,
             textScale: textScale,
@@ -319,7 +316,7 @@ struct MessageBubbleView: View {
                 if let first = parsed.first,
                    case let .markdown(content, identity) = first.kind {
                     AssistantBubble(
-                        markdownContent: content,
+                        markdownString: content,
                         markdownIdentity: identity,
                         label: assistantAgentLabel,
                         textScale: textScale
@@ -339,10 +336,11 @@ struct MessageBubbleView: View {
                         ForEach(parsed) { segment in
                             switch segment.kind {
                             case .markdown(let content, _):
-                                Markdown(content)
-                                    .markdownTheme(.litter(bodySize: mdBodySize * textScale, codeSize: mdCodeSize * textScale))
-                                    .markdownCodeSyntaxHighlighter(.plain)
-                                    .textSelection(.enabled)
+                                StructuredText(markdown: content)
+                                    .font(.custom(LitterFont.markdownFontName, size: mdBodySize * textScale))
+                                    .foregroundStyle(LitterTheme.textBody)
+                                    .textual.structuredTextStyle(LitterStructuredStyle(bodySize: mdBodySize * textScale, codeSize: mdCodeSize * textScale))
+                                    .textual.textSelection(.enabled)
                             case .image(let uiImage):
                                 Image(uiImage: uiImage)
                                     .resizable()
@@ -416,11 +414,6 @@ struct MessageBubbleView: View {
         let (title, body) = extractSystemTitleAndBody(message.text)
         let markdown = title == nil ? message.text : body
         let displayTitle = title ?? "System"
-        let content = renderCache.markdownContent(
-            for: markdown,
-            key: renderRevisionKey,
-            fragmentId: "system-generic"
-        )
 
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
@@ -434,10 +427,11 @@ struct MessageBubbleView: View {
             }
 
             if !markdown.isEmpty {
-                Markdown(content)
-                    .markdownTheme(.litterSystem(bodySize: mdSystemBodySize * textScale, codeSize: mdSystemCodeSize * textScale))
-                    .markdownCodeSyntaxHighlighter(.plain)
-                    .textSelection(.enabled)
+                StructuredText(markdown: markdown)
+                    .font(.custom(LitterFont.markdownFontName, size: mdSystemBodySize * textScale))
+                    .foregroundStyle(LitterTheme.textSystem)
+                    .textual.structuredTextStyle(LitterSystemStructuredStyle(bodySize: mdSystemBodySize * textScale, codeSize: mdSystemCodeSize * textScale))
+                    .textual.textSelection(.enabled)
                     .padding(.top, 8)
             }
         }
@@ -492,185 +486,193 @@ struct MessageBubbleView: View {
     }
 }
 
-// MARK: - Plain syntax highlighter (no highlighting, just monospace)
+// MARK: - Litter Textual Styles
 
-struct PlainSyntaxHighlighter: CodeSyntaxHighlighter {
-    func highlightCode(_ code: String, language: String?) -> Text {
-        Text(code)
+struct LitterHeadingStyle: StructuredText.HeadingStyle {
+    let fontScales: [CGFloat]
+    let topMargins: [CGFloat]
+    let bottomMargins: [CGFloat]
+
+    func makeBody(configuration: Configuration) -> some View {
+        let level = min(configuration.headingLevel, 3) - 1
+        let scale = level < fontScales.count ? fontScales[level] : 1.0
+        let top = level < topMargins.count ? topMargins[level] : 8
+        let bottom = level < bottomMargins.count ? bottomMargins[level] : 4
+
+        configuration.label
+            .textual.fontScale(scale)
+            .fontWeight(level == 0 ? .bold : .semibold)
+            .foregroundStyle(LitterTheme.textPrimary)
+            .textual.blockSpacing(.init(top: top, bottom: bottom))
     }
 }
 
-extension CodeSyntaxHighlighter where Self == PlainSyntaxHighlighter {
-    static var plain: PlainSyntaxHighlighter { PlainSyntaxHighlighter() }
+struct LitterBlockQuoteStyle: StructuredText.BlockQuoteStyle {
+    let topBottom: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(LitterTheme.textSecondary)
+            .italic()
+            .padding(.leading, 12)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(LitterTheme.border)
+                    .frame(width: 3)
+            }
+            .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
+    }
 }
 
-// MARK: - Litter Markdown Theme
+struct LitterCodeBlockStyle: StructuredText.CodeBlockStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            configuration.label
+                .monospaced()
+                .textual.textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(LitterTheme.codeBackground.opacity(0.8))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .modifier(GlassRectModifier(cornerRadius: 8))
+        .textual.blockSpacing(.init(top: 8, bottom: 8))
+    }
+}
 
-extension MarkdownUI.Theme {
-    static func litter(bodySize: CGFloat, codeSize: CGFloat) -> Theme {
-        Theme()
-            .text {
-                ForegroundColor(LitterTheme.textBody)
-                FontFamily(.custom(LitterFont.markdownFontName))
-                FontSize(bodySize)
-            }
-            .heading1 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.bold)
-                        FontSize(bodySize * 1.43)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 16, bottom: 8)
-            }
-            .heading2 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.semibold)
-                        FontSize(bodySize * 1.21)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 12, bottom: 6)
-            }
-            .heading3 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.semibold)
-                        FontSize(bodySize * 1.07)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 10, bottom: 4)
-            }
-            .strong {
-                FontWeight(.semibold)
-                ForegroundColor(LitterTheme.textPrimary)
-            }
-            .emphasis {
-                FontStyle(.italic)
-            }
-            .link {
-                ForegroundColor(LitterTheme.accent)
-            }
-            .code {
-                FontFamily(.custom(LitterFont.markdownFontName))
-                FontSize(codeSize)
-                ForegroundColor(LitterTheme.accent)
-                BackgroundColor(LitterTheme.surface)
-            }
-            .codeBlock { configuration in
-                CodeBlockView(
-                    language: configuration.language ?? "",
-                    code: configuration.content,
-                    fontSize: codeSize
-                )
-                .markdownMargin(top: 8, bottom: 8)
-            }
-            .listItem { configuration in
-                configuration.label
-                    .markdownMargin(top: 4, bottom: 4)
-            }
-            .blockquote { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        ForegroundColor(LitterTheme.textSecondary)
-                        FontStyle(.italic)
-                    }
-                    .padding(.leading, 12)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(LitterTheme.border)
-                            .frame(width: 3)
-                    }
-                    .markdownMargin(top: 8, bottom: 8)
-            }
-            .thematicBreak {
-                Divider()
-                    .overlay(LitterTheme.border)
-                    .markdownMargin(top: 12, bottom: 12)
-            }
+struct LitterSystemCodeBlockStyle: StructuredText.CodeBlockStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            configuration.label
+                .monospaced()
+                .textual.textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(LitterTheme.codeBackground.opacity(0.8))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .modifier(GlassRectModifier(cornerRadius: 8))
+        .textual.blockSpacing(.init(top: 6, bottom: 6))
+    }
+}
+
+struct LitterThematicBreakStyle: StructuredText.ThematicBreakStyle {
+    let topBottom: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        Divider()
+            .overlay(LitterTheme.border)
+            .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
+    }
+}
+
+struct LitterListItemStyle: StructuredText.ListItemStyle {
+    let topBottom: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            configuration.marker
+            configuration.block
+        }
+        .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
+    }
+}
+
+struct LitterStructuredStyle: StructuredText.Style {
+    let bodySize: CGFloat
+    let codeSize: CGFloat
+
+    var inlineStyle: InlineStyle {
+        InlineStyle()
+            .code(
+                .monospaced,
+                .fontScale(codeSize / bodySize),
+                .foregroundColor(LitterTheme.accent),
+                .backgroundColor(LitterTheme.surface)
+            )
+            .strong(.fontWeight(.semibold), .foregroundColor(LitterTheme.textPrimary))
+            .emphasis(.italic)
+            .link(.foregroundColor(LitterTheme.accent))
     }
 
-    static func litterSystem(bodySize: CGFloat, codeSize: CGFloat) -> Theme {
-        Theme()
-            .text {
-                ForegroundColor(LitterTheme.textSystem)
-                FontFamily(.custom(LitterFont.markdownFontName))
-                FontSize(bodySize)
-            }
-            .heading1 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.bold)
-                        FontSize(bodySize * 1.31)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 12, bottom: 6)
-            }
-            .heading2 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.semibold)
-                        FontSize(bodySize * 1.15)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 10, bottom: 4)
-            }
-            .heading3 { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        FontWeight(.semibold)
-                        FontSize(bodySize * 1.08)
-                        ForegroundColor(LitterTheme.textPrimary)
-                    }
-                    .markdownMargin(top: 8, bottom: 4)
-            }
-            .strong {
-                FontWeight(.semibold)
-                ForegroundColor(LitterTheme.textPrimary)
-            }
-            .emphasis {
-                FontStyle(.italic)
-            }
-            .link {
-                ForegroundColor(LitterTheme.accent)
-            }
-            .code {
-                FontFamily(.custom(LitterFont.markdownFontName))
-                FontSize(codeSize)
-                ForegroundColor(LitterTheme.accent)
-                BackgroundColor(LitterTheme.surface)
-            }
-            .codeBlock { configuration in
-                CodeBlockView(
-                    language: configuration.language ?? "",
-                    code: configuration.content,
-                    fontSize: codeSize
-                )
-                .markdownMargin(top: 6, bottom: 6)
-            }
-            .listItem { configuration in
-                configuration.label
-                    .markdownMargin(top: 3, bottom: 3)
-            }
-            .blockquote { configuration in
-                configuration.label
-                    .markdownTextStyle {
-                        ForegroundColor(LitterTheme.textSecondary)
-                        FontStyle(.italic)
-                    }
-                    .padding(.leading, 12)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(LitterTheme.border)
-                            .frame(width: 3)
-                    }
-                    .markdownMargin(top: 6, bottom: 6)
-            }
-            .thematicBreak {
-                Divider()
-                    .overlay(LitterTheme.border)
-                    .markdownMargin(top: 8, bottom: 8)
-            }
+    var headingStyle: LitterHeadingStyle {
+        LitterHeadingStyle(
+            fontScales: [1.43, 1.21, 1.07],
+            topMargins: [16, 12, 10],
+            bottomMargins: [8, 6, 4]
+        )
+    }
+
+    var paragraphStyle: StructuredText.DefaultParagraphStyle { .default }
+
+    var blockQuoteStyle: LitterBlockQuoteStyle {
+        LitterBlockQuoteStyle(topBottom: 8)
+    }
+
+    var codeBlockStyle: LitterCodeBlockStyle {
+        LitterCodeBlockStyle()
+    }
+
+    var listItemStyle: LitterListItemStyle {
+        LitterListItemStyle(topBottom: 4)
+    }
+
+    var unorderedListMarker: StructuredText.SymbolListMarker { .disc }
+    var orderedListMarker: StructuredText.DecimalListMarker { .decimal }
+    var tableStyle: StructuredText.DefaultTableStyle { .default }
+    var tableCellStyle: StructuredText.DefaultTableCellStyle { .default }
+
+    var thematicBreakStyle: LitterThematicBreakStyle {
+        LitterThematicBreakStyle(topBottom: 12)
+    }
+}
+
+struct LitterSystemStructuredStyle: StructuredText.Style {
+    let bodySize: CGFloat
+    let codeSize: CGFloat
+
+    var inlineStyle: InlineStyle {
+        InlineStyle()
+            .code(
+                .monospaced,
+                .fontScale(codeSize / bodySize),
+                .foregroundColor(LitterTheme.accent),
+                .backgroundColor(LitterTheme.surface)
+            )
+            .strong(.fontWeight(.semibold), .foregroundColor(LitterTheme.textPrimary))
+            .emphasis(.italic)
+            .link(.foregroundColor(LitterTheme.accent))
+    }
+
+    var headingStyle: LitterHeadingStyle {
+        LitterHeadingStyle(
+            fontScales: [1.31, 1.15, 1.08],
+            topMargins: [12, 10, 8],
+            bottomMargins: [6, 4, 4]
+        )
+    }
+
+    var paragraphStyle: StructuredText.DefaultParagraphStyle { .default }
+
+    var blockQuoteStyle: LitterBlockQuoteStyle {
+        LitterBlockQuoteStyle(topBottom: 6)
+    }
+
+    var codeBlockStyle: LitterSystemCodeBlockStyle {
+        LitterSystemCodeBlockStyle()
+    }
+
+    var listItemStyle: LitterListItemStyle {
+        LitterListItemStyle(topBottom: 3)
+    }
+
+    var unorderedListMarker: StructuredText.SymbolListMarker { .disc }
+    var orderedListMarker: StructuredText.DecimalListMarker { .decimal }
+    var tableStyle: StructuredText.DefaultTableStyle { .default }
+    var tableCellStyle: StructuredText.DefaultTableCellStyle { .default }
+
+    var thematicBreakStyle: LitterThematicBreakStyle {
+        LitterThematicBreakStyle(topBottom: 8)
     }
 }
 

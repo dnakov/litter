@@ -37,9 +37,9 @@ struct ConversationWarmupView: View {
                 shouldPrimeKeyboard: $shouldPrimeKeyboard,
                 onDidPrimeKeyboard: completeWarmup
             )
-            .frame(width: 1, height: 1)
+            .frame(width: 100, height: 44)
         }
-        .opacity(0.001)
+        .offset(x: -9999)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
         .task(id: warmupID) {
@@ -81,24 +81,17 @@ private struct ConversationKeyboardWarmupTextView: UIViewRepresentable {
         Coordinator(onDidPrimeKeyboard: onDidPrimeKeyboard)
     }
 
-    func makeUIView(context: Context) -> UITextView {
-        let textView = UITextView(frame: .zero)
-        textView.delegate = context.coordinator
-        textView.alpha = 0.01
-        textView.isEditable = true
-        textView.isSelectable = true
-        textView.autocorrectionType = .no
-        textView.autocapitalizationType = .none
-        textView.backgroundColor = .clear
-        textView.tintColor = .clear
-        textView.textColor = .clear
-        textView.textContainerInset = .zero
-        textView.textContainer.lineFragmentPadding = 0
-        context.coordinator.textView = textView
-        return textView
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField(frame: CGRect(x: -9999, y: -9999, width: 100, height: 44))
+        field.delegate = context.coordinator
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        context.coordinator.field = field
+        return field
     }
 
-    func updateUIView(_ uiView: UITextView, context: Context) {
+    func updateUIView(_ uiView: UITextField, context: Context) {
         guard shouldPrimeKeyboard else {
             if uiView.isFirstResponder {
                 uiView.resignFirstResponder()
@@ -114,8 +107,8 @@ private struct ConversationKeyboardWarmupTextView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
-        weak var textView: UITextView?
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        weak var field: UITextField?
         var didPrimeKeyboard = false
         let onDidPrimeKeyboard: () -> Void
 
@@ -123,12 +116,12 @@ private struct ConversationKeyboardWarmupTextView: UIViewRepresentable {
             self.onDidPrimeKeyboard = onDidPrimeKeyboard
         }
 
-        func textViewDidBeginEditing(_ textView: UITextView) {
+        func textFieldDidBeginEditing(_ textField: UITextField) {
             guard !didPrimeKeyboard else { return }
             didPrimeKeyboard = true
 
             DispatchQueue.main.async {
-                textView.resignFirstResponder()
+                textField.resignFirstResponder()
                 self.onDidPrimeKeyboard()
             }
         }
