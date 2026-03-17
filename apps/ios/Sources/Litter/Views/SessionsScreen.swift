@@ -307,10 +307,10 @@ struct SessionsScreen: View {
 
             Button {
                 if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
-                    // For local on-device server, skip directory picker and use Documents.
+                    // For local on-device server, skip directory picker and use /home/codex.
                     if let conn = serverManager.connections[defaultServerId], conn.target == .local {
-                        let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? NSHomeDirectory()
-                        Task { await startNewSession(serverId: defaultServerId, cwd: docs) }
+                        let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+                        Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                     } else {
                         directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
                     }
@@ -707,6 +707,8 @@ struct SessionsScreen: View {
                 HStack(alignment: .top, spacing: 6) {
                     if hasTurnActive {
                         PulsingDot().padding(.top, 3)
+                    } else if thread.isSubagent {
+                        subagentStatusIndicator(thread.agentStatus).padding(.top, 3)
                     } else {
                         Circle().fill(Color.clear).frame(width: 8, height: 8).padding(.top, 3)
                     }
@@ -720,7 +722,19 @@ struct SessionsScreen: View {
                                 .multilineTextAlignment(.leading)
                                 .accessibilityIdentifier("sessions.sessionTitle")
 
-                            if thread.isFork {
+                            if thread.isSubagent {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "person.2.fill")
+                                        .font(.system(size: 8, weight: .semibold))
+                                    Text(thread.agentDisplayLabel ?? "Agent")
+                                        .font(LitterFont.styled(.caption2))
+                                }
+                                .foregroundColor(LitterTheme.textOnAccent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(LitterTheme.success)
+                                .cornerRadius(4)
+                            } else if thread.isFork {
                                 Text("Fork")
                                     .font(LitterFont.styled(.caption2))
                                     .foregroundColor(LitterTheme.textOnAccent)
@@ -845,6 +859,36 @@ struct SessionsScreen: View {
                     .stroke(isInteractive ? LitterTheme.accent.opacity(0.5) : LitterTheme.border.opacity(0.5), lineWidth: 1)
             )
             .cornerRadius(5)
+    }
+
+    @ViewBuilder
+    private func subagentStatusIndicator(_ status: SubagentStatus) -> some View {
+        switch status {
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 8))
+                .foregroundColor(LitterTheme.success)
+                .frame(width: 8, height: 8)
+        case .errored:
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 8))
+                .foregroundColor(LitterTheme.danger)
+                .frame(width: 8, height: 8)
+        case .shutdown:
+            Image(systemName: "stop.circle.fill")
+                .font(.system(size: 8))
+                .foregroundColor(LitterTheme.textMuted)
+                .frame(width: 8, height: 8)
+        case .interrupted:
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 8))
+                .foregroundColor(LitterTheme.warning)
+                .frame(width: 8, height: 8)
+        default:
+            Circle()
+                .fill(LitterTheme.textMuted.opacity(0.4))
+                .frame(width: 8, height: 8)
+        }
     }
 
     private func visibleSessionRows(for group: WorkspaceSessionGroup) -> [SessionTreeRow] {

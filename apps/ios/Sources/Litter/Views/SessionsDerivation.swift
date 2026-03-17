@@ -73,7 +73,8 @@ enum SessionsDerivation {
                 thread.cwd.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.serverName.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.modelProvider.localizedCaseInsensitiveContains(searchQuery) ||
-                parentTitle.localizedCaseInsensitiveContains(searchQuery)
+                parentTitle.localizedCaseInsensitiveContains(searchQuery) ||
+                (thread.agentDisplayLabel?.localizedCaseInsensitiveContains(searchQuery) ?? false)
         }
 
         let groupedByWorkspace = Dictionary(grouping: filteredThreads) { workspaceGroupID(for: $0) }

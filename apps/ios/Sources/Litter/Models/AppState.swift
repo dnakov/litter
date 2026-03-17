@@ -17,6 +17,7 @@ final class AppState {
     var reasoningEffort = ""
     var showModelSelector = false
     var showSettings = false
+    var pendingThreadNavigation: ThreadKey?
     var approvalPolicy: String {
         didSet {
             UserDefaults.standard.set(approvalPolicy, forKey: Self.approvalPolicyKey)

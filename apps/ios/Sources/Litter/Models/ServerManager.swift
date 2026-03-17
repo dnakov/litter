@@ -295,6 +295,29 @@ final class ServerManager {
         return nil
     }
 
+    /// Resolve a receiver/agent ID to an actual ThreadKey by checking
+    /// the agent directory and threads dictionary. The receiver ID might be
+    /// an agent ID rather than a thread ID, so we look it up in the directory
+    /// to find the real thread ID.
+    func resolvedThreadKey(for receiverId: String, serverId: String) -> ThreadKey? {
+        let normalized = sanitizedLineageId(receiverId)
+        guard let normalized else { return nil }
+
+        // Direct match in threads dictionary
+        let directKey = ThreadKey(serverId: serverId, threadId: normalized)
+        if threads[directKey] != nil {
+            return directKey
+        }
+
+        // Look up in agent directory — receiverId might be an agent ID
+        if let entry = mergedAgentDirectoryEntry(serverId: serverId, threadId: normalized, agentId: normalized),
+           let resolvedThreadId = entry.threadId {
+            return ThreadKey(serverId: serverId, threadId: resolvedThreadId)
+        }
+
+        return directKey
+    }
+
     // MARK: - Server Lifecycle
 
     func addServer(_ server: DiscoveredServer, target: ConnectionTarget) async {
@@ -519,47 +542,56 @@ final class ServerManager {
                 approvalPolicy: approvalPolicy,
                 sandboxMode: sandboxMode
             )
-            state.cwd = resp.cwd
-            state.model = resp.model
-            state.modelProvider = resp.modelProvider ?? resp.model
-            state.reasoningEffort = resp.reasoningEffort
-            state.rolloutPath = resp.thread.path ?? state.rolloutPath
-            state.parentThreadId = sanitizedLineageId(resp.thread.parentThreadId)
-            state.rootThreadId = sanitizedLineageId(resp.thread.rootThreadId)
-            state.agentNickname = sanitizedLineageId(resp.thread.agentNickname)
-            state.agentRole = sanitizedLineageId(resp.thread.agentRole)
-            upsertAgentDirectory(
-                serverId: serverId,
-                threadId: threadId,
-                agentId: resp.thread.agentId,
-                nickname: state.agentNickname,
-                role: state.agentRole
-            )
-            await Task.yield()
-            let restored = restoredMessages(
-                from: resp.thread.turns,
-                serverId: serverId,
-                defaultAgentNickname: resp.thread.agentNickname,
-                defaultAgentRole: resp.thread.agentRole
-            )
-            installRestoredMessages(
-                restored,
-                on: state,
+            await applyResumedThreadResponse(
+                resp,
+                to: state,
                 key: key,
-                staged: true
+                serverId: serverId
             )
-            state.requiresOpenHydration = false
-            threadTurnCounts[key] = resp.thread.turns.count
-            liveItemMessageIndices[key] = nil
-            liveTurnDiffMessageIndices[key] = nil
-            state.status = .ready
-            state.updatedAt = Date()
-            scheduleThreadMetadataRefresh(for: key, cwd: resp.cwd)
             return true
         } catch {
             state.status = .error(error.localizedDescription)
             return false
         }
+    }
+
+    func hydrateThreadIfNeeded(
+        _ key: ThreadKey,
+        approvalPolicy: String = "never",
+        sandboxMode: String? = nil
+    ) async -> Bool {
+        guard let thread = threads[key],
+              thread.items.isEmpty,
+              thread.requiresOpenHydration,
+              let conn = connections[key.serverId] else {
+            return threads[key]?.items.isEmpty == false
+        }
+
+        thread.status = .connecting
+        let cwd = thread.cwd.isEmpty ? "/tmp" : thread.cwd
+
+        do {
+            let resp = try await conn.resumeThread(
+                threadId: key.threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandboxMode: sandboxMode
+            )
+            await applyResumedThreadResponse(
+                resp,
+                to: thread,
+                key: key,
+                serverId: key.serverId
+            )
+            return true
+        } catch {
+            thread.status = .error(error.localizedDescription)
+            return false
+        }
+    }
+
+    func ensureThreadPlaceholderForPresentation(_ key: ThreadKey) {
+        ensureThreadExistsByKey(serverId: key.serverId, threadId: key.threadId)
     }
 
     func viewThread(
@@ -1299,15 +1331,25 @@ final class ServerManager {
         case "sessionConfigured":
             handleSessionConfiguredNotification(serverId: serverId, data: data)
 
+        case "thread/started":
+            handleThreadStartedNotification(serverId: serverId, data: data)
+
         case "thread/tokenUsage/updated":
             handleThreadTokenUsageUpdatedNotification(serverId: serverId, data: data)
+
+        case "thread/status/changed":
+            ensureThreadExists(serverId: serverId, data: data)
 
         case "turn/started":
             let identifiers = await extractThreadIdentifiers(from: data)
             if let threadId = identifiers.threadId {
                 let key = ThreadKey(serverId: serverId, threadId: threadId)
+                ensureThreadExistsByKey(serverId: serverId, threadId: threadId)
                 threads[key]?.status = .thinking
                 threads[key]?.activeTurnId = identifiers.turnId
+                if threads[key]?.isSubagent == true {
+                    threads[key]?.agentStatus = .running
+                }
                 removePendingRequests(serverId: serverId, threadId: threadId)
             }
 
@@ -1471,6 +1513,9 @@ final class ServerManager {
                 threads[key]?.status = .ready
                 threads[key]?.updatedAt = Date()
                 threads[key]?.activeTurnId = nil
+                if threads[key]?.isSubagent == true {
+                    threads[key]?.agentStatus = .completed
+                }
                 removePendingRequests(serverId: serverId, threadId: threadId)
                 liveItemMessageIndices[key] = nil
                 liveTurnDiffMessageIndices[key] = nil
@@ -1511,7 +1556,6 @@ final class ServerManager {
 
         default:
             if method.hasPrefix("item/") {
-                NSLog("[notif] item notification: %@", method)
                 await handleItemNotification(serverId: serverId, method: method, data: data)
             } else if method == "codex/event/turn_diff" {
                 handleLegacyCodexEventNotification(serverId: serverId, method: method, data: data)
@@ -1609,6 +1653,155 @@ final class ServerManager {
         }
     }
 
+    /// Create a minimal ThreadState for a thread ID we haven't seen yet.
+    /// Called from turn/started, thread/status/changed, etc. to ensure items
+    /// for subagent threads are not silently dropped.
+    private func ensureThreadExistsByKey(serverId: String, threadId: String) {
+        let key = ThreadKey(serverId: serverId, threadId: threadId)
+        guard threads[key] == nil, let conn = connections[serverId] else { return }
+        let state = ThreadState(
+            serverId: serverId,
+            threadId: threadId,
+            serverName: conn.server.name,
+            serverSource: conn.server.source
+        )
+        state.requiresOpenHydration = true
+        threads[key] = state
+        threadTurnCounts[key] = 0
+    }
+
+    /// Extract threadId from notification data and ensure a ThreadState exists.
+    private func ensureThreadExists(serverId: String, data: Data) {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let params = root["params"] as? [String: Any] else { return }
+        if let threadId = extractString(params, keys: ["threadId", "thread_id"]),
+           !threadId.isEmpty {
+            ensureThreadExistsByKey(serverId: serverId, threadId: threadId)
+        }
+    }
+
+    /// Handle `thread/started` notifications for subagent threads.
+    /// These are emitted when a new child thread is spawned and tell us
+    /// the thread ID so we can create a `ThreadState` for it before items arrive.
+    private func handleThreadStartedNotification(serverId: String, data: Data) {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let params = root["params"] as? [String: Any] else { return }
+
+        // The thread object can be nested under "thread" or flat in params
+        let threadObj = (params["thread"] as? [String: Any]) ?? params
+        guard let threadId = extractString(threadObj, keys: ["id", "threadId", "thread_id"]),
+              !threadId.isEmpty else { return }
+
+        let key = ThreadKey(serverId: serverId, threadId: threadId)
+        // Only create if we don't already have this thread
+        guard threads[key] == nil else { return }
+        guard let conn = connections[serverId] else { return }
+
+        let state = ThreadState(
+            serverId: serverId,
+            threadId: threadId,
+            serverName: conn.server.name,
+            serverSource: conn.server.source
+        )
+
+        if let preview = extractString(threadObj, keys: ["preview"]), !preview.isEmpty {
+            state.preview = preview
+        }
+        if let modelProvider = extractString(threadObj, keys: ["modelProvider", "model_provider"]), !modelProvider.isEmpty {
+            state.modelProvider = modelProvider
+        }
+        if let model = extractString(threadObj, keys: ["model"]), !model.isEmpty {
+            state.model = model
+        }
+        if let cwd = extractString(threadObj, keys: ["cwd"]), !cwd.isEmpty {
+            state.cwd = cwd
+        }
+        if let createdAt = (threadObj["createdAt"] as? TimeInterval) ?? (threadObj["created_at"] as? TimeInterval) {
+            state.updatedAt = Date(timeIntervalSince1970: createdAt)
+        }
+
+        // Extract agent metadata from source if present
+        let source = (threadObj["source"] as? [String: Any])
+            ?? (threadObj["sessionSource"] as? [String: Any])
+        if let source {
+            let threadSpawn = (source["thread_spawn"] as? [String: Any])
+                ?? (source["threadSpawn"] as? [String: Any])
+            if let threadSpawn {
+                state.parentThreadId = sanitizedLineageId(
+                    extractString(threadSpawn, keys: ["parent_thread_id", "parentThreadId"])
+                )
+                state.agentNickname = extractString(threadSpawn, keys: ["agent_nickname", "agentNickname"])
+                state.agentRole = extractString(threadSpawn, keys: ["agent_role", "agentRole"])
+
+                upsertAgentDirectory(
+                    serverId: serverId,
+                    threadId: threadId,
+                    agentId: nil,
+                    nickname: state.agentNickname,
+                    role: state.agentRole
+                )
+            }
+        }
+
+        // Also check top-level agent fields
+        let agentMetadata = extractAgentMetadata(threadObj)
+        if state.agentNickname == nil { state.agentNickname = agentMetadata.nickname }
+        if state.agentRole == nil { state.agentRole = agentMetadata.role }
+        if state.parentThreadId == nil {
+            state.parentThreadId = sanitizedLineageId(
+                extractString(threadObj, keys: ["parentThreadId", "parent_thread_id"])
+            )
+        }
+
+        state.requiresOpenHydration = true
+        threads[key] = state
+        threadTurnCounts[key] = 0
+    }
+
+    private func applyResumedThreadResponse(
+        _ resp: ThreadResumeResponse,
+        to state: ThreadState,
+        key: ThreadKey,
+        serverId: String
+    ) async {
+        state.cwd = resp.cwd
+        state.model = resp.model
+        state.modelProvider = resp.modelProvider ?? resp.model
+        state.reasoningEffort = resp.reasoningEffort
+        state.rolloutPath = resp.thread.path ?? state.rolloutPath
+        state.parentThreadId = sanitizedLineageId(resp.thread.parentThreadId)
+        state.rootThreadId = sanitizedLineageId(resp.thread.rootThreadId)
+        state.agentNickname = sanitizedLineageId(resp.thread.agentNickname)
+        state.agentRole = sanitizedLineageId(resp.thread.agentRole)
+        upsertAgentDirectory(
+            serverId: serverId,
+            threadId: key.threadId,
+            agentId: resp.thread.agentId,
+            nickname: state.agentNickname,
+            role: state.agentRole
+        )
+        await Task.yield()
+        let restored = restoredMessages(
+            from: resp.thread.turns,
+            serverId: serverId,
+            defaultAgentNickname: resp.thread.agentNickname,
+            defaultAgentRole: resp.thread.agentRole
+        )
+        installRestoredMessages(
+            restored,
+            on: state,
+            key: key,
+            staged: true
+        )
+        state.requiresOpenHydration = false
+        threadTurnCounts[key] = resp.thread.turns.count
+        liveItemMessageIndices[key] = nil
+        liveTurnDiffMessageIndices[key] = nil
+        state.status = .ready
+        state.updatedAt = Date()
+        scheduleThreadMetadataRefresh(for: key, cwd: resp.cwd)
+    }
+
     private func handleThreadTokenUsageUpdatedNotification(serverId: String, data: Data) {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let params = root["params"] as? [String: Any],
@@ -1641,6 +1834,7 @@ final class ServerManager {
               let paramsDict = raw.params?.value as? [String: Any] else { return }
 
         let threadId = extractString(paramsDict, keys: ["threadId", "thread_id"])
+        if let threadId { ensureThreadExistsByKey(serverId: serverId, threadId: threadId) }
         let key = resolveThreadKey(serverId: serverId, threadId: threadId)
         guard let thread = threads[key] else { return }
         let turnId = extractString(paramsDict, keys: ["turnId", "turn_id"])
@@ -1649,7 +1843,6 @@ final class ServerManager {
         case "item/started", "item/completed":
             guard let itemDict = paramsDict["item"] as? [String: Any] else { return }
             let itemType = itemDict["type"] as? String ?? "unknown"
-            NSLog("[item] %@ type=%@", method, itemType)
             // agentMessage is streamed via delta; userMessage is added locally in send()
             if itemType == "agentMessage" || itemType == "userMessage" {
                 return
@@ -2027,7 +2220,7 @@ final class ServerManager {
         ])
         let directAgentId = extractString(dict, keys: ["agentId", "agent_id", "id"])
         let directNickname = extractString(dict, keys: ["agentNickname", "agent_nickname", "nickname", "name"])
-        let directRole = extractString(dict, keys: ["agentRole", "agent_role", "agentType", "agent_type", "role", "type"])
+        let directRole = extractString(dict, keys: ["agentRole", "agent_role", "agentType", "agent_type"])
 
         let source = dict["source"] as? [String: Any]
         let subAgent = (source?["subAgent"] as? [String: Any]) ?? (source?["sub_agent"] as? [String: Any])
@@ -2037,9 +2230,9 @@ final class ServerManager {
         let nestedSpawnId = threadSpawn.flatMap { extractString($0, keys: ["id"]) }
         let nestedSubAgentId = subAgent.flatMap { extractString($0, keys: ["agent_id", "agentId", "id"]) }
         let nestedNickname = threadSpawn.flatMap { extractString($0, keys: ["agent_nickname", "agentNickname", "nickname", "name"]) }
-        let nestedRole = threadSpawn.flatMap { extractString($0, keys: ["agent_role", "agentRole", "agent_type", "agentType", "role", "type"]) }
+        let nestedRole = threadSpawn.flatMap { extractString($0, keys: ["agent_role", "agentRole", "agent_type", "agentType"]) }
         let nestedSubAgentNickname = subAgent.flatMap { extractString($0, keys: ["agent_nickname", "agentNickname", "nickname", "name"]) }
-        let nestedSubAgentRole = subAgent.flatMap { extractString($0, keys: ["agent_role", "agentRole", "agent_type", "agentType", "role", "type"]) }
+        let nestedSubAgentRole = subAgent.flatMap { extractString($0, keys: ["agent_role", "agentRole", "agent_type", "agentType"]) }
 
         return AgentIdentity(
             threadId: sanitizedLineageId(directThreadId) ?? sanitizedLineageId(nestedThreadId),
@@ -3777,6 +3970,12 @@ final class ServerManager {
                     message: value.message
                 )
             }.sorted { $0.targetId < $1.targetId }
+            if let serverId {
+                for (threadId, agentState) in agentsStates {
+                    let childKey = ThreadKey(serverId: serverId, threadId: threadId)
+                    threads[childKey]?.agentStatus = SubagentStatus(fromRaw: agentState.status)
+                }
+            }
             return ConversationItem(
                 id: itemId,
                 content: .multiAgentAction(
@@ -3785,6 +3984,7 @@ final class ServerManager {
                         status: status,
                         prompt: prompt,
                         targets: targets,
+                        receiverThreadIds: receiverThreadIds,
                         agentStates: states
                     )
                 ),

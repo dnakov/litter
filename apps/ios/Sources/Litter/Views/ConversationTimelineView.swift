@@ -15,6 +15,7 @@ struct ConversationTurnTimeline: View {
     let onWidgetPrompt: (String) -> Void
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
+    var onOpenConversation: ((ThreadKey) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -50,10 +51,17 @@ struct ConversationTurnTimeline: View {
                 resolveTargetLabel: resolveTargetLabel,
                 onWidgetPrompt: onWidgetPrompt,
                 onEditUserItem: onEditUserItem,
-                onForkFromUserItem: onForkFromUserItem
+                onForkFromUserItem: onForkFromUserItem,
+                onOpenConversation: onOpenConversation
             )
         case .exploration(let id, let items):
             ConversationExplorationGroupRow(id: id, items: items, textScale: textScale)
+        case .subagentGroup(_, let merged, _):
+            SubagentCardView(
+                data: merged,
+                serverId: serverId,
+                textScale: textScale
+            )
         }
     }
 }
@@ -61,6 +69,7 @@ struct ConversationTurnTimeline: View {
 private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
     case item(ConversationItem)
     case exploration(id: String, items: [ConversationItem])
+    case subagentGroup(id: String, merged: ConversationMultiAgentActionData, sourceItems: [ConversationItem])
 
     var id: String {
         switch self {
@@ -68,12 +77,16 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
             return item.id
         case .exploration(let id, _):
             return id
+        case .subagentGroup(let id, _, _):
+            return id
         }
     }
 
     static func build(from items: [ConversationItem]) -> [ConversationTimelineRowDescriptor] {
         var rows: [ConversationTimelineRowDescriptor] = []
         var explorationBuffer: [ConversationItem] = []
+        var subagentBuffer: [(item: ConversationItem, data: ConversationMultiAgentActionData)] = []
+        var subagentTool: String?
 
         func flushExplorationBuffer() {
             guard !explorationBuffer.isEmpty else { return }
@@ -86,16 +99,74 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
             explorationBuffer.removeAll(keepingCapacity: true)
         }
 
+        func flushSubagentBuffer() {
+            guard !subagentBuffer.isEmpty else { return }
+            if subagentBuffer.count == 1 {
+                rows.append(.item(subagentBuffer[0].item))
+            } else {
+                let seed = subagentBuffer.first?.item.id ?? UUID().uuidString
+                // Merge all targets, threadIds, states, pick the latest status
+                var mergedTargets: [String] = []
+                var mergedThreadIds: [String] = []
+                var mergedStates: [ConversationMultiAgentState] = []
+                var mergedPrompts: [String] = []
+                var latestStatus = "completed"
+                let tool = subagentBuffer.first?.data.tool ?? "spawnAgent"
+
+                for entry in subagentBuffer {
+                    mergedTargets.append(contentsOf: entry.data.targets)
+                    mergedThreadIds.append(contentsOf: entry.data.receiverThreadIds)
+                    mergedStates.append(contentsOf: entry.data.agentStates)
+                    if let p = entry.data.prompt, !p.isEmpty {
+                        mergedPrompts.append(p)
+                    }
+                    if entry.data.isInProgress {
+                        latestStatus = "in_progress"
+                    }
+                }
+
+                let merged = ConversationMultiAgentActionData(
+                    tool: tool,
+                    status: latestStatus,
+                    prompt: nil,
+                    targets: mergedTargets,
+                    receiverThreadIds: mergedThreadIds,
+                    agentStates: mergedStates,
+                    perAgentPrompts: mergedPrompts
+                )
+                rows.append(.subagentGroup(
+                    id: "subagent-group-\(seed)",
+                    merged: merged,
+                    sourceItems: subagentBuffer.map(\.item)
+                ))
+            }
+            subagentBuffer.removeAll(keepingCapacity: true)
+            subagentTool = nil
+        }
+
         for item in items {
-            if case .commandExecution(let data) = item.content, data.isPureExploration {
+            if case .multiAgentAction(let data) = item.content {
+                let tool = data.tool.lowercased()
+                if let currentTool = subagentTool, currentTool == tool {
+                    subagentBuffer.append((item, data))
+                } else {
+                    flushExplorationBuffer()
+                    flushSubagentBuffer()
+                    subagentBuffer.append((item, data))
+                    subagentTool = tool
+                }
+            } else if case .commandExecution(let data) = item.content, data.isPureExploration {
+                flushSubagentBuffer()
                 explorationBuffer.append(item)
             } else {
                 flushExplorationBuffer()
+                flushSubagentBuffer()
                 rows.append(.item(item))
             }
         }
 
         flushExplorationBuffer()
+        flushSubagentBuffer()
         return rows
     }
 }
@@ -121,6 +192,7 @@ private struct ConversationTimelineItemRow: View {
     let onWidgetPrompt: (String) -> Void
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
+    var onOpenConversation: ((ThreadKey) -> Void)? = nil
 
     var body: some View {
         switch item.content {
@@ -145,7 +217,11 @@ private struct ConversationTimelineItemRow: View {
         case .dynamicToolCall(let data):
             ConversationToolCardRow(model: makeDynamicToolModel(data), textScale: textScale)
         case .multiAgentAction(let data):
-            ConversationToolCardRow(model: makeCollaborationModel(data), textScale: textScale)
+            SubagentCardView(
+                data: data,
+                serverId: serverId,
+                textScale: textScale
+            )
         case .webSearch(let data):
             ConversationToolCardRow(model: makeWebSearchModel(data), textScale: textScale)
         case .widget(let data):
@@ -381,40 +457,6 @@ private struct ConversationTimelineItemRow: View {
             summary: data.tool,
             status: toolCallStatus(from: data.status),
             duration: formatDuration(data.durationMs),
-            sections: sections
-        )
-    }
-
-    private func makeCollaborationModel(_ data: ConversationMultiAgentActionData) -> ToolCallCardModel {
-        let stateLines = data.agentStates.map { state in
-            if let message = state.message, !message.isEmpty {
-                return "\(state.targetId): \(state.status) - \(message)"
-            }
-            return "\(state.targetId): \(state.status)"
-        }
-
-        var sections: [ToolCallSection] = []
-        if let prompt = data.prompt, !prompt.isEmpty {
-            sections.append(.text(label: "Prompt", content: prompt))
-        }
-        if !data.targets.isEmpty {
-            sections.append(.list(label: "Targets", items: data.targets))
-        }
-        if !stateLines.isEmpty {
-            sections.append(.progress(label: "Agents", items: stateLines))
-        }
-
-        let targetCount = max(data.targets.count, data.agentStates.count)
-        let summary = targetCount == 1
-            ? "\(data.tool) 1 agent"
-            : "\(data.tool) \(targetCount) agents"
-
-        return ToolCallCardModel(
-            kind: .collaboration,
-            title: "Collaboration",
-            summary: summary,
-            status: toolCallStatus(from: data.status),
-            duration: nil,
             sections: sections
         )
     }

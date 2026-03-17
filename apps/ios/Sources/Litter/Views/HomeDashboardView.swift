@@ -10,6 +10,10 @@ struct HomeDashboardView: View {
     let onNewSession: () -> Void
     let onConnectServer: () -> Void
     let onShowSettings: () -> Void
+    var onDeleteThread: ((ThreadKey) async -> Void)? = nil
+    var onDisconnectServer: ((String) -> Void)? = nil
+    @State private var deleteTargetThread: ThreadState?
+    @State private var disconnectTargetServer: ServerConnection?
 
     var body: some View {
         ScrollView {
@@ -23,6 +27,34 @@ struct HomeDashboardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+        .alert("Delete Session?", isPresented: Binding(
+            get: { deleteTargetThread != nil },
+            set: { if !$0 { deleteTargetThread = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { deleteTargetThread = nil }
+            Button("Delete", role: .destructive) {
+                if let thread = deleteTargetThread {
+                    Task { await onDeleteThread?(thread.key) }
+                }
+                deleteTargetThread = nil
+            }
+        } message: {
+            Text("This will permanently delete \"\(deleteTargetThread?.sessionTitle ?? "this session")\".")
+        }
+        .alert("Disconnect Server?", isPresented: Binding(
+            get: { disconnectTargetServer != nil },
+            set: { if !$0 { disconnectTargetServer = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { disconnectTargetServer = nil }
+            Button("Disconnect", role: .destructive) {
+                if let conn = disconnectTargetServer {
+                    onDisconnectServer?(conn.id)
+                }
+                disconnectTargetServer = nil
+            }
+        } message: {
+            Text("Disconnect from \"\(disconnectTargetServer?.server.name ?? "this server")\"?")
+        }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -66,6 +98,13 @@ struct HomeDashboardView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(openingRecentSessionKey != nil || isStartingNewSession)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                deleteTargetThread = thread
+                            } label: {
+                                Label("Delete Session", systemImage: "trash")
+                            }
+                        }
                     }
                 }
             }
@@ -90,6 +129,13 @@ struct HomeDashboardView: View {
                             connectedServerRow(connection)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                disconnectTargetServer = connection
+                            } label: {
+                                Label("Disconnect Server", systemImage: "bolt.slash")
+                            }
+                        }
                     }
                 }
             }

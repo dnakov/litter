@@ -59,6 +59,20 @@ targets:
         embed: true
       - framework: Frameworks/ios_system/files.xcframework
         embed: true
+      - framework: Frameworks/ios_system/awk.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/tar.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/curl_ios.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/ssh_cmd.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/lg2.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/openssl.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/libssh2.xcframework
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sigkitten.litter.remote
@@ -110,6 +124,20 @@ targets:
       - framework: Frameworks/ios_system/text.xcframework
         embed: true
       - framework: Frameworks/ios_system/files.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/awk.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/tar.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/curl_ios.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/ssh_cmd.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/lg2.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/openssl.xcframework
+        embed: true
+      - framework: Frameworks/ios_system/libssh2.xcframework
         embed: true
       - target: LitterLiveActivity
         embed: true

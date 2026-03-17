@@ -126,6 +126,8 @@ struct ContentView: View {
                 if let approval = serverManager.activePendingApproval {
                     ApprovalPromptView(approval: approval) { decision in
                         serverManager.respondToPendingApproval(requestId: approval.requestId, decision: decision)
+                    } onViewThread: { threadKey in
+                        appState.pendingThreadNavigation = threadKey
                     }
                 }
 
@@ -239,7 +241,13 @@ private struct HomeNavigationView: View {
                         onOpenServerSessions: openServerSessions,
                         onNewSession: handleNewSessionTap,
                         onConnectServer: { appState.showServerPicker = true },
-                        onShowSettings: { appState.showSettings = true }
+                        onShowSettings: { appState.showSettings = true },
+                        onDeleteThread: { key in
+                            try? await serverManager.archiveThread(key)
+                        },
+                        onDisconnectServer: { serverId in
+                            serverManager.removeServer(id: serverId)
+                        }
                     )
                 } else {
                     LitterTheme.backgroundGradient.ignoresSafeArea()
@@ -283,6 +291,12 @@ private struct HomeNavigationView: View {
         }
         .onChange(of: navigationPath.count) { _, _ in
             updateHomeDashboardActivity()
+        }
+        .onChange(of: appState.pendingThreadNavigation) { _, newKey in
+            if let newKey {
+                appState.pendingThreadNavigation = nil
+                replaceTopConversation(with: newKey)
+            }
         }
         .sheet(item: $directoryPickerSheet) { _ in
             NavigationStack {
@@ -332,10 +346,10 @@ private struct HomeNavigationView: View {
 
     private func handleNewSessionTap() {
         if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
-            // For local on-device server, skip directory picker and use Documents.
+            // For local on-device server, skip directory picker and use /home/codex.
             if let conn = serverManager.connections[defaultServerId], conn.target == .local {
-                let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first ?? NSHomeDirectory()
-                Task { await startNewSession(serverId: defaultServerId, cwd: docs) }
+                let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+                Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                 return
             }
             directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
@@ -554,10 +568,31 @@ private struct ConversationDestinationScreen: View {
                     )
                 }
             } else {
-                ProgressView()
-                    .tint(LitterTheme.accent)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+                VStack(spacing: 16) {
+                    Spacer()
+                    ProgressView()
+                        .tint(LitterTheme.accent)
+                    Text("Loading thread...")
+                        .font(LitterFont.styled(.caption))
+                        .foregroundColor(LitterTheme.textMuted)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+                .overlay(alignment: .topLeading) {
+                    Button(action: onBack) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("Back")
+                                .font(LitterFont.styled(.callout))
+                        }
+                        .foregroundColor(LitterTheme.accent)
+                        .padding(.horizontal, 16)
+                        .padding(.top, topInset + 12)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -588,6 +623,7 @@ private struct ConversationDestinationScreen: View {
 private struct ApprovalPromptView: View {
     let approval: ServerManager.PendingApproval
     let onDecision: (ServerManager.ApprovalDecision) -> Void
+    var onViewThread: ((ThreadKey) -> Void)? = nil
 
     private var title: String {
         switch approval.kind {
@@ -599,18 +635,10 @@ private struct ApprovalPromptView: View {
     }
 
     private var requesterLabel: String? {
-        let nickname = approval.requesterAgentNickname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let role = approval.requesterAgentRole?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !nickname.isEmpty && !role.isEmpty {
-            return "\(nickname) [\(role)]"
-        }
-        if !nickname.isEmpty {
-            return nickname
-        }
-        if !role.isEmpty {
-            return "[\(role)]"
-        }
-        return nil
+        AgentLabelFormatter.format(
+            nickname: approval.requesterAgentNickname,
+            role: approval.requesterAgentRole
+        )
     }
 
     var body: some View {
@@ -630,9 +658,37 @@ private struct ApprovalPromptView: View {
                 }
 
                 if let requesterLabel {
-                    Text("Requester: \(requesterLabel)")
-                        .font(LitterFont.styled(.caption))
-                        .foregroundColor(LitterTheme.textMuted)
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(LitterTheme.success)
+                            Text(requesterLabel)
+                                .font(LitterFont.styled(.caption, weight: .medium))
+                                .foregroundColor(LitterTheme.textPrimary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(LitterTheme.success.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                        if let threadId = approval.threadId, onViewThread != nil {
+                            Button {
+                                onViewThread?(ThreadKey(serverId: approval.serverId, threadId: threadId))
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text("View Thread")
+                                        .font(LitterFont.styled(.caption, weight: .medium))
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                                .foregroundColor(LitterTheme.accent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Spacer()
+                    }
                 }
 
                 if let command = approval.command, !command.isEmpty {

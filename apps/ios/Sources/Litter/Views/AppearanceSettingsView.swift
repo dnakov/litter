@@ -3,11 +3,13 @@ import SwiftUI
 struct AppearanceSettingsView: View {
     @Environment(ThemeManager.self) private var themeManager
     @State private var activeThemePicker: ThemePickerKind?
+    @AppStorage("conversationTextSizeStep") private var textSizeStep = ConversationTextSize.medium.rawValue
 
     var body: some View {
         ZStack {
             LitterTheme.backgroundGradient.ignoresSafeArea()
             Form {
+                fontSizeSection
                 conversationPreviewSection
                 lightThemeSection
                 darkThemeSection
@@ -26,6 +28,52 @@ struct AppearanceSettingsView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+    }
+
+    // MARK: - Font Size
+
+    private var fontSizeSection: some View {
+        Section {
+            VStack(spacing: 12) {
+                HStack {
+                    Text("Font Size")
+                        .font(LitterFont.styled(.subheadline))
+                        .foregroundColor(LitterTheme.textPrimary)
+                    Spacer()
+                    Text(ConversationTextSize.clamped(rawValue: textSizeStep).label)
+                        .font(LitterFont.styled(.subheadline))
+                        .foregroundColor(LitterTheme.textSecondary)
+                }
+
+                HStack(spacing: 6) {
+                    Text("A")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(LitterTheme.textMuted)
+
+                    Slider(
+                        value: Binding(
+                            get: { Double(textSizeStep) },
+                            set: { textSizeStep = Int($0.rounded()) }
+                        ),
+                        in: Double(ConversationTextSize.xxSmall.rawValue)...Double(ConversationTextSize.xxLarge.rawValue),
+                        step: 1
+                    )
+                    .tint(LitterTheme.accent)
+
+                    Text("A")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(LitterTheme.textMuted)
+                }
+            }
+            .padding(.vertical, 4)
+            .listRowBackground(LitterTheme.surface.opacity(0.6))
+        } header: {
+            Text("Font Size")
+                .foregroundColor(LitterTheme.textSecondary)
+        } footer: {
+            Text("Pinch in conversations to adjust, or use this slider. Applies to all conversations.")
+                .foregroundColor(LitterTheme.textMuted)
         }
     }
 

@@ -139,7 +139,11 @@ struct ConversationMultiAgentActionData: Equatable {
     var status: String
     var prompt: String?
     var targets: [String]
+    var receiverThreadIds: [String]
     var agentStates: [ConversationMultiAgentState]
+    /// Per-agent prompts when multiple spawn items are merged into one group.
+    /// Index-aligned with `targets`/`receiverThreadIds`. Empty for non-merged items.
+    var perAgentPrompts: [String] = []
 
     var isInProgress: Bool {
         status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("progress")
@@ -419,6 +423,8 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine(data.status)
             hasher.combine(data.prompt)
             hasher.combine(data.targets)
+            hasher.combine(data.receiverThreadIds)
+            hasher.combine(data.perAgentPrompts)
             for state in data.agentStates {
                 hasher.combine(state.targetId)
                 hasher.combine(state.status)

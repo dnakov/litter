@@ -156,6 +156,13 @@
 		<string></string>
 		<string>file</string>
 	</array>
+	<key>lg2</key>
+	<array>
+		<string>lg2.framework/lg2</string>
+		<string>main</string>
+		<string></string>
+		<string>no</string>
+	</array>
 	<key>id</key>
 	<array>
 		<string>shell.framework/shell</string>
@@ -281,55 +288,6 @@
 		<string>dllpdftexmain</string>
 		<string></string>
 		<string>file</string>
-	</array>
-	<key>python</key>
-	<array>
-		<string>Python_ios.framework/Python_ios</string>
-		<string>python_main</string>
-		<string>3bBc:dEhiJm:OQ:RsStuUvVW:xX?</string>
-		<string>file</string>
-	</array>
-	<key>python3</key>
-	<array>
-		<string>python3_ios.framework/python3_ios</string>
-		<string>python_main</string>
-		<string>3bBc:dEhiJm:OQ:RsStuUvVW:xX?</string>
-		<string>file</string>
-	</array>
-	<key>pythonE</key>
-	<array>
-		<string>pythonE.framework/pythonE</string>
-		<string>python_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
-	<key>pythonA</key>
-	<array>
-		<string>pythonA.framework/pythonA</string>
-		<string>python_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
-	<key>pythonB</key>
-	<array>
-		<string>pythonB.framework/pythonB</string>
-		<string>python_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
-	<key>pythonC</key>
-	<array>
-		<string>pythonC.framework/pythonC</string>
-		<string>python_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
-	<key>pythonD</key>
-	<array>
-		<string>pythonD.framework/pythonD</string>
-		<string>python_main</string>
-		<string></string>
-		<string>no</string>
 	</array>
 	<key>texlua</key>
 	<array>

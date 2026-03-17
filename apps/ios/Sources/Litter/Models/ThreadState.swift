@@ -34,9 +34,15 @@ final class ThreadState: Identifiable {
     var requiresOpenHydration: Bool = true
     var activeTurnId: String?
 
+    var agentStatus: SubagentStatus = .unknown
+
     var hasTurnActive: Bool {
         if case .thinking = status { return true }
         return false
+    }
+
+    var isSubagent: Bool {
+        parentThreadId?.isEmpty == false && agentDisplayLabel != nil
     }
 
     var isFork: Bool {
@@ -64,6 +70,56 @@ final class ThreadState: Identifiable {
         self.threadId = threadId
         self.serverName = serverName
         self.serverSource = serverSource
+    }
+}
+
+enum SubagentStatus: String {
+    case unknown
+    case pendingInit
+    case running
+    case interrupted
+    case completed
+    case errored
+    case shutdown
+
+    init(fromRaw raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Try exact camelCase match first (server sends these)
+        switch trimmed {
+        case "pendingInit", "PendingInit":
+            self = .pendingInit
+        case "running", "Running":
+            self = .running
+        case "interrupted", "Interrupted":
+            self = .interrupted
+        case "completed", "Completed":
+            self = .completed
+        case "errored", "Errored":
+            self = .errored
+        case "shutdown", "Shutdown":
+            self = .shutdown
+        case "notFound", "NotFound":
+            self = .unknown
+        default:
+            // Fuzzy fallback
+            let normalized = trimmed.lowercased().replacingOccurrences(of: "_", with: "")
+            switch normalized {
+            case "pendinginit", "pending":
+                self = .pendingInit
+            case "running", "inprogress", "active", "thinking":
+                self = .running
+            case "interrupted":
+                self = .interrupted
+            case "completed", "complete", "done", "idle":
+                self = .completed
+            case "errored", "error", "failed":
+                self = .errored
+            case "shutdown":
+                self = .shutdown
+            default:
+                self = .unknown
+            }
+        }
     }
 }
 

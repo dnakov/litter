@@ -53,6 +53,10 @@ struct ConversationView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var activeThread: ThreadState? {
+        serverManager.threads[activeThreadKey]
+    }
+
     var body: some View {
         ConversationMessageList(
             items: items,
@@ -60,12 +64,13 @@ struct ConversationView: View {
             followScrollToken: followScrollToken,
             activeThreadKey: activeThreadKey,
             agentDirectoryVersion: agentDirectoryVersion,
-            topInset: topInset,
+            topInset: activeThread?.isSubagent == true ? topInset + 32 : topInset,
             textSizeStep: $conversationTextSizeStep,
             resolveTargetLabel: resolveTargetLabel,
             onWidgetPrompt: sendWidgetPrompt,
             onEditUserItem: editMessage,
-            onForkFromUserItem: forkFromMessage
+            onForkFromUserItem: forkFromMessage,
+            onOpenConversation: onOpenConversation
         )
         .background(LitterTheme.backgroundGradient.ignoresSafeArea())
         .mask {
@@ -75,6 +80,19 @@ struct ConversationView: View {
                 Rectangle().fill(.black)
             }
             .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            if let thread = activeThread, thread.isSubagent {
+                SubagentBreadcrumbBar(
+                    thread: thread,
+                    topInset: topInset,
+                    onNavigateToParent: {
+                        if let parentId = thread.parentThreadId {
+                            onOpenConversation?(ThreadKey(serverId: thread.serverId, threadId: parentId))
+                        }
+                    }
+                )
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ConversationBottomChrome(
@@ -226,25 +244,41 @@ private struct ConversationBottomChrome: View {
     }
 }
 
-private enum ConversationTextSize: Int, CaseIterable {
+enum ConversationTextSize: Int, CaseIterable {
+    case xxSmall = -1
     case xSmall = 0
     case small = 1
     case medium = 2
     case large = 3
     case xLarge = 4
+    case xxLarge = 5
 
     var scale: CGFloat {
         switch self {
+        case .xxSmall: return 0.78
         case .xSmall: return 0.86
         case .small: return 0.93
         case .medium: return 1.0
         case .large: return 1.1
         case .xLarge: return 1.22
+        case .xxLarge: return 1.36
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .xxSmall: return "Smallest"
+        case .xSmall: return "Smaller"
+        case .small: return "Small"
+        case .medium: return "Default"
+        case .large: return "Large"
+        case .xLarge: return "Larger"
+        case .xxLarge: return "Largest"
         }
     }
 
     static func clamped(rawValue: Int) -> ConversationTextSize {
-        let bounded = min(max(rawValue, xSmall.rawValue), xLarge.rawValue)
+        let bounded = min(max(rawValue, xxSmall.rawValue), xxLarge.rawValue)
         return ConversationTextSize(rawValue: bounded) ?? .medium
     }
 }
@@ -282,6 +316,7 @@ private struct ConversationMessageList: View {
     let onWidgetPrompt: (String) -> Void
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
+    var onOpenConversation: ((ThreadKey) -> Void)? = nil
     @State private var pendingScrollWorkItem: DispatchWorkItem?
     @State private var isNearBottom = true
     @State private var autoFollowStreaming = true
@@ -389,7 +424,8 @@ private struct ConversationMessageList: View {
                                     resolveTargetLabel: resolveTargetLabel,
                                     onWidgetPrompt: onWidgetPrompt,
                                     onEditUserItem: onEditUserItem,
-                                    onForkFromUserItem: onForkFromUserItem
+                                    onForkFromUserItem: onForkFromUserItem,
+                                    onOpenConversation: onOpenConversation
                                 )
                             }
                         }
@@ -800,6 +836,7 @@ private struct ConversationTurnRow: View {
     let onWidgetPrompt: (String) -> Void
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
+    var onOpenConversation: ((ThreadKey) -> Void)? = nil
 
     var body: some View {
         if isExpanded {
@@ -823,7 +860,8 @@ private struct ConversationTurnRow: View {
                 resolveTargetLabel: resolveTargetLabel,
                 onWidgetPrompt: onWidgetPrompt,
                 onEditUserItem: onEditUserItem,
-                onForkFromUserItem: onForkFromUserItem
+                onForkFromUserItem: onForkFromUserItem,
+                onOpenConversation: onOpenConversation
             )
 
             if showTypingIndicator {
@@ -2270,6 +2308,51 @@ struct CameraView: UIViewControllerRepresentable {
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.dismiss()
         }
+    }
+}
+
+private struct SubagentBreadcrumbBar: View {
+    let thread: ThreadState
+    let topInset: CGFloat
+    let onNavigateToParent: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onNavigateToParent) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Parent")
+                        .font(LitterFont.styled(.caption, weight: .medium))
+                }
+                .foregroundColor(LitterTheme.accent)
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+                .frame(height: 14)
+                .background(LitterTheme.border)
+
+            HStack(spacing: 4) {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(LitterTheme.success)
+                Text(thread.agentDisplayLabel ?? "Agent")
+                    .font(LitterFont.styled(.caption, weight: .medium))
+                    .foregroundColor(LitterTheme.textPrimary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .padding(.top, topInset + 48)
+        .background(
+            LitterTheme.surface.opacity(0.85)
+                .background(.ultraThinMaterial)
+                .ignoresSafeArea()
+        )
     }
 }
 
