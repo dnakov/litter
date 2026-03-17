@@ -275,9 +275,16 @@ final class ServerConnection: Identifiable {
         approvalPolicy: String,
         sandbox: String
     ) async throws -> ThreadResumeResponse {
-        try await routedSendRequest(
+        let instructions = target == .local ? Self.localSystemInstructions : nil
+        return try await routedSendRequest(
             method: "thread/resume",
-            params: ThreadResumeParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
+            params: ThreadResumeParams(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: sandbox,
+                developerInstructions: instructions
+            ),
             responseType: ThreadResumeResponse.self
         )
     }
@@ -288,9 +295,16 @@ final class ServerConnection: Identifiable {
         approvalPolicy: String,
         sandbox: String
     ) async throws -> ThreadForkResponse {
-        try await routedSendRequest(
+        let instructions = target == .local ? Self.localSystemInstructions : nil
+        return try await routedSendRequest(
             method: "thread/fork",
-            params: ThreadForkParams(threadId: threadId, cwd: cwd, approvalPolicy: approvalPolicy, sandbox: sandbox),
+            params: ThreadForkParams(
+                threadId: threadId,
+                cwd: cwd,
+                approvalPolicy: approvalPolicy,
+                sandbox: sandbox,
+                developerInstructions: instructions
+            ),
             responseType: ThreadForkResponse.self
         )
     }
@@ -576,28 +590,38 @@ final class ServerConnection: Identifiable {
     You are running on an iOS device with limited shell capabilities via ios_system.
 
     Environment:
-    - Working directory: ~/Documents (the app's sandboxed Documents folder)
-    - Shell: ios_system (not a full POSIX shell — no fork/exec, no process spawning)
-    - Available commands: ls, cat, echo, touch, find, grep, cp, mv, rm, mkdir, pwd, wc, head, tail, sort, uniq, sed, awk, tr, tee, env, date, and other single-binary utilities bundled via ios_system
-    - /bin/sh is available but runs in-process — compound commands (&&, ||, pipes) work but may behave differently than on a full system
+    - Working directory: /home/codex (inside the app's sandboxed filesystem — persistent across app launches)
+    - Filesystem layout: ~/Documents acts as root with /home/codex, /tmp, /var/log, /etc
+    - Shell: ios_system (in-process, not a full POSIX shell — no fork/exec)
+    - If you need a shell wrapper, the executable itself must be `sh`.
+    - Use `sh -c '...'` directly. Do NOT emit `/bin/bash`, `bash`, `/bin/zsh`, `zsh`, `/bin/sh -lc`, or nested wrappers like `/bin/bash -lc "sh -c '...'"`.
+    - /bin/sh runs in-process — compound commands (&&, ||, pipes) work
+
+    Available tools:
+    - Shell: ls, cat, echo, touch, cp, mv, rm, mkdir, rmdir, pwd, chmod, ln, du, df, env, date, uname, whoami, which, true, false, yes, printenv, basename, dirname, realpath, readlink
+    - Text: grep, sed, awk, wc, sort, uniq, head, tail, tr, tee, cut, paste, comm, diff, expand, unexpand, fold, fmt, nl, rev, strings
+    - Files: find, stat, tar, xargs
+    - Network: curl (full HTTP client), ssh, scp, sftp
+    - Git: lg2 (libgit2 CLI — use `lg2` instead of `git`, supports clone, init, add, commit, push, pull, status, log, diff, branch, checkout, merge, remote, tag, stash)
+    - Other: bc (calculator)
 
     Limitations:
-    - apply_patch runs in-process but may fail with "Operation not permitted" on some paths. When it fails, fall back to shell commands (echo > file, cat >> file) to create/edit files.
-    - Do NOT use absolute container paths like /var/mobile/Containers/... in file operations — use relative paths from the working directory instead.
-    - The container UUID changes between app installs, so absolute paths from previous sessions are invalid.
-    - File redirection (> and >>) works. Use `echo 'content' > file.txt` to create files when apply_patch fails.
-    - For multi-line file creation, use multiple echo commands with >> (append).
-    - git is NOT available.
-    - No package managers (npm, pip, brew, etc).
-    - No network tools (curl, wget) via shell — but the app handles network requests internally.
-    - Commands run synchronously. Long-running commands will block.
+    - apply_patch may fail with "Operation not permitted" — fall back to echo/cat with redirection.
+    - Use RELATIVE paths, not absolute /var/mobile/Containers/... paths.
+    - Container UUID changes between installs — absolute paths from previous sessions are invalid.
+    - No package managers (npm, pip, brew) and no Python/Node.
+    - Use `lg2` not `git` for git operations.
+    - Commands run synchronously — avoid long-running operations.
 
     Best practices:
-    - Always use relative paths for file operations.
+    - Use relative paths for all file operations.
+    - Prefer direct argv commands like `pwd`, `find`, `ls`, `rg`, `sed`.
+    - Only wrap with `sh -c '...'` when shell syntax is actually required.
+    - Never prepend `sh -c` with `bash -lc` or `zsh -lc`.
     - Prefer simple, single commands over complex pipelines.
-    - When creating files, try apply_patch first. If it fails, use echo/cat with redirection.
-    - Keep file operations within ~/Documents.
-    - Be concise — this is a mobile device with limited screen space.
+    - For file creation: try apply_patch first, fall back to echo/cat redirection.
+    - For scripting: use shell scripts or awk.
+    - Be concise — this is a mobile device.
     """
 
     // MARK: - Transport Routing

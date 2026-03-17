@@ -593,6 +593,7 @@ struct ThreadResumeParams: Encodable {
     var approvalPolicy: String?
     var sandbox: String?
     let persistExtendedHistory: Bool? = true
+    let developerInstructions: String?
 }
 
 struct ThreadResumeResponse: Decodable {
@@ -666,6 +667,7 @@ struct ThreadForkParams: Encodable {
     var approvalPolicy: String?
     var sandbox: String?
     let persistExtendedHistory: Bool? = true
+    let developerInstructions: String?
 }
 
 struct ThreadForkResponse: Decodable {
