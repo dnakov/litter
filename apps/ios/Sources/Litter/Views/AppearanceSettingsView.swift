@@ -56,7 +56,7 @@ struct AppearanceSettingsView: View {
                             get: { Double(textSizeStep) },
                             set: { textSizeStep = Int($0.rounded()) }
                         ),
-                        in: Double(ConversationTextSize.smallest.rawValue)...Double(ConversationTextSize.largest.rawValue),
+                        in: Double(ConversationTextSize.tiny.rawValue)...Double(ConversationTextSize.huge.rawValue),
                         step: 1
                     )
                     .tint(LitterTheme.accent)
