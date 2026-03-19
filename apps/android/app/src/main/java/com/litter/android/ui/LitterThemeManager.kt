@@ -1,6 +1,7 @@
 package com.litter.android.ui
 
 import android.content.Context
+import android.content.res.Configuration
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -14,6 +15,8 @@ private const val THEME_LOG_TAG = "LitterThemeManager"
 private const val UI_PREFERENCES_NAME = "litter_ui_prefs"
 private const val SELECTED_LIGHT_THEME_KEY = "selected_light_theme"
 private const val SELECTED_DARK_THEME_KEY = "selected_dark_theme"
+private const val DARK_MODE_KEY = "dark_mode_enabled"
+private const val FONT_MONO_KEY = "font_family_mono"
 
 enum class LitterColorThemeType {
     LIGHT,
@@ -208,7 +211,13 @@ object LitterThemeManager {
     private var appContext: Context? = null
     private var initialized = false
     private var definitionCache = LinkedHashMap<String, LitterThemeDefinition>()
-    private var systemIsDark = true
+    private var systemIsDark = false
+
+    var darkModeEnabled by mutableStateOf(false)
+        private set
+
+    var monoFontEnabled by mutableStateOf(true)
+        private set
 
     var lightTheme by mutableStateOf(LitterResolvedTheme.defaultLight)
         private set
@@ -249,17 +258,37 @@ object LitterThemeManager {
             themeIndex = loadThemeIndex()
             lightTheme = loadAndResolve(selectedLightSlug) ?: LitterResolvedTheme.defaultLight
             darkTheme = loadAndResolve(selectedDarkSlug) ?: LitterResolvedTheme.defaultDark
-            activeTheme = if (systemIsDark) darkTheme else lightTheme
+            val nightModeFlags = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+            val systemIsDarkMode = nightModeFlags == Configuration.UI_MODE_NIGHT_YES
+            val hasDarkModePref = preferences?.contains(DARK_MODE_KEY) ?: false
+            val storedDark = if (hasDarkModePref) preferences?.getBoolean(DARK_MODE_KEY, false) ?: false else systemIsDarkMode
+            darkModeEnabled = storedDark
+            activeTheme = if (storedDark) darkTheme else lightTheme
+            monoFontEnabled = preferences?.getBoolean(FONT_MONO_KEY, true) ?: true
             initialized = true
         }
     }
 
     fun applySystemTheme(isDark: Boolean) {
         systemIsDark = isDark
-        val nextTheme = if (isDark) darkTheme else lightTheme
+        val nextTheme = if (darkModeEnabled) darkTheme else lightTheme
         if (activeTheme.slug != nextTheme.slug || activeTheme.type != nextTheme.type) {
             activeTheme = nextTheme
         }
+    }
+
+    fun applyDarkMode(enabled: Boolean) {
+        preferences?.edit()?.putBoolean(DARK_MODE_KEY, enabled)?.apply()
+        darkModeEnabled = enabled
+        val nextTheme = if (enabled) darkTheme else lightTheme
+        if (activeTheme.slug != nextTheme.slug || activeTheme.type != nextTheme.type) {
+            activeTheme = nextTheme
+        }
+    }
+
+    fun applyFont(isMono: Boolean) {
+        preferences?.edit()?.putBoolean(FONT_MONO_KEY, isMono)?.apply()
+        monoFontEnabled = isMono
     }
 
     fun selectLightTheme(slug: String) {

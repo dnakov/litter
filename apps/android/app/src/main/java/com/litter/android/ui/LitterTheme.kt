@@ -1,6 +1,5 @@
 package com.litter.android.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -131,65 +130,65 @@ private val Mono =
         Font(R.font.berkeley_mono_bold_oblique, weight = FontWeight.Bold, style = FontStyle.Italic),
     )
 
-private val LitterTypography =
+private fun buildTypography(fontFamily: FontFamily) =
     Typography(
         titleLarge =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 20.sp,
             ),
         titleMedium =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 16.sp,
             ),
         titleSmall =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 14.sp,
             ),
         headlineSmall =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 20.sp,
             ),
         bodyLarge =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Normal,
                 fontSize = 16.sp,
             ),
         bodyMedium =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Normal,
                 fontSize = 14.sp,
             ),
         bodySmall =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Normal,
                 fontSize = 12.sp,
             ),
         labelLarge =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 12.sp,
             ),
         labelMedium =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 11.sp,
             ),
         labelSmall =
             TextStyle(
-                fontFamily = Mono,
+                fontFamily = fontFamily,
                 fontWeight = FontWeight.Medium,
                 fontSize = 10.sp,
             ),
@@ -203,11 +202,11 @@ fun LitterAppTheme(content: @Composable () -> Unit) {
         onDispose {}
     }
 
-    val isSystemDark = isSystemInDarkTheme()
+    val darkModeEnabled = LitterThemeManager.darkModeEnabled
     val lightThemeSlug = LitterThemeManager.lightTheme.slug
     val darkThemeSlug = LitterThemeManager.darkTheme.slug
-    LaunchedEffect(isSystemDark, lightThemeSlug, darkThemeSlug) {
-        LitterThemeManager.applySystemTheme(isSystemDark)
+    LaunchedEffect(darkModeEnabled, lightThemeSlug, darkThemeSlug) {
+        LitterThemeManager.applySystemTheme(darkModeEnabled)
     }
 
     val activeTheme = LitterThemeManager.activeTheme
@@ -244,9 +243,12 @@ fun LitterAppTheme(content: @Composable () -> Unit) {
             }
         }
 
+    val monoFontEnabled = LitterThemeManager.monoFontEnabled
+    val typography = if (monoFontEnabled) buildTypography(Mono) else buildTypography(FontFamily.Default)
+
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = LitterTypography,
+        typography = typography,
         content = content,
     )
 }

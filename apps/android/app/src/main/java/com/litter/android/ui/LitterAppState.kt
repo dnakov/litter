@@ -99,6 +99,8 @@ data class DiscoveryUiState(
     val manualUsername: String = "",
     val manualPassword: String = "",
     val manualDirectory: String = "",
+    val manualSshPort: String = "22",
+    val connectingServerId: String? = null,
     val errorMessage: String? = null,
 )
 
@@ -379,6 +381,10 @@ interface LitterAppState : Closeable {
 
     fun connectManualUrl()
 
+    fun updateManualSshPort(value: String)
+
+    fun connectManualSsh()
+
     fun dismissSshLogin()
 
     fun updateSshUsername(value: String)
@@ -495,7 +501,7 @@ class DefaultLitterAppState(
         val session = _uiState.value.sessions.firstOrNull { it.key == threadKey } ?: return
         serverManager.selectThread(threadKey = threadKey, cwdForLazyResume = session.cwd) { result ->
             result.onFailure { error ->
-                setUiError(error.message ?: "Failed to resume session")
+                handleThreadError(error, threadKey, "Failed to resume session")
             }
             result.onSuccess {
                 _uiState.update { it.copy(isSidebarOpen = false, sessionSearchQuery = "") }
@@ -873,7 +879,7 @@ class DefaultLitterAppState(
             skillMentions = skillMentions,
         ) { result ->
             result.onFailure { error ->
-                setUiError(error.message ?: "Failed to send message")
+                handleThreadError(error, fallbackMessage = "Failed to send message")
             }
         }
     }
@@ -1095,10 +1101,6 @@ class DefaultLitterAppState(
     }
 
     override fun openSettings() {
-        if (!_uiState.value.activeCapabilities.supportsAuthManagement) {
-            setUiError("Settings are not available for this backend")
-            return
-        }
         _uiState.update {
             it.copy(
                 showSettings = true,
@@ -1340,7 +1342,9 @@ class DefaultLitterAppState(
             return
         }
 
+        _uiState.update { it.copy(discovery = it.discovery.copy(connectingServerId = id)) }
         serverManager.connectServer(discovered.toServerConfig()) { result ->
+            _uiState.update { it.copy(discovery = it.discovery.copy(connectingServerId = null)) }
             result.onFailure { error ->
                 setUiError(error.message ?: "Connection failed")
             }
@@ -1541,6 +1545,32 @@ class DefaultLitterAppState(
                 postConnectPrime()
             }
         }
+    }
+
+    override fun updateManualSshPort(value: String) {
+        _uiState.update {
+            it.copy(discovery = it.discovery.copy(manualSshPort = value))
+        }
+    }
+
+    override fun connectManualSsh() {
+        val snapshot = _uiState.value.discovery
+        val host = snapshot.manualHost.trim()
+        val port = snapshot.manualSshPort.trim().toIntOrNull() ?: 22
+        if (host.isEmpty()) {
+            setUiError("Enter a hostname or IP address")
+            return
+        }
+        val serverId = "manual-ssh-$host:$port"
+        val discovered = UiDiscoveredServer(
+            id = serverId,
+            name = host,
+            host = host,
+            port = port,
+            source = DiscoverySource.SSH,
+            hasCodexServer = false,
+        )
+        openSshLoginFor(discovered)
     }
 
     override fun dismissSshLogin() {
@@ -1875,7 +1905,17 @@ class DefaultLitterAppState(
                 setUiError(error.message ?: "Failed to load models")
             }
         }
-        refreshSessions()
+        serverManager.refreshSessions { result ->
+            result.onFailure { error ->
+                setUiError(error.message ?: "Failed to refresh sessions")
+            }
+            result.onSuccess { threads ->
+                val latest = threads.firstOrNull { !it.isPlaceholder }
+                if (latest != null && _uiState.value.activeThreadKey == null) {
+                    serverManager.selectThread(threadKey = latest.key, cwdForLazyResume = latest.cwd) { _ -> }
+                }
+            }
+        }
         serverManager.refreshAccountState { accountResult ->
             accountResult.onFailure { error ->
                 setUiError(error.message ?: "Failed to refresh account")
@@ -2142,6 +2182,26 @@ class DefaultLitterAppState(
 
     private fun setUiError(message: String) {
         _uiState.update { it.copy(uiError = message) }
+    }
+
+    private fun handleThreadError(error: Throwable, threadKey: ThreadKey? = null, fallbackMessage: String = "Operation failed") {
+        val msg = error.message ?: ""
+        if (msg.contains("thread not found", ignoreCase = true)) {
+            // Stale thread — clear it from state and refresh silently
+            val stalKey = threadKey ?: _uiState.value.activeThreadKey
+            if (stalKey != null) {
+                _uiState.update { state ->
+                    state.copy(
+                        sessions = state.sessions.filter { it.key != stalKey },
+                        activeThreadKey = if (state.activeThreadKey == stalKey) null else state.activeThreadKey,
+                        messages = if (state.activeThreadKey == stalKey) emptyList() else state.messages,
+                    )
+                }
+            }
+            refreshSessions()
+        } else {
+            setUiError(msg.ifBlank { fallbackMessage })
+        }
     }
 
     private fun SshLoginUiState.toSavedCredential(): SavedSshCredential =

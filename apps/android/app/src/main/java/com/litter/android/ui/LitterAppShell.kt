@@ -1,7 +1,9 @@
 package com.litter.android.ui
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.speech.RecognizerIntent
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.net.Uri
@@ -12,6 +14,8 @@ import android.widget.TextView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -40,6 +44,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -68,9 +73,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.UnfoldLess
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CameraAlt
@@ -94,8 +115,12 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -287,6 +312,7 @@ fun LitterAppShell(
                 connectionStatus = uiState.connectionStatus,
                 currentCwd = uiState.currentCwd,
                 onToggleSidebar = appState::toggleSidebar,
+                onOpenSettings = appState::openSettings,
                 onSelectModel = appState::selectModel,
                 onSelectReasoningEffort = appState::selectReasoningEffort,
             )
@@ -296,7 +322,10 @@ fun LitterAppShell(
                     connectionStatus = uiState.connectionStatus,
                     connectedServers = uiState.connectedServers,
                     savedServers = uiState.savedServers,
+                    sessions = uiState.sessions,
                     onOpenDiscovery = appState::openDiscovery,
+                    onSelectSession = appState::selectSession,
+                    onNewSession = appState::openNewSessionPicker,
                     onReconnectSavedServer = appState::reconnectSavedServer,
                     onReconfigureSavedServer = appState::reconfigureSavedServer,
                 )
@@ -450,6 +479,8 @@ fun LitterAppShell(
                 onManualDirectoryChanged = appState::updateManualDirectory,
                 onConnectManual = appState::connectManualServer,
                 onConnectManualUrl = appState::connectManualUrl,
+                onManualSshPortChanged = appState::updateManualSshPort,
+                onConnectManualSsh = appState::connectManualSsh,
             )
         }
 
@@ -468,7 +499,7 @@ fun LitterAppShell(
             )
         }
 
-        if (uiState.showSettings && uiState.activeCapabilities.supportsAuthManagement) {
+        if (uiState.showSettings) {
             SettingsSheet(
                 accountState = uiState.accountState,
                 connectedServers = uiState.connectedServers,
@@ -477,6 +508,10 @@ fun LitterAppShell(
                 onCopyBundledLogs = appState::copyBundledLogs,
                 onOpenDiscovery = appState::openDiscovery,
                 onRemoveServer = appState::removeServer,
+                conversationTextSizeStep = uiState.conversationTextSizeStep,
+                onConversationTextSizeStepChanged = appState::updateConversationTextSizeStep,
+                onListExperimentalFeatures = appState::listExperimentalFeatures,
+                onSetExperimentalFeatureEnabled = appState::setExperimentalFeatureEnabled,
             )
         }
 
@@ -800,6 +835,7 @@ private fun HeaderBar(
     connectionStatus: ServerConnectionStatus,
     currentCwd: String = "",
     onToggleSidebar: () -> Unit,
+    onOpenSettings: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSelectReasoningEffort: (String) -> Unit,
 ) {
@@ -827,72 +863,102 @@ private fun HeaderBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // Menu button with glass circle
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(LitterTheme.surfaceLight)
-                    .border(1.dp, LitterTheme.border.copy(alpha = 0.4f), CircleShape)
-                    .clickable { onToggleSidebar() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Default.Menu,
-                    contentDescription = "Toggle sidebar",
-                    tint = LitterTheme.textSecondary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            if (backendKind == BackendKind.OPENCODE) {
-                // OpenCode static button
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = LitterTheme.surfaceLight,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border.copy(alpha = 0.4f)),
+            if (activeThreadKey == null) {
+                // Home screen: Settings gear | BrandLogo (centered) | nothing
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(LitterTheme.surfaceLight)
+                        .border(1.dp, LitterTheme.border.copy(alpha = 0.4f), CircleShape)
+                        .clickable { onOpenSettings() },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "OpenCode",
-                        color = LitterTheme.textSecondary,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = LitterTheme.textSecondary,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                BrandLogo(size = 44.dp)
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Placeholder to balance the left icon and keep BrandLogo centered
+                Spacer(modifier = Modifier.size(44.dp))
             } else {
-                // Model selector button - iOS style
-                ModelSelectorButton(
-                    models = models,
-                    selectedModelId = selectedModelId,
-                    selectedReasoningEffort = selectedReasoningEffort,
-                    activeThreadModelId = activeThreadModelId,
-                    connectionStatus = connectionStatus,
-                    currentCwd = currentCwd,
-                    isExpanded = showModelSelector,
-                    onClick = { showModelSelector = !showModelSelector },
-                )
-            }
+                // Inside a conversation: existing behaviour unchanged
+                // Menu button with glass circle
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(LitterTheme.surfaceLight)
+                        .border(1.dp, LitterTheme.border.copy(alpha = 0.4f), CircleShape)
+                        .clickable { onToggleSidebar() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Menu,
+                        contentDescription = "Toggle sidebar",
+                        tint = LitterTheme.textSecondary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
 
-            Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.weight(1f))
 
-            // Reload button with glass circle
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(LitterTheme.surfaceLight)
-                    .border(1.dp, LitterTheme.border.copy(alpha = 0.4f), CircleShape)
-                    .clickable { /* TODO: reload action */ },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Default.ArrowUpward,
-                    contentDescription = "Reload",
-                    tint = LitterTheme.accent,
-                    modifier = Modifier.size(16.dp),
-                )
+                if (backendKind == BackendKind.OPENCODE) {
+                    // OpenCode static button
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = LitterTheme.surfaceLight,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border.copy(alpha = 0.4f)),
+                    ) {
+                        Text(
+                            "OpenCode",
+                            color = LitterTheme.textSecondary,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                } else {
+                    // Model selector button - iOS style
+                    ModelSelectorButton(
+                        models = models,
+                        selectedModelId = selectedModelId,
+                        selectedReasoningEffort = selectedReasoningEffort,
+                        activeThreadModelId = activeThreadModelId,
+                        connectionStatus = connectionStatus,
+                        currentCwd = currentCwd,
+                        isExpanded = showModelSelector,
+                        onClick = { showModelSelector = !showModelSelector },
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Reload button with glass circle
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(LitterTheme.surfaceLight)
+                        .border(1.dp, LitterTheme.border.copy(alpha = 0.4f), CircleShape)
+                        .clickable { /* TODO: reload action */ },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.ArrowUpward,
+                        contentDescription = "Reload",
+                        tint = LitterTheme.accent,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
         }
 
@@ -1216,146 +1282,390 @@ private fun EmptyState(
     connectionStatus: ServerConnectionStatus,
     connectedServers: List<ServerConfig>,
     savedServers: List<SavedServer> = emptyList(),
+    sessions: List<ThreadState> = emptyList(),
     onOpenDiscovery: () -> Unit,
+    onSelectSession: (ThreadKey) -> Unit = {},
+    onNewSession: () -> Unit = {},
     onReconnectSavedServer: (String) -> Unit = {},
     onReconfigureSavedServer: (String) -> Unit = {},
 ) {
-    val canConnect =
-        connectionStatus == ServerConnectionStatus.DISCONNECTED ||
-            connectionStatus == ServerConnectionStatus.ERROR
     val connectedServerIds = remember(connectedServers) { connectedServers.map { it.id }.toSet() }
-    val connectedServerLabels =
-        remember(connectedServers) {
-            connectedServers
-                .sortedBy { it.name.lowercase(Locale.ROOT) }
-                .map { server ->
-                    val name = server.name.ifBlank { "server" }
-                    "$name * ${serverSourceLabel(server.source)}"
-                }
-        }
-    // Saved servers that are not currently connected (offline/unreachable)
-    val offlineSavedServers =
-        remember(savedServers, connectedServerIds) {
-            savedServers.filter { !connectedServerIds.contains(it.id) }
-        }
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
+    // Match iOS: show only sessions from connected servers, latest 3
+    val recentSessions = remember(sessions, connectedServerIds) {
+        sessions
+            .filter { connectedServerIds.contains(it.key.serverId) }
+            .sortedByDescending { it.updatedAtEpochMillis }
+            .take(3)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+            .padding(top = 20.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            BrandLogo(size = 112.dp)
-            Text(
-                text = "Open the sidebar to start a session",
-                style = MaterialTheme.typography.bodyMedium,
-                color = LitterTheme.textMuted,
+        // Recent Sessions section
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            HomeSectionHeader(
+                title = "Recent Sessions",
+                buttonLabel = "New Session",
+                buttonIcon = Icons.Default.Add,
+                onClick = onNewSession,
             )
-            if (connectedServerLabels.isNotEmpty()) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = "Connected Servers",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LitterTheme.textSecondary,
-                    )
-                    connectedServerLabels.forEach { label ->
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = LitterTheme.accent,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+            if (recentSessions.isEmpty()) {
+                HomeEmptyCard(
+                    title = "No recent sessions",
+                    message = if (connectedServers.isEmpty())
+                        "Connect a server to start your first session."
+                    else
+                        "Start a new session on one of your connected servers.",
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    recentSessions.forEach { session ->
+                        SessionHomeCard(
+                            session = session,
+                            onClick = { onSelectSession(session.key) },
                         )
                     }
                 }
             }
-            // Show offline saved servers with reconnect / reconfigure options
-            if (offlineSavedServers.isNotEmpty()) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = if (connectedServerLabels.isEmpty()) "Saved Servers" else "Offline Servers",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LitterTheme.textSecondary,
-                    )
-                    offlineSavedServers.forEach { saved ->
-                        val kindLabel = if (saved.backendKind.lowercase() == "opencode") "OpenCode" else "Codex"
-                        val hostLabel = "${saved.host}:${saved.port}"
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            color = LitterTheme.surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
+        }
+
+        // Connected Servers section
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            HomeSectionHeader(
+                title = "Connected Servers",
+                buttonLabel = "Connect Server",
+                buttonIcon = Icons.Default.Sync,
+                onClick = onOpenDiscovery,
+            )
+            if (connectedServers.isEmpty()) {
+                val disconnectedSaved = savedServers.filter { saved -> connectedServerIds.none { it == saved.id } }
+                if (disconnectedSaved.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        disconnectedSaved.forEach { saved ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = LitterTheme.surface.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border.copy(alpha = 0.6f)),
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                         Text(
-                                            text = saved.name.ifBlank { hostLabel },
-                                            style = MaterialTheme.typography.bodyMedium,
+                                            saved.name,
+                                            style = MaterialTheme.typography.bodySmall,
                                             color = LitterTheme.textPrimary,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                         Text(
-                                            text = "$kindLabel · $hostLabel",
+                                            "${saved.host}:${saved.port}",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = LitterTheme.textMuted,
                                         )
                                     }
-                                    // Offline indicator
-                                    Text(
-                                        text = "offline",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = LitterTheme.statusError,
-                                    )
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    OutlinedButton(
-                                        onClick = { onReconnectSavedServer(saved.id) },
-                                        modifier = Modifier.weight(1f),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.accent),
-                                    ) {
-                                        Text("Reconnect", color = LitterTheme.accent)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { onReconfigureSavedServer(saved.id) },
-                                        modifier = Modifier.weight(1f),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                                    ) {
-                                        Text("Reconfigure", color = LitterTheme.textSecondary)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        TextButton(
+                                            onClick = { onReconfigureSavedServer(saved.id) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        ) {
+                                            Text(
+                                                "Edit",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = LitterTheme.textSecondary,
+                                            )
+                                        }
+                                        Button(
+                                            onClick = { onReconnectSavedServer(saved.id) },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = LitterTheme.accentStrong,
+                                                contentColor = LitterTheme.onAccentStrong,
+                                            ),
+                                        ) {
+                                            Text(
+                                                "Reconnect",
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } else {
+                    HomeEmptyCard(
+                        title = "No connected servers",
+                        message = "Use Connect Server to add a server and its sessions will appear here.",
+                    )
                 }
-            }
-            if (canConnect) {
-                OutlinedButton(onClick = onOpenDiscovery) {
-                    Text(stringResource(R.string.connect_to_server), color = LitterTheme.accent)
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    connectedServers.forEach { server ->
+                        ServerHomeCard(server = server)
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun HomeSectionHeader(
+    title: String,
+    buttonLabel: String,
+    buttonIcon: ImageVector,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = LitterTheme.textPrimary,
+        )
+        Row(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(LitterTheme.surface.copy(alpha = 0.72f))
+                .border(1.dp, LitterTheme.border.copy(alpha = 0.7f), CircleShape)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                buttonIcon,
+                contentDescription = null,
+                tint = LitterTheme.accent,
+                modifier = Modifier.size(13.dp),
+            )
+            Text(
+                text = buttonLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = LitterTheme.accent,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionHomeCard(
+    session: ThreadState,
+    onClick: () -> Unit,
+) {
+    val workspaceLabel = session.cwd.trim().takeIf { it.isNotBlank() }?.let { cwd ->
+        cwd.substringAfterLast('/').ifBlank { cwd }
+    }
+    val icon = if (session.hasTurnActive) Icons.Default.AutoAwesome else Icons.Default.ChatBubble
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(LitterTheme.surface.copy(alpha = 0.6f))
+            .border(1.dp, LitterTheme.border.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(LitterTheme.accent.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = LitterTheme.accent,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = session.preview.ifBlank { session.key.threadId },
+                style = MaterialTheme.typography.bodySmall,
+                color = LitterTheme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = session.serverName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LitterTheme.textMuted,
+                    maxLines = 1,
+                )
+                if (workspaceLabel != null) {
+                    HomeMetadataDot()
+                    Text(
+                        text = workspaceLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LitterTheme.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 120.dp),
+                    )
+                }
+                HomeMetadataDot()
+                Text(
+                    text = relativeDate(session.updatedAtEpochMillis),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LitterTheme.textMuted,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (session.hasTurnActive) {
+            Text(
+                text = "Thinking",
+                style = MaterialTheme.typography.labelSmall,
+                color = LitterTheme.accent,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(LitterTheme.accent.copy(alpha = 0.14f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        } else {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = LitterTheme.textMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ServerHomeCard(server: ServerConfig) {
+    val isLocal = server.source == ServerSource.LOCAL || server.source == ServerSource.BUNDLED
+    val icon = if (isLocal) Icons.Default.PhoneAndroid else Icons.Default.Dns
+    val subtitle = if (isLocal) {
+        "In-process server"
+    } else {
+        "${server.host}:${server.port} | ${serverSourceLabel(server.source)}"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(LitterTheme.surface.copy(alpha = 0.6f))
+            .border(1.dp, LitterTheme.border.copy(alpha = 0.7f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(LitterTheme.accent.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = LitterTheme.accent,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = server.name,
+                style = MaterialTheme.typography.bodySmall,
+                color = LitterTheme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = LitterTheme.textMuted,
+                maxLines = 1,
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(LitterTheme.accent),
+            )
+            Text(
+                text = "Connected",
+                style = MaterialTheme.typography.labelSmall,
+                color = LitterTheme.textMuted,
+            )
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = LitterTheme.textMuted,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeEmptyCard(title: String, message: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(LitterTheme.surface.copy(alpha = 0.5f))
+            .border(1.dp, LitterTheme.border.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodySmall,
+            color = LitterTheme.textPrimary,
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = LitterTheme.textMuted,
+        )
+    }
+}
+
+@Composable
+private fun HomeMetadataDot() {
+    Box(
+        modifier = Modifier
+            .size(3.dp)
+            .clip(CircleShape)
+            .background(LitterTheme.textMuted.copy(alpha = 0.7f)),
+    )
 }
 
 @Composable
@@ -3949,6 +4259,18 @@ private fun InputBar(
         lastCommittedDraft = nextDraft
     }
 
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val spokenText = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?: return@rememberLauncherForActivityResult
+        val appended = if (composerValue.text.isNotEmpty()) "${composerValue.text} $spokenText" else spokenText
+        composerValue = TextFieldValue(text = appended, selection = TextRange(appended.length))
+        commitDraftIfNeeded(appended)
+    }
+
     fun clearFileSearchState() {
         fileSearchJob?.cancel()
         fileSearchJob = null
@@ -5475,14 +5797,22 @@ private fun InputBar(
                         Box(
                             modifier = Modifier
                                 .size(actionButtonSize)
-                                .padding(end = 4.dp),
+                                .padding(end = 4.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                                        putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your message")
+                                    }
+                                    speechLauncher.launch(intent)
+                                },
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Mic,
                                 contentDescription = "Voice input",
                                 modifier = Modifier.size(actionIconSize - 2.dp),
-                                tint = LitterTheme.textSecondary,
+                                tint = LitterTheme.accent,
                             )
                         }
                     }
@@ -6732,6 +7062,8 @@ private fun DiscoverySheet(
     onManualDirectoryChanged: (String) -> Unit,
     onConnectManual: () -> Unit,
     onConnectManualUrl: () -> Unit,
+    onManualSshPortChanged: (String) -> Unit,
+    onConnectManualSsh: () -> Unit,
 ) {
     val configuration = LocalConfiguration.current
     val useLargeScreenDialog =
@@ -7208,203 +7540,450 @@ private fun DiscoverySheet(
         return
     }
 
+    var showAddServerSheet by rememberSaveable { mutableStateOf(false) }
+
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        containerColor = LitterTheme.background,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.9f).padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp),
         ) {
+            // Header row
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                BrandLogo(size = 86.dp)
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("Connect Server", style = MaterialTheme.typography.titleMedium)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    Text(
+                        "SERVERS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = LitterTheme.textSecondary,
+                    )
                     if (state.isLoading) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
                             color = LitterTheme.textMuted,
                         )
                     }
-                    TextButton(onClick = onRefresh) {
-                        Text("Refresh")
-                    }
+                }
+                IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Refresh",
+                        tint = LitterTheme.accent,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
             }
 
-            if (state.isLoading) {
-                Text("Scanning local network and tailscale...", color = LitterTheme.textSecondary)
-            }
-
             if (state.errorMessage != null) {
-                Text(state.errorMessage, color = LitterTheme.danger)
+                Text(
+                    state.errorMessage,
+                    color = LitterTheme.danger,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
             }
 
-            if (state.servers.isEmpty() && !state.isLoading) {
-                Text("No servers discovered", color = LitterTheme.textMuted)
-            } else {
-                LazyColumn(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false)
-                            .heightIn(min = 140.dp, max = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    items(state.servers, key = { it.id }) { server ->
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().clickable { onConnectDiscovered(server.id) },
-                            color = LitterTheme.surface.copy(alpha = 0.6f),
-                            shape = RoundedCornerShape(8.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-                                verticalArrangement = Arrangement.spacedBy(3.dp),
+            // Server rows
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                color = LitterTheme.surface.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Column {
+                    if (state.servers.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                            if (state.isLoading) {
+                                Text(
+                                    "Scanning...",
+                                    color = LitterTheme.textMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                Text(
+                                    "No servers found",
+                                    color = LitterTheme.textMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    } else {
+                        state.servers.forEachIndexed { index, server ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(start = 52.dp),
+                                    color = LitterTheme.divider.copy(alpha = 0.5f),
+                                    thickness = 0.5.dp,
+                                )
+                            }
+                            val isConnectingThis = state.connectingServerId == server.id
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = state.connectingServerId == null) { onConnectDiscovered(server.id) }
+                                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
+                                Icon(
+                                    imageVector = discoverySourceIcon(server.source),
+                                    contentDescription = null,
+                                    tint = if (server.hasCodexServer) LitterTheme.accent else LitterTheme.textSecondary,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(
                                         server.name,
-                                        color = LitterTheme.textPrimary,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (isConnectingThis) LitterTheme.accent else LitterTheme.textPrimary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        discoverySourceLabel(server.source),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = LitterTheme.textSecondary,
+                                        if (isConnectingThis) "Connecting..." else discoveryServerSubtitle(server),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isConnectingThis) LitterTheme.accent.copy(alpha = 0.7f) else LitterTheme.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
-                                Text(
-                                    "${server.host}:${server.port}",
-                                    color = LitterTheme.textSecondary,
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
-                                Text(
-                                    if (server.hasCodexServer) "codex running" else "ssh only",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = if (server.hasCodexServer) LitterTheme.accent else LitterTheme.textMuted,
-                                )
+                                if (isConnectingThis) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = LitterTheme.accent,
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = LitterTheme.textMuted,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Manual", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Add Server button
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                color = LitterTheme.surface.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp),
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showAddServerSheet = true }
+                        .padding(horizontal = 14.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    OutlinedButton(
-                        onClick = { onManualBackendKindChanged(BackendKind.CODEX) },
-                        modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (state.manualBackendKind == BackendKind.CODEX) LitterTheme.accent else LitterTheme.border),
-                    ) {
-                        Text("Codex")
-                    }
-                    OutlinedButton(
-                        onClick = { onManualBackendKindChanged(BackendKind.OPENCODE) },
-                        modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (state.manualBackendKind == BackendKind.OPENCODE) LitterTheme.accent else LitterTheme.border),
-                    ) {
-                        Text("OpenCode")
+                    Icon(
+                        Icons.Default.AddCircle,
+                        contentDescription = "Add Server",
+                        tint = LitterTheme.accent,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        "Add Server",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = LitterTheme.accent,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+
+    if (showAddServerSheet) {
+        AddServerSheet(
+            state = state,
+            onDismiss = { showAddServerSheet = false },
+            onManualBackendKindChanged = onManualBackendKindChanged,
+            onManualHostChanged = onManualHostChanged,
+            onManualUrlChanged = onManualUrlChanged,
+            onManualSshPortChanged = onManualSshPortChanged,
+            onConnectManualUrl = {
+                showAddServerSheet = false
+                onConnectManualUrl()
+            },
+            onConnectManualSsh = {
+                showAddServerSheet = false
+                onConnectManualSsh()
+            },
+        )
+    }
+}
+
+private fun discoverySourceIcon(source: DiscoverySource): ImageVector =
+    when (source) {
+        DiscoverySource.LOCAL, DiscoverySource.BUNDLED -> Icons.Default.PhoneAndroid
+        DiscoverySource.BONJOUR -> Icons.Default.DesktopWindows
+        DiscoverySource.SSH -> Icons.Default.Terminal
+        DiscoverySource.TAILSCALE -> Icons.Default.Hub
+        DiscoverySource.LAN, DiscoverySource.MANUAL -> Icons.Default.Storage
+    }
+
+private fun discoveryServerSubtitle(server: UiDiscoveredServer): String {
+    if (server.source == DiscoverySource.LOCAL || server.source == DiscoverySource.BUNDLED) {
+        return "In-process server"
+    }
+    val portPart = if (server.port > 0) ":${server.port}" else ""
+    val statusPart = if (server.hasCodexServer) " - codex running" else " - SSH (${discoverySourceLabel(server.source)})"
+    return "${server.host}$portPart$statusPart"
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun AddServerSheet(
+    state: DiscoveryUiState,
+    onDismiss: () -> Unit,
+    onManualBackendKindChanged: (BackendKind) -> Unit,
+    onManualHostChanged: (String) -> Unit,
+    onManualUrlChanged: (String) -> Unit,
+    onManualSshPortChanged: (String) -> Unit,
+    onConnectManualUrl: () -> Unit,
+    onConnectManualSsh: () -> Unit,
+) {
+    // Use SSH tab = OPENCODE internally doesn't matter; we track with a local bool
+    var isSshMode by rememberSaveable { mutableStateOf(false) }
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = LitterTheme.background,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp),
+        ) {
+            // Title bar
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "Add Server",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = LitterTheme.textPrimary,
+                )
+                TextButton(onClick = onDismiss, contentPadding = PaddingValues(0.dp)) {
+                    Text(
+                        "Cancel",
+                        color = LitterTheme.accent,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+
+            // CONNECTION section
+            Text(
+                "CONNECTION",
+                style = MaterialTheme.typography.labelSmall,
+                color = LitterTheme.textSecondary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                color = LitterTheme.surface.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                // Segmented control: Codex | SSH
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf("Codex" to false, "SSH" to true).forEach { (label, ssh) ->
+                        val selected = isSshMode == ssh
+                        Surface(
+                            modifier = Modifier.weight(1f).clickable { isSshMode = ssh },
+                            color = if (selected) LitterTheme.surfaceLight else Color.Transparent,
+                            shape = RoundedCornerShape(7.dp),
+                        ) {
+                            Text(
+                                label,
+                                modifier = Modifier.padding(vertical = 7.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (selected) LitterTheme.textPrimary else LitterTheme.textSecondary,
+                            )
+                        }
                     }
                 }
-                if (state.manualBackendKind == BackendKind.CODEX) {
-                    OutlinedTextField(
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (!isSshMode) {
+                // CODEX SERVER section
+                Text(
+                    "CODEX SERVER",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LitterTheme.textSecondary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    androidx.compose.material3.TextField(
                         value = state.manualUrl,
                         onValueChange = onManualUrlChanged,
-                        label = { Text("ws://host:port or wss://...") },
+                        placeholder = {
+                            Text(
+                                "ws://host:port or wss://...",
+                                color = LitterTheme.textMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        colors = androidx.compose.material3.TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTextColor = LitterTheme.textPrimary,
+                            unfocusedTextColor = LitterTheme.textPrimary,
+                            cursorColor = LitterTheme.accent,
+                        ),
+                        textStyle = MaterialTheme.typography.bodySmall,
                     )
-                    Text(
-                        "Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = LitterTheme.textMuted,
-                    )
-                    Button(
+                }
+                Text(
+                    "Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LitterTheme.textMuted,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    TextButton(
                         onClick = onConnectManualUrl,
-                        modifier = Modifier.fillMaxWidth(),
                         enabled = state.manualUrl.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     ) {
-                        Text("Connect")
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = state.manualHost,
-                            onValueChange = onManualHostChanged,
-                            label = { Text("Host") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
+                        Text(
+                            "Connect",
+                            color = if (state.manualUrl.isNotBlank()) LitterTheme.accent else LitterTheme.textMuted,
+                            style = MaterialTheme.typography.bodyMedium,
                         )
-                        OutlinedTextField(
-                            value = state.manualPort,
-                            onValueChange = onManualPortChanged,
-                            label = { Text("Port") },
-                            modifier = Modifier.width(110.dp),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                        )
-                    }
-                    OutlinedTextField(
-                        value = state.manualUsername,
-                        onValueChange = onManualUsernameChanged,
-                        label = { Text("Username (optional)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    OutlinedTextField(
-                        value = state.manualPassword,
-                        onValueChange = onManualPasswordChanged,
-                        label = { Text("Password (optional)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    OutlinedTextField(
-                        value = state.manualDirectory,
-                        onValueChange = onManualDirectoryChanged,
-                        label = { Text("Directory (optional)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    Button(
-                        onClick = onConnectManual,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = state.manualHost.isNotBlank() && state.manualPort.isNotBlank(),
-                    ) {
-                        Text("Connect")
                     }
                 }
+            } else {
+                // SSH BOOTSTRAP section
+                Text(
+                    "SSH BOOTSTRAP",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LitterTheme.textSecondary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Column {
+                        androidx.compose.material3.TextField(
+                            value = state.manualHost,
+                            onValueChange = onManualHostChanged,
+                            placeholder = {
+                                Text(
+                                    "hostname or IP",
+                                    color = LitterTheme.textMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            colors = androidx.compose.material3.TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = LitterTheme.textPrimary,
+                                unfocusedTextColor = LitterTheme.textPrimary,
+                                cursorColor = LitterTheme.accent,
+                            ),
+                            textStyle = MaterialTheme.typography.bodySmall,
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 16.dp),
+                            color = LitterTheme.divider.copy(alpha = 0.4f),
+                            thickness = 0.5.dp,
+                        )
+                        androidx.compose.material3.TextField(
+                            value = state.manualSshPort,
+                            onValueChange = onManualSshPortChanged,
+                            placeholder = {
+                                Text(
+                                    "22",
+                                    color = LitterTheme.textMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            colors = androidx.compose.material3.TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = LitterTheme.textPrimary,
+                                unfocusedTextColor = LitterTheme.textPrimary,
+                                cursorColor = LitterTheme.accent,
+                            ),
+                            textStyle = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    color = LitterTheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    TextButton(
+                        onClick = onConnectManualSsh,
+                        enabled = state.manualHost.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    ) {
+                        Text(
+                            "Continue to SSH Login",
+                            color = if (state.manualHost.isNotBlank()) LitterTheme.accent else LitterTheme.textMuted,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
-}
 }
 
 @Composable
@@ -7536,6 +8115,10 @@ private fun SettingsSheet(
     onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
+    conversationTextSizeStep: Int,
+    onConversationTextSizeStepChanged: (Int) -> Unit,
+    onListExperimentalFeatures: ((Result<List<ExperimentalFeature>>) -> Unit) -> Unit,
+    onSetExperimentalFeatureEnabled: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
 ) {
     val configuration = LocalConfiguration.current
     val useLargeScreenDialog =
@@ -7564,6 +8147,10 @@ private fun SettingsSheet(
                         onCopyBundledLogs = onCopyBundledLogs,
                         onOpenDiscovery = onOpenDiscovery,
                         onRemoveServer = onRemoveServer,
+                        conversationTextSizeStep = conversationTextSizeStep,
+                        onConversationTextSizeStepChanged = onConversationTextSizeStepChanged,
+                        onListExperimentalFeatures = onListExperimentalFeatures,
+                        onSetExperimentalFeatureEnabled = onSetExperimentalFeatureEnabled,
                         modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp),
                     )
                 }
@@ -7585,10 +8172,16 @@ private fun SettingsSheet(
             onCopyBundledLogs = onCopyBundledLogs,
             onOpenDiscovery = onOpenDiscovery,
             onRemoveServer = onRemoveServer,
+            conversationTextSizeStep = conversationTextSizeStep,
+            onConversationTextSizeStepChanged = onConversationTextSizeStepChanged,
+            onListExperimentalFeatures = onListExperimentalFeatures,
+            onSetExperimentalFeatureEnabled = onSetExperimentalFeatureEnabled,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         )
     }
 }
+
+private enum class SettingsNavScreen { MAIN, APPEARANCE, EXPERIMENTAL }
 
 @Composable
 private fun SettingsSheetContent(
@@ -7599,13 +8192,22 @@ private fun SettingsSheetContent(
     onCopyBundledLogs: () -> Unit,
     onOpenDiscovery: () -> Unit,
     onRemoveServer: (String) -> Unit,
+    conversationTextSizeStep: Int,
+    onConversationTextSizeStepChanged: (Int) -> Unit,
+    onListExperimentalFeatures: ((Result<List<ExperimentalFeature>>) -> Unit) -> Unit,
+    onSetExperimentalFeatureEnabled: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var navScreen by rememberSaveable { mutableStateOf(SettingsNavScreen.MAIN) }
     var activeThemePicker by rememberSaveable { mutableStateOf<ThemePickerKind?>(null) }
     val lightThemes = LitterThemeManager.lightThemes
     val darkThemes = LitterThemeManager.darkThemes
-    val selectedLightTheme = lightThemes.firstOrNull { it.slug == LitterThemeManager.selectedLightSlug } ?: lightThemes.firstOrNull()
-    val selectedDarkTheme = darkThemes.firstOrNull { it.slug == LitterThemeManager.selectedDarkSlug } ?: darkThemes.firstOrNull()
+    val darkModeEnabled = LitterThemeManager.darkModeEnabled
+    val monoFontEnabled = LitterThemeManager.monoFontEnabled
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val uiPrefs = remember { context.getSharedPreferences("litter_ui_prefs", android.content.Context.MODE_PRIVATE) }
+    var collapseTurns by rememberSaveable { mutableStateOf(uiPrefs.getBoolean("collapse_turns", false)) }
 
     activeThemePicker?.let { pickerKind ->
         ThemePickerDialog(
@@ -7624,130 +8226,744 @@ private fun SettingsSheetContent(
         )
     }
 
-    Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        if (onDismiss == null) {
-            Text("Settings", style = MaterialTheme.typography.titleMedium)
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+    AnimatedContent(
+        targetState = navScreen,
+        modifier = modifier,
+        transitionSpec = {
+            if (targetState > initialState) {
+                (slideInHorizontally { it } + fadeIn()).togetherWith(slideOutHorizontally { -it } + fadeOut())
+            } else {
+                (slideInHorizontally { -it } + fadeIn()).togetherWith(slideOutHorizontally { it } + fadeOut())
+            }
+        },
+        label = "settings_nav",
+    ) { screen ->
+        when (screen) {
+            SettingsNavScreen.APPEARANCE -> SettingsAppearanceScreen(
+                conversationTextSizeStep = conversationTextSizeStep,
+                onConversationTextSizeStepChanged = onConversationTextSizeStepChanged,
+                darkModeEnabled = darkModeEnabled,
+                lightThemes = lightThemes,
+                darkThemes = darkThemes,
+                onSelectLightTheme = { activeThemePicker = ThemePickerKind.LIGHT },
+                onSelectDarkTheme = { activeThemePicker = ThemePickerKind.DARK },
+                onBack = { navScreen = SettingsNavScreen.MAIN },
+            )
+            SettingsNavScreen.EXPERIMENTAL -> SettingsExperimentalScreen(
+                onListExperimentalFeatures = onListExperimentalFeatures,
+                onSetExperimentalFeatureEnabled = onSetExperimentalFeatureEnabled,
+                onBack = { navScreen = SettingsNavScreen.MAIN },
+            )
+            SettingsNavScreen.MAIN -> Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
             ) {
-                Text("Settings", style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = onDismiss) {
-                    Text("Close", color = LitterTheme.danger)
-                }
-            }
-        }
-
-        OutlinedButton(
-            onClick = onCopyBundledLogs,
-            modifier = Modifier.fillMaxWidth(),
+        // ── Title row: centered "Settings" + "Done" pill ──────────────────
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Text("Bundled Debug")
-        }
-
-        Text("Authentication", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-        Surface(
-            modifier = Modifier.fillMaxWidth().clickable { onOpenAccount() },
-            color = LitterTheme.surface.copy(alpha = 0.6f),
-            shape = RoundedCornerShape(8.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Account", color = LitterTheme.textPrimary)
-                    Text(accountState.summaryTitle, color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-                }
-                Text("Open", color = LitterTheme.accent, style = MaterialTheme.typography.labelLarge)
-            }
-        }
-
-        Text("Appearance", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-        ThemeSelectionTriggerCard(
-            label = "Light Theme",
-            entry = selectedLightTheme,
-            enabled = lightThemes.isNotEmpty(),
-            onClick = { activeThemePicker = ThemePickerKind.LIGHT },
-        )
-        ThemeSelectionTriggerCard(
-            label = "Dark Theme",
-            entry = selectedDarkTheme,
-            enabled = darkThemes.isNotEmpty(),
-            onClick = { activeThemePicker = ThemePickerKind.DARK },
-        )
-
-        Text("Typography", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = LitterTheme.surface.copy(alpha = 0.6f),
-            shape = RoundedCornerShape(8.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text("Custom Font", color = LitterTheme.textPrimary)
-                Text(
-                    "Using Berkeley Mono for app typography.",
-                    color = LitterTheme.textSecondary,
-                    style = MaterialTheme.typography.labelLarge,
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("Servers", color = LitterTheme.textSecondary, style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = onOpenDiscovery) {
-                Text("Add Server")
-            }
-        }
-
-        if (connectedServers.isEmpty()) {
-            Text("No servers connected", color = LitterTheme.textMuted)
-        } else {
-            connectedServers.forEach { server ->
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = LitterTheme.surface.copy(alpha = 0.6f),
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+            Text(
+                "Settings",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                color = LitterTheme.textPrimary,
+            )
+            if (onDismiss != null) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    Surface(
+                        onClick = onDismiss,
+                        color = LitterTheme.surface,
+                        shape = RoundedCornerShape(50),
                     ) {
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(server.name, color = LitterTheme.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                "${server.host}:${server.port} * ${serverSourceLabel(server.source)}",
-                                color = LitterTheme.textSecondary,
-                                style = MaterialTheme.typography.labelLarge,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        TextButton(onClick = { onRemoveServer(server.id) }) {
-                            Text("Remove", color = LitterTheme.danger)
-                        }
+                        Text(
+                            "Done",
+                            color = LitterTheme.accent,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
                     }
                 }
             }
         }
+
+        // ── Theme section ──────────────────────────────────────────────────
+        SettingsSectionHeader("Theme")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            SettingsNavRow(
+                icon = Icons.Default.Brush,
+                label = "Appearance",
+                onClick = { navScreen = SettingsNavScreen.APPEARANCE },
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Font section ───────────────────────────────────────────────────
+        SettingsSectionHeader("Font")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { LitterThemeManager.applyFont(true) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "Monospaced",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LitterTheme.textPrimary,
+                    )
+                    Text(
+                        "The quick brown fox",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LitterTheme.textSecondary,
+                    )
+                }
+                if (monoFontEnabled) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = LitterTheme.accentStrong,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            HorizontalDivider(
+                color = LitterTheme.divider.copy(alpha = 0.5f),
+                thickness = 0.5.dp,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { LitterThemeManager.applyFont(false) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "System (Roboto)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LitterTheme.textPrimary,
+                    )
+                    Text(
+                        "The quick brown fox",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Default),
+                        color = LitterTheme.textSecondary,
+                    )
+                }
+                if (!monoFontEnabled) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        tint = LitterTheme.accentStrong,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Conversation section ───────────────────────────────────────────
+        SettingsSectionHeader("Conversation")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    Icons.Default.UnfoldLess,
+                    contentDescription = null,
+                    tint = LitterTheme.accent,
+                    modifier = Modifier.size(20.dp),
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Collapse Turns",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LitterTheme.textPrimary,
+                    )
+                    Text(
+                        "Collapse previous turns into cards",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LitterTheme.textSecondary,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = collapseTurns,
+                    onCheckedChange = { value ->
+                        collapseTurns = value
+                        uiPrefs.edit().putBoolean("collapse_turns", value).apply()
+                    },
+                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                        checkedThumbColor = LitterTheme.surface,
+                        checkedTrackColor = LitterTheme.accent,
+                        uncheckedThumbColor = LitterTheme.textMuted,
+                        uncheckedTrackColor = LitterTheme.surface,
+                    ),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Experimental section ───────────────────────────────────────────
+        SettingsSectionHeader("Experimental")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            SettingsNavRow(
+                icon = Icons.Default.Science,
+                label = "Experimental Features",
+                onClick = { navScreen = SettingsNavScreen.EXPERIMENTAL },
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Account section ────────────────────────────────────────────────
+        SettingsSectionHeader("Account")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            if (connectedServers.isEmpty()) {
+                SettingsTextRow("Connect to a server first")
+            } else {
+                // Status dot + title row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(accountStatusColor(accountState.status)),
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            accountState.summaryTitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LitterTheme.textPrimary,
+                        )
+                        accountState.summarySubtitle?.let { subtitle ->
+                            Text(
+                                subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = LitterTheme.textSecondary,
+                            )
+                        }
+                    }
+                    if (accountState.status != AuthStatus.NOT_LOGGED_IN && accountState.status != AuthStatus.UNKNOWN) {
+                        Text(
+                            "Logout",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = LitterTheme.danger,
+                            modifier = Modifier.clickable { onOpenAccount() }.padding(4.dp),
+                        )
+                    }
+                }
+                // Login row — only when not logged in
+                if (accountState.status == AuthStatus.NOT_LOGGED_IN) {
+                    HorizontalDivider(
+                        color = LitterTheme.divider.copy(alpha = 0.5f),
+                        thickness = 0.5.dp,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenAccount() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.AccountCircle,
+                            contentDescription = null,
+                            tint = LitterTheme.accent,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            "Login with ChatGPT",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LitterTheme.accent,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // ── Servers section ────────────────────────────────────────────────
+        SettingsSectionHeader("Servers")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            if (connectedServers.isEmpty()) {
+                SettingsTextRow("No servers connected")
+            } else {
+                connectedServers.forEachIndexed { index, server ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = LitterTheme.divider.copy(alpha = 0.5f),
+                            thickness = 0.5.dp,
+                            modifier = Modifier.padding(start = 44.dp),
+                        )
+                    }
+                    val isLocal = server.source == ServerSource.LOCAL || server.source == ServerSource.BUNDLED
+                    val serverIcon = if (isLocal) Icons.Default.PhoneAndroid else Icons.Default.Dns
+                    val serverSubtitle = if (isLocal) "In-process server" else "${server.host}:${server.port} | ${serverSourceLabel(server.source)}"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            serverIcon,
+                            contentDescription = null,
+                            tint = LitterTheme.accent,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                server.name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = LitterTheme.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                serverSubtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = LitterTheme.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Text(
+                            "Remove",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = LitterTheme.danger,
+                            modifier = Modifier.clickable { onRemoveServer(server.id) }.padding(4.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+            } // end Column (MAIN)
+        } // end when
+    } // end AnimatedContent
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun SettingsAppearanceScreen(
+    conversationTextSizeStep: Int,
+    onConversationTextSizeStepChanged: (Int) -> Unit,
+    darkModeEnabled: Boolean,
+    lightThemes: List<LitterThemeIndexEntry>,
+    darkThemes: List<LitterThemeIndexEntry>,
+    onSelectLightTheme: () -> Unit,
+    onSelectDarkTheme: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val selectedLightEntry = lightThemes.firstOrNull { it.slug == LitterThemeManager.selectedLightSlug } ?: lightThemes.firstOrNull()
+    val selectedDarkEntry = darkThemes.firstOrNull { it.slug == LitterThemeManager.selectedDarkSlug } ?: darkThemes.firstOrNull()
+    val fontSizeLabel = when (conversationTextSizeStep) {
+        0 -> "Tiny"; 1 -> "Small"; 2 -> "Medium"; 3 -> "Large"; else -> "Huge"
     }
+    Column(
+        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Appearance",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = LitterTheme.textPrimary,
+            )
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LitterTheme.accent)
+                }
+            }
+        }
+
+        SettingsSectionHeader("Font Size")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Font Size", style = MaterialTheme.typography.bodySmall, color = LitterTheme.textPrimary)
+                    Text(fontSizeLabel, style = MaterialTheme.typography.bodySmall, color = LitterTheme.textSecondary)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("A", style = MaterialTheme.typography.labelSmall, color = LitterTheme.textMuted)
+                    androidx.compose.material3.Slider(
+                        value = conversationTextSizeStep.toFloat(),
+                        onValueChange = { onConversationTextSizeStepChanged(it.toInt()) },
+                        valueRange = 0f..4f,
+                        steps = 3,
+                        modifier = Modifier.weight(1f),
+                        colors = androidx.compose.material3.SliderDefaults.colors(
+                            thumbColor = LitterTheme.accent,
+                            activeTrackColor = LitterTheme.accent,
+                            inactiveTrackColor = LitterTheme.border,
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent,
+                        ),
+                        thumb = {
+                            Box(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(CircleShape)
+                                    .background(LitterTheme.accent),
+                            )
+                        },
+                    )
+                    Text("A", style = MaterialTheme.typography.titleMedium, color = LitterTheme.textMuted)
+                }
+            }
+        }
+        Text(
+            "Pinch in conversations to adjust, or use this slider. Applies across the app.",
+            style = MaterialTheme.typography.labelSmall,
+            color = LitterTheme.textMuted,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        SettingsSectionHeader("Preview")
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = LitterTheme.background,
+            shape = RoundedCornerShape(10.dp),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val textSp = (13.sp.value * ConversationTextSizing.scaleForStep(conversationTextSizeStep)).sp
+                // User bubble
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = LitterTheme.surfaceLight,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                    ) {
+                        Text(
+                            "Hey clanker, why is prod on fire",
+                            color = LitterTheme.textPrimary,
+                            fontSize = textSp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        )
+                    }
+                }
+                // Tool call card
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = LitterTheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = null, tint = LitterTheme.toolCallCommand, modifier = Modifier.size(14.dp))
+                        Text("rg 'TODO: fix later' --count", color = LitterTheme.textSecondary, fontSize = (textSp.value * 0.88f).sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text("0.3s", color = LitterTheme.textMuted, fontSize = (textSp.value * 0.8f).sp)
+                    }
+                }
+                // Assistant bubble
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Found the issue. Someone deployed this:", color = LitterTheme.textBody, fontSize = textSp)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = LitterTheme.codeBackground,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "if is_friday():\n    yolo_deploy(skip_tests=True)",
+                            color = LitterTheme.textPrimary,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize = (textSp.value * 0.88f).sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        )
+                    }
+                    Text("I'm not mad, just disappointed.", color = LitterTheme.textBody, fontSize = textSp)
+                }
+                // User bubble
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = LitterTheme.surfaceLight,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LitterTheme.border),
+                    ) {
+                        Text(
+                            "That was you, Clanker",
+                            color = LitterTheme.textPrimary,
+                            fontSize = textSp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        SettingsSectionHeader("Light theme")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onSelectLightTheme)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ThemePreviewBadge(entry = selectedLightEntry)
+                Text(
+                    selectedLightEntry?.name ?: "No theme",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LitterTheme.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(Icons.Default.SwapVert, contentDescription = null, tint = LitterTheme.textMuted, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        SettingsSectionHeader("Dark theme")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onSelectDarkTheme)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ThemePreviewBadge(entry = selectedDarkEntry)
+                Text(
+                    selectedDarkEntry?.name ?: "No theme",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LitterTheme.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(Icons.Default.SwapVert, contentDescription = null, tint = LitterTheme.textMuted, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        SettingsSectionHeader("Display")
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingsSectionCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(Icons.Default.Brush, contentDescription = null, tint = LitterTheme.accent, modifier = Modifier.size(20.dp))
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Dark Mode", style = MaterialTheme.typography.bodySmall, color = LitterTheme.textPrimary)
+                    Text("Use dark theme (light by default)", style = MaterialTheme.typography.labelSmall, color = LitterTheme.textSecondary)
+                }
+                androidx.compose.material3.Switch(
+                    checked = darkModeEnabled,
+                    onCheckedChange = { LitterThemeManager.applyDarkMode(it) },
+                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                        checkedThumbColor = LitterTheme.surface,
+                        checkedTrackColor = LitterTheme.accent,
+                        uncheckedThumbColor = LitterTheme.textMuted,
+                        uncheckedTrackColor = LitterTheme.surface,
+                    ),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun SettingsExperimentalScreen(
+    onListExperimentalFeatures: ((Result<List<ExperimentalFeature>>) -> Unit) -> Unit,
+    onSetExperimentalFeatureEnabled: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
+    onBack: () -> Unit,
+) {
+    var features by remember { mutableStateOf<List<ExperimentalFeature>>(emptyList()) }
+    var featureStates by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+
+    LaunchedEffect(Unit) {
+        onListExperimentalFeatures { result ->
+            result.onSuccess { list ->
+                features = list
+                featureStates = list.associate { it.name to it.enabled }
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Experimental",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = LitterTheme.textPrimary,
+            )
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = LitterTheme.accent)
+                }
+            }
+        }
+
+        SettingsSectionHeader("Features")
+        Spacer(modifier = Modifier.height(8.dp))
+        if (features.isEmpty()) {
+            SettingsSectionCard { SettingsTextRow("No experimental features available") }
+        } else {
+            SettingsSectionCard {
+                features.forEachIndexed { index, feature ->
+                    if (index > 0) {
+                        HorizontalDivider(color = LitterTheme.divider.copy(alpha = 0.5f), thickness = 0.5.dp)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                feature.displayName ?: feature.name,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = LitterTheme.textPrimary,
+                            )
+                            if (!feature.description.isNullOrEmpty()) {
+                                Text(
+                                    feature.description!!,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = LitterTheme.textSecondary,
+                                )
+                            }
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = featureStates[feature.name] ?: feature.enabled,
+                            onCheckedChange = { checked ->
+                                featureStates = featureStates + (feature.name to checked)
+                                onSetExperimentalFeatureEnabled(feature.name, checked) {}
+                            },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = LitterTheme.surface,
+                                checkedTrackColor = LitterTheme.accentStrong,
+                                uncheckedThumbColor = LitterTheme.textMuted,
+                                uncheckedTrackColor = LitterTheme.surface,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "Experimental features may be unstable or change without notice.",
+            style = MaterialTheme.typography.labelSmall,
+            color = LitterTheme.textMuted,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun SettingsSectionHeader(title: String) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        color = LitterTheme.textSecondary,
+        modifier = Modifier.padding(horizontal = 4.dp),
+    )
+}
+
+@Composable
+private fun SettingsSectionCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = LitterTheme.surface.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Column(content = content)
+    }
+}
+
+@Composable
+private fun SettingsNavRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = LitterTheme.accent, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.bodySmall, color = LitterTheme.textPrimary, modifier = Modifier.weight(1f))
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = LitterTheme.textMuted, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun SettingsTextRow(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = LitterTheme.textMuted,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    )
 }
 
 private enum class ThemePickerKind(val title: String) {
