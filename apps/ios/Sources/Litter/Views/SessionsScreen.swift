@@ -723,7 +723,7 @@ struct SessionsScreen: View {
                     } else if thread.isSubagent {
                         subagentStatusIndicator(thread.agentStatus).padding(.top, 3)
                     } else {
-                        Circle().fill(Color.clear).frame(width: 8, height: 8).padding(.top, 3)
+                        Circle().fill(LitterTheme.textMuted.opacity(0.4)).frame(width: 8, height: 8).padding(.top, 3)
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
