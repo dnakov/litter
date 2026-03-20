@@ -1076,7 +1076,7 @@ struct SessionsScreen: View {
     private func submitRename() async {
         guard let key = renamingThreadKey else { return }
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !nextTitle.isEmpty else { return }
+        // Empty string clears the local nickname, reverting to the server title
         localNicknames.set(nextTitle, for: key)
         renamingThreadKey = nil
         renameCurrentTitle = ""
