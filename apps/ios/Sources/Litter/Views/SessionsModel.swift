@@ -19,6 +19,7 @@ final class SessionsModel {
     private(set) var derivedData: SessionsDerivedData = .empty
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
+    let localNicknames = LocalSessionNicknames()
 
     @ObservationIgnored private weak var serverManager: ServerManager?
     @ObservationIgnored private weak var appState: AppState?
@@ -90,13 +91,17 @@ final class SessionsModel {
                 previousDisplayedOrder: previousDisplayedOrder
             )
 
+            let nicknameLookup = { [localNicknames] (key: ThreadKey) -> String? in
+                localNicknames.nickname(for: key)
+            }
             let nextDerivedData = SessionsDerivation.build(
                 serverManager: serverManager,
                 selectedServerFilterId: selectedServerFilterId,
                 showOnlyForks: showOnlyForks,
                 workspaceSortMode: workspaceSortMode,
                 searchQuery: currentSearchQuery,
-                frozenMostRecentOrder: nextFrozenMostRecentThreadOrder
+                frozenMostRecentOrder: nextFrozenMostRecentThreadOrder,
+                nicknameLookup: nicknameLookup
             )
 
             return Snapshot(

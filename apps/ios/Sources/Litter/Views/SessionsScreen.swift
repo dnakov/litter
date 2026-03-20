@@ -24,7 +24,6 @@ struct SessionsScreen: View {
     @State private var renamingThreadKey: ThreadKey?
     @State private var renameCurrentTitle = ""
     @State private var renameDraft = ""
-    @State private var localNicknames = LocalSessionNicknames()
     @State private var archiveTargetKey: ThreadKey?
     @State private var collapsedWorkspaceGroupIDs: Set<String> = []
     @State private var collapsedSessionNodeKeys: Set<ThreadKey> = []
@@ -665,8 +664,8 @@ struct SessionsScreen: View {
     private func sessionRowContextMenu(_ thread: ThreadState) -> some View {
         Button {
             renamingThreadKey = thread.key
-            renameCurrentTitle = localNicknames.nickname(for: thread.key) ?? thread.sessionTitle
-            renameDraft = localNicknames.nickname(for: thread.key) ?? ""
+            renameCurrentTitle = sessionsModel.localNicknames.nickname(for: thread.key) ?? thread.sessionTitle
+            renameDraft = sessionsModel.localNicknames.nickname(for: thread.key) ?? ""
         } label: {
             Label("Rename", systemImage: "pencil")
         }
@@ -729,7 +728,7 @@ struct SessionsScreen: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(localNicknames.nickname(for: thread.key) ?? thread.sessionTitle)
+                            Text(sessionsModel.localNicknames.nickname(for: thread.key) ?? thread.sessionTitle)
                                 .litterFont(.footnote)
                                 .foregroundColor(LitterTheme.textPrimary)
                                 .lineLimit(2)
@@ -1077,7 +1076,7 @@ struct SessionsScreen: View {
         guard let key = renamingThreadKey else { return }
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         // Empty string clears the local nickname, reverting to the server title
-        localNicknames.set(nextTitle, for: key)
+        sessionsModel.localNicknames.set(nextTitle, for: key)
         renamingThreadKey = nil
         renameCurrentTitle = ""
         renameDraft = ""

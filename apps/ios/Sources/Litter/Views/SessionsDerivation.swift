@@ -15,7 +15,8 @@ enum SessionsDerivation {
         showOnlyForks: Bool,
         workspaceSortMode: WorkspaceSortMode,
         searchQuery: String,
-        frozenMostRecentOrder: [ThreadKey]?
+        frozenMostRecentOrder: [ThreadKey]?,
+        nicknameLookup: ((ThreadKey) -> String?)? = nil
     ) -> SessionsDerivedData {
         let allThreads = sortThreads(
             Array(serverManager.threads.values),
@@ -69,7 +70,8 @@ enum SessionsDerivation {
                 return true
             }
             let parentTitle = parentByKey[thread.key]?.sessionTitle ?? ""
-            return thread.sessionTitle.localizedCaseInsensitiveContains(searchQuery) ||
+            let displayTitle = nicknameLookup?(thread.key) ?? thread.sessionTitle
+            return displayTitle.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.cwd.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.serverName.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.modelProvider.localizedCaseInsensitiveContains(searchQuery) ||
