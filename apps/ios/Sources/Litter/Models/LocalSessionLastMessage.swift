@@ -11,7 +11,7 @@ final class LocalSessionLastMessage {
     private(set) var messages: [String: String]
 
     init() {
-        messages = (UserDefaults.standard.dictionary(forKey: "localSessionLastMessages") as? [String: String]) ?? [:]
+        messages = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
     }
 
     func update(_ text: String, for threadKey: ThreadKey) {

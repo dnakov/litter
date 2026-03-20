@@ -61,6 +61,7 @@ final class SessionsModel {
 
         observationGeneration &+= 1
         let generation = observationGeneration
+        var pendingCacheUpdates: [(ThreadKey, String)] = []
         let snapshot = withObservationTracking {
             let selectedServerFilterId = appState.sessionsSelectedServerFilterId
             let showOnlyForks = appState.sessionsShowOnlyForks
@@ -84,13 +85,13 @@ final class SessionsModel {
                     hasTurnActive: entry.value.hasTurnActive,
                     updatedAt: entry.value.updatedAt
                 )
-                // Cache the last assistant message only when the turn is complete —
-                // skipping active turns avoids a UserDefaults write on every streamed token
+                // Collect cache updates — applied after withObservationTracking to avoid
+                // SessionsModel inadvertently observing localLastMessages.messages
                 if !entry.value.hasTurnActive,
                    let lastText = entry.value.items
                     .last(where: { $0.isAssistantItem && !($0.assistantText ?? "").isEmpty })?
                     .assistantText {
-                    localLastMessages.update(lastText, for: entry.key)
+                    pendingCacheUpdates.append((entry.key, lastText))
                 }
             }
 
@@ -130,6 +131,13 @@ final class SessionsModel {
         connectedServerOptions = snapshot.connectedServerOptions
         ephemeralStateByThreadKey = snapshot.ephemeralStateByThreadKey
         derivedData = snapshot.derivedData
+
+        // Apply last-message cache updates outside withObservationTracking so
+        // SessionsModel does not observe localLastMessages and trigger a spurious
+        // extra refreshState() on every write
+        for (key, text) in pendingCacheUpdates {
+            localLastMessages.update(text, for: key)
+        }
     }
 
     private func resolvedFrozenMostRecentThreadOrder(

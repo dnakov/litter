@@ -10,7 +10,7 @@ final class LocalSessionNicknames {
     private(set) var nicknames: [String: String]
 
     init() {
-        nicknames = (UserDefaults.standard.dictionary(forKey: "localSessionNicknames") as? [String: String]) ?? [:]
+        nicknames = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
     }
 
     func set(_ nickname: String, for threadKey: ThreadKey) {

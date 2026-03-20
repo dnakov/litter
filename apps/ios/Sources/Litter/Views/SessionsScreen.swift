@@ -766,7 +766,7 @@ struct SessionsScreen: View {
                             }
                         }
 
-                        if let lastMessage = sessionsModel.localLastMessages.lastMessage(for: thread.key) {
+                        if !hasTurnActive, let lastMessage = sessionsModel.localLastMessages.lastMessage(for: thread.key) {
                             Text(lastMessage)
                                 .litterFont(.caption2)
                                 .foregroundColor(LitterTheme.textMuted)
