@@ -24,6 +24,7 @@ struct SessionsScreen: View {
     @State private var renamingThreadKey: ThreadKey?
     @State private var renameCurrentTitle = ""
     @State private var renameDraft = ""
+    @State private var localNicknames = LocalSessionNicknames()
     @State private var archiveTargetKey: ThreadKey?
     @State private var collapsedWorkspaceGroupIDs: Set<String> = []
     @State private var collapsedSessionNodeKeys: Set<ThreadKey> = []
@@ -664,8 +665,8 @@ struct SessionsScreen: View {
     private func sessionRowContextMenu(_ thread: ThreadState) -> some View {
         Button {
             renamingThreadKey = thread.key
-            renameCurrentTitle = thread.sessionTitle
-            renameDraft = ""
+            renameCurrentTitle = localNicknames.nickname(for: thread.key) ?? thread.sessionTitle
+            renameDraft = localNicknames.nickname(for: thread.key) ?? ""
         } label: {
             Label("Rename", systemImage: "pencil")
         }
@@ -728,7 +729,7 @@ struct SessionsScreen: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(thread.sessionTitle)
+                            Text(localNicknames.nickname(for: thread.key) ?? thread.sessionTitle)
                                 .litterFont(.footnote)
                                 .foregroundColor(LitterTheme.textPrimary)
                                 .lineLimit(2)
@@ -1076,11 +1077,7 @@ struct SessionsScreen: View {
         guard let key = renamingThreadKey else { return }
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextTitle.isEmpty else { return }
-        do {
-            try await serverManager.renameThread(key, to: nextTitle)
-        } catch {
-            sessionActionErrorMessage = error.localizedDescription
-        }
+        localNicknames.set(nextTitle, for: key)
         renamingThreadKey = nil
         renameCurrentTitle = ""
         renameDraft = ""
