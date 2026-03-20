@@ -15,9 +15,13 @@ final class LocalSessionLastMessage {
     }
 
     func update(_ text: String, for threadKey: ThreadKey) {
+        let snippet = String(text.prefix(200))
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !snippet.isEmpty else { return }
         let k = storageKey(for: threadKey)
-        guard messages[k] != text else { return }
-        messages[k] = text
+        guard messages[k] != snippet else { return }
+        messages[k] = snippet
         UserDefaults.standard.set(messages, forKey: defaultsKey)
     }
 
