@@ -766,6 +766,13 @@ struct SessionsScreen: View {
                             }
                         }
 
+                        if let lastMessage = sessionsModel.localLastMessages.lastMessage(for: thread.key) {
+                            Text(lastMessage)
+                                .litterFont(.caption2)
+                                .foregroundColor(LitterTheme.textMuted)
+                                .lineLimit(1)
+                        }
+
                         HStack(spacing: 4) {
                             Text(relativeDate(updatedAt))
                                 .foregroundColor(LitterTheme.textSecondary)

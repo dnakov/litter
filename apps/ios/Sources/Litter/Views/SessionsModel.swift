@@ -20,6 +20,7 @@ final class SessionsModel {
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
     let localNicknames = LocalSessionNicknames()
+    let localLastMessages = LocalSessionLastMessage()
 
     @ObservationIgnored private weak var serverManager: ServerManager?
     @ObservationIgnored private weak var appState: AppState?
@@ -83,6 +84,12 @@ final class SessionsModel {
                     hasTurnActive: entry.value.hasTurnActive,
                     updatedAt: entry.value.updatedAt
                 )
+                // Cache the last assistant message whenever items change
+                if let lastText = entry.value.items
+                    .last(where: { $0.isAssistantItem && !($0.assistantText ?? "").isEmpty })?
+                    .assistantText {
+                    localLastMessages.update(lastText, for: entry.key)
+                }
             }
 
             let nextFrozenMostRecentThreadOrder = resolvedFrozenMostRecentThreadOrder(
