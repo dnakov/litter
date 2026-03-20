@@ -19,7 +19,7 @@ final class SessionsModel {
     private(set) var derivedData: SessionsDerivedData = .empty
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
-    let localNicknames = LocalSessionNicknames()
+    let localNicknames = LocalSessionNicknames.shared
     let localLastMessages = LocalSessionLastMessage()
 
     @ObservationIgnored private weak var serverManager: ServerManager?

@@ -6,6 +6,8 @@ import Observation
 @MainActor
 @Observable
 final class LocalSessionNicknames {
+    static let shared = LocalSessionNicknames()
+
     private let defaultsKey = "localSessionNicknames"
     private(set) var nicknames: [String: String]
 

@@ -39,7 +39,7 @@ struct HomeDashboardView: View {
                 deleteTargetThread = nil
             }
         } message: {
-            Text("This will permanently delete \"\(deleteTargetThread?.sessionTitle ?? "this session")\".")
+            Text("This will permanently delete \"\(deleteTargetThread.flatMap { LocalSessionNicknames.shared.nickname(for: $0.key) } ?? deleteTargetThread?.sessionTitle ?? "this session")\".")
         }
         .alert("Disconnect Server?", isPresented: Binding(
             get: { disconnectTargetServer != nil },
@@ -193,7 +193,7 @@ struct HomeDashboardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(thread.sessionTitle)
+                Text(LocalSessionNicknames.shared.nickname(for: thread.key) ?? thread.sessionTitle)
                     .litterFont(.subheadline)
                     .foregroundColor(LitterTheme.textPrimary)
                     .lineLimit(1)
