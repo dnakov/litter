@@ -84,8 +84,10 @@ final class SessionsModel {
                     hasTurnActive: entry.value.hasTurnActive,
                     updatedAt: entry.value.updatedAt
                 )
-                // Cache the last assistant message whenever items change
-                if let lastText = entry.value.items
+                // Cache the last assistant message only when the turn is complete —
+                // skipping active turns avoids a UserDefaults write on every streamed token
+                if !entry.value.hasTurnActive,
+                   let lastText = entry.value.items
                     .last(where: { $0.isAssistantItem && !($0.assistantText ?? "").isEmpty })?
                     .assistantText {
                     localLastMessages.update(lastText, for: entry.key)
