@@ -664,8 +664,8 @@ struct SessionsScreen: View {
     private func sessionRowContextMenu(_ thread: ThreadState) -> some View {
         Button {
             renamingThreadKey = thread.key
-            renameCurrentTitle = thread.sessionTitle
-            renameDraft = ""
+            renameCurrentTitle = sessionsModel.localNicknames.nickname(for: thread.key) ?? thread.sessionTitle
+            renameDraft = sessionsModel.localNicknames.nickname(for: thread.key) ?? ""
         } label: {
             Label("Rename", systemImage: "pencil")
         }
@@ -728,7 +728,7 @@ struct SessionsScreen: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(thread.sessionTitle)
+                            Text(sessionsModel.localNicknames.nickname(for: thread.key) ?? thread.sessionTitle)
                                 .litterFont(.footnote)
                                 .foregroundColor(LitterTheme.textPrimary)
                                 .lineLimit(2)
@@ -764,6 +764,13 @@ struct SessionsScreen: View {
                                     .controlSize(.small)
                                     .tint(LitterTheme.accent)
                             }
+                        }
+
+                        if !hasTurnActive, let lastMessage = sessionsModel.localLastMessages.lastMessage(for: thread.key) {
+                            Text(lastMessage)
+                                .litterFont(.caption2)
+                                .foregroundColor(LitterTheme.textMuted)
+                                .lineLimit(1)
                         }
 
                         HStack(spacing: 4) {
@@ -1075,12 +1082,8 @@ struct SessionsScreen: View {
     private func submitRename() async {
         guard let key = renamingThreadKey else { return }
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !nextTitle.isEmpty else { return }
-        do {
-            try await serverManager.renameThread(key, to: nextTitle)
-        } catch {
-            sessionActionErrorMessage = error.localizedDescription
-        }
+        // Empty string clears the local nickname, reverting to the server title
+        sessionsModel.localNicknames.set(nextTitle, for: key)
         renamingThreadKey = nil
         renameCurrentTitle = ""
         renameDraft = ""

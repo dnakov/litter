@@ -19,6 +19,8 @@ final class SessionsModel {
     private(set) var derivedData: SessionsDerivedData = .empty
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
+    let localNicknames = LocalSessionNicknames.shared
+    let localLastMessages = LocalSessionLastMessage()
 
     @ObservationIgnored private weak var serverManager: ServerManager?
     @ObservationIgnored private weak var appState: AppState?
@@ -59,6 +61,7 @@ final class SessionsModel {
 
         observationGeneration &+= 1
         let generation = observationGeneration
+        var pendingCacheUpdates: [(ThreadKey, String)] = []
         let snapshot = withObservationTracking {
             let selectedServerFilterId = appState.sessionsSelectedServerFilterId
             let showOnlyForks = appState.sessionsShowOnlyForks
@@ -82,6 +85,14 @@ final class SessionsModel {
                     hasTurnActive: entry.value.hasTurnActive,
                     updatedAt: entry.value.updatedAt
                 )
+                // Collect cache updates — applied after withObservationTracking to avoid
+                // SessionsModel inadvertently observing localLastMessages.messages
+                if !entry.value.hasTurnActive,
+                   let lastText = entry.value.items
+                    .last(where: { $0.isAssistantItem && !($0.assistantText ?? "").isEmpty })?
+                    .assistantText {
+                    pendingCacheUpdates.append((entry.key, lastText))
+                }
             }
 
             let nextFrozenMostRecentThreadOrder = resolvedFrozenMostRecentThreadOrder(
@@ -90,13 +101,17 @@ final class SessionsModel {
                 previousDisplayedOrder: previousDisplayedOrder
             )
 
+            let nicknameLookup = { [localNicknames] (key: ThreadKey) -> String? in
+                localNicknames.nickname(for: key)
+            }
             let nextDerivedData = SessionsDerivation.build(
                 serverManager: serverManager,
                 selectedServerFilterId: selectedServerFilterId,
                 showOnlyForks: showOnlyForks,
                 workspaceSortMode: workspaceSortMode,
                 searchQuery: currentSearchQuery,
-                frozenMostRecentOrder: nextFrozenMostRecentThreadOrder
+                frozenMostRecentOrder: nextFrozenMostRecentThreadOrder,
+                nicknameLookup: nicknameLookup
             )
 
             return Snapshot(
@@ -116,6 +131,13 @@ final class SessionsModel {
         connectedServerOptions = snapshot.connectedServerOptions
         ephemeralStateByThreadKey = snapshot.ephemeralStateByThreadKey
         derivedData = snapshot.derivedData
+
+        // Apply last-message cache updates outside withObservationTracking so
+        // SessionsModel does not observe localLastMessages and trigger a spurious
+        // extra refreshState() on every write
+        for (key, text) in pendingCacheUpdates {
+            localLastMessages.update(text, for: key)
+        }
     }
 
     private func resolvedFrozenMostRecentThreadOrder(
