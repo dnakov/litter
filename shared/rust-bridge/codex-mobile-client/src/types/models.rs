@@ -41,6 +41,10 @@ pub struct ThreadInfo {
     pub agent_nickname: Option<String>,
     /// Agent role for subagent threads.
     pub agent_role: Option<String>,
+    /// Parent thread id for spawned/forked threads when known.
+    pub parent_thread_id: Option<String>,
+    /// Best-effort subagent lifecycle status string.
+    pub agent_status: Option<String>,
     /// Unix timestamp (seconds) when the thread was created.
     pub created_at: Option<i64>,
     /// Unix timestamp (seconds) when the thread was last updated.
@@ -50,19 +54,32 @@ pub struct ThreadInfo {
 impl From<upstream::Thread> for ThreadInfo {
     fn from(thread: upstream::Thread) -> Self {
         // Extract agent info from source (SubAgent variant).
-        let (agent_nickname, agent_role) = match &thread.source {
+        let (agent_nickname, agent_role, parent_thread_id) = match &thread.source {
             upstream::SessionSource::SubAgent(sub) => {
                 use codex_protocol::protocol::SubAgentSource;
                 match sub {
                     SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
                         agent_nickname,
                         agent_role,
                         ..
-                    } => (agent_nickname.clone(), agent_role.clone()),
-                    _ => (thread.agent_nickname.clone(), thread.agent_role.clone()),
+                    } => (
+                        agent_nickname.clone(),
+                        agent_role.clone(),
+                        Some(parent_thread_id.to_string()),
+                    ),
+                    _ => (
+                        thread.agent_nickname.clone(),
+                        thread.agent_role.clone(),
+                        None,
+                    ),
                 }
             }
-            _ => (thread.agent_nickname.clone(), thread.agent_role.clone()),
+            _ => (
+                thread.agent_nickname.clone(),
+                thread.agent_role.clone(),
+                None,
+            ),
         };
 
         Self {
@@ -80,6 +97,8 @@ impl From<upstream::Thread> for ThreadInfo {
             model_provider: Some(thread.model_provider),
             agent_nickname,
             agent_role,
+            parent_thread_id,
+            agent_status: None,
             created_at: Some(thread.created_at),
             updated_at: Some(thread.updated_at),
         }
@@ -130,6 +149,8 @@ mod tests {
             model_provider: Some("openai".to_string()),
             agent_nickname: None,
             agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
             created_at: Some(1700000000),
             updated_at: Some(1700001000),
         };
@@ -150,6 +171,8 @@ mod tests {
             model_provider: None,
             agent_nickname: None,
             agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
             cwd: None,
             created_at: None,
             updated_at: None,
@@ -195,6 +218,8 @@ mod tests {
             model_provider: None,
             agent_nickname: None,
             agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
             created_at: Some(1000),
             updated_at: Some(2000),
         };
@@ -241,7 +266,10 @@ mod tests {
 
         match response.thread.status {
             generated::ThreadStatus::Active { active_flags } => {
-                assert_eq!(active_flags, vec![generated::ThreadActiveFlag::WaitingOnApproval]);
+                assert_eq!(
+                    active_flags,
+                    vec![generated::ThreadActiveFlag::WaitingOnApproval]
+                );
             }
             other => panic!("unexpected thread status: {other:?}"),
         }
@@ -260,54 +288,58 @@ mod tests {
             }
             other => panic!("unexpected session source: {other:?}"),
         }
+
+        let info = ThreadInfo::from(response.thread);
+        assert_eq!(info.parent_thread_id.as_deref(), Some("parent-1"));
+        assert_eq!(info.agent_nickname.as_deref(), Some("Scout"));
+        assert_eq!(info.agent_role.as_deref(), Some("reviewer"));
     }
 
     #[test]
     fn generated_thread_resume_response_deserializes_granular_approval_policy() {
-        let response: generated::ThreadResumeResponse =
-            serde_json::from_value(serde_json::json!({
-                "thread": {
-                    "id": "thread-1",
-                    "preview": "hi",
-                    "ephemeral": false,
-                    "modelProvider": "openai",
-                    "createdAt": 1,
-                    "updatedAt": 2,
-                    "status": { "type": "idle" },
-                    "path": "/tmp/thread",
-                    "cwd": "/tmp/thread",
-                    "cliVersion": "1.0.0",
-                    "source": "cli",
-                    "agentNickname": null,
-                    "agentRole": null,
-                    "gitInfo": null,
-                    "name": "thread",
-                    "turns": []
-                },
-                "model": "gpt-5",
+        let response: generated::ThreadResumeResponse = serde_json::from_value(serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "preview": "hi",
+                "ephemeral": false,
                 "modelProvider": "openai",
-                "serviceTier": "fast",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "status": { "type": "idle" },
+                "path": "/tmp/thread",
                 "cwd": "/tmp/thread",
-                "approvalPolicy": {
-                    "granular": {
-                        "sandbox_approval": true,
-                        "rules": false,
-                        "skill_approval": true,
-                        "request_permissions": true,
-                        "mcp_elicitations": false
-                    }
+                "cliVersion": "1.0.0",
+                "source": "cli",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": "thread",
+                "turns": []
+            },
+            "model": "gpt-5",
+            "modelProvider": "openai",
+            "serviceTier": "fast",
+            "cwd": "/tmp/thread",
+            "approvalPolicy": {
+                "granular": {
+                    "sandbox_approval": true,
+                    "rules": false,
+                    "skill_approval": true,
+                    "request_permissions": true,
+                    "mcp_elicitations": false
+                }
+            },
+            "approvalsReviewer": "user",
+            "sandbox": {
+                "type": "readOnly",
+                "access": {
+                    "type": "fullAccess"
                 },
-                "approvalsReviewer": "user",
-                "sandbox": {
-                    "type": "readOnly",
-                    "access": {
-                        "type": "fullAccess"
-                    },
-                    "networkAccess": true
-                },
-                "reasoningEffort": "medium"
-            }))
-            .expect("thread/resume response should deserialize typed enums");
+                "networkAccess": true
+            },
+            "reasoningEffort": "medium"
+        }))
+        .expect("thread/resume response should deserialize typed enums");
 
         assert_eq!(response.service_tier, Some(generated::ServiceTier::Fast));
         assert_eq!(

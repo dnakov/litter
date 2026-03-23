@@ -17,7 +17,7 @@ final class MessageRenderCache {
         let messageId: String
         let revisionToken: Int
         let serverId: String
-        let agentDirectoryVersion: Int
+        let agentDirectoryVersion: UInt64
     }
 
     static let shared = MessageRenderCache()
@@ -91,7 +91,7 @@ final class MessageRenderCache {
     static func makeRevisionKey(
         for message: ChatMessage,
         serverId: String?,
-        agentDirectoryVersion: Int,
+        agentDirectoryVersion: UInt64,
         isStreaming: Bool
     ) -> RevisionKey {
         RevisionKey(
@@ -105,7 +105,7 @@ final class MessageRenderCache {
     static func makeRevisionKey(
         for item: ConversationItem,
         serverId: String?,
-        agentDirectoryVersion: Int,
+        agentDirectoryVersion: UInt64,
         isStreaming: Bool
     ) -> RevisionKey {
         RevisionKey(

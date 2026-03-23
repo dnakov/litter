@@ -87,6 +87,38 @@ enum ToolCallStatus: Equatable {
     }
 }
 
+extension AppOperationStatus {
+    var toolCallStatus: ToolCallStatus {
+        switch self {
+        case .pending, .inProgress:
+            return .inProgress
+        case .completed:
+            return .completed
+        case .failed, .declined:
+            return .failed
+        case .unknown:
+            return .unknown
+        }
+    }
+
+    var displayLabel: String {
+        switch self {
+        case .unknown:
+            return "Unknown"
+        case .pending:
+            return "Pending"
+        case .inProgress:
+            return "In Progress"
+        case .completed:
+            return "Completed"
+        case .failed:
+            return "Failed"
+        case .declined:
+            return "Declined"
+        }
+    }
+}
+
 struct ToolCallKeyValue: Equatable {
     let key: String
     let value: String

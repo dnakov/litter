@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import UIKit
 import os
@@ -112,7 +113,8 @@ private final class DirectoryPickerSheetModel {
 
     func loadInitialPath(
         selectedServerId: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async {
         let signpostID = OSSignpostID(log: directoryPickerSignpostLog)
         os_signpost(
@@ -146,16 +148,17 @@ private final class DirectoryPickerSheetModel {
         allEntries = []
         currentPath = ""
 
-        let home = await resolveHome(for: targetServerId, serverManager: serverManager)
+        let home = await resolveHome(for: targetServerId, appModel: appModel, isLocalServer: isLocalServer)
         guard targetServerId == selectedServerId else { return }
         currentPath = home
-        await listDirectory(for: targetServerId, path: home, serverManager: serverManager)
+        await listDirectory(for: targetServerId, path: home, appModel: appModel, isLocalServer: isLocalServer)
     }
 
     func listDirectory(
         for serverId: String,
         path: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async {
         let signpostID = OSSignpostID(log: directoryPickerSignpostLog)
         os_signpost(
@@ -176,7 +179,7 @@ private final class DirectoryPickerSheetModel {
             )
         }
 
-        guard let connection = serverManager.connections[serverId], connection.isConnected else {
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == serverId })?.health == .connected else {
             if serverId == lastLoadedServerId {
                 isLoading = false
                 allEntries = []
@@ -189,10 +192,10 @@ private final class DirectoryPickerSheetModel {
         isLoading = true
         errorMessage = nil
 
-        if connection.server.source == .local {
+        if isLocalServer {
             await listLocalDirectory(normalizedPath, serverId: serverId)
         } else {
-            await listRemoteDirectory(normalizedPath, serverId: serverId, connection: connection)
+            await listRemoteDirectory(normalizedPath, serverId: serverId, appModel: appModel)
         }
 
         if serverId == lastLoadedServerId {
@@ -222,11 +225,25 @@ private final class DirectoryPickerSheetModel {
         }
     }
 
-    private func listRemoteDirectory(_ path: String, serverId: String, connection: ServerConnection) async {
+    private func listRemoteDirectory(_ path: String, serverId: String, appModel: AppModel) async {
         do {
-            let resp = try await connection.execCommand(
-                ["/bin/ls", "-1ap", path],
-                cwd: path
+            let resp = try await appModel.rpc.oneOffCommandExec(
+                serverId: serverId,
+                params: CommandExecParams(
+                    command: ["/bin/ls", "-1ap", path],
+                    processId: nil,
+                    tty: false,
+                    streamStdin: false,
+                    streamStdoutStderr: false,
+                    outputBytesCap: nil,
+                    disableOutputCap: false,
+                    disableTimeout: false,
+                    timeoutMs: nil,
+                    cwd: AbsolutePath(value: path),
+                    env: nil,
+                    size: nil,
+                    sandboxPolicy: nil
+                )
             )
             guard serverId == lastLoadedServerId else { return }
 
@@ -253,7 +270,8 @@ private final class DirectoryPickerSheetModel {
     func navigateInto(
         _ name: String,
         selectedServerId: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async {
         var nextPath = currentPath
         if nextPath.hasSuffix("/") {
@@ -261,26 +279,28 @@ private final class DirectoryPickerSheetModel {
         } else {
             nextPath += "/\(name)"
         }
-        await listDirectory(for: selectedServerId, path: nextPath, serverManager: serverManager)
+        await listDirectory(for: selectedServerId, path: nextPath, appModel: appModel, isLocalServer: isLocalServer)
     }
 
     func navigateUp(
         selectedServerId: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async {
         var nextPath = (currentPath as NSString).deletingLastPathComponent
         if nextPath.isEmpty {
             nextPath = "/"
         }
-        await listDirectory(for: selectedServerId, path: nextPath, serverManager: serverManager)
+        await listDirectory(for: selectedServerId, path: nextPath, appModel: appModel, isLocalServer: isLocalServer)
     }
 
     func navigateToPath(
         _ path: String,
         selectedServerId: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async {
-        await listDirectory(for: selectedServerId, path: path, serverManager: serverManager)
+        await listDirectory(for: selectedServerId, path: path, appModel: appModel, isLocalServer: isLocalServer)
     }
 
     func removeRecentEntry(_ entry: RecentDirectoryEntry, selectedServerId: String) {
@@ -301,18 +321,33 @@ private final class DirectoryPickerSheetModel {
 
     private func resolveHome(
         for serverId: String,
-        serverManager: ServerManager
+        appModel: AppModel,
+        isLocalServer: Bool
     ) async -> String {
-        guard let connection = serverManager.connections[serverId], connection.isConnected else {
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == serverId })?.health == .connected else {
             return "/"
         }
-        if connection.server.source == .local {
+        if isLocalServer {
             return NSHomeDirectory()
         }
         do {
-            let response = try await connection.execCommand(
-                ["/bin/sh", "-lc", "printf %s \"$HOME\""],
-                cwd: "/tmp"
+            let response = try await appModel.rpc.oneOffCommandExec(
+                serverId: serverId,
+                params: CommandExecParams(
+                    command: ["/bin/sh", "-lc", "printf %s \"$HOME\""],
+                    processId: nil,
+                    tty: false,
+                    streamStdin: false,
+                    streamStdoutStderr: false,
+                    outputBytesCap: nil,
+                    disableOutputCap: false,
+                    disableTimeout: false,
+                    timeoutMs: nil,
+                    cwd: AbsolutePath(value: "/tmp"),
+                    env: nil,
+                    size: nil,
+                    sandboxPolicy: nil
+                )
             )
             if response.exitCode == 0 {
                 let home = response.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -347,7 +382,7 @@ struct DirectoryPickerView: View {
     var onDirectorySelected: ((String, String) -> Void)?
     var onDismissRequested: (() -> Void)?
 
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     @State private var model = DirectoryPickerSheetModel()
     @State private var showClearRecentsConfirmation = false
 
@@ -355,12 +390,16 @@ struct DirectoryPickerView: View {
         servers.first { $0.id == selectedServerId }
     }
 
-    private var conn: ServerConnection? {
-        serverManager.connections[selectedServerId]
+    private var selectedServerSnapshot: AppServerSnapshot? {
+        appModel.snapshot?.servers.first(where: { $0.serverId == selectedServerId })
+    }
+
+    private var selectedServerIsLocal: Bool {
+        selectedServerSnapshot?.isLocal ?? false
     }
 
     private var canSelectPath: Bool {
-        !model.currentPath.isEmpty && conn?.isConnected == true && selectedServerOption != nil
+        !model.currentPath.isEmpty && selectedServerSnapshot?.health == .connected && selectedServerOption != nil
     }
 
     private var showRecentDirectories: Bool {
@@ -398,7 +437,8 @@ struct DirectoryPickerView: View {
             model.handleServerSelectionChanged(selectedServerId)
             await model.loadInitialPath(
                 selectedServerId: selectedServerId,
-                serverManager: serverManager
+                appModel: appModel,
+                isLocalServer: selectedServerIsLocal
             )
         }
         .onChange(of: servers.map(\.id)) { _, ids in
@@ -497,7 +537,8 @@ struct DirectoryPickerView: View {
                         Task {
                             await model.navigateUp(
                                 selectedServerId: selectedServerId,
-                                serverManager: serverManager
+                                appModel: appModel,
+                                isLocalServer: selectedServerIsLocal
                             )
                         }
                     } label: {
@@ -512,7 +553,8 @@ struct DirectoryPickerView: View {
                                 await model.navigateToPath(
                                     segment.path,
                                     selectedServerId: selectedServerId,
-                                    serverManager: serverManager
+                                    appModel: appModel,
+                                    isLocalServer: selectedServerIsLocal
                                 )
                             }
                         } label: {
@@ -556,7 +598,8 @@ struct DirectoryPickerView: View {
                             await model.listDirectory(
                                 for: selectedServerId,
                                 path: model.currentPath,
-                                serverManager: serverManager
+                                appModel: appModel,
+                                isLocalServer: selectedServerIsLocal
                             )
                         }
                     }
@@ -680,7 +723,8 @@ struct DirectoryPickerView: View {
                             await model.navigateInto(
                                 entry,
                                 selectedServerId: selectedServerId,
-                                serverManager: serverManager
+                                appModel: appModel,
+                                isLocalServer: selectedServerIsLocal
                             )
                         }
                     } label: {
@@ -790,6 +834,6 @@ struct DirectoryPickerView: View {
             selectedServerId: .constant(""),
             onDismissRequested: {}
         )
-        .environment(ServerManager())
+        .environment(LitterPreviewData.makeDiscoveryAppModel())
     }
 }

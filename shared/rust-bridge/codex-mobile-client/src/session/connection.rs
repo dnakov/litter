@@ -211,6 +211,8 @@ pub struct ServerConfig {
     pub host: String,
     /// TCP port.
     pub port: u16,
+    /// Explicit WebSocket URL override for remote connections.
+    pub websocket_url: Option<String>,
     /// Whether this is a local (in-process) server.
     pub is_local: bool,
     /// Whether to use TLS for the WebSocket connection.
@@ -543,8 +545,12 @@ impl ServerSession {
             max_attempts: 5,
         });
 
-        let scheme = if config.tls { "wss" } else { "ws" };
-        let url = format!("{scheme}://{}:{}", config.host, config.port);
+        let url = if let Some(url) = config.websocket_url.clone() {
+            url
+        } else {
+            let scheme = if config.tls { "wss" } else { "ws" };
+            format!("{scheme}://{}:{}", config.host, config.port)
+        };
 
         let args = RemoteAppServerConnectArgs {
             websocket_url: url.clone(),
@@ -871,6 +877,7 @@ mod tests {
             display_name: "My Mac".into(),
             host: "127.0.0.1".into(),
             port: 0,
+            websocket_url: None,
             is_local: true,
             tls: false,
         };
@@ -885,6 +892,7 @@ mod tests {
             display_name: "Cloud Server".into(),
             host: "codex.example.com".into(),
             port: 443,
+            websocket_url: None,
             is_local: false,
             tls: true,
         };
@@ -1171,6 +1179,7 @@ mod tests {
             display_name: "Test".into(),
             host: "192.168.1.100".into(),
             port: 8080,
+            websocket_url: None,
             is_local: false,
             tls: false,
         };
@@ -1186,6 +1195,7 @@ mod tests {
             display_name: "Secure".into(),
             host: "codex.example.com".into(),
             port: 443,
+            websocket_url: None,
             is_local: false,
             tls: true,
         };

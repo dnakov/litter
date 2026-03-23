@@ -1,9 +1,11 @@
 import Foundation
 
-extension ThreadState {
+extension AppSessionSummary: Identifiable {
+    public var id: ThreadKey { key }
+    var serverId: String { key.serverId }
+    var threadId: String { key.threadId }
     var sessionTitle: String {
-        let trimmed = preview.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Untitled session" : trimmed
+        title
     }
 
     var sessionModelLabel: String? {
@@ -13,6 +15,14 @@ extension ThreadState {
             return "\(trimmedModel) (\(agentLabel))"
         }
         return trimmedModel
+    }
+    
+    var updatedAtDate: Date {
+        Date(timeIntervalSince1970: TimeInterval(updatedAt ?? 0))
+    }
+
+    var subagentStatus: AppSubagentStatus {
+        agentStatus
     }
 }
 
@@ -43,7 +53,7 @@ struct WorkspaceSessionGroup: Identifiable {
     let workspacePath: String
     let workspaceTitle: String
     let latestUpdatedAt: Date
-    let threads: [ThreadState]
+    let threads: [AppSessionSummary]
     let treeRoots: [SessionTreeNode]
 }
 
@@ -54,7 +64,7 @@ struct WorkspaceGroupSection: Identifiable {
 }
 
 struct SessionTreeNode: Identifiable {
-    let thread: ThreadState
+    let thread: AppSessionSummary
     let children: [SessionTreeNode]
 
     var id: ThreadKey { thread.key }
@@ -74,16 +84,16 @@ struct SessionsDerivedData {
         childrenByKey: [:]
     )
 
-    let allThreads: [ThreadState]
+    let allThreads: [AppSessionSummary]
     let allThreadKeys: [ThreadKey]
-    let filteredThreads: [ThreadState]
+    let filteredThreads: [AppSessionSummary]
     let filteredThreadKeys: [ThreadKey]
     let workspaceSections: [WorkspaceGroupSection]
     let workspaceGroupIDs: [String]
     let workspaceGroupIDByThreadKey: [ThreadKey: String]
-    let parentByKey: [ThreadKey: ThreadState]
-    let siblingsByKey: [ThreadKey: [ThreadState]]
-    let childrenByKey: [ThreadKey: [ThreadState]]
+    let parentByKey: [ThreadKey: AppSessionSummary]
+    let siblingsByKey: [ThreadKey: [AppSessionSummary]]
+    let childrenByKey: [ThreadKey: [AppSessionSummary]]
 }
 
 func normalizedWorkspacePath(_ raw: String) -> String {
@@ -99,7 +109,7 @@ func normalizedWorkspacePath(_ raw: String) -> String {
 }
 
 @MainActor
-func workspaceGroupID(for thread: ThreadState) -> String {
+func workspaceGroupID(for thread: AppSessionSummary) -> String {
     "\(thread.serverId)::\(normalizedWorkspacePath(thread.cwd))"
 }
 

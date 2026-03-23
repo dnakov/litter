@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct VoiceCallView: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
+    @Environment(VoiceRuntimeController.self) private var voiceRuntime
     @AppStorage("conversationTextSizeStep") private var conversationTextSizeStep = VoiceConversationTextSize.medium.rawValue
     @State private var screenModel = ConversationScreenModel()
 #if DEBUG
@@ -13,12 +14,11 @@ struct VoiceCallView: View {
     }
 
     private var voiceContext: VoiceCallContext? {
-        guard let session = serverManager.activeVoiceSession,
-              let thread = serverManager.threads[session.threadKey],
-              let connection = serverManager.connections[session.threadKey.serverId] else {
+        guard let session = voiceRuntime.activeVoiceSession,
+              let thread = appModel.snapshot?.threadSnapshot(for: session.threadKey) else {
             return nil
         }
-        return VoiceCallContext(session: session, thread: thread, connection: connection)
+        return VoiceCallContext(session: session, thread: thread)
     }
 
     var body: some View {
@@ -50,7 +50,7 @@ struct VoiceCallView: View {
         }
 #if DEBUG
         .sheet(isPresented: $showDebugSheet) {
-            if let session = serverManager.activeVoiceSession {
+            if let session = voiceRuntime.activeVoiceSession {
                 VoiceCallDebugSheet(session: session)
             }
         }
@@ -61,8 +61,8 @@ struct VoiceCallView: View {
         guard let context = voiceContext else { return }
         screenModel.bind(
             thread: context.thread,
-            connection: context.connection,
-            serverManager: serverManager
+            appModel: appModel,
+            agentDirectoryVersion: appModel.snapshot?.agentDirectoryVersion ?? 0
         )
     }
 
@@ -141,7 +141,7 @@ struct VoiceCallView: View {
             Spacer()
 
             Button(role: .destructive) {
-                Task { await serverManager.stopActiveVoiceSession() }
+                Task { await voiceRuntime.stopActiveVoiceSession() }
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "phone.down.fill")
@@ -172,7 +172,7 @@ struct VoiceCallView: View {
 
     private func routeButton(_ session: VoiceSessionState) -> some View {
         Button {
-            Task { try? await serverManager.toggleActiveVoiceSessionSpeaker() }
+            Task { try? await voiceRuntime.toggleActiveVoiceSessionSpeaker() }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: routeIcon(session.route))
@@ -227,8 +227,7 @@ struct VoiceCallView: View {
 
 private struct VoiceCallContext {
     let session: VoiceSessionState
-    let thread: ThreadState
-    let connection: ServerConnection
+    let thread: AppThreadSnapshot
 }
 
 private enum VoiceConversationTextSize: Int {
@@ -445,7 +444,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
 
         case .todoList(let data):
             guard !data.steps.isEmpty else { return nil }
-            let lines = data.steps.map { "[\($0.status.rawValue)] \($0.step)" }
+            let lines = data.steps.map { "[\(planStepLabel($0.status))] \($0.step)" }
             self = VoiceTranscriptEntry(
                 id: item.id,
                 kind: .tool,
@@ -459,7 +458,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
             self = VoiceTranscriptEntry(id: item.id, kind: .tool, title: "PLAN", body: body)
 
         case .commandExecution(let data):
-            let chunks = [data.command, data.status, data.output]
+            let chunks = [data.command, data.status.displayLabel, data.output]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
             guard !chunks.isEmpty else { return nil }
@@ -471,7 +470,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
             )
 
         case .fileChange(let data):
-            var chunks = ["Status: \(data.status)"]
+            var chunks = ["Status: \(data.status.displayLabel)"]
             let changeSummaries = data.changes.map { "\($0.kind.uppercased()) \($0.path)\n\($0.diff)" }
             chunks.append(contentsOf: changeSummaries)
             if let outputDelta = data.outputDelta?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -491,7 +490,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
             self = VoiceTranscriptEntry(id: item.id, kind: .tool, title: "DIFF", body: body)
 
         case .mcpToolCall(let data):
-            var chunks = ["\(data.server) / \(data.tool)", "Status: \(data.status)"]
+            var chunks = ["\(data.server) / \(data.tool)", "Status: \(data.status.displayLabel)"]
             if let summary = data.contentSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
                !summary.isEmpty {
                 chunks.append(summary)
@@ -507,7 +506,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
             )
 
         case .dynamicToolCall(let data):
-            var chunks = [data.tool, "Status: \(data.status)"]
+            var chunks = [data.tool, "Status: \(data.status.displayLabel)"]
             if let summary = data.contentSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
                !summary.isEmpty {
                 chunks.append(summary)
@@ -520,7 +519,7 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
             )
 
         case .multiAgentAction(let data):
-            var chunks = ["Tool: \(data.tool)", "Status: \(data.status)"]
+            var chunks = ["Tool: \(data.tool)", "Status: \(data.status.displayLabel)"]
             if let prompt = data.prompt?.trimmingCharacters(in: .whitespacesAndNewlines),
                !prompt.isEmpty {
                 chunks.append(prompt)
@@ -629,6 +628,17 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
         case .generic(let title, let detail):
             return [title, detail].compactMap { $0 }.joined(separator: "\n\n")
         }
+    }
+}
+
+private func planStepLabel(_ status: HydratedPlanStepStatus) -> String {
+    switch status {
+    case .pending:
+        return "pending"
+    case .inProgress:
+        return "in_progress"
+    case .completed:
+        return "completed"
     }
 }
 

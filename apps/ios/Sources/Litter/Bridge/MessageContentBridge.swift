@@ -7,15 +7,15 @@ enum MessageContentBridge {
     }
 
     static func segmentAssistantText(_ text: String) -> [AssistantContentSegment] {
-        let parsed = assistantContentSegments(from: client.extractSegmentsTyped(text: text))
+        let parsed = assistantContentSegments(from: store.extractSegmentsTyped(text: text))
         return parsed.isEmpty ? [.markdown(text)] : parsed
     }
 
     static func parseToolCalls(text: String) -> [ToolCallCardModel] {
-        client.parseToolCallsTyped(text: text).compactMap { $0.toToolCallCardModel() }
+        store.parseToolCallsTyped(text: text).compactMap { $0.toToolCallCardModel() }
     }
 
-    private static let client = CodexSharedClient.shared
+    private static let store = MessageParser()
 
     private static func assistantContentSegments(from rustSegments: [FfiMessageSegment]) -> [AssistantContentSegment] {
         rustSegments.compactMap { segment -> AssistantContentSegment? in

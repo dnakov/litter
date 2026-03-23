@@ -182,7 +182,7 @@ struct MessageBubbleView: View {
     private let renderCache = MessageRenderCache.shared
     let message: ChatMessage
     let serverId: String?
-    let agentDirectoryVersion: Int
+    let agentDirectoryVersion: UInt64
     let isStreamingMessage: Bool
     let actionsDisabled: Bool
     let onStreamingSnapshotRendered: (() -> Void)?
@@ -198,7 +198,7 @@ struct MessageBubbleView: View {
     init(
         message: ChatMessage,
         serverId: String? = nil,
-        agentDirectoryVersion: Int = 0,
+        agentDirectoryVersion: UInt64 = 0,
         isStreamingMessage: Bool = false,
         actionsDisabled: Bool = false,
         onStreamingSnapshotRendered: (() -> Void)? = nil,

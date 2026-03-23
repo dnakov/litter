@@ -15,7 +15,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         self.interfaceController = interfaceController
 
         let vm = CarPlayVoiceManager(
-            voiceActions: ServerManager.shared,
+            voiceActions: VoiceRuntimeController.shared,
+            appModel: AppModel.shared,
             interfaceController: interfaceController
         )
         self.voiceManager = vm

@@ -4,12 +4,14 @@ import UIKit
 @MainActor
 final class CarPlayVoiceManager {
     private let voiceActions: VoiceActions
+    private let appModel: AppModel
     private weak var interfaceController: CPInterfaceController?
     private var observationTask: Task<Void, Error>?
     private var isShowingActiveSession = false
 
-    init(voiceActions: VoiceActions, interfaceController: CPInterfaceController) {
+    init(voiceActions: VoiceActions, appModel: AppModel, interfaceController: CPInterfaceController) {
         self.voiceActions = voiceActions
+        self.appModel = appModel
         self.interfaceController = interfaceController
     }
 
@@ -25,23 +27,23 @@ final class CarPlayVoiceManager {
     }
 
     func buildSessionsTab() -> CPListTemplate {
-        let mgr = voiceActions as! ServerManager
         var items: [CPListItem] = []
 
-        let sorted = mgr.threads
-            .sorted { $0.value.updatedAt > $1.value.updatedAt }
+        let sorted = appModel.snapshot?.sessionSummaries
+            .filter { !$0.isSubagent }
+            .sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
             .prefix(8)
+            ?? []
 
-        for (key, thread) in sorted {
-            guard !thread.isSubagent else { continue }
-            let title = thread.preview.isEmpty
+        for summary in sorted {
+            let title = summary.preview.isEmpty
                 ? "Session"
-                : String(thread.preview.prefix(60))
-            let detail = key.serverId == ServerManager.localServerID
-                ? "local" : key.serverId
+                : String(summary.preview.prefix(60))
+            let detail = summary.key.serverId == VoiceRuntimeController.localServerID
+                ? "local" : summary.serverDisplayName
             let item = CPListItem(text: title, detailText: detail)
             item.handler = { [weak self] _, completion in
-                self?.handleResume(key)
+                self?.handleResume(summary.key)
                 completion()
             }
             items.append(item)

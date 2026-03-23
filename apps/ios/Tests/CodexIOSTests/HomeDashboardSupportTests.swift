@@ -4,22 +4,32 @@ import XCTest
 @MainActor
 final class HomeDashboardSupportTests: XCTestCase {
     func testRecentConnectedSessionsFiltersDisconnectedServersAndLimitsToThreeNewest() {
-        let threads = [
-            makeThread(serverId: "server-b", threadId: "b-older", updatedAt: 20),
-            makeThread(serverId: "server-a", threadId: "a-newest", updatedAt: 50),
-            makeThread(serverId: "server-c", threadId: "c-disconnected", updatedAt: 60),
-            makeThread(serverId: "server-a", threadId: "a-mid", updatedAt: 40),
-            makeThread(serverId: "server-b", threadId: "b-mid", updatedAt: 30),
-            makeThread(serverId: "server-a", threadId: "a-oldest", updatedAt: 10)
+        let servers = [
+            makeServerSnapshot(id: "server-a", name: "Server A"),
+            makeServerSnapshot(id: "server-b", name: "Server B")
         ]
+        let threads = [
+            makeThreadSnapshot(serverId: "server-b", threadId: "b-older", updatedAt: 20),
+            makeThreadSnapshot(serverId: "server-a", threadId: "a-newest", updatedAt: 50),
+            makeThreadSnapshot(serverId: "server-c", threadId: "c-disconnected", updatedAt: 60),
+            makeThreadSnapshot(serverId: "server-a", threadId: "a-mid", updatedAt: 40),
+            makeThreadSnapshot(serverId: "server-b", threadId: "b-mid", updatedAt: 30),
+            makeThreadSnapshot(serverId: "server-a", threadId: "a-oldest", updatedAt: 10)
+        ]
+        let snapshot = makeSnapshot(servers: servers, threads: threads, activeThread: nil)
+
+        let connectedServers = HomeDashboardSupport.sortedConnectedServers(
+            from: servers,
+            activeServerId: nil
+        )
 
         let result = HomeDashboardSupport.recentConnectedSessions(
-            from: threads,
-            connectedServerIds: ["server-a", "server-b"],
+            from: snapshot.sessionSummaries,
+            serversById: Dictionary(uniqueKeysWithValues: connectedServers.map { ($0.id, $0) }),
             limit: 3
         )
 
-        XCTAssertEqual(result.map(\.threadId), ["a-newest", "a-mid", "b-mid"])
+        XCTAssertEqual(result.map(\.key.threadId), ["a-newest", "a-mid", "b-mid"])
     }
 
     func testDefaultConnectedServerIdPrefersPreferredThenActiveThenFirstConnected() {
@@ -82,216 +92,240 @@ final class HomeDashboardSupportTests: XCTestCase {
         XCTAssertFalse(discovered.hasCodexServer)
     }
 
-    func testAddServerInstallsNetworkMonitorCallbacks() async {
-        let manager = ServerManager()
-        let server = DiscoveredServer(
-            id: "network-monitor-test",
-            name: "Network Monitor Test",
-            hostname: "network-monitor-test.local",
-            port: 8390,
-            source: .manual,
-            hasCodexServer: true
-        )
-        defer { manager.removeServer(id: server.id) }
-
-        XCTAssertFalse(manager.hasInstalledNetworkMonitorCallbacks)
-
-        await manager.addServer(server, target: .remote(host: "", port: 8390))
-
-        XCTAssertTrue(manager.hasInstalledNetworkMonitorCallbacks)
-    }
-
-    func testHomeDashboardModelRefreshesWhenObservedConnectionChanges() async {
-        let server = DiscoveredServer(
-            id: "server-a",
-            name: "Server A",
-            hostname: "server-a.local",
-            port: 8390,
-            source: .manual,
-            hasCodexServer: true
-        )
-        let connection = ServerConnection(server: server, target: .remote(host: server.hostname, port: 8390))
-        let manager = ServerManager()
-        manager.connections = [server.id: connection]
+    func testHomeDashboardModelRefreshesWhenObservedSnapshotChanges() async {
+        let appModel = AppModel()
         let model = HomeDashboardModel()
-        model.bind(serverManager: manager)
+        model.bind(appModel: appModel)
         model.activate()
 
-        connection.connectionHealth = .connected
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [],
+                activeThread: nil
+            )
+        )
         await flushMainQueue()
 
-        XCTAssertEqual(model.connectedServers.map(\.id), [server.id])
+        XCTAssertEqual(model.connectedServers.map(\.id), ["server-a"])
     }
 
     func testSortedConnectedServersDeduplicatesEquivalentHostsAndPrefersActiveConnection() {
-        let primary = makeConnection(
+        let primary = makeServerSnapshot(
             id: "server-a",
             name: "Mac Studio",
-            hostname: "192.168.1.167",
+            host: "192.168.1.167",
             port: 8390
         )
-        let duplicate = makeConnection(
+        let duplicate = makeServerSnapshot(
             id: "server-b",
             name: "Mac Studio",
-            hostname: "192.168.1.167",
+            host: "192.168.1.167",
             port: 9494
         )
 
         let result = HomeDashboardSupport.sortedConnectedServers(
             from: [duplicate, primary],
-            activeServerId: duplicate.id
+            activeServerId: duplicate.serverId
         )
 
-        XCTAssertEqual(result.map(\.id), [duplicate.id])
+        XCTAssertEqual(result.map(\.id), [duplicate.serverId])
     }
 
-    func testAddServerReusesEquivalentConnectedServerWithDifferentId() async {
-        let manager = ServerManager()
-        let existingServer = DiscoveredServer(
-            id: "bonjour-mac",
-            name: "Mac Studio",
-            hostname: "192.168.1.167",
-            port: 8390,
-            source: .bonjour,
-            hasCodexServer: true
-        )
-        let duplicateServer = DiscoveredServer(
-            id: "manual-mac",
-            name: "Mac Studio",
-            hostname: "192.168.1.167",
-            port: 9494,
-            source: .manual,
-            hasCodexServer: true
-        )
-        let existingConnection = ServerConnection(
-            server: existingServer,
-            target: .remote(host: existingServer.hostname, port: 8390)
-        )
-        existingConnection.connectionHealth = .connected
-        manager.connections = [existingServer.id: existingConnection]
-
-        let reusedId = await manager.addServer(
-            duplicateServer,
-            target: .remote(host: duplicateServer.hostname, port: 9494)
-        )
-
-        XCTAssertEqual(reusedId, existingServer.id)
-        XCTAssertEqual(manager.connections.count, 1)
-        XCTAssertNotNil(manager.connections[existingServer.id])
-        XCTAssertNil(manager.connections[duplicateServer.id])
-    }
-
-    func testHomeDashboardModelRefreshesRecentSessionsWhenObservedThreadChanges() async {
-        let server = DiscoveredServer(
-            id: "server-a",
-            name: "Server A",
-            hostname: "server-a.local",
-            port: 8390,
-            source: .manual,
-            hasCodexServer: true
-        )
-        let connection = ServerConnection(server: server, target: .remote(host: server.hostname, port: 8390))
-        connection.connectionHealth = .connected
-        let olderThread = makeThread(serverId: server.id, threadId: "thread-older", updatedAt: 20)
-        let newerThread = makeThread(serverId: server.id, threadId: "thread-newer", updatedAt: 40)
-        let manager = ServerManager()
-        manager.connections = [server.id: connection]
-        manager.threads = [olderThread.key: olderThread, newerThread.key: newerThread]
+    func testHomeDashboardModelRefreshesRecentSessionsWhenObservedSnapshotThreadChanges() async {
+        let appModel = AppModel()
         let model = HomeDashboardModel()
-        model.bind(serverManager: manager)
+        model.bind(appModel: appModel)
         model.activate()
 
-        olderThread.updatedAt = Date(timeIntervalSince1970: 60)
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-older", updatedAt: 20),
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-newer", updatedAt: 40)
+                ],
+                activeThread: nil
+            )
+        )
         await flushMainQueue()
 
-        XCTAssertEqual(model.recentSessions.map(\.threadId), ["thread-older", "thread-newer"])
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-older", updatedAt: 60),
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-newer", updatedAt: 40)
+                ],
+                activeThread: nil
+            )
+        )
+        await flushMainQueue()
+
+        XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-older", "thread-newer"])
     }
 
     func testHomeDashboardModelRefreshesRecentSessionsWhenThreadsArriveAfterBind() async {
-        let server = DiscoveredServer(
-            id: "server-a",
-            name: "Server A",
-            hostname: "server-a.local",
-            port: 8390,
-            source: .manual,
-            hasCodexServer: true
-        )
-        let connection = ServerConnection(server: server, target: .remote(host: server.hostname, port: 8390))
-        connection.connectionHealth = .connected
-        let manager = ServerManager()
-        manager.connections = [server.id: connection]
+        let appModel = AppModel()
         let model = HomeDashboardModel()
-        model.bind(serverManager: manager)
+        model.bind(appModel: appModel)
         model.activate()
 
-        let thread = makeThread(serverId: server.id, threadId: "thread-late", updatedAt: 80)
-        manager.threads[thread.key] = thread
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [makeThreadSnapshot(serverId: "server-a", threadId: "thread-late", updatedAt: 80)],
+                activeThread: nil
+            )
+        )
         await flushMainQueue()
 
-        XCTAssertEqual(model.recentSessions.map(\.threadId), ["thread-late"])
+        XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-late"])
     }
 
     func testHomeDashboardModelIgnoresThreadChangesWhileInactiveAndRefreshesOnReactivate() async {
-        let server = DiscoveredServer(
-            id: "server-a",
-            name: "Server A",
-            hostname: "server-a.local",
-            port: 8390,
-            source: .manual,
-            hasCodexServer: true
-        )
-        let connection = ServerConnection(server: server, target: .remote(host: server.hostname, port: 8390))
-        connection.connectionHealth = .connected
-        let initialThread = makeThread(serverId: server.id, threadId: "thread-initial", updatedAt: 20)
-        let lateThread = makeThread(serverId: server.id, threadId: "thread-late", updatedAt: 80)
-        let manager = ServerManager()
-        manager.connections = [server.id: connection]
-        manager.threads = [initialThread.key: initialThread]
+        let appModel = AppModel()
         let model = HomeDashboardModel()
-        model.bind(serverManager: manager)
+        model.bind(appModel: appModel)
         model.activate()
 
-        XCTAssertEqual(model.recentSessions.map(\.threadId), ["thread-initial"])
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [makeThreadSnapshot(serverId: "server-a", threadId: "thread-initial", updatedAt: 20)],
+                activeThread: nil
+            )
+        )
+        await flushMainQueue()
+
+        XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-initial"])
         let rebuildCountBeforeDeactivate = model.rebuildCount
 
         model.deactivate()
-        manager.threads[lateThread.key] = lateThread
+        appModel.applySnapshot(
+            makeSnapshot(
+                servers: [makeServerSnapshot(id: "server-a", name: "Server A")],
+                threads: [
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-initial", updatedAt: 20),
+                    makeThreadSnapshot(serverId: "server-a", threadId: "thread-late", updatedAt: 80)
+                ],
+                activeThread: nil
+            )
+        )
         await flushMainQueue()
 
-        XCTAssertEqual(model.recentSessions.map(\.threadId), ["thread-initial"])
+        XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-initial"])
         XCTAssertEqual(model.rebuildCount, rebuildCountBeforeDeactivate)
 
         model.activate()
         await flushMainQueue()
 
-        XCTAssertEqual(model.recentSessions.map(\.threadId), ["thread-late", "thread-initial"])
+        XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-late", "thread-initial"])
         XCTAssertGreaterThan(model.rebuildCount, rebuildCountBeforeDeactivate)
     }
 
-    private func makeThread(serverId: String, threadId: String, updatedAt: TimeInterval) -> ThreadState {
-        let thread = ThreadState(
-            serverId: serverId,
-            threadId: threadId,
-            serverName: serverId,
-            serverSource: .manual
+    private func makeThreadSnapshot(serverId: String, threadId: String, updatedAt: TimeInterval) -> AppThreadSnapshot {
+        AppThreadSnapshot(
+            key: ThreadKey(serverId: serverId, threadId: threadId),
+            info: ThreadInfo(
+                id: threadId,
+                title: nil,
+                model: nil,
+                status: .idle,
+                preview: threadId,
+                cwd: "/tmp/\(threadId)",
+                path: nil,
+                modelProvider: nil,
+                agentNickname: nil,
+                agentRole: nil,
+                createdAt: nil,
+                updatedAt: Int64(updatedAt)
+            ),
+            model: nil,
+            reasoningEffort: nil,
+            hydratedConversationItems: [],
+            activeTurnId: nil,
+            contextTokensUsed: nil,
+            modelContextWindow: nil,
+            rateLimitsJson: nil,
+            realtimeSessionId: nil
         )
-        thread.preview = threadId
-        thread.updatedAt = Date(timeIntervalSince1970: updatedAt)
-        return thread
     }
 
-    private func makeConnection(id: String, name: String, hostname: String, port: UInt16) -> ServerConnection {
-        let server = DiscoveredServer(
-            id: id,
-            name: name,
-            hostname: hostname,
-            port: port,
-            source: .manual,
-            hasCodexServer: true
+    private func makeSnapshot(
+        servers: [AppServerSnapshot],
+        threads: [AppThreadSnapshot],
+        activeThread: ThreadKey?
+    ) -> AppSnapshotRecord {
+        let serversById = Dictionary(uniqueKeysWithValues: servers.map { ($0.serverId, $0) })
+        let sessionSummaries = threads.compactMap { thread -> AppSessionSummary? in
+            guard let server = serversById[thread.key.serverId] else { return nil }
+            return AppSessionSummary(
+                key: thread.key,
+                serverDisplayName: server.displayName,
+                serverHost: server.host,
+                title: thread.info.title ?? "",
+                preview: thread.info.preview ?? "",
+                cwd: thread.info.cwd ?? "",
+                model: thread.model ?? "",
+                modelProvider: thread.info.modelProvider ?? "",
+                parentThreadId: thread.info.parentThreadId,
+                agentNickname: thread.info.agentNickname,
+                agentRole: thread.info.agentRole,
+                agentDisplayLabel: AgentLabelFormatter.format(
+                    nickname: thread.info.agentNickname,
+                    role: thread.info.agentRole,
+                    fallbackIdentifier: thread.key.threadId
+                ),
+                agentStatus: .unknown,
+                updatedAt: thread.info.updatedAt,
+                hasActiveTurn: thread.hasActiveTurn,
+                isSubagent: thread.info.parentThreadId != nil,
+                isFork: thread.info.parentThreadId != nil
+            )
+        }
+
+        return AppSnapshotRecord(
+            servers: servers,
+            threads: threads,
+            sessionSummaries: sessionSummaries,
+            agentDirectoryVersion: 0,
+            activeThread: activeThread,
+            pendingApprovals: [],
+            pendingUserInputs: [],
+            voiceSession: inactiveVoiceSession()
         )
-        let connection = ServerConnection(server: server, target: .remote(host: hostname, port: port))
-        connection.connectionHealth = .connected
-        return connection
+    }
+
+    private func makeServerSnapshot(
+        id: String,
+        name: String,
+        host: String? = nil,
+        port: UInt16 = 8390,
+        isLocal: Bool = false,
+        health: AppServerHealth = .connected
+    ) -> AppServerSnapshot {
+        AppServerSnapshot(
+            serverId: id,
+            displayName: name,
+            host: host ?? "\(id).local",
+            port: port,
+            isLocal: isLocal,
+            health: health,
+            account: nil,
+            requiresOpenaiAuth: false,
+            rateLimits: nil,
+            availableModels: nil
+        )
+    }
+
+    private func inactiveVoiceSession() -> AppVoiceSessionSnapshot {
+        AppVoiceSessionSnapshot(
+            activeThread: nil,
+            sessionId: nil,
+            phase: nil,
+            lastError: nil
+        )
     }
 
     private func flushMainQueue() async {

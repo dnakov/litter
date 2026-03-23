@@ -10,7 +10,7 @@ enum SessionsDerivation {
     }()
 
     static func build(
-        serverManager: ServerManager,
+        sessions: [AppSessionSummary],
         selectedServerFilterId: String?,
         showOnlyForks: Bool,
         workspaceSortMode: WorkspaceSortMode,
@@ -18,13 +18,13 @@ enum SessionsDerivation {
         frozenMostRecentOrder: [ThreadKey]?
     ) -> SessionsDerivedData {
         let allThreads = sortThreads(
-            Array(serverManager.threads.values),
+            sessions,
             workspaceSortMode: workspaceSortMode,
             frozenMostRecentOrder: frozenMostRecentOrder
         )
 
-        var threadsByServerAndId: [String: [String: ThreadState]] = [:]
-        var childrenByServerAndParentId: [String: [String: [ThreadState]]] = [:]
+        var threadsByServerAndId: [String: [String: AppSessionSummary]] = [:]
+        var childrenByServerAndParentId: [String: [String: [AppSessionSummary]]] = [:]
         var parentIdByThreadKey: [ThreadKey: String] = [:]
 
         for thread in allThreads {
@@ -37,13 +37,13 @@ enum SessionsDerivation {
 
         let sortedChildrenByServerAndParentId = childrenByServerAndParentId.mapValues { parentMap in
             parentMap.mapValues { children in
-                children.sorted { $0.updatedAt > $1.updatedAt }
+                children.sorted { $0.updatedAtDate > $1.updatedAtDate }
             }
         }
 
-        var parentByKey: [ThreadKey: ThreadState] = [:]
-        var siblingsByKey: [ThreadKey: [ThreadState]] = [:]
-        var childrenByKey: [ThreadKey: [ThreadState]] = [:]
+        var parentByKey: [ThreadKey: AppSessionSummary] = [:]
+        var siblingsByKey: [ThreadKey: [AppSessionSummary]] = [:]
+        var childrenByKey: [ThreadKey: [AppSessionSummary]] = [:]
 
         for thread in allThreads {
             let serverThreads = threadsByServerAndId[thread.serverId] ?? [:]
@@ -71,7 +71,7 @@ enum SessionsDerivation {
             let parentTitle = parentByKey[thread.key]?.sessionTitle ?? ""
             return thread.sessionTitle.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.cwd.localizedCaseInsensitiveContains(searchQuery) ||
-                thread.serverName.localizedCaseInsensitiveContains(searchQuery) ||
+                thread.serverDisplayName.localizedCaseInsensitiveContains(searchQuery) ||
                 thread.modelProvider.localizedCaseInsensitiveContains(searchQuery) ||
                 parentTitle.localizedCaseInsensitiveContains(searchQuery) ||
                 (thread.agentDisplayLabel?.localizedCaseInsensitiveContains(searchQuery) ?? false)
@@ -86,15 +86,14 @@ enum SessionsDerivation {
             )
             guard let first = sortedThreads.first else { return nil }
             let workspacePath = normalizedWorkspacePath(first.cwd)
-            let serverHost = serverManager.connections[first.serverId]?.server.hostname ?? first.serverName
             return WorkspaceSessionGroup(
                 id: groupID,
                 serverId: first.serverId,
-                serverName: first.serverName,
-                serverHost: serverHost,
+                serverName: first.serverDisplayName,
+                serverHost: first.serverHost,
                 workspacePath: workspacePath,
                 workspaceTitle: workspaceTitle(for: workspacePath),
-                latestUpdatedAt: first.updatedAt,
+                latestUpdatedAt: first.updatedAtDate,
                 threads: sortedThreads,
                 treeRoots: buildSessionTree(for: sortedThreads, parentByKey: parentByKey)
             )
@@ -122,14 +121,14 @@ enum SessionsDerivation {
     }
 
     private static func sortThreads(
-        _ threads: [ThreadState],
+        _ threads: [AppSessionSummary],
         workspaceSortMode: WorkspaceSortMode,
         frozenMostRecentOrder: [ThreadKey]?
-    ) -> [ThreadState] {
+    ) -> [AppSessionSummary] {
         guard workspaceSortMode == .mostRecent,
               let frozenMostRecentOrder,
               !frozenMostRecentOrder.isEmpty else {
-            return threads.sorted { $0.updatedAt > $1.updatedAt }
+            return threads.sorted { $0.updatedAtDate > $1.updatedAtDate }
         }
 
         let positions = Dictionary(uniqueKeysWithValues: frozenMostRecentOrder.enumerated().map { ($1, $0) })
@@ -145,8 +144,8 @@ enum SessionsDerivation {
             case (nil, _?):
                 return false
             default:
-                if lhs.updatedAt != rhs.updatedAt {
-                    return lhs.updatedAt > rhs.updatedAt
+                if lhs.updatedAtDate != rhs.updatedAtDate {
+                    return lhs.updatedAtDate > rhs.updatedAtDate
                 }
                 return lhs.threadId.localizedCaseInsensitiveCompare(rhs.threadId) == .orderedAscending
             }
@@ -241,23 +240,23 @@ enum SessionsDerivation {
     }
 
     private static func buildSessionTree(
-        for threads: [ThreadState],
-        parentByKey: [ThreadKey: ThreadState]
+        for threads: [AppSessionSummary],
+        parentByKey: [ThreadKey: AppSessionSummary]
     ) -> [SessionTreeNode] {
         let threadsByKey = Dictionary(uniqueKeysWithValues: threads.map { ($0.key, $0) })
-        var childrenByParentKey: [ThreadKey: [ThreadState]] = [:]
+        var childrenByParentKey: [ThreadKey: [AppSessionSummary]] = [:]
 
         for thread in threads {
             guard let parent = parentByKey[thread.key], threadsByKey[parent.key] != nil else { continue }
             childrenByParentKey[parent.key, default: []].append(thread)
         }
         childrenByParentKey = childrenByParentKey.mapValues { children in
-            children.sorted { $0.updatedAt > $1.updatedAt }
+            children.sorted { $0.updatedAtDate > $1.updatedAtDate }
         }
 
         var emitted: Set<ThreadKey> = []
 
-        func makeNode(_ thread: ThreadState, path: inout Set<ThreadKey>) -> SessionTreeNode {
+        func makeNode(_ thread: AppSessionSummary, path: inout Set<ThreadKey>) -> SessionTreeNode {
             path.insert(thread.key)
             let children = (childrenByParentKey[thread.key] ?? []).compactMap { child -> SessionTreeNode? in
                 guard !path.contains(child.key), emitted.insert(child.key).inserted else { return nil }

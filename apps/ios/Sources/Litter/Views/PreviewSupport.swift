@@ -135,24 +135,6 @@ enum LitterPreviewData {
         ]
     )
 
-    static let samplePendingApproval = ServerManager.PendingApproval(
-        id: "preview-approval",
-        requestId: "req-preview",
-        serverId: sampleServer.id,
-        method: "approval/request",
-        kind: .commandExecution,
-        threadId: "thread-preview-main",
-        turnId: "turn-preview",
-        itemId: "item-preview",
-        command: "git push origin main",
-        cwd: sampleCwd,
-        reason: "Push requires explicit approval under current session policy.",
-        grantRoot: sampleCwd,
-        requesterAgentNickname: "Latest",
-        requesterAgentRole: "worker",
-        createdAt: Date()
-    )
-
     static var longConversation: [ChatMessage] {
         var msgs: [ChatMessage] = []
         let questions = [
@@ -217,90 +199,90 @@ enum LitterPreviewData {
     }
 
     @MainActor
-    static func makeServerManager(
-        server: DiscoveredServer = sampleServer,
-        includeConnection: Bool = true,
-        includeActiveThread: Bool = true,
-        authStatus: AuthStatus = .chatgpt(email: "builder@example.com"),
-        threadStatus: ConversationStatus = .ready,
-        messages: [ChatMessage] = sampleMessages
-    ) -> ServerManager {
-        let manager = ServerManager()
-
-        if includeConnection {
-            let target = server.connectionTarget ?? .remote(host: server.hostname, port: server.port ?? 8390)
-            let connection = ServerConnection(server: server, target: target)
-            connection.connectionHealth = .connected
-            connection.connectionPhase = "ready"
-            connection.authStatus = authStatus
-            connection.models = sampleModels
-            connection.modelsLoaded = true
-            manager.connections[server.id] = connection
-        }
-
-        if includeActiveThread {
-            let thread = makeThreadState(
-                server: server,
-                threadId: "thread-preview-main",
-                preview: "Map the patch repair bottleneck in repo scheduler",
-                cwd: sampleCwd,
-                model: sampleModels[0].id,
-                modelProvider: sampleModels[0].displayName,
-                reasoningEffort: "xhigh",
-                status: threadStatus,
-                messages: messages
-            )
-            manager.threads[thread.key] = thread
-            manager.activeThreadKey = thread.key
-        }
-
-        return manager
+    static func makeAppModel(snapshot: AppSnapshotRecord) -> AppModel {
+        let model = AppModel()
+        model.applySnapshot(snapshot)
+        return model
     }
 
     @MainActor
-    static func makeSidebarManager() -> ServerManager {
-        let manager = makeServerManager()
+    static func makeConversationAppModel(messages: [ChatMessage] = sampleMessages) -> AppModel {
+        makeAppModel(snapshot: makeConversationSnapshot(messages: messages))
+    }
 
-        let forkThread = makeThreadState(
-            server: sampleServer,
+    @MainActor
+    static func makeDiscoveryAppModel() -> AppModel {
+        makeAppModel(snapshot: makeSnapshot(threads: [], activeThread: nil))
+    }
+
+    @MainActor
+    static func makeSidebarAppModel() -> AppModel {
+        let primaryThread = makeThreadSnapshot(
+            threadId: "thread-preview-main",
+            preview: "Map the patch repair bottleneck in repo scheduler",
+            cwd: sampleCwd,
+            model: sampleModels[0].id,
+            modelProvider: sampleModels[0].displayName,
+            reasoningEffort: "xhigh",
+            status: .idle,
+            messages: sampleMessages
+        )
+
+        let forkThread = makeThreadSnapshot(
             threadId: "thread-preview-fork",
             preview: "Check whether repo-first mode is enabled",
             cwd: sampleCwd + "/shared",
             model: sampleModels[1].id,
             modelProvider: sampleModels[1].displayName,
             reasoningEffort: "medium",
-            status: .ready,
+            status: .idle,
             messages: [
                 ChatMessage(role: .user, text: "is repo-first mode actually enabled?"),
                 ChatMessage(role: .assistant, text: "Not from the current scheduler state. The gate is configured but starved.")
-            ]
+            ],
+            parentThreadId: "thread-preview-main",
+            agentNickname: "Latest",
+            agentRole: "explorer",
+            updatedAt: Date().addingTimeInterval(-1800)
         )
-        forkThread.parentThreadId = "thread-preview-main"
-        forkThread.rootThreadId = "thread-preview-main"
-        forkThread.agentNickname = "Latest"
-        forkThread.agentRole = "explorer"
-        forkThread.updatedAt = Date().addingTimeInterval(-1800)
-        manager.threads[forkThread.key] = forkThread
 
-        let archivedThread = makeThreadState(
-            server: sampleServer,
+        let archivedThread = makeThreadSnapshot(
             threadId: "thread-preview-older",
             preview: "Summarize queue metrics from the last hour",
             cwd: sampleCwd,
             model: sampleModels[0].id,
             modelProvider: sampleModels[0].displayName,
             reasoningEffort: "high",
-            status: .ready,
-            messages: [ChatMessage(role: .assistant, text: "Queue metrics look stable except for repo_jobs_q1.")]
+            status: .idle,
+            messages: [ChatMessage(role: .assistant, text: "Queue metrics look stable except for repo_jobs_q1.")],
+            updatedAt: Date().addingTimeInterval(-7200)
         )
-        archivedThread.updatedAt = Date().addingTimeInterval(-7200)
-        manager.threads[archivedThread.key] = archivedThread
 
-        return manager
+        return makeAppModel(
+            snapshot: makeSnapshot(
+                threads: [primaryThread, forkThread, archivedThread],
+                activeThread: primaryThread.key
+            )
+        )
     }
 
     @MainActor
-    static func makeThreadState(
+    static func makeConversationSnapshot(messages: [ChatMessage] = sampleMessages) -> AppSnapshotRecord {
+        let thread = makeThreadSnapshot(
+            threadId: "thread-preview-main",
+            preview: "Map the patch repair bottleneck in repo scheduler",
+            cwd: sampleCwd,
+            model: sampleModels[0].id,
+            modelProvider: sampleModels[0].displayName,
+            reasoningEffort: "xhigh",
+            status: .idle,
+            messages: messages
+        )
+        return makeSnapshot(threads: [thread], activeThread: thread.key)
+    }
+
+    @MainActor
+    static func makeThreadSnapshot(
         server: DiscoveredServer = sampleServer,
         threadId: String,
         preview: String,
@@ -308,57 +290,132 @@ enum LitterPreviewData {
         model: String,
         modelProvider: String,
         reasoningEffort: String,
-        status: ConversationStatus,
-        messages: [ChatMessage]
-    ) -> ThreadState {
-        let thread = ThreadState(
-            serverId: server.id,
-            threadId: threadId,
-            serverName: server.name,
-            serverSource: server.source
+        status: ThreadSummaryStatus,
+        messages: [ChatMessage],
+        parentThreadId: String? = nil,
+        agentNickname: String? = nil,
+        agentRole: String? = nil,
+        updatedAt: Date = Date().addingTimeInterval(-300)
+    ) -> AppThreadSnapshot {
+        AppThreadSnapshot(
+            key: ThreadKey(serverId: server.id, threadId: threadId),
+            info: ThreadInfo(
+                id: threadId,
+                title: nil,
+                model: model,
+                status: status,
+                preview: preview,
+                cwd: cwd,
+                path: cwd + "/.codex/sessions/\(threadId).jsonl",
+                modelProvider: modelProvider,
+                agentNickname: agentNickname,
+                agentRole: agentRole,
+                parentThreadId: parentThreadId,
+                agentStatus: nil,
+                createdAt: nil,
+                updatedAt: Int64(updatedAt.timeIntervalSince1970)
+            ),
+            model: model,
+            reasoningEffort: reasoningEffort,
+            hydratedConversationItems: makeHydratedConversationItems(from: messages),
+            activeTurnId: status == .active ? "turn-preview" : nil,
+            contextTokensUsed: 156_000,
+            modelContextWindow: 200_000,
+            rateLimitsJson: nil,
+            realtimeSessionId: nil
         )
-        thread.preview = preview
-        thread.cwd = cwd
-        thread.model = model
-        thread.modelProvider = modelProvider
-        thread.reasoningEffort = reasoningEffort
-        thread.modelContextWindow = 200_000
-        thread.contextTokensUsed = 156_000
-        thread.rolloutPath = cwd + "/.codex/sessions/\(threadId).jsonl"
-        thread.items = makeConversationItems(from: messages)
-        thread.status = status
-        thread.updatedAt = Date().addingTimeInterval(-300)
-        return thread
     }
 
-    private static func makeConversationItems(from messages: [ChatMessage]) -> [ConversationItem] {
+    @MainActor
+    static func makeSnapshot(
+        threads: [AppThreadSnapshot],
+        activeThread: ThreadKey?
+    ) -> AppSnapshotRecord {
+        let server = AppServerSnapshot(
+            serverId: sampleServer.id,
+            displayName: sampleServer.name,
+            host: sampleServer.hostname,
+            port: UInt16(sampleServer.port ?? 8390),
+            isLocal: false,
+            health: .connected,
+            account: .chatgpt(email: "builder@example.com", planType: .plus),
+            requiresOpenaiAuth: false,
+            rateLimits: nil,
+            availableModels: sampleModels
+        )
+
+        let sessionSummaries = threads.map { thread in
+            AppSessionSummary(
+                key: thread.key,
+                serverDisplayName: server.displayName,
+                serverHost: server.host,
+                title: thread.info.title ?? "",
+                preview: thread.info.preview ?? "",
+                cwd: thread.info.cwd ?? "",
+                model: thread.model ?? "",
+                modelProvider: thread.info.modelProvider ?? "",
+                parentThreadId: thread.info.parentThreadId,
+                agentNickname: thread.info.agentNickname,
+                agentRole: thread.info.agentRole,
+                agentDisplayLabel: AgentLabelFormatter.format(
+                    nickname: thread.info.agentNickname,
+                    role: thread.info.agentRole,
+                    fallbackIdentifier: thread.key.threadId
+                ),
+                agentStatus: .unknown,
+                updatedAt: thread.info.updatedAt,
+                hasActiveTurn: thread.hasActiveTurn,
+                isSubagent: thread.info.parentThreadId != nil,
+                isFork: thread.info.parentThreadId != nil
+            )
+        }
+
+        return AppSnapshotRecord(
+            servers: [server],
+            threads: threads,
+            sessionSummaries: sessionSummaries,
+            agentDirectoryVersion: 0,
+            activeThread: activeThread,
+            pendingApprovals: [],
+            pendingUserInputs: [],
+            voiceSession: AppVoiceSessionSnapshot(
+                activeThread: nil,
+                sessionId: nil,
+                phase: nil,
+                lastError: nil
+            )
+        )
+    }
+
+    private static func makeHydratedConversationItems(from messages: [ChatMessage]) -> [HydratedConversationItem] {
         messages.map { message in
-            let content: ConversationItemContent
+            let content: HydratedConversationItemContent
             switch message.role {
             case .user:
-                content = .user(ConversationUserMessageData(text: message.text, images: message.images))
+                content = .user(
+                    HydratedUserMessageData(
+                        text: message.text,
+                        imageDataUris: []
+                    )
+                )
             case .assistant:
                 content = .assistant(
-                    ConversationAssistantMessageData(
+                    HydratedAssistantMessageData(
                         text: message.text,
                         agentNickname: message.agentNickname,
                         agentRole: message.agentRole
                     )
                 )
             case .system:
-                if let widgetState = message.widgetState {
-                    content = .widget(ConversationWidgetData(widgetState: widgetState, status: "completed"))
-                } else {
-                    content = .note(ConversationNoteData(title: "System", body: message.text))
-                }
+                content = .note(HydratedNoteData(title: "System", body: message.text))
             }
 
-            return ConversationItem(
+            return HydratedConversationItem(
                 id: message.id.uuidString,
                 content: content,
                 sourceTurnId: message.sourceTurnId,
-                sourceTurnIndex: message.sourceTurnIndex,
-                timestamp: message.timestamp,
+                sourceTurnIndex: message.sourceTurnIndex.map(UInt32.init),
+                timestamp: message.timestamp.timeIntervalSince1970,
                 isFromUserTurnBoundary: message.isFromUserTurnBoundary
             )
         }
@@ -368,19 +425,20 @@ enum LitterPreviewData {
 
 @MainActor
 struct LitterPreviewScene<Content: View>: View {
-    @State private var serverManager: ServerManager
+    @State private var appModel: AppModel
     @State private var appState: AppState
+    @State private var voiceRuntime = VoiceRuntimeController()
 
     private let includeBackground: Bool
     private let content: Content
 
     init(
-        serverManager: ServerManager? = nil,
+        appModel: AppModel? = nil,
         appState: AppState? = nil,
         includeBackground: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
-        _serverManager = State(initialValue: serverManager ?? LitterPreviewData.makeServerManager())
+        _appModel = State(initialValue: appModel ?? LitterPreviewData.makeConversationAppModel())
         _appState = State(initialValue: appState ?? LitterPreviewData.makeAppState())
         self.includeBackground = includeBackground
         self.content = content()
@@ -393,7 +451,8 @@ struct LitterPreviewScene<Content: View>: View {
             }
             content
         }
-        .environment(serverManager)
+        .environment(appModel)
+        .environment(voiceRuntime)
         .environment(appState)
         .environment(ThemeManager.shared)
     }

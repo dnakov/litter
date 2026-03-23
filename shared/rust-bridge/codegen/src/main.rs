@@ -10,7 +10,8 @@
 //! Usage:
 //!   cargo run -p codex-mobile-codegen -- \
 //!     --out ../codex-mobile-client/src/types/codegen_types.generated.rs \
-//!     --rpc-out ../codex-mobile-client/src/ffi/codegen_rpc.generated.rs
+//!     --rpc-out ../codex-mobile-client/src/rpc/generated_client.rs \
+//!     --ffi-rpc-out ../codex-mobile-client/src/ffi/rpc.rs
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ const PARAM_ROOT_TYPES: &[&str] = &[
     "ThreadReadParams",
     "ThreadResumeParams",
     "ThreadForkParams",
+    "ThreadArchiveParams",
     "ThreadRollbackParams",
     "TurnStartParams",
     "TurnInterruptParams",
@@ -43,17 +45,21 @@ const PARAM_ROOT_TYPES: &[&str] = &[
     "ThreadRealtimeStopParams",
     "ThreadRealtimeResolveHandoffParams",
     "ThreadRealtimeFinalizeHandoffParams",
+    "CommandExecParams",
     "FuzzyFileSearchParams",
     "GetAuthStatusParams",
 ];
 
 const SUPPORTED_RPC_VARIANTS: &[&str] = &[
+    "ThreadStart",
     "ThreadList",
     "ThreadRead",
     "ThreadResume",
     "ThreadFork",
+    "ThreadArchive",
     "ThreadRollback",
     "ThreadSetName",
+    "TurnStart",
     "TurnInterrupt",
     "SkillsList",
     "ThreadRealtimeStart",
@@ -66,15 +72,13 @@ const SUPPORTED_RPC_VARIANTS: &[&str] = &[
     "ModelList",
     "ExperimentalFeatureList",
     "LoginAccount",
-    "CancelLoginAccount",
     "LogoutAccount",
     "GetAccountRateLimits",
-    "ConfigRead",
     "ConfigValueWrite",
-    "ConfigBatchWrite",
     "GetAccount",
     "FuzzyFileSearch",
     "GetAuthStatus",
+    "OneOffCommandExec",
 ];
 
 const EXCLUDED_GENERATED_TYPES: &[&str] = &[];
@@ -105,6 +109,11 @@ fn main() {
     let rpc_out_path = args
         .iter()
         .position(|a| a == "--rpc-out")
+        .map(|i| PathBuf::from(&args[i + 1]));
+
+    let ffi_rpc_out_path = args
+        .iter()
+        .position(|a| a == "--ffi-rpc-out")
         .map(|i| PathBuf::from(&args[i + 1]));
 
     let common_path = args
@@ -548,6 +557,14 @@ where\n\
         );
         std::fs::write(&rpc_out, &rpc_output).expect("failed to write RPC output");
         eprintln!("Written RPC methods to: {}", rpc_out.display());
+
+        if let Some(ffi_rpc_out) = ffi_rpc_out_path {
+            let public_rpc_output =
+                generate_public_rpc_methods(&rpc_methods, &all_known, &rpc_param_types);
+            std::fs::write(&ffi_rpc_out, &public_rpc_output)
+                .expect("failed to write public RPC output");
+            eprintln!("Written public RPC methods to: {}", ffi_rpc_out.display());
+        }
     }
 }
 
@@ -1125,10 +1142,8 @@ fn generate_wrapper_struct(def: &StructDef, known: &BTreeSet<String>) -> String 
     }
 
     // All generated structs get uniffi::Record so they can cross the FFI boundary
-    // as typed values. Params types are excluded since rpc_* uses flat arguments.
-    if !def.name.ends_with("Params") {
-        out.push_str("#[derive(uniffi::Record)]\n");
-    }
+    // as typed values, including params records for the public direct-RPC surface.
+    out.push_str("#[derive(uniffi::Record)]\n");
 
     out.push_str(&format!("pub struct {} {{\n", def.name));
 
@@ -1300,13 +1315,17 @@ fn parse_client_requests(source: &str) -> Vec<RpcMethod> {
         .unwrap_or(source.len());
     let source = &source[client_block_start..client_block_end];
     let re = regex::Regex::new(
-        r#"(?m)^\s+(\w+)\s*=>\s*"([^"]+)"\s*\{\s*\n\s*params:\s*(?:#\[.*?\]\s*)*(\S+),?\s*\n(?:\s*inspect_params:\s*\w+,?\s*\n)?\s*response:\s*(\S+),?"#
+        r#"(?m)^\s+(\w+)(?:\s*=>\s*"([^"]+)")?\s*\{\s*\n\s*params:\s*(?:#\[.*?\]\s*)*(\S+),?\s*\n(?:\s*inspect_params:\s*\w+,?\s*\n)?\s*response:\s*(\S+),?"#
     ).unwrap();
 
     for cap in re.captures_iter(source) {
+        let variant = cap[1].to_string();
         methods.push(RpcMethod {
-            variant: cap[1].to_string(),
-            wire_method: cap[2].to_string(),
+            wire_method: cap
+                .get(2)
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| variant.clone()),
+            variant,
             params_type: cap[3].trim_end_matches(',').to_string(),
             response_type: cap[4].trim_end_matches(',').to_string(),
         });
@@ -1314,7 +1333,7 @@ fn parse_client_requests(source: &str) -> Vec<RpcMethod> {
     methods
 }
 
-/// Generate internal typed RPC helpers for `CodexClient`.
+/// Generate internal typed RPC helpers for `MobileClient`.
 fn generate_rpc_methods(
     methods: &[RpcMethod],
     known: &BTreeSet<String>,
@@ -1324,20 +1343,21 @@ fn generate_rpc_methods(
 ) -> String {
     let supported: BTreeSet<&str> = SUPPORTED_RPC_VARIANTS.iter().copied().collect();
     let mut out = String::new();
-    out.push_str("//! Auto-generated internal typed RPC helpers for CodexClient.\n");
+    out.push_str("//! Auto-generated internal typed RPC helpers for MobileClient.\n");
     out.push_str("//!\n");
     out.push_str("//! DO NOT EDIT — regenerate with: cargo run -p codex-mobile-codegen -- --rpc-out <path>\n\n");
     out.push_str("use codex_app_server_protocol as upstream;\n");
-    out.push_str("use crate::types::generated;\n\n");
+    out.push_str("use crate::{MobileClient, types::generated};\n");
+    out.push_str("use super::{RpcClientError, next_request_id};\n\n");
     out.push_str(
-        "pub(crate) fn convert_generated_field<T, U>(value: T) -> Result<U, ClientError>\n",
+        "pub(crate) fn convert_generated_field<T, U>(value: T) -> Result<U, RpcClientError>\n",
     );
     out.push_str("where\n");
     out.push_str("    T: serde::Serialize,\n");
     out.push_str("    U: serde::de::DeserializeOwned,\n");
     out.push_str("{\n");
     out.push_str("    let value = serde_json::to_value(value)\n");
-    out.push_str("        .map_err(|e| ClientError::Serialization(format!(\"serialize generated field value: {e}\")))?;\n");
+    out.push_str("        .map_err(|e| RpcClientError::Serialization(format!(\"serialize generated field value: {e}\")))?;\n");
     out.push_str("    #[cfg(feature = \"rpc-trace\")]\n");
     out.push_str("    {\n");
     out.push_str("        let src = std::any::type_name::<T>();\n");
@@ -1354,7 +1374,7 @@ fn generate_rpc_methods(
     out.push_str("                \"[codex-rpc] FAILED {src} -> {dst}: {e}\\n--- intermediate JSON ---\\n{json}\\n---\"\n");
     out.push_str("            );\n");
     out.push_str("        }\n");
-    out.push_str("        ClientError::Serialization(format!(\"deserialize upstream field value: {e}\"))\n");
+    out.push_str("        RpcClientError::Serialization(format!(\"deserialize upstream field value: {e}\"))\n");
     out.push_str("    })\n");
     out.push_str("}\n\n");
 
@@ -1362,8 +1382,7 @@ fn generate_rpc_methods(
     out.push_str(
         "/// Each helper converts a generated params wrapper into the upstream request type\n",
     );
-    out.push_str("/// and sends it via `request_typed`.\n");
-    out.push_str("use super::uniffi_exports::{CodexClient, ClientError, next_id};\n\n");
+    out.push_str("/// and sends it via `request_typed_for_server`.\n\n");
 
     let direct_param_conversion_types: BTreeSet<String> = PARAM_ROOT_TYPES
         .iter()
@@ -1389,7 +1408,7 @@ fn generate_rpc_methods(
         }
     }
 
-    out.push_str("impl CodexClient {\n");
+    out.push_str("impl MobileClient {\n");
 
     for method in methods {
         if !supported.contains(method.variant.as_str()) {
@@ -1430,7 +1449,7 @@ fn generate_rpc_methods(
                     "  SKIP {} — params type {} not found in generated set",
                     method.variant, params_struct_name
                 );
-                out.push_str("    ) -> Result<(), ClientError> {\n");
+                out.push_str("    ) -> Result<(), RpcClientError> {\n");
                 out.push_str(
                     "        unreachable!(\"generator emitted an invalid method stub\")\n",
                 );
@@ -1443,7 +1462,7 @@ fn generate_rpc_methods(
             ));
         }
         out.push_str(&format!(
-            "    ) -> Result<generated::{}, ClientError> {{\n",
+            "    ) -> Result<generated::{}, RpcClientError> {{\n",
             response_type
         ));
 
@@ -1456,7 +1475,7 @@ fn generate_rpc_methods(
                 "        let req = upstream::ClientRequest::{} {{\n",
                 method.variant
             ));
-            out.push_str("            request_id: upstream::RequestId::Integer(next_id()),\n");
+            out.push_str("            request_id: upstream::RequestId::Integer(next_request_id()),\n");
             out.push_str("            params,\n");
             out.push_str("        };\n");
         } else {
@@ -1464,12 +1483,14 @@ fn generate_rpc_methods(
                 "        let req = upstream::ClientRequest::{} {{\n",
                 method.variant
             ));
-            out.push_str("            request_id: upstream::RequestId::Integer(next_id()),\n");
+            out.push_str("            request_id: upstream::RequestId::Integer(next_request_id()),\n");
             out.push_str("            params: None,\n");
             out.push_str("        };\n");
         }
 
-        out.push_str("        self.request_typed(server_id, req).await\n");
+        out.push_str("        self.request_typed_for_server(server_id, req)\n");
+        out.push_str("            .await\n");
+        out.push_str("            .map_err(RpcClientError::Rpc)\n");
         out.push_str("    }\n");
     }
 
@@ -1477,13 +1498,123 @@ fn generate_rpc_methods(
     out
 }
 
+fn generate_public_rpc_methods(
+    methods: &[RpcMethod],
+    known: &BTreeSet<String>,
+    rpc_param_types: &BTreeSet<String>,
+) -> String {
+    let supported: BTreeSet<&str> = SUPPORTED_RPC_VARIANTS.iter().copied().collect();
+    let mut out = String::new();
+    out.push_str("//! Auto-generated public UniFFI direct RPC surface.\n");
+    out.push_str("//!\n");
+    out.push_str(
+        "//! DO NOT EDIT — regenerate with: cargo run -p codex-mobile-codegen -- --ffi-rpc-out <path>\n\n",
+    );
+    out.push_str("use crate::MobileClient;\n");
+    out.push_str("use crate::ffi::ClientError;\n");
+    out.push_str("use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};\n");
+    out.push_str("use crate::types::generated;\n");
+    out.push_str("use std::sync::Arc;\n\n");
+    out.push_str("#[derive(uniffi::Object)]\n");
+    out.push_str("pub struct AppServerRpc {\n");
+    out.push_str("    pub(crate) inner: Arc<MobileClient>,\n");
+    out.push_str("    pub(crate) rt: Arc<tokio::runtime::Runtime>,\n");
+    out.push_str("}\n\n");
+    out.push_str("#[uniffi::export(async_runtime = \"tokio\")]\n");
+    out.push_str("impl AppServerRpc {\n");
+    out.push_str("    #[uniffi::constructor]\n");
+    out.push_str("    pub fn new() -> Self {\n");
+    out.push_str("        Self {\n");
+    out.push_str("            inner: shared_mobile_client(),\n");
+    out.push_str("            rt: shared_runtime(),\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
+
+    for method in methods {
+        if !supported.contains(method.variant.as_str()) {
+            continue;
+        }
+
+        let has_params = method.params_type != "Option<()>";
+        let params_struct_name = method
+            .params_type
+            .trim_start_matches("v1::")
+            .replace("v2::", "")
+            .replace("codex_app_server_protocol::", "");
+        let method_name = to_snake_case(&method.variant);
+        let response_type = method
+            .response_type
+            .trim_start_matches("v1::")
+            .replace("v2::", "")
+            .replace("codex_app_server_protocol::", "");
+        if !known.contains(&response_type) {
+            continue;
+        }
+        if has_params && !known.contains(&params_struct_name) {
+            continue;
+        }
+        if has_params && !rpc_param_types.contains(&params_struct_name) {
+            continue;
+        }
+
+        out.push_str(&format!(
+            "\n    /// Direct `{}` app-server RPC.\n",
+            method.wire_method
+        ));
+        out.push_str(&format!("    pub async fn {}(\n", method_name));
+        out.push_str("        &self,\n");
+        out.push_str("        server_id: String,\n");
+        if has_params {
+            out.push_str(&format!(
+                "        params: generated::{},\n",
+                params_struct_name
+            ));
+        }
+        out.push_str(&format!(
+            "    ) -> Result<generated::{}, ClientError> {{\n",
+            response_type
+        ));
+        out.push_str("        blocking_async!(self.rt, self.inner, |c| {\n");
+        if has_params {
+            out.push_str("            let reconcile_params = params.clone();\n");
+            out.push_str(&format!(
+                "            let response = c.generated_{}(&server_id, params).await?;\n",
+                method_name
+            ));
+        } else {
+            out.push_str(&format!(
+                "            let response = c.generated_{}(&server_id).await?;\n",
+                method_name
+            ));
+        }
+        if has_params {
+            out.push_str(&format!(
+                "            c.reconcile_public_rpc(\"{}\", &server_id, Some(&reconcile_params), &response)\n",
+                method.wire_method
+            ));
+        } else {
+            out.push_str(&format!(
+                "            c.reconcile_public_rpc(\"{}\", &server_id, Option::<&()>::None, &response)\n",
+                method.wire_method
+            ));
+        }
+        out.push_str("                .await\n");
+        out.push_str("                .map_err(|e| ClientError::Rpc(e.to_string()))?;\n");
+        out.push_str("            Ok(response)\n");
+        out.push_str("        })\n");
+        out.push_str("    }\n");
+    }
+
+    out.push_str("}\n");
+    out
+}
 fn generate_try_from_struct(def: &StructDef) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "impl TryFrom<generated::{}> for upstream::{} {{\n",
         def.name, def.name
     ));
-    out.push_str("    type Error = ClientError;\n\n");
+    out.push_str("    type Error = RpcClientError;\n\n");
     out.push_str(&format!(
         "    fn try_from(value: generated::{}) -> Result<Self, Self::Error> {{\n",
         def.name
@@ -1500,7 +1631,7 @@ fn generate_try_from_enum(def: &EnumDef) -> String {
         "impl TryFrom<generated::{}> for upstream::{} {{\n",
         def.name, def.name
     ));
-    out.push_str("    type Error = ClientError;\n\n");
+    out.push_str("    type Error = RpcClientError;\n\n");
     out.push_str(&format!(
         "    fn try_from(value: generated::{}) -> Result<Self, Self::Error> {{\n",
         def.name

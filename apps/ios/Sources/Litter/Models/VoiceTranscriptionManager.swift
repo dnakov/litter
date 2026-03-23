@@ -59,7 +59,7 @@ final class VoiceTranscriptionManager {
         isRecording = true
     }
 
-    func stopAndTranscribe(authMethod: String?, authToken: String?) async -> String? {
+    func stopAndTranscribe(authMethod: AuthMode?, authToken: String?) async -> String? {
         guard isRecording else { return nil }
         teardownEngine()
 
@@ -154,8 +154,8 @@ final class VoiceTranscriptionManager {
         return wav
     }
 
-    private func transcribe(wav: Data, authMethod: String?, token: String) async throws -> String {
-        let isChatGPT = authMethod == "chatgpt" || authMethod == "chatgptAuthTokens"
+    private func transcribe(wav: Data, authMethod: AuthMode?, token: String) async throws -> String {
+        let isChatGPT = authMethod == .chatgpt || authMethod == .chatgptAuthTokens
 
         let url: URL
         if isChatGPT {

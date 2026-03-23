@@ -1,29 +1,22 @@
 import Foundation
 
-enum ServerSource: Hashable {
+enum ServerSource: String, Codable, Hashable {
     case local
     case bonjour
     case ssh
     case tailscale
     case manual
 
-    var rawString: String {
-        switch self {
-        case .local: return "local"
-        case .bonjour: return "bonjour"
-        case .ssh: return "ssh"
-        case .tailscale: return "tailscale"
-        case .manual: return "manual"
-        }
-    }
-
-    static func from(_ string: String) -> ServerSource {
-        switch string {
-        case "local": return .local
-        case "bonjour": return .bonjour
-        case "ssh": return .ssh
-        case "tailscale": return .tailscale
-        default: return .manual
+    init(_ source: FfiDiscoverySource) {
+        switch source {
+        case .bonjour, .lanProbe, .arpScan:
+            self = .bonjour
+        case .tailscale:
+            self = .tailscale
+        case .manual:
+            self = .manual
+        case .local:
+            self = .local
         }
     }
 }

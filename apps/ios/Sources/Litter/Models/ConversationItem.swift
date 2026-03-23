@@ -1,26 +1,13 @@
 import Foundation
 import CoreGraphics
 
-enum ConversationPlanStepStatus: String, Equatable {
-    case pending
-    case inProgress = "in_progress"
-    case completed
-}
-
 struct ConversationPlanStep: Equatable {
     let step: String
-    let status: ConversationPlanStepStatus
-}
-
-enum ConversationCommandActionKind: String, Equatable {
-    case read
-    case search
-    case listFiles
-    case unknown
+    let status: HydratedPlanStepStatus
 }
 
 struct ConversationCommandAction: Equatable {
-    let kind: ConversationCommandActionKind
+    let kind: HydratedCommandActionKind
     let command: String
     let name: String?
     let path: String?
@@ -62,7 +49,7 @@ struct ConversationProposedPlanData: Equatable {
 struct ConversationCommandExecutionData: Equatable {
     var command: String
     var cwd: String
-    var status: String
+    var status: AppOperationStatus
     var output: String?
     var exitCode: Int?
     var durationMs: Int?
@@ -70,7 +57,7 @@ struct ConversationCommandExecutionData: Equatable {
     var actions: [ConversationCommandAction]
 
     var isInProgress: Bool {
-        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("progress")
+        status == .pending || status == .inProgress
     }
 
     var isPureExploration: Bool {
@@ -93,7 +80,7 @@ struct ConversationFileChangeEntry: Equatable {
 }
 
 struct ConversationFileChangeData: Equatable {
-    var status: String
+    var status: AppOperationStatus
     var changes: [ConversationFileChangeEntry]
     var outputDelta: String?
 }
@@ -105,7 +92,7 @@ struct ConversationTurnDiffData: Equatable {
 struct ConversationMcpToolCallData: Equatable {
     var server: String
     var tool: String
-    var status: String
+    var status: AppOperationStatus
     var durationMs: Int?
     var argumentsJSON: String?
     var contentSummary: String?
@@ -115,28 +102,32 @@ struct ConversationMcpToolCallData: Equatable {
     var progressMessages: [String]
 
     var isInProgress: Bool {
-        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("progress")
+        status == .pending || status == .inProgress
     }
 }
 
 struct ConversationDynamicToolCallData: Equatable {
     var tool: String
-    var status: String
+    var status: AppOperationStatus
     var durationMs: Int?
     var success: Bool?
     var argumentsJSON: String?
     var contentSummary: String?
+
+    var isInProgress: Bool {
+        status == .pending || status == .inProgress
+    }
 }
 
 struct ConversationMultiAgentState: Equatable {
     var targetId: String
-    var status: String
+    var status: AppSubagentStatus
     var message: String?
 }
 
 struct ConversationMultiAgentActionData: Equatable {
     var tool: String
-    var status: String
+    var status: AppOperationStatus
     var prompt: String?
     var targets: [String]
     var receiverThreadIds: [String]
@@ -146,7 +137,7 @@ struct ConversationMultiAgentActionData: Equatable {
     var perAgentPrompts: [String] = []
 
     var isInProgress: Bool {
-        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("progress")
+        status == .pending || status == .inProgress
     }
 }
 
@@ -364,7 +355,7 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine("todoList")
             for step in data.steps {
                 hasher.combine(step.step)
-                hasher.combine(step.status.rawValue)
+                hasher.combine(String(describing: step.status))
             }
         case .proposedPlan(let data):
             hasher.combine("proposedPlan")
@@ -373,13 +364,13 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine("commandExecution")
             hasher.combine(data.command)
             hasher.combine(data.cwd)
-            hasher.combine(data.status)
+            hasher.combine(String(describing: data.status))
             hasher.combine(data.output)
             hasher.combine(data.exitCode)
             hasher.combine(data.durationMs)
             hasher.combine(data.processId)
             for action in data.actions {
-                hasher.combine(action.kind.rawValue)
+                hasher.combine(String(describing: action.kind))
                 hasher.combine(action.command)
                 hasher.combine(action.name)
                 hasher.combine(action.path)
@@ -387,7 +378,7 @@ struct ConversationItem: Identifiable, Equatable {
             }
         case .fileChange(let data):
             hasher.combine("fileChange")
-            hasher.combine(data.status)
+            hasher.combine(String(describing: data.status))
             hasher.combine(data.outputDelta)
             for change in data.changes {
                 hasher.combine(change.path)
@@ -401,7 +392,7 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine("mcpToolCall")
             hasher.combine(data.server)
             hasher.combine(data.tool)
-            hasher.combine(data.status)
+            hasher.combine(String(describing: data.status))
             hasher.combine(data.durationMs)
             hasher.combine(data.argumentsJSON)
             hasher.combine(data.contentSummary)
@@ -412,7 +403,7 @@ struct ConversationItem: Identifiable, Equatable {
         case .dynamicToolCall(let data):
             hasher.combine("dynamicToolCall")
             hasher.combine(data.tool)
-            hasher.combine(data.status)
+            hasher.combine(String(describing: data.status))
             hasher.combine(data.durationMs)
             hasher.combine(data.success)
             hasher.combine(data.argumentsJSON)
@@ -420,7 +411,7 @@ struct ConversationItem: Identifiable, Equatable {
         case .multiAgentAction(let data):
             hasher.combine("multiAgentAction")
             hasher.combine(data.tool)
-            hasher.combine(data.status)
+            hasher.combine(String(describing: data.status))
             hasher.combine(data.prompt)
             hasher.combine(data.targets)
             hasher.combine(data.receiverThreadIds)
@@ -492,4 +483,153 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine(data.body)
         }
     }
+}
+
+extension HydratedConversationItem {
+    var conversationItem: ConversationItem {
+        ConversationItem(
+            id: id,
+            content: content.conversationItemContent,
+            sourceTurnId: sourceTurnId,
+            sourceTurnIndex: sourceTurnIndex.map(Int.init),
+            timestamp: timestamp.map(Date.init(timeIntervalSince1970:)) ?? Date(),
+            isFromUserTurnBoundary: isFromUserTurnBoundary
+        )
+    }
+}
+
+private extension HydratedConversationItemContent {
+    var conversationItemContent: ConversationItemContent {
+        switch self {
+        case .user(let data):
+            let images = data.imageDataUris.compactMap(decodeBase64DataURI(_:)).map { ChatImage(data: $0) }
+            return .user(ConversationUserMessageData(text: data.text, images: images))
+        case .assistant(let data):
+            return .assistant(
+                ConversationAssistantMessageData(
+                    text: data.text,
+                    agentNickname: data.agentNickname,
+                    agentRole: data.agentRole
+                )
+            )
+        case .reasoning(let data):
+            return .reasoning(ConversationReasoningData(summary: data.summary, content: data.content))
+        case .todoList(let data):
+            return .todoList(
+                ConversationTodoListData(
+                    steps: data.steps.map {
+                        ConversationPlanStep(step: $0.step, status: $0.status)
+                    }
+                )
+            )
+        case .proposedPlan(let data):
+            return .proposedPlan(ConversationProposedPlanData(content: data.content))
+        case .commandExecution(let data):
+            return .commandExecution(
+                ConversationCommandExecutionData(
+                    command: data.command,
+                    cwd: data.cwd,
+                    status: data.status,
+                    output: data.output,
+                    exitCode: data.exitCode.map(Int.init),
+                    durationMs: data.durationMs.map(Int.init),
+                    processId: data.processId,
+                    actions: data.actions.map {
+                        ConversationCommandAction(
+                            kind: $0.kind,
+                            command: $0.command,
+                            name: $0.name,
+                            path: $0.path,
+                            query: $0.query
+                        )
+                    }
+                )
+            )
+        case .fileChange(let data):
+            return .fileChange(
+                ConversationFileChangeData(
+                    status: data.status,
+                    changes: data.changes.map {
+                        ConversationFileChangeEntry(path: $0.path, kind: $0.kind, diff: $0.diff)
+                    },
+                    outputDelta: nil
+                )
+            )
+        case .mcpToolCall(let data):
+            return .mcpToolCall(
+                ConversationMcpToolCallData(
+                    server: data.server,
+                    tool: data.tool,
+                    status: data.status,
+                    durationMs: data.durationMs.map(Int.init),
+                    argumentsJSON: data.argumentsJson,
+                    contentSummary: data.contentSummary,
+                    structuredContentJSON: data.structuredContentJson,
+                    rawOutputJSON: data.rawOutputJson,
+                    errorMessage: data.errorMessage,
+                    progressMessages: []
+                )
+            )
+        case .dynamicToolCall(let data):
+            return .dynamicToolCall(
+                ConversationDynamicToolCallData(
+                    tool: data.tool,
+                    status: data.status,
+                    durationMs: data.durationMs.map(Int.init),
+                    success: data.success,
+                    argumentsJSON: data.argumentsJson,
+                    contentSummary: data.contentSummary
+                )
+            )
+        case .multiAgentAction(let data):
+            return .multiAgentAction(
+                ConversationMultiAgentActionData(
+                    tool: data.tool,
+                    status: data.status,
+                    prompt: data.prompt,
+                    targets: data.targets,
+                    receiverThreadIds: data.receiverThreadIds,
+                    agentStates: data.agentStates.map {
+                        ConversationMultiAgentState(
+                            targetId: $0.targetId,
+                            status: $0.status,
+                            message: $0.message
+                        )
+                    }
+                )
+            )
+        case .webSearch(let data):
+            return .webSearch(
+                ConversationWebSearchData(
+                    query: data.query,
+                    actionJSON: data.actionJson,
+                    isInProgress: data.isInProgress
+                )
+            )
+        case .divider(let data):
+            switch data {
+            case .contextCompaction(let isComplete):
+                return .divider(.contextCompaction(isComplete: isComplete))
+            case .reviewEntered(let review):
+                return .divider(.reviewEntered(review))
+            case .reviewExited(let review):
+                return .divider(.reviewExited(review))
+            }
+        case .note(let data):
+            return .note(ConversationNoteData(title: data.title, body: data.body))
+        }
+    }
+}
+
+private func decodeBase64DataURI(_ uri: String) -> Data? {
+    guard uri.hasPrefix("data:") else {
+        if uri.hasPrefix("file://") {
+            let path = String(uri.dropFirst("file://".count))
+            return FileManager.default.contents(atPath: path)
+        }
+        return nil
+    }
+    guard let commaIndex = uri.firstIndex(of: ",") else { return nil }
+    let base64 = String(uri[uri.index(after: commaIndex)...])
+    return Data(base64Encoded: base64, options: .ignoreUnknownCharacters)
 }

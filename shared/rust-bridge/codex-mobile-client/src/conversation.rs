@@ -267,13 +267,7 @@ pub fn hydrate_thread_item(
     source_turn_index: Option<usize>,
     opts: &HydrationOptions,
 ) -> Option<ConversationItem> {
-    convert_thread_item(
-        item,
-        item.id(),
-        source_turn_id,
-        source_turn_index,
-        opts,
-    )
+    convert_thread_item(item, item.id(), source_turn_id, source_turn_index, opts)
 }
 
 /// Convert a single [`ThreadItem`] into a [`ConversationItem`].
@@ -737,8 +731,8 @@ fn stringify_json_value(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use codex_app_server_protocol::TurnStatus;
+    use std::collections::HashMap;
 
     fn make_turn(id: &str, items: Vec<ThreadItem>) -> Turn {
         Turn {
@@ -1054,11 +1048,9 @@ mod tests {
                     tool: "show_widget".into(),
                     arguments: serde_json::json!({ "title": "Widget" }),
                     status: DynamicToolCallStatus::Completed,
-                    content_items: Some(vec![
-                        DynamicToolCallOutputContentItem::InputText {
-                            text: "rendered".into(),
-                        },
-                    ]),
+                    content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
+                        text: "rendered".into(),
+                    }]),
                     success: Some(true),
                     duration_ms: Some(120),
                 },
@@ -1084,9 +1076,21 @@ mod tests {
         let items = hydrate_turns(&turns, &HydrationOptions::default());
         assert_eq!(items.len(), 4);
 
-        assert!(matches!(items[0].content, ConversationItemContent::McpToolCall(_)));
-        assert!(matches!(items[1].content, ConversationItemContent::DynamicToolCall(_)));
-        assert!(matches!(items[2].content, ConversationItemContent::MultiAgentAction(_)));
-        assert!(matches!(items[3].content, ConversationItemContent::WebSearch(_)));
+        assert!(matches!(
+            items[0].content,
+            ConversationItemContent::McpToolCall(_)
+        ));
+        assert!(matches!(
+            items[1].content,
+            ConversationItemContent::DynamicToolCall(_)
+        ));
+        assert!(matches!(
+            items[2].content,
+            ConversationItemContent::MultiAgentAction(_)
+        ));
+        assert!(matches!(
+            items[3].content,
+            ConversationItemContent::WebSearch(_)
+        ));
     }
 }

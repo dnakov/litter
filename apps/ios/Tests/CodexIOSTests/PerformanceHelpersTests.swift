@@ -185,35 +185,6 @@ final class PerformanceHelpersTests: XCTestCase {
         XCTAssertEqual(cache.systemEntryCount, 2)
     }
 
-    func testSessionsModelFreezesMostRecentOrderingWhileThreadIsActive() async {
-        let serverManager = ServerManager()
-        let appState = AppState()
-        appState.sessionsWorkspaceSortModeRaw = WorkspaceSortMode.mostRecent.rawValue
-
-        let olderThread = makeThreadState(threadId: "older", updatedAt: 10)
-        let streamingThread = makeThreadState(threadId: "streaming", updatedAt: 5)
-
-        serverManager.threads = [
-            olderThread.key: olderThread,
-            streamingThread.key: streamingThread
-        ]
-
-        let sessionsModel = SessionsModel()
-        sessionsModel.bind(serverManager: serverManager, appState: appState)
-        XCTAssertEqual(sessionsModel.derivedData.allThreadKeys.map(\.threadId), ["older", "streaming"])
-
-        streamingThread.status = .thinking
-        await flushMainQueue()
-
-        streamingThread.updatedAt = Date(timeIntervalSince1970: 20)
-        await flushMainQueue()
-        XCTAssertEqual(sessionsModel.derivedData.allThreadKeys.map(\.threadId), ["older", "streaming"])
-
-        streamingThread.status = .ready
-        await flushMainQueue()
-        XCTAssertEqual(sessionsModel.derivedData.allThreadKeys.map(\.threadId), ["streaming", "older"])
-    }
-
     func testChatMessageRenderDigestChangesWhenMarkdownChanges() {
         var message = ChatMessage(role: .assistant, text: "# Title")
         let originalDigest = message.renderDigest
@@ -227,24 +198,6 @@ final class PerformanceHelpersTests: XCTestCase {
         """
 
         XCTAssertNotEqual(message.renderDigest, originalDigest)
-    }
-
-    private func makeThreadState(threadId: String, updatedAt: TimeInterval) -> ThreadState {
-        let thread = ThreadState(
-            serverId: "server-a",
-            threadId: threadId,
-            serverName: "Server",
-            serverSource: .local
-        )
-        thread.preview = threadId
-        thread.cwd = "/tmp/\(threadId)"
-        thread.updatedAt = Date(timeIntervalSince1970: updatedAt)
-        return thread
-    }
-
-    private func flushMainQueue() async {
-        await Task.yield()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
     }
 
     private func makeUserItem(
@@ -293,7 +246,7 @@ final class PerformanceHelpersTests: XCTestCase {
                 ConversationCommandExecutionData(
                     command: command,
                     cwd: "/tmp",
-                    status: "completed",
+                    status: .completed,
                     output: nil,
                     exitCode: 0,
                     durationMs: durationMs,

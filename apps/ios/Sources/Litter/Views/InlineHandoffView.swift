@@ -1,19 +1,21 @@
 import SwiftUI
 
 struct InlineHandoffView: View {
+    @Environment(AppModel.self) private var appModel
     let threadKey: ThreadKey
-    let serverManager: ServerManager
     let maxHeight: CGFloat
 
-    private var thread: ThreadState? {
-        serverManager.threads[threadKey]
+    private var thread: AppThreadSnapshot? {
+        appModel.snapshot?.threadSnapshot(for: threadKey)
     }
 
     @State private var contentHeight: CGFloat = 0
 
     private var entries: [InlineHandoffEntry] {
         guard let thread else { return [] }
-        return thread.items.compactMap(InlineHandoffEntry.init(item:))
+        return thread.hydratedConversationItems
+            .map(\.conversationItem)
+            .compactMap(InlineHandoffEntry.init(item:))
     }
 
     private var scrollSignature: String? {
@@ -150,7 +152,7 @@ private struct InlineHandoffEntry: Identifiable {
             self.id = item.id
             self.text = InlineHandoffEntry.statusText(
                 label: data.command.isEmpty ? "Working" : data.command,
-                status: data.status
+                status: data.status.displayLabel
             )
             self.style = .status
         case .fileChange(let data):
@@ -158,7 +160,7 @@ private struct InlineHandoffEntry: Identifiable {
             let count = data.changes.count
             self.text = InlineHandoffEntry.statusText(
                 label: count > 0 ? "Changed \(count) file\(count == 1 ? "" : "s")" : "Applying changes",
-                status: data.status
+                status: data.status.displayLabel
             )
             self.style = .status
         case .turnDiff:
@@ -167,15 +169,15 @@ private struct InlineHandoffEntry: Identifiable {
             self.style = .status
         case .mcpToolCall(let data):
             self.id = item.id
-            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status)
+            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status.displayLabel)
             self.style = .status
         case .dynamicToolCall(let data):
             self.id = item.id
-            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status)
+            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status.displayLabel)
             self.style = .status
         case .multiAgentAction(let data):
             self.id = item.id
-            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status)
+            self.text = InlineHandoffEntry.statusText(label: data.tool, status: data.status.displayLabel)
             self.style = .status
         case .webSearch(let data):
             self.id = item.id

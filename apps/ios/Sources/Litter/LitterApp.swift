@@ -5,10 +5,10 @@ import os
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     private var pendingPushToken: Data?
-    weak var serverManager: ServerManager? {
+    weak var appRuntime: AppRuntimeController? {
         didSet {
             if let token = pendingPushToken {
-                serverManager?.devicePushToken = token
+                appRuntime?.setDevicePushToken(token)
                 pendingPushToken = nil
             }
         }
@@ -45,8 +45,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
         NSLog("[push] device token received (%d bytes): %@", deviceToken.count, hex)
-        if let sm = serverManager {
-            sm.devicePushToken = deviceToken
+        if let appRuntime {
+            appRuntime.setDevicePushToken(deviceToken)
         } else {
             pendingPushToken = deviceToken
         }
@@ -58,12 +58,12 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         NSLog("[push] background push received")
-        guard let sm = serverManager else {
+        guard let appRuntime else {
             completionHandler(.noData)
             return
         }
         Task { @MainActor in
-            await sm.handleBackgroundPush()
+            await appRuntime.handleBackgroundPush()
             completionHandler(.newData)
         }
     }
@@ -72,26 +72,33 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct LitterApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var serverManager = ServerManager.shared
+    @State private var appModel = AppModel.shared
+    @State private var voiceRuntime = VoiceRuntimeController.shared
+    @State private var appRuntime = AppRuntimeController.shared
     @State private var themeManager = ThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(serverManager)
+                .environment(appModel)
+                .environment(appRuntime)
+                .environment(voiceRuntime)
                 .environment(themeManager)
                 .task {
-                    appDelegate.serverManager = serverManager
-                    await serverManager.reconnectAll()
+                    appModel.start()
+                    voiceRuntime.bind(appModel: appModel)
+                    appRuntime.bind(appModel: appModel, voiceRuntime: voiceRuntime)
+                    appDelegate.appRuntime = appRuntime
+                    await appRuntime.reconnectSavedServers()
                 }
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .background:
-                serverManager.appDidEnterBackground()
+                appRuntime.appDidEnterBackground()
             case .active:
-                serverManager.appDidBecomeActive()
+                appRuntime.appDidBecomeActive()
             default:
                 break
             }
@@ -100,7 +107,8 @@ struct LitterApp: App {
 }
 
 struct ContentView: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
+    @Environment(AppRuntimeController.self) private var appRuntime
     @Environment(ThemeManager.self) private var themeManager
     @State private var appState = AppState()
     @State private var stableSafeAreaInsets = StableSafeAreaInsets()
@@ -127,9 +135,14 @@ struct ContentView: View {
                 .ignoresSafeArea(.container, edges: [.top, .bottom])
                 .id(themeManager.themeVersion)
 
-                if let approval = serverManager.activePendingApproval {
+                if let approval = appModel.snapshot?.pendingApprovals.first {
                     ApprovalPromptView(approval: approval) { decision in
-                        serverManager.respondToPendingApproval(requestId: approval.requestId, decision: decision)
+                        Task {
+                            try? await appModel.store.respondToApproval(
+                                requestId: approval.id,
+                                decision: decision
+                            )
+                        }
                     } onViewThread: { threadKey in
                         appState.pendingThreadNavigation = threadKey
                     }
@@ -166,10 +179,13 @@ struct ContentView: View {
                 appState.showServerPicker = true
             }
         }
-        .onChange(of: serverManager.activeThreadKey) { _, _ in
+        .onChange(of: appModel.snapshot?.activeThread) { _, _ in
             appState.selectedModel = ""
             appState.reasoningEffort = ""
             appState.showModelSelector = false
+        }
+        .onChange(of: appModel.snapshot) { _, nextSnapshot in
+            appRuntime.handleSnapshot(nextSnapshot)
         }
         .sheet(isPresented: $bindableAppState.showServerPicker) {
             NavigationStack {
@@ -177,17 +193,14 @@ struct ContentView: View {
                     appState.showServerPicker = false
                 })
             }
-            .environment(serverManager)
             .environment(appState)
             .environment(\.textScale, textScale)
         }
         .sheet(isPresented: $bindableAppState.showSettings) {
             SettingsView()
-                .environment(serverManager)
                 .environment(\.textScale, textScale)
         }
     }
-
 }
 
 private let homeNavigationSignpostLog = OSLog(
@@ -201,7 +214,8 @@ private let conversationRouteSignpostLog = OSLog(
 )
 
 private struct HomeNavigationView: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
+    @Environment(VoiceRuntimeController.self) private var voiceRuntime
     @Environment(AppState.self) private var appState
     @Environment(ConversationWarmupCoordinator.self) private var conversationWarmup
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
@@ -224,11 +238,11 @@ private struct HomeNavigationView: View {
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
-        homeDashboardModel.connectedServers.map { connection in
+        homeDashboardModel.connectedServers.map { server in
             DirectoryPickerServerOption(
-                id: connection.id,
-                name: connection.server.name,
-                sourceLabel: connection.server.source.rawString
+                id: server.id,
+                name: server.displayName,
+                sourceLabel: server.sourceLabel
             )
         }
     }
@@ -252,10 +266,16 @@ private struct HomeNavigationView: View {
                         onConnectServer: { appState.showServerPicker = true },
                         onShowSettings: { appState.showSettings = true },
                         onDeleteThread: { key in
-                            try? await serverManager.archiveThread(key)
+                            _ = try? await appModel.rpc.threadArchive(
+                                serverId: key.serverId,
+                                params: ThreadArchiveParams(threadId: key.threadId)
+                            )
+                            await appModel.refreshSnapshot()
                         },
                         onDisconnectServer: { serverId in
-                            serverManager.removeServer(id: serverId)
+                            SavedServerStore.remove(serverId: serverId)
+                            Task { await SshSessionStore.shared.close(serverId: serverId, ssh: appModel.ssh) }
+                            appModel.serverBridge.disconnectServer(serverId: serverId)
                         }
                     )
                 } else {
@@ -294,14 +314,13 @@ private struct HomeNavigationView: View {
                     )
                 case let .realtimeVoice(threadKey):
                     RealtimeVoiceScreen(
-                        serverManager: serverManager,
                         threadKey: threadKey,
                         onEnd: {
                             popCurrentRoute()
-                            Task { await serverManager.stopActiveVoiceSession() }
+                            Task { await voiceRuntime.stopActiveVoiceSession() }
                         },
                         onToggleSpeaker: {
-                            Task { try? await serverManager.toggleActiveVoiceSessionSpeaker() }
+                            Task { try? await voiceRuntime.toggleActiveVoiceSessionSpeaker() }
                         }
                     )
                     .toolbar(.hidden, for: .navigationBar)
@@ -310,11 +329,11 @@ private struct HomeNavigationView: View {
             }
         }
         .task {
-            homeDashboardModel.bind(serverManager: serverManager)
+            homeDashboardModel.bind(appModel: appModel)
             updateHomeDashboardActivity()
-            seedInitialConversationIfNeeded(activeKey: serverManager.activeThreadKey)
+            seedInitialConversationIfNeeded(activeKey: appModel.snapshot?.activeThread)
         }
-        .onChange(of: serverManager.activeThreadKey) { _, newKey in
+        .onChange(of: appModel.snapshot?.activeThread) { _, newKey in
             seedInitialConversationIfNeeded(activeKey: newKey)
         }
         .onChange(of: navigationPath.count) { _, _ in
@@ -352,7 +371,6 @@ private struct HomeNavigationView: View {
                     }
                 )
             }
-            .environment(serverManager)
         }
         .alert("Home Action Failed", isPresented: Binding(
             get: { actionErrorMessage != nil },
@@ -367,7 +385,7 @@ private struct HomeNavigationView: View {
     private func defaultNewSessionServerId(preferredServerId: String? = nil) -> String? {
         SessionLaunchSupport.defaultConnectedServerId(
             connectedServerIds: connectedServerOptions.map(\.id),
-            activeThreadKey: serverManager.activeThreadKey,
+            activeThreadKey: appModel.snapshot?.activeThread,
             preferredServerId: preferredServerId
         )
     }
@@ -375,7 +393,8 @@ private struct HomeNavigationView: View {
     private func handleNewSessionTap() {
         if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
             // For local on-device server, skip directory picker and use /home/codex.
-            if let conn = serverManager.connections[defaultServerId], conn.target == .local {
+            if let server = homeDashboardModel.connectedServers.first(where: { $0.id == defaultServerId }),
+               server.isLocal {
                 let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
                 Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                 return
@@ -390,7 +409,7 @@ private struct HomeNavigationView: View {
         HStack {
             Spacer()
             HomeVoiceOrbButton(
-                session: serverManager.activeVoiceSession,
+                session: voiceRuntime.activeVoiceSession,
                 isAvailable: true,
                 isStarting: isStartingVoice,
                 action: startHomeVoiceSession
@@ -410,16 +429,16 @@ private struct HomeNavigationView: View {
             do {
                 let selectedModel = normalizedSelectedModel()
                 let selectedEffort = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-                serverManager.handoffModel = selectedModel
-                serverManager.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
-                serverManager.handoffFastMode = false
-                try await serverManager.startPinnedLocalVoiceCall(
+                voiceRuntime.handoffModel = selectedModel
+                voiceRuntime.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
+                voiceRuntime.handoffFastMode = false
+                try await voiceRuntime.startPinnedLocalVoiceCall(
                     cwd: preferredVoiceWorkingDirectory(),
                     model: selectedModel,
                     approvalPolicy: appState.approvalPolicy,
                     sandboxMode: appState.sandboxMode
                 )
-                if let voiceKey = await MainActor.run(body: { serverManager.activeVoiceSession?.threadKey }) {
+                if let voiceKey = await MainActor.run(body: { voiceRuntime.activeVoiceSession?.threadKey }) {
                     await MainActor.run {
                         openRealtimeVoice(voiceKey)
                     }
@@ -455,14 +474,14 @@ private struct HomeNavigationView: View {
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     }
 
-    private func openServerSessions(_ connection: ServerConnection) {
-        appState.sessionsSelectedServerFilterId = connection.id
+    private func openServerSessions(_ server: HomeDashboardServer) {
+        appState.sessionsSelectedServerFilterId = server.id
         appState.sessionsShowOnlyForks = false
         hasSeededInitialConversationRoute = true
-        navigationPath.append(.sessions(serverId: connection.id, title: connection.server.name))
+        navigationPath.append(.sessions(serverId: server.id, title: server.displayName))
     }
 
-    private func openRecentSession(_ thread: ThreadState) async {
+    private func openRecentSession(_ thread: HomeDashboardRecentSession) async {
         guard openingRecentSessionKey == nil else { return }
         openingRecentSessionKey = thread.key
         actionErrorMessage = nil
@@ -471,18 +490,26 @@ private struct HomeNavigationView: View {
         await conversationWarmup.prewarmIfNeeded()
         workDir = thread.cwd
         appState.currentCwd = thread.cwd
-        let opened = await serverManager.viewThread(
-            thread.key,
-            approvalPolicy: appState.approvalPolicy,
-            sandboxMode: appState.sandboxMode
-        )
+        let opened: Bool
+        do {
+            let response = try await appModel.rpc.threadResume(
+                serverId: thread.key.serverId,
+                params: launchConfig().threadResumeParams(
+                    threadId: thread.key.threadId,
+                    cwdOverride: thread.cwd
+                )
+            )
+            appModel.store.setActiveThread(
+                key: ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
+            )
+            await appModel.refreshSnapshot()
+            opened = true
+        } catch {
+            actionErrorMessage = error.localizedDescription
+            opened = false
+        }
         guard opened else {
-            if let selectedThread = serverManager.threads[thread.key],
-               case .error(let message) = selectedThread.status {
-                actionErrorMessage = message
-            } else {
-                actionErrorMessage = "Failed to open conversation."
-            }
+            actionErrorMessage = actionErrorMessage ?? "Failed to open conversation."
             return
         }
         openConversation(thread.key)
@@ -509,17 +536,17 @@ private struct HomeNavigationView: View {
         await conversationWarmup.prewarmIfNeeded()
         workDir = cwd
         appState.currentCwd = cwd
-        let model = appState.selectedModel.isEmpty ? nil : appState.selectedModel
-        let startedKey = try? await serverManager.startThread(
-            serverId: serverId,
-            cwd: cwd,
-            model: model,
-            approvalPolicy: appState.approvalPolicy,
-            sandboxMode: appState.sandboxMode
-        )
-
-        guard let startedKey else {
-            actionErrorMessage = "Failed to start a new session."
+        let startedKey: ThreadKey
+        do {
+            let response = try await appModel.rpc.threadStart(
+                serverId: serverId,
+                params: launchConfig().threadStartParams(cwd: cwd)
+            )
+            startedKey = ThreadKey(serverId: serverId, threadId: response.thread.id)
+            appModel.store.setActiveThread(key: startedKey)
+            await appModel.refreshSnapshot()
+        } catch {
+            actionErrorMessage = error.localizedDescription
             return
         }
 
@@ -537,12 +564,23 @@ private struct HomeNavigationView: View {
             guard !hasSeededInitialConversationRoute,
                   !isStartingVoice,
                   navigationPath.isEmpty,
-                  serverManager.activeThreadKey == activeKey else {
+                  appModel.snapshot?.activeThread == activeKey else {
                 return
             }
             hasSeededInitialConversationRoute = true
             navigationPath = [.conversation(activeKey)]
         }
+    }
+
+    private func launchConfig() -> AppThreadLaunchConfig {
+        let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AppThreadLaunchConfig(
+            model: selectedModel.isEmpty ? nil : selectedModel,
+            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            developerInstructions: nil,
+            persistExtendedHistory: false
+        )
     }
 
     private func openConversation(_ key: ThreadKey) {
@@ -604,21 +642,18 @@ private struct HomeNavigationView: View {
     }
 
     private func serverTitle(for serverId: String) -> String {
-        if let connection = serverManager.connections[serverId] {
-            return connection.server.name
+        if let server = homeDashboardModel.connectedServers.first(where: { $0.id == serverId }) {
+            return server.displayName
         }
-        if let connection = homeDashboardModel.connectedServers.first(where: { $0.id == serverId }) {
-            return connection.server.name
-        }
-        if let thread = serverManager.threads.values.first(where: { $0.serverId == serverId }) {
-            return thread.serverName
+        if let thread = homeDashboardModel.recentSessions.first(where: { $0.serverId == serverId }) {
+            return thread.serverDisplayName
         }
         return "Sessions"
     }
 }
 
 private struct ConversationDestinationScreen: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @State private var screenModel = ConversationScreenModel()
@@ -629,22 +664,17 @@ private struct ConversationDestinationScreen: View {
     let onResumeSessions: (String) -> Void
     let onOpenConversation: (ThreadKey) -> Void
 
-    private var conversationContext: (thread: ThreadState, connection: ServerConnection)? {
-        guard let thread = serverManager.threads[threadKey],
-              let connection = serverManager.connections[threadKey.serverId] else {
-            return nil
-        }
-        return (thread, connection)
+    private var conversationThread: AppThreadSnapshot? {
+        appModel.snapshot?.threadSnapshot(for: threadKey)
     }
 
     var body: some View {
         Group {
-            if let conversationContext {
+            if let conversationThread {
                 ZStack(alignment: .top) {
                     ConversationView(
-                        connection: conversationContext.connection,
+                        thread: conversationThread,
                         activeThreadKey: threadKey,
-                        serverManager: serverManager,
                         transcript: screenModel.transcript,
                         pinnedContextItems: screenModel.pinnedContextItems,
                         composer: screenModel.composer,
@@ -664,19 +694,17 @@ private struct ConversationDestinationScreen: View {
                             .zIndex(1)
                     }
                     HeaderView(
-                        thread: conversationContext.thread,
-                        connection: conversationContext.connection,
-                        serverManager: serverManager,
+                        thread: conversationThread,
                         onBack: onBack,
                         topInset: topInset
                     )
                     .zIndex(2)
                 }
-                .task(id: threadKey) {
+                .task(id: conversationThread) {
                     screenModel.bind(
-                        thread: conversationContext.thread,
-                        connection: conversationContext.connection,
-                        serverManager: serverManager
+                        thread: conversationThread,
+                        appModel: appModel,
+                        agentDirectoryVersion: appModel.snapshot?.agentDirectoryVersion ?? 0
                     )
                 }
             } else {
@@ -719,38 +747,34 @@ private struct ConversationDestinationScreen: View {
                 threadKey.serverId,
                 threadKey.threadId
             )
-            _ = await serverManager.prepareThreadForPresentation(
-                threadKey,
-                approvalPolicy: appState.approvalPolicy,
-                sandboxMode: appState.sandboxMode
-            )
-            if let thread = serverManager.threads[threadKey], !thread.cwd.isEmpty {
-                workDir = thread.cwd
-                appState.currentCwd = thread.cwd
+            appModel.store.setActiveThread(key: threadKey)
+            await appModel.loadConversationMetadataIfNeeded(serverId: threadKey.serverId)
+            if let thread = appModel.snapshot?.threads.first(where: { $0.key == threadKey }),
+               let cwd = thread.info.cwd?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cwd.isEmpty {
+                workDir = cwd
+                appState.currentCwd = cwd
             }
         }
     }
 }
 
 private struct ApprovalPromptView: View {
-    let approval: ServerManager.PendingApproval
-    let onDecision: (ServerManager.ApprovalDecision) -> Void
+    let approval: PendingApproval
+    let onDecision: (ApprovalDecisionValue) -> Void
     var onViewThread: ((ThreadKey) -> Void)? = nil
 
     private var title: String {
         switch approval.kind {
-        case .commandExecution:
+        case .command:
             return "Command Approval Required"
         case .fileChange:
             return "File Change Approval Required"
+        case .permissions:
+            return "Permissions Approval Required"
+        case .mcpElicitation:
+            return "MCP Input Required"
         }
-    }
-
-    private var requesterLabel: String? {
-        AgentLabelFormatter.format(
-            nickname: approval.requesterAgentNickname,
-            role: approval.requesterAgentRole
-        )
     }
 
     var body: some View {
@@ -769,35 +793,20 @@ private struct ApprovalPromptView: View {
                         .foregroundColor(LitterTheme.textSecondary)
                 }
 
-                if let requesterLabel {
-                    HStack(spacing: 8) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "person.fill")
-                                .litterFont(size: 10, weight: .semibold)
-                                .foregroundColor(LitterTheme.success)
-                            Text(requesterLabel)
-                                .litterFont(.caption, weight: .medium)
-                                .foregroundColor(LitterTheme.textPrimary)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(LitterTheme.success.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                        if let threadId = approval.threadId, onViewThread != nil {
-                            Button {
-                                onViewThread?(ThreadKey(serverId: approval.serverId, threadId: threadId))
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Text("View Thread")
-                                        .litterFont(.caption, weight: .medium)
-                                    Image(systemName: "arrow.right")
-                                        .litterFont(size: 9, weight: .semibold)
-                                }
-                                .foregroundColor(LitterTheme.accent)
+                if let threadId = approval.threadId, onViewThread != nil {
+                    HStack {
+                        Button {
+                            onViewThread?(ThreadKey(serverId: approval.serverId, threadId: threadId))
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("View Thread")
+                                    .litterFont(.caption, weight: .medium)
+                                Image(systemName: "arrow.right")
+                                    .litterFont(size: 9, weight: .semibold)
                             }
-                            .buttonStyle(.plain)
+                            .foregroundColor(LitterTheme.accent)
                         }
+                        .buttonStyle(.plain)
 
                         Spacer()
                     }

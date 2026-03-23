@@ -5,7 +5,7 @@ struct ConversationTranscriptSnapshot {
     var items: [ConversationItem]
     var threadStatus: ConversationStatus
     var followScrollToken: Int
-    var agentDirectoryVersion: Int
+    var agentDirectoryVersion: UInt64
 
     static let empty = ConversationTranscriptSnapshot(
         items: [],
@@ -17,8 +17,8 @@ struct ConversationTranscriptSnapshot {
 
 struct ConversationComposerSnapshot {
     var threadKey: ThreadKey
-    var pendingUserInputRequest: ServerManager.PendingUserInputRequest?
-    var composerPrefillRequest: ServerManager.ComposerPrefillRequest?
+    var pendingUserInputRequest: PendingUserInputRequest?
+    var composerPrefillRequest: AppModel.ComposerPrefillRequest?
     var isTurnActive: Bool
     var threadPreview: String
     var threadModel: String
@@ -48,39 +48,29 @@ struct ConversationComposerSnapshot {
 @MainActor
 @Observable
 final class ConversationScreenModel {
-    private struct Snapshot {
-        let items: [ConversationItem]
-        let threadStatus: ConversationStatus
-        let updatedAt: Date
-        let isTurnActive: Bool
-        let agentDirectoryVersion: Int
-        let composer: ConversationComposerSnapshot
-    }
-
     private(set) var transcript: ConversationTranscriptSnapshot = .empty
     private(set) var pinnedContextItems: [ConversationItem] = []
     private(set) var composer: ConversationComposerSnapshot = .empty
 
-    @ObservationIgnored private var thread: ThreadState?
-    @ObservationIgnored private var connection: ServerConnection?
-    @ObservationIgnored private var serverManager: ServerManager?
+    @ObservationIgnored private var thread: AppThreadSnapshot?
+    @ObservationIgnored private var appModel: AppModel?
+    @ObservationIgnored private var agentDirectoryVersion: UInt64 = 0
     @ObservationIgnored private var followScrollToken = 0
-    @ObservationIgnored private var observationGeneration = 0
     @ObservationIgnored private var lastObservedUpdatedAt: Date?
 
     func bind(
-        thread: ThreadState,
-        connection: ServerConnection,
-        serverManager: ServerManager
+        thread: AppThreadSnapshot,
+        appModel: AppModel,
+        agentDirectoryVersion: UInt64
     ) {
         let needsRebind =
-            self.thread !== thread ||
-            self.connection !== connection ||
-            self.serverManager !== serverManager
+            self.thread != thread ||
+            self.appModel !== appModel ||
+            self.agentDirectoryVersion != agentDirectoryVersion
 
         self.thread = thread
-        self.connection = connection
-        self.serverManager = serverManager
+        self.appModel = appModel
+        self.agentDirectoryVersion = agentDirectoryVersion
 
         if needsRebind {
             followScrollToken = 0
@@ -91,7 +81,7 @@ final class ConversationScreenModel {
     }
 
     private func refreshState() {
-        guard let thread, let connection, let serverManager else {
+        guard let thread, let appModel else {
             transcript = .empty
             pinnedContextItems = []
             composer = .empty
@@ -99,51 +89,58 @@ final class ConversationScreenModel {
             return
         }
 
-        observationGeneration &+= 1
-        let generation = observationGeneration
-        let snapshot = withObservationTracking {
-            Snapshot(
-                items: thread.items,
-                threadStatus: thread.status,
-                updatedAt: thread.updatedAt,
-                isTurnActive: thread.hasTurnActive,
-                agentDirectoryVersion: serverManager.agentDirectoryVersion,
-                composer: ConversationComposerSnapshot(
-                    threadKey: thread.key,
-                    pendingUserInputRequest: serverManager.pendingUserInputRequest(for: thread.key),
-                    composerPrefillRequest: serverManager.composerPrefillRequest,
-                    isTurnActive: thread.hasTurnActive,
-                    threadPreview: thread.preview,
-                    threadModel: thread.model,
-                    threadReasoningEffort: thread.reasoningEffort,
-                    modelContextWindow: thread.modelContextWindow,
-                    contextTokensUsed: thread.contextTokensUsed,
-                    rateLimits: connection.rateLimits,
-                    availableModels: connection.models,
-                    isConnected: connection.isConnected
-                )
-            )
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.observationGeneration == generation else { return }
-                self.refreshState()
-            }
+        let items = thread.hydratedConversationItems.map(\.conversationItem)
+        let threadStatus = conversationStatus(from: thread)
+        let updatedAt = Date(timeIntervalSince1970: TimeInterval(thread.info.updatedAt ?? 0))
+        let isTurnActive = thread.activeTurnId != nil || thread.info.status == .active
+        let pendingUserInputRequest = appModel.snapshot?.pendingUserInputs.first {
+            $0.serverId == thread.key.serverId && $0.threadId == thread.key.threadId
         }
+        let composerPrefillRequest = appModel.composerPrefillRequest.flatMap { request in
+            request.threadKey == thread.key ? request : nil
+        }
+        let composerSnapshot = ConversationComposerSnapshot(
+            threadKey: thread.key,
+            pendingUserInputRequest: pendingUserInputRequest,
+            composerPrefillRequest: composerPrefillRequest,
+            isTurnActive: isTurnActive,
+            threadPreview: thread.resolvedPreview,
+            threadModel: thread.resolvedModel,
+            threadReasoningEffort: thread.reasoningEffort,
+            modelContextWindow: thread.modelContextWindow.map(Int64.init),
+            contextTokensUsed: thread.contextTokensUsed.map(Int64.init),
+            rateLimits: appModel.rateLimits(for: thread.key.serverId),
+            availableModels: appModel.availableModels(for: thread.key.serverId),
+            isConnected: appModel.snapshot?.serverSnapshot(for: thread.key.serverId)?.isConnected ?? false
+        )
 
         if let lastObservedUpdatedAt,
-           snapshot.updatedAt != lastObservedUpdatedAt,
-           snapshot.isTurnActive {
+           updatedAt != lastObservedUpdatedAt,
+           isTurnActive {
             followScrollToken &+= 1
         }
-        lastObservedUpdatedAt = snapshot.updatedAt
+        lastObservedUpdatedAt = updatedAt
 
-        pinnedContextItems = snapshot.items
+        pinnedContextItems = items
         transcript = ConversationTranscriptSnapshot(
-            items: snapshot.items,
-            threadStatus: snapshot.threadStatus,
+            items: items,
+            threadStatus: threadStatus,
             followScrollToken: followScrollToken,
-            agentDirectoryVersion: snapshot.agentDirectoryVersion
+            agentDirectoryVersion: agentDirectoryVersion
         )
-        composer = snapshot.composer
+        composer = composerSnapshot
+    }
+}
+
+private func conversationStatus(from thread: AppThreadSnapshot) -> ConversationStatus {
+    switch thread.info.status {
+    case .active:
+        return .thinking
+    case .systemError:
+        return .error("Session error")
+    case .notLoaded:
+        return .connecting
+    case .idle:
+        return .ready
     }
 }

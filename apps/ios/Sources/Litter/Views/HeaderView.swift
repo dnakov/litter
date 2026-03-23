@@ -2,15 +2,22 @@ import SwiftUI
 
 struct HeaderView: View {
     @Environment(AppState.self) private var appState
-    let thread: ThreadState
-    let connection: ServerConnection
-    let serverManager: ServerManager
+    @Environment(AppModel.self) private var appModel
+    let thread: AppThreadSnapshot
     let onBack: () -> Void
     @State private var isReloading = false
     @State private var pulsing = false
     @AppStorage("fastMode") private var fastMode = false
 
     var topInset: CGFloat = 0
+
+    private var server: AppServerSnapshot? {
+        appModel.snapshot?.serverSnapshot(for: thread.key.serverId)
+    }
+
+    private var availableModels: [Model] {
+        appModel.availableModels(for: thread.key.serverId)
+    }
 
     var body: some View {
         VStack(spacing: 4) {
@@ -84,7 +91,7 @@ struct HeaderView: View {
 
             if appState.showModelSelector {
                 InlineModelSelectorView(
-                    models: connection.models,
+                    models: availableModels,
                     selectedModel: selectedModelBinding,
                     reasoningEffort: reasoningEffortBinding,
                     onDismiss: {
@@ -113,21 +120,28 @@ struct HeaderView: View {
     }
 
     private var shouldPulse: Bool {
-        connection.connectionHealth == .connecting || connection.connectionHealth == .unresponsive
+        guard let health = server?.health else { return false }
+        return health == .connecting || health == .unresponsive
     }
 
     private var statusDotColor: Color {
-        switch connection.connectionHealth {
-        case .disconnected:
-            return LitterTheme.danger
+        guard let server else {
+            return LitterTheme.textMuted
+        }
+        switch server.health {
         case .connecting, .unresponsive:
             return .orange
         case .connected:
-            switch connection.authStatus {
-            case .chatgpt, .apiKey: return LitterTheme.success
-            case .notLoggedIn: return LitterTheme.danger
-            case .unknown: return LitterTheme.textMuted
+            switch server.account {
+            case .chatgpt?, .apiKey?:
+                return LitterTheme.success
+            case nil:
+                return LitterTheme.danger
             }
+        case .disconnected:
+            return LitterTheme.danger
+        case .unknown:
+            return LitterTheme.textMuted
         }
     }
 
@@ -135,7 +149,7 @@ struct HeaderView: View {
         let pendingModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !pendingModel.isEmpty { return pendingModel }
 
-        let threadModel = thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let threadModel = (thread.model ?? thread.info.model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !threadModel.isEmpty { return threadModel }
 
         return "litter"
@@ -149,8 +163,8 @@ struct HeaderView: View {
         if !threadReasoning.isEmpty { return threadReasoning }
 
         // Fall back to the model's default reasoning effort from the loaded model list.
-        let currentModel = thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let model = connection.models.first(where: { $0.model == currentModel }),
+        let currentModel = (thread.model ?? thread.info.model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let model = availableModels.first(where: { $0.model == currentModel }),
            !model.defaultReasoningEffort.wireValue.isEmpty {
             return model.defaultReasoningEffort.wireValue
         }
@@ -159,7 +173,7 @@ struct HeaderView: View {
     }
 
     private var sessionDirectoryLabel: String {
-        let currentDirectory = thread.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentDirectory = (thread.info.cwd ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !currentDirectory.isEmpty {
             return abbreviateHomePath(currentDirectory)
         }
@@ -172,7 +186,7 @@ struct HeaderView: View {
             get: {
                 let pending = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty { return pending }
-                return thread.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (thread.model ?? thread.info.model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             },
             set: { appState.selectedModel = $0 }
         )
@@ -190,25 +204,44 @@ struct HeaderView: View {
     }
 
     private func loadModelsIfNeeded() async {
-        guard connection.isConnected, !connection.modelsLoaded else { return }
-        do {
-            let resp = try await connection.listModels()
-            connection.models = resp.data
-            connection.modelsLoaded = true
-        } catch {}
+        await appModel.loadConversationMetadataIfNeeded(serverId: thread.key.serverId)
     }
 
     private var reloadButton: some View {
         Button {
             Task {
                 isReloading = true
-                if connection.authStatus == .notLoggedIn {
+                defer { isReloading = false }
+                if server?.account == nil {
                     appState.showSettings = true
                 } else {
-                    await serverManager.refreshAllSessions()
-                    await serverManager.syncActiveThreadFromServer()
+                    _ = try? await appModel.rpc.threadList(
+                        serverId: thread.key.serverId,
+                        params: ThreadListParams(
+                            cursor: nil,
+                            limit: nil,
+                            sortKey: nil,
+                            modelProviders: nil,
+                            sourceKinds: nil,
+                            archived: nil,
+                            cwd: nil,
+                            searchTerm: nil
+                        )
+                    )
+                    let response = try? await appModel.rpc.threadResume(
+                        serverId: thread.key.serverId,
+                        params: reloadLaunchConfig().threadResumeParams(
+                            threadId: thread.key.threadId,
+                            cwdOverride: thread.info.cwd
+                        )
+                    )
+                    if let response {
+                        appModel.store.setActiveThread(
+                            key: ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
+                        )
+                    }
+                    await appModel.refreshSnapshot()
                 }
-                isReloading = false
             }
         } label: {
             Group {
@@ -219,14 +252,26 @@ struct HeaderView: View {
                 } else {
                     Image(systemName: "arrow.clockwise")
                         .litterFont(size: 16, weight: .semibold)
-                        .foregroundColor(connection.isConnected ? LitterTheme.accent : LitterTheme.textMuted)
+                        .foregroundColor(server?.isConnected == true ? LitterTheme.accent : LitterTheme.textMuted)
                 }
             }
             .frame(width: 44, height: 44)
             .modifier(GlassCircleModifier())
         }
         .accessibilityIdentifier("header.reloadButton")
-        .disabled(isReloading || !connection.isConnected)
+        .disabled(isReloading || server?.isConnected != true)
+    }
+
+    private func reloadLaunchConfig() -> AppThreadLaunchConfig {
+        let pendingModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = pendingModel.isEmpty ? nil : pendingModel
+        return AppThreadLaunchConfig(
+            model: resolvedModel,
+            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            developerInstructions: nil,
+            persistExtendedHistory: false
+        )
     }
 
 }
@@ -448,12 +493,10 @@ struct ModelSelectorSheet: View {
 
 #if DEBUG
 #Preview("Header") {
-    let manager = LitterPreviewData.makeServerManager()
-    return LitterPreviewScene(serverManager: manager) {
+    let appModel = LitterPreviewData.makeConversationAppModel()
+    LitterPreviewScene(appModel: appModel) {
         HeaderView(
-            thread: manager.activeThread!,
-            connection: manager.activeConnection!,
-            serverManager: manager,
+            thread: appModel.snapshot!.threads[0],
             onBack: {}
         )
     }

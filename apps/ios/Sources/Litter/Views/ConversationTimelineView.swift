@@ -7,7 +7,7 @@ struct ConversationTurnTimeline: View {
     let isLive: Bool
     let renderMode: ConversationTurnRenderMode
     let serverId: String
-    let agentDirectoryVersion: Int
+    let agentDirectoryVersion: UInt64
     let messageActionsDisabled: Bool
     let onStreamingSnapshotRendered: (() -> Void)?
     let resolveTargetLabel: (String) -> String?
@@ -107,7 +107,7 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
                 var mergedThreadIds: [String] = []
                 var mergedStates: [ConversationMultiAgentState] = []
                 var mergedPrompts: [String] = []
-                var latestStatus = "completed"
+                var latestStatus: AppOperationStatus = .completed
                 let tool = subagentBuffer.first?.data.tool ?? "spawnAgent"
 
                 for entry in subagentBuffer {
@@ -118,7 +118,7 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
                         mergedPrompts.append(p)
                     }
                     if entry.data.isInProgress {
-                        latestStatus = "in_progress"
+                        latestStatus = .inProgress
                     }
                 }
 
@@ -179,7 +179,7 @@ private struct ConversationTimelineItemRow: View {
 
     let item: ConversationItem
     let serverId: String
-    let agentDirectoryVersion: Int
+    let agentDirectoryVersion: UInt64
     let renderMode: ConversationTurnRenderMode
     let isStreamingMessage: Bool
     let messageActionsDisabled: Bool
@@ -386,7 +386,7 @@ private struct ConversationTimelineItemRow: View {
             kind: .fileChange,
             title: "File Change",
             summary: summary,
-            status: toolCallStatus(from: data.status),
+            status: data.status.toolCallStatus,
             duration: nil,
             sections: sections
         )
@@ -421,7 +421,7 @@ private struct ConversationTimelineItemRow: View {
             kind: .mcpToolCall,
             title: "MCP Tool Call",
             summary: summary,
-            status: toolCallStatus(from: data.status),
+            status: data.status.toolCallStatus,
             duration: formatDuration(data.durationMs),
             sections: sections
         )
@@ -446,7 +446,7 @@ private struct ConversationTimelineItemRow: View {
             kind: .mcpToolCall,
             title: "Dynamic Tool Call",
             summary: data.tool,
-            status: toolCallStatus(from: data.status),
+            status: data.status.toolCallStatus,
             duration: formatDuration(data.durationMs),
             sections: sections
         )
@@ -571,7 +571,7 @@ private struct ConversationCommandExecutionRow: View {
             shellLine
             ConversationCommandOutputViewport(
                 output: renderedOutput,
-                status: toolCallStatus(from: data.status),
+                status: data.status.toolCallStatus,
                 durationText: formatDuration(data.durationMs)
             )
         }
@@ -836,7 +836,7 @@ private struct ConversationTodoListRow: View {
     }
 
     @ViewBuilder
-    private func todoStatusView(for status: ConversationPlanStepStatus) -> some View {
+    private func todoStatusView(for status: HydratedPlanStepStatus) -> some View {
         switch status {
         case .pending:
             Image(systemName: "circle")
@@ -1177,7 +1177,7 @@ struct ConversationPinnedContextStrip: View {
     }
 
     @ViewBuilder
-    private func compactTodoStatusView(for status: ConversationPlanStepStatus) -> some View {
+    private func compactTodoStatusView(for status: HydratedPlanStepStatus) -> some View {
         switch status {
         case .pending:
             Image(systemName: "circle")
@@ -1421,20 +1421,6 @@ private func summarizeDiff(_ diff: String) -> DiffStats {
     }
 
     return DiffStats(additions: additions, deletions: deletions)
-}
-
-private func toolCallStatus(from rawStatus: String) -> ToolCallStatus {
-    let normalized = rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if normalized.contains("progress") || normalized.contains("running") || normalized.contains("pending") {
-        return .inProgress
-    }
-    if normalized.contains("fail") || normalized.contains("error") || normalized.contains("denied") {
-        return .failed
-    }
-    if normalized.contains("complete") || normalized.contains("success") || normalized.contains("done") || normalized == "ok" {
-        return .completed
-    }
-    return .unknown
 }
 
 private func formatDuration(_ durationMs: Int?) -> String? {

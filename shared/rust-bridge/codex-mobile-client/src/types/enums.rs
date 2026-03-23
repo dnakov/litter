@@ -45,6 +45,16 @@ pub enum ApprovalKind {
     McpElicitation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Enum)]
+pub enum ApprovalDecisionValue {
+    Accept,
+    AcceptForSession,
+    Decline,
+    Cancel,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

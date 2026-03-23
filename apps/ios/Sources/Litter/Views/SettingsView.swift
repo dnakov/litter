@@ -1,19 +1,23 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     @AppStorage("fontFamily") private var fontFamily = FontFamilyOption.mono.rawValue
     @AppStorage("collapseTurns") private var collapseTurns = false
 
-    private var connection: ServerConnection? {
-        serverManager.activeConnection ?? serverManager.connections.values.first(where: { $0.isConnected })
+    private var currentServer: AppServerSnapshot? {
+        if let activeServerId = appModel.snapshot?.activeThread?.serverId,
+           let activeServer = appModel.snapshot?.servers.first(where: { $0.serverId == activeServerId }) {
+            return activeServer
+        }
+        return appModel.snapshot?.servers.first
     }
 
-    private var connectedServers: [ServerConnection] {
+    private var connectedServers: [HomeDashboardServer] {
         HomeDashboardSupport.sortedConnectedServers(
-            from: Array(serverManager.connections.values),
-            activeServerId: serverManager.activeThreadKey?.serverId
+            from: appModel.snapshot?.servers ?? [],
+            activeServerId: appModel.snapshot?.activeThread?.serverId
         )
     }
 
@@ -153,8 +157,8 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         Group {
-            if let connection {
-                SettingsConnectionAccountSection(connection: connection)
+            if let currentServer {
+                SettingsConnectionAccountSection(server: currentServer)
             } else {
                 SettingsDisconnectedAccountSection()
             }
@@ -173,20 +177,22 @@ struct SettingsView: View {
             } else {
                 ForEach(connectedServers, id: \.id) { conn in
                     HStack {
-                        Image(systemName: serverIconName(for: conn.server.source))
+                        Image(systemName: conn.isLocal ? "iphone" : "server.rack")
                             .foregroundColor(LitterTheme.accent)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(conn.server.name)
+                            Text(conn.displayName)
                                 .litterFont(.footnote)
                                 .foregroundColor(LitterTheme.textPrimary)
-                            Text(conn.connectionHealth.settingsLabel)
+                            Text(conn.health.displayLabel)
                                 .litterFont(.caption)
-                                .foregroundColor(conn.connectionHealth.settingsColor)
+                                .foregroundColor(conn.health.accentColor)
                         }
                         Spacer()
                         Button("Remove") {
-                            serverManager.removeServer(id: conn.id)
+                            SavedServerStore.remove(serverId: conn.id)
+                            Task { await SshSessionStore.shared.close(serverId: conn.id, ssh: appModel.ssh) }
+                            appModel.serverBridge.disconnectServer(serverId: conn.id)
                         }
                         .litterFont(.caption)
                         .foregroundColor(LitterTheme.danger)
@@ -203,13 +209,11 @@ struct SettingsView: View {
 }
 
 private struct SettingsConnectionAccountSection: View {
-    let connection: ServerConnection
+    @Environment(AppModel.self) private var appModel
+    let server: AppServerSnapshot
     @State private var apiKey = ""
     @State private var isAuthWorking = false
-
-    private var authStatus: AuthStatus {
-        connection.authStatus
-    }
+    @State private var authError: String?
 
     var body: some View {
         Section {
@@ -228,9 +232,9 @@ private struct SettingsConnectionAccountSection: View {
                     }
                 }
                 Spacer()
-                if authStatus != .notLoggedIn && authStatus != .unknown {
+                if server.account != nil {
                     Button("Logout") {
-                        Task { await connection.logout() }
+                        Task { await logout() }
                     }
                     .litterFont(.caption)
                     .foregroundColor(LitterTheme.danger)
@@ -238,44 +242,16 @@ private struct SettingsConnectionAccountSection: View {
             }
             .listRowBackground(LitterTheme.surface.opacity(0.6))
 
-            if connection.target == .local, connection.hasOpenAIApiKey {
-                HStack(spacing: 10) {
-                    Image(systemName: "key.fill")
-                        .foregroundColor(Color(hex: "#00AAFF"))
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Realtime API Key Saved")
-                            .litterFont(.subheadline)
-                            .foregroundColor(LitterTheme.textPrimary)
-                        Text("Realtime can use the saved OpenAI API key while keeping your current account auth.")
-                            .litterFont(.caption)
-                            .foregroundColor(LitterTheme.textSecondary)
-                    }
-                    Spacer()
-                    Button("Delete") {
-                        Task {
-                            isAuthWorking = true
-                            await connection.clearOpenAIApiKey()
-                            isAuthWorking = false
-                        }
-                    }
-                    .litterFont(.caption)
-                    .foregroundColor(LitterTheme.danger)
-                    .disabled(isAuthWorking)
-                }
-                .listRowBackground(LitterTheme.surface.opacity(0.6))
-            }
-
-            if case .notLoggedIn = authStatus {
+            if server.account == nil {
                 Button {
                     Task {
                         isAuthWorking = true
-                        await connection.loginWithChatGPT()
+                        await loginWithChatGPT()
                         isAuthWorking = false
                     }
                 } label: {
                     HStack {
-                        if isAuthWorking || connection.isChatGPTLoginInProgress {
+                        if isAuthWorking {
                             ProgressView().tint(LitterTheme.textPrimary).scaleEffect(0.8)
                         }
                         Image(systemName: "person.crop.circle.badge.checkmark")
@@ -284,7 +260,7 @@ private struct SettingsConnectionAccountSection: View {
                     }
                     .foregroundColor(LitterTheme.accent)
                 }
-                .disabled(isAuthWorking || connection.isChatGPTLoginInProgress)
+                .disabled(isAuthWorking)
                 .listRowBackground(LitterTheme.surface.opacity(0.6))
             }
 
@@ -306,7 +282,7 @@ private struct SettingsConnectionAccountSection: View {
                         guard !key.isEmpty else { return }
                         Task {
                             isAuthWorking = true
-                            await connection.loginWithApiKey(key)
+                            await saveApiKey(key)
                             isAuthWorking = false
                         }
                     }
@@ -317,7 +293,7 @@ private struct SettingsConnectionAccountSection: View {
                 .listRowBackground(LitterTheme.surface.opacity(0.6))
             }
 
-            if let authError = connection.lastAuthError {
+            if let authError {
                 Text(authError)
                     .litterFont(.caption)
                     .foregroundColor(LitterTheme.danger)
@@ -330,31 +306,79 @@ private struct SettingsConnectionAccountSection: View {
     }
 
     private var authColor: Color {
-        switch authStatus {
-        case .chatgpt: return LitterTheme.accent
-        case .apiKey: return Color(hex: "#00AAFF")
-        case .notLoggedIn, .unknown: return LitterTheme.textMuted
+        switch server.account {
+        case .chatgpt?:
+            return LitterTheme.accent
+        case .apiKey?:
+            return Color(hex: "#00AAFF")
+        case nil:
+            return LitterTheme.textMuted
         }
     }
 
     private var authTitle: String {
-        switch authStatus {
-        case .chatgpt(let email): return email.isEmpty ? "ChatGPT" : email
-        case .apiKey: return "API Key"
-        case .notLoggedIn: return "Not logged in"
-        case .unknown: return "Checking…"
+        switch server.account {
+        case .chatgpt(let email, _)?:
+            return email.isEmpty ? "ChatGPT" : email
+        case .apiKey?:
+            return "API Key"
+        case nil:
+            return "Not logged in"
         }
     }
 
     private var authSubtitle: String? {
-        switch authStatus {
-        case .chatgpt:
-            return connection.hasOpenAIApiKey
-                ? "ChatGPT account with saved realtime API key"
-                : "ChatGPT account"
-        case .apiKey:
-            return connection.hasOpenAIApiKey ? "OpenAI API key saved" : "OpenAI API key"
-        default: return nil
+        switch server.account {
+        case .chatgpt?:
+            return "ChatGPT account"
+        case .apiKey?:
+            return "OpenAI API key"
+        case nil:
+            return nil
+        }
+    }
+
+    private func loginWithChatGPT() async {
+        do {
+            authError = nil
+            let tokens = try await ChatGPTOAuth.login()
+            _ = try await appModel.rpc.loginAccount(
+                serverId: server.serverId,
+                params: .chatgptAuthTokens(
+                    accessToken: tokens.accessToken,
+                    chatgptAccountId: tokens.accountID,
+                    chatgptPlanType: tokens.planType
+                )
+            )
+            await appModel.refreshSnapshot()
+        } catch ChatGPTOAuthError.cancelled {
+            return
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private func saveApiKey(_ key: String) async {
+        do {
+            authError = nil
+            _ = try await appModel.rpc.loginAccount(
+                serverId: server.serverId,
+                params: .apiKey(apiKey: key)
+            )
+            await appModel.refreshSnapshot()
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private func logout() async {
+        do {
+            try? ChatGPTOAuthTokenStore.shared.clear()
+            _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+            await appModel.refreshSnapshot()
+            authError = nil
+        } catch {
+            authError = error.localizedDescription
         }
     }
 }

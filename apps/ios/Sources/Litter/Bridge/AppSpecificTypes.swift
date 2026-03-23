@@ -51,6 +51,23 @@ enum TurnSandboxPolicy: Encodable {
         }
     }
 
+    var ffiValue: SandboxPolicy {
+        switch self {
+        case .dangerFullAccess:
+            return .dangerFullAccess
+        case .readOnly:
+            return .readOnly(access: .fullAccess, networkAccess: false)
+        case .workspaceWrite:
+            return .workspaceWrite(
+                writableRoots: [],
+                readOnlyAccess: .fullAccess,
+                networkAccess: false,
+                excludeTmpdirEnvVar: false,
+                excludeSlashTmp: false
+            )
+        }
+    }
+
     private enum DangerFullAccessCodingKeys: String, CodingKey {
         case type
     }

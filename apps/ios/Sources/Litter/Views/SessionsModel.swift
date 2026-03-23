@@ -12,25 +12,27 @@ final class SessionsModel {
     private struct Snapshot {
         let derivedData: SessionsDerivedData
         let connectedServerOptions: [DirectoryPickerServerOption]
+        let connectedServers: [HomeDashboardServer]
         let ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState]
         let frozenMostRecentThreadOrder: [ThreadKey]?
     }
 
     private(set) var derivedData: SessionsDerivedData = .empty
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
+    private(set) var connectedServers: [HomeDashboardServer] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
 
-    @ObservationIgnored private weak var serverManager: ServerManager?
+    @ObservationIgnored private weak var appModel: AppModel?
     @ObservationIgnored private weak var appState: AppState?
     @ObservationIgnored private var searchQuery = ""
     @ObservationIgnored private var hasInitializedState = false
     @ObservationIgnored private var observationGeneration = 0
     @ObservationIgnored private var frozenMostRecentThreadOrder: [ThreadKey]?
 
-    func bind(serverManager: ServerManager, appState: AppState) {
-        let needsRebind = self.serverManager !== serverManager || self.appState !== appState
+    func bind(appModel: AppModel, appState: AppState) {
+        let needsRebind = self.appModel !== appModel || self.appState !== appState
 
-        self.serverManager = serverManager
+        self.appModel = appModel
         self.appState = appState
 
         guard needsRebind || !hasInitializedState else { return }
@@ -46,9 +48,10 @@ final class SessionsModel {
     }
 
     private func refreshState() {
-        guard let serverManager, let appState else {
+        guard let appModel, let appState else {
             derivedData = .empty
             connectedServerOptions = []
+            connectedServers = []
             ephemeralStateByThreadKey = [:]
             frozenMostRecentThreadOrder = nil
             return
@@ -63,35 +66,36 @@ final class SessionsModel {
             let selectedServerFilterId = appState.sessionsSelectedServerFilterId
             let showOnlyForks = appState.sessionsShowOnlyForks
             let workspaceSortMode = WorkspaceSortMode(rawValue: appState.sessionsWorkspaceSortModeRaw) ?? .mostRecent
+            let appSnapshot = appModel.snapshot
 
-            let nextConnectedServerOptions = serverManager.connections.values
-                .filter(\.isConnected)
-                .sorted {
-                    $0.server.name.localizedCaseInsensitiveCompare($1.server.name) == .orderedAscending
-                }
-                .map {
-                    DirectoryPickerServerOption(
-                        id: $0.id,
-                        name: $0.server.name,
-                        sourceLabel: $0.server.source.rawString
-                    )
-                }
+            let nextConnectedServers = HomeDashboardSupport.sortedConnectedServers(
+                from: appSnapshot?.servers ?? [],
+                activeServerId: appSnapshot?.activeThread?.serverId
+            )
 
-            let nextEphemeralStateByThreadKey = serverManager.threads.reduce(into: [ThreadKey: ThreadEphemeralState]()) { partialResult, entry in
-                partialResult[entry.key] = ThreadEphemeralState(
-                    hasTurnActive: entry.value.hasTurnActive,
-                    updatedAt: entry.value.updatedAt
+            let nextConnectedServerOptions = nextConnectedServers.map {
+                DirectoryPickerServerOption(
+                    id: $0.id,
+                    name: $0.displayName,
+                    sourceLabel: $0.sourceLabel
+                )
+            }
+
+            let nextEphemeralStateByThreadKey = (appSnapshot?.sessionSummaries ?? []).reduce(into: [ThreadKey: ThreadEphemeralState]()) { partialResult, session in
+                partialResult[session.key] = ThreadEphemeralState(
+                    hasTurnActive: session.hasActiveTurn,
+                    updatedAt: session.updatedAtDate
                 )
             }
 
             let nextFrozenMostRecentThreadOrder = resolvedFrozenMostRecentThreadOrder(
-                serverManager: serverManager,
+                sessionSummaries: appSnapshot?.sessionSummaries ?? [],
                 workspaceSortMode: workspaceSortMode,
                 previousDisplayedOrder: previousDisplayedOrder
             )
 
             let nextDerivedData = SessionsDerivation.build(
-                serverManager: serverManager,
+                sessions: appSnapshot?.sessionSummaries ?? [],
                 selectedServerFilterId: selectedServerFilterId,
                 showOnlyForks: showOnlyForks,
                 workspaceSortMode: workspaceSortMode,
@@ -102,6 +106,7 @@ final class SessionsModel {
             return Snapshot(
                 derivedData: nextDerivedData,
                 connectedServerOptions: nextConnectedServerOptions,
+                connectedServers: nextConnectedServers,
                 ephemeralStateByThreadKey: nextEphemeralStateByThreadKey,
                 frozenMostRecentThreadOrder: nextFrozenMostRecentThreadOrder
             )
@@ -114,12 +119,13 @@ final class SessionsModel {
 
         frozenMostRecentThreadOrder = snapshot.frozenMostRecentThreadOrder
         connectedServerOptions = snapshot.connectedServerOptions
+        connectedServers = snapshot.connectedServers
         ephemeralStateByThreadKey = snapshot.ephemeralStateByThreadKey
         derivedData = snapshot.derivedData
     }
 
     private func resolvedFrozenMostRecentThreadOrder(
-        serverManager: ServerManager,
+        sessionSummaries: [AppSessionSummary],
         workspaceSortMode: WorkspaceSortMode,
         previousDisplayedOrder: [ThreadKey]
     ) -> [ThreadKey]? {
@@ -127,7 +133,7 @@ final class SessionsModel {
             return nil
         }
 
-        let hasActiveThread = serverManager.threads.values.contains(where: \.hasTurnActive)
+        let hasActiveThread = sessionSummaries.contains(where: \.hasActiveTurn)
         guard hasActiveThread else {
             return nil
         }
@@ -140,8 +146,8 @@ final class SessionsModel {
             return previousDisplayedOrder
         }
 
-        return serverManager.threads.values
-            .sorted { $0.updatedAt > $1.updatedAt }
+        return sessionSummaries
+            .sorted { $0.updatedAtDate > $1.updatedAtDate }
             .map(\.key)
     }
 }

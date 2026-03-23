@@ -159,6 +159,28 @@ pub struct DiscoveryService {
     running: Arc<AtomicBool>,
 }
 
+pub fn reconcile_discovered_servers(candidates: Vec<DiscoveredServer>) -> Vec<DiscoveredServer> {
+    let mut map: HashMap<String, DiscoveredServer> = HashMap::new();
+    for server in candidates {
+        match map.get_mut(&server.id) {
+            Some(existing) => merge_server(existing, server),
+            None => {
+                map.insert(server.id.clone(), server);
+            }
+        }
+    }
+
+    let mut results: Vec<DiscoveredServer> = map.into_values().collect();
+    results.sort_by(|a, b| {
+        source_rank(a.source)
+            .cmp(&source_rank(b.source))
+            .then_with(|| a.display_name.cmp(&b.display_name))
+            .then_with(|| a.host.cmp(&b.host))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    results
+}
+
 impl DiscoveryService {
     /// Create a new discovery service with default (no-op) mDNS browser.
     pub fn new(config: DiscoveryConfig) -> Self {
@@ -191,7 +213,10 @@ impl DiscoveryService {
     }
 
     /// Run a single discovery sweep using pre-resolved platform mDNS seeds.
-    pub async fn scan_once_with_mdns_seeds(&self, mdns_seeds: &[MdnsSeed]) -> Vec<DiscoveredServer> {
+    pub async fn scan_once_with_mdns_seeds(
+        &self,
+        mdns_seeds: &[MdnsSeed],
+    ) -> Vec<DiscoveredServer> {
         self.scan_once_with_context(mdns_seeds, None).await
     }
 
@@ -595,7 +620,11 @@ impl DiscoveryService {
 
             results.push(DiscoveredServer {
                 id: format!("network-{}", host),
-                display_name: if display.is_empty() { host.clone() } else { display },
+                display_name: if display.is_empty() {
+                    host.clone()
+                } else {
+                    display
+                },
                 host,
                 port,
                 codex_port,
@@ -758,7 +787,10 @@ fn detect_local_ipv4() -> Option<Ipv4Addr> {
 }
 
 fn parse_ipv4_hint(value: &str) -> Option<Ipv4Addr> {
-    value.parse::<Ipv4Addr>().ok().filter(|ip| !ip.is_loopback())
+    value
+        .parse::<Ipv4Addr>()
+        .ok()
+        .filter(|ip| !ip.is_loopback())
 }
 
 /// Fetch the list of Tailscale peers from the local API.
@@ -1130,6 +1162,41 @@ mod tests {
         assert_eq!(cloned.id, server.id);
         assert_eq!(cloned.host, server.host);
         assert_eq!(cloned.source, server.source);
+    }
+
+    #[test]
+    fn reconcile_prefers_better_source_and_codex_port() {
+        let older = DiscoveredServer {
+            id: "server-1".to_string(),
+            display_name: "10.0.0.2".to_string(),
+            host: "10.0.0.2".to_string(),
+            port: 22,
+            codex_port: None,
+            ssh_port: Some(22),
+            source: DiscoverySource::Manual,
+            metadata: HashMap::new(),
+            last_seen: Instant::now(),
+            reachable: true,
+        };
+        let newer = DiscoveredServer {
+            id: "server-1".to_string(),
+            display_name: "Studio".to_string(),
+            host: "10.0.0.2".to_string(),
+            port: 8390,
+            codex_port: Some(8390),
+            ssh_port: Some(22),
+            source: DiscoverySource::Bonjour,
+            metadata: HashMap::new(),
+            last_seen: Instant::now(),
+            reachable: true,
+        };
+
+        let reconciled = reconcile_discovered_servers(vec![older, newer]);
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].source, DiscoverySource::Bonjour);
+        assert_eq!(reconciled[0].display_name, "Studio");
+        assert_eq!(reconciled[0].codex_port, Some(8390));
+        assert_eq!(reconciled[0].port, 8390);
     }
 
     /// Test that the mock mDNS browser works correctly with the service.

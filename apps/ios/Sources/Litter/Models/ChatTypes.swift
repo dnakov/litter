@@ -154,10 +154,3 @@ enum ConversationStatus: Equatable {
     case thinking
     case error(String)
 }
-
-enum AuthStatus: Equatable {
-    case unknown
-    case notLoggedIn
-    case apiKey
-    case chatgpt(email: String)
-}

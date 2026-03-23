@@ -8,6 +8,9 @@
 mod aec;
 
 pub mod conversation;
+pub mod conversation_uniffi;
+pub mod discovery_uniffi;
+pub mod uniffi_shared;
 /// FFI-exportable wrapper types for all Codex protocol messages.
 pub mod types;
 
@@ -29,6 +32,12 @@ pub mod parser;
 /// Progressive message hydration and LRU caching.
 pub mod hydration;
 
+/// Internal generated RPC client and conversion helpers.
+pub mod rpc;
+
+/// Canonical app/session/thread store built on top of the shared client.
+pub mod store;
+
 /// FFI layer: UniFFI bindings for iOS and Android.
 pub mod ffi;
 
@@ -41,19 +50,17 @@ uniffi::setup_scaffolding!();
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::discovery::{DiscoveredServer, DiscoveryConfig, DiscoveryService, MdnsSeed};
-use crate::hydration::{CacheKey, CachedMessage, MessageCache, MessageSegment};
-use crate::parser::ToolCallCard;
 use crate::session::connection::InProcessConfig;
 use crate::session::connection::{ServerConfig, ServerSession};
 use crate::session::events::{EventProcessor, UiEvent};
-use crate::session::threads::{ThreadManager, ThreadState};
+use crate::store::{AppSnapshot, AppStoreReducer, AppUpdate, ServerHealthSnapshot, ThreadSnapshot};
 use crate::transport::{RpcError, TransportError};
-use crate::types::{PendingApproval, ThreadInfo, ThreadKey};
+use crate::types::{PendingApproval, ThreadInfo, ThreadKey, ThreadSummaryStatus, generated};
 use codex_app_server_protocol as upstream;
 
 /// Top-level entry point for platform code (iOS / Android).
@@ -63,21 +70,22 @@ use codex_app_server_protocol as upstream;
 /// All methods are safe to call from any thread (`Send + Sync`).
 pub struct MobileClient {
     sessions: RwLock<HashMap<String, Arc<ServerSession>>>,
-    thread_manager: RwLock<ThreadManager>,
     event_processor: Arc<EventProcessor>,
+    app_store: Arc<AppStoreReducer>,
     discovery: RwLock<DiscoveryService>,
-    cache: Mutex<MessageCache>,
 }
 
 impl MobileClient {
     /// Create a new `MobileClient`.
     pub fn new() -> Self {
+        let event_processor = Arc::new(EventProcessor::new());
+        let app_store = Arc::new(AppStoreReducer::new());
+        spawn_store_listener(Arc::clone(&app_store), event_processor.subscribe());
         Self {
             sessions: RwLock::new(HashMap::new()),
-            thread_manager: RwLock::new(ThreadManager::new()),
-            event_processor: Arc::new(EventProcessor::new()),
+            event_processor,
+            app_store,
             discovery: RwLock::new(DiscoveryService::new(DiscoveryConfig::default())),
-            cache: Mutex::new(MessageCache::new()),
         }
     }
 
@@ -86,13 +94,15 @@ impl MobileClient {
     /// Connect to a local (in-process) Codex server.
     ///
     /// Returns the `server_id` from the config on success.
-    pub async fn connect_local(
+    pub(crate) async fn connect_local(
         &self,
         config: ServerConfig,
         in_process: InProcessConfig,
     ) -> Result<String, TransportError> {
         let server_id = config.server_id.clone();
         let session = Arc::new(ServerSession::connect_local(config, in_process).await?);
+        self.app_store
+            .upsert_server(session.config(), ServerHealthSnapshot::Connected);
 
         self.spawn_event_reader(server_id.clone(), Arc::clone(&session));
 
@@ -100,6 +110,10 @@ impl MobileClient {
             .write()
             .expect("sessions lock poisoned")
             .insert(server_id.clone(), session);
+
+        if let Err(error) = self.sync_server_account(server_id.as_str()).await {
+            warn!("MobileClient: failed to sync account for {server_id}: {error}");
+        }
 
         info!("MobileClient: connected local server {server_id}");
         Ok(server_id)
@@ -108,9 +122,11 @@ impl MobileClient {
     /// Connect to a remote Codex server via WebSocket.
     ///
     /// Returns the `server_id` from the config on success.
-    pub async fn connect_remote(&self, config: ServerConfig) -> Result<String, TransportError> {
+    pub(crate) async fn connect_remote(&self, config: ServerConfig) -> Result<String, TransportError> {
         let server_id = config.server_id.clone();
         let session = Arc::new(ServerSession::connect_remote(config).await?);
+        self.app_store
+            .upsert_server(session.config(), ServerHealthSnapshot::Connected);
 
         self.spawn_event_reader(server_id.clone(), Arc::clone(&session));
 
@@ -119,12 +135,16 @@ impl MobileClient {
             .expect("sessions lock poisoned")
             .insert(server_id.clone(), session);
 
+        if let Err(error) = self.sync_server_account(server_id.as_str()).await {
+            warn!("MobileClient: failed to sync account for {server_id}: {error}");
+        }
+
         info!("MobileClient: connected remote server {server_id}");
         Ok(server_id)
     }
 
     /// Disconnect a server by its ID.
-    pub fn disconnect_server(&self, server_id: &str) {
+    pub(crate) fn disconnect_server(&self, server_id: &str) {
         let session = self
             .sessions
             .write()
@@ -133,6 +153,7 @@ impl MobileClient {
 
         if let Some(session) = session {
             // Swift/Kotlin can call this from outside any Tokio runtime.
+            self.app_store.remove_server(server_id);
             Self::spawn_detached(async move {
                 session.disconnect().await;
             });
@@ -143,7 +164,8 @@ impl MobileClient {
     }
 
     /// Return the configs of all currently connected servers.
-    pub fn connected_servers(&self) -> Vec<ServerConfig> {
+    #[cfg(test)]
+    pub(crate) fn connected_servers(&self) -> Vec<ServerConfig> {
         self.sessions
             .read()
             .expect("sessions lock poisoned")
@@ -155,92 +177,172 @@ impl MobileClient {
     // ── Threads ───────────────────────────────────────────────────────
 
     /// List threads from a specific server.
-    pub async fn list_threads(&self, server_id: &str) -> Result<Vec<ThreadInfo>, RpcError> {
-        let session = self.get_session(server_id)?;
-        let tm = self
-            .thread_manager
-            .read()
-            .expect("thread_manager lock poisoned");
-        tm.list_threads(&session).await
+    #[cfg(test)]
+    pub(crate) async fn list_threads(&self, server_id: &str) -> Result<Vec<ThreadInfo>, RpcError> {
+        self.get_session(server_id)?;
+        let response = self
+            .generated_thread_list(
+                server_id,
+                generated::ThreadListParams {
+                    limit: None,
+                    cursor: None,
+                    sort_key: None,
+                    model_providers: None,
+                    source_kinds: None,
+                    archived: None,
+                    cwd: None,
+                    search_term: None,
+                },
+            )
+            .await
+            .map_err(map_rpc_client_error)?;
+        let threads = response
+            .data
+            .into_iter()
+            .filter_map(thread_info_from_generated_thread)
+            .collect::<Vec<_>>();
+        self.app_store.sync_thread_list(server_id, &threads);
+        Ok(threads)
     }
 
-    /// Start a new thread on a server.
-    pub async fn start_thread(
-        &self,
-        server_id: &str,
-        params: upstream::ThreadStartParams,
-    ) -> Result<ThreadKey, RpcError> {
-        let session = self.get_session(server_id)?;
-        let mut tm = self
-            .thread_manager
-            .write()
-            .expect("thread_manager lock poisoned");
-        tm.start_thread(&session, params).await
+    pub(crate) async fn sync_server_account(&self, server_id: &str) -> Result<(), RpcError> {
+        self.get_session(server_id)?;
+        let response = self
+            .generated_get_account(
+                server_id,
+                generated::GetAccountParams {
+                    refresh_token: false,
+                },
+            )
+            .await
+            .map_err(map_rpc_client_error)?;
+        self.apply_account_response(server_id, &response);
+        Ok(())
     }
 
-    /// Resume an existing thread on a server.
-    pub async fn resume_thread(
-        &self,
-        server_id: &str,
-        thread_id: &str,
-    ) -> Result<ThreadKey, RpcError> {
-        let session = self.get_session(server_id)?;
-        let mut tm = self
-            .thread_manager
-            .write()
-            .expect("thread_manager lock poisoned");
-        tm.resume_thread(&session, thread_id).await
-    }
-
-    /// Send a message / start a turn on a thread.
-    pub async fn send_message(
+    /// Roll back the current thread to a selected user turn and return the
+    /// message text that should be restored into the composer for editing.
+    pub(crate) async fn edit_message(
         &self,
         key: &ThreadKey,
-        params: upstream::TurnStartParams,
-    ) -> Result<(), RpcError> {
-        let session = self.get_session(&key.server_id)?;
-        let mut tm = self
-            .thread_manager
-            .write()
-            .expect("thread_manager lock poisoned");
-        tm.send_message(&session, key, params).await
+        selected_turn_index: u32,
+    ) -> Result<String, RpcError> {
+        self.get_session(&key.server_id)?;
+        let current = self.snapshot_thread(key)?;
+        ensure_thread_is_editable(&current)?;
+        let rollback_depth = rollback_depth_for_turn(&current, selected_turn_index as usize)?;
+        let prefill_text = user_boundary_text_for_turn(&current, selected_turn_index as usize)?;
+
+        if rollback_depth > 0 {
+            let response = self
+                .generated_thread_rollback(
+                    &key.server_id,
+                    generated::ThreadRollbackParams {
+                        thread_id: key.thread_id.clone(),
+                        num_turns: rollback_depth,
+                    },
+                )
+                .await
+                .map_err(|e| RpcError::Deserialization(e.to_string()))?;
+            let mut snapshot = thread_snapshot_from_generated_thread(
+                &key.server_id,
+                response.thread,
+                current.model.clone(),
+                current.reasoning_effort.clone(),
+            )?;
+            copy_thread_runtime_fields(&current, &mut snapshot);
+            self.app_store.upsert_thread_snapshot(snapshot);
+        }
+
+        self.set_active_thread(Some(key.clone()));
+        Ok(prefill_text)
     }
 
-    /// Interrupt the active turn on a thread.
-    pub async fn interrupt_turn(&self, key: &ThreadKey) -> Result<(), RpcError> {
-        let session = self.get_session(&key.server_id)?;
-        let tm = self
-            .thread_manager
-            .read()
-            .expect("thread_manager lock poisoned");
-        tm.interrupt_turn(&session, key).await
-    }
+    /// Fork a thread from a selected user message boundary.
+    pub(crate) async fn fork_thread_from_message(
+        &self,
+        key: &ThreadKey,
+        selected_turn_index: u32,
+        cwd: Option<String>,
+        model: Option<String>,
+        approval_policy: Option<generated::AskForApproval>,
+        sandbox: Option<generated::SandboxMode>,
+        developer_instructions: Option<String>,
+        persist_extended_history: bool,
+    ) -> Result<ThreadKey, RpcError> {
+        self.get_session(&key.server_id)?;
+        let source = self.snapshot_thread(key)?;
+        ensure_thread_is_editable(&source)?;
+        let rollback_depth = rollback_depth_for_turn(&source, selected_turn_index as usize)?;
 
-    /// Archive a thread.
-    pub async fn archive_thread(&self, key: &ThreadKey) -> Result<(), RpcError> {
-        let session = self.get_session(&key.server_id)?;
-        let mut tm = self
-            .thread_manager
-            .write()
-            .expect("thread_manager lock poisoned");
-        tm.archive_thread(&session, key).await
+        let response = self
+            .generated_thread_fork(
+                &key.server_id,
+                generated::ThreadForkParams {
+                    thread_id: key.thread_id.clone(),
+                    path: None,
+                    model,
+                    model_provider: None,
+                    service_tier: None,
+                    cwd,
+                    approval_policy,
+                    approvals_reviewer: None,
+                    sandbox,
+                    config: None,
+                    base_instructions: None,
+                    developer_instructions,
+                    ephemeral: false,
+                    persist_extended_history,
+                },
+            )
+            .await
+            .map_err(|e| RpcError::Deserialization(e.to_string()))?;
+
+        let fork_model = Some(response.model);
+        let fork_reasoning = response.reasoning_effort.map(reasoning_effort_string);
+        let mut snapshot = thread_snapshot_from_generated_thread(
+            &key.server_id,
+            response.thread,
+            fork_model.clone(),
+            fork_reasoning.clone(),
+        )?;
+        let next_key = snapshot.key.clone();
+
+        if rollback_depth > 0 {
+            let rollback = self
+                .generated_thread_rollback(
+                    &next_key.server_id,
+                    generated::ThreadRollbackParams {
+                        thread_id: next_key.thread_id.clone(),
+                        num_turns: rollback_depth,
+                    },
+                )
+                .await
+                .map_err(|e| RpcError::Deserialization(e.to_string()))?;
+            snapshot = thread_snapshot_from_generated_thread(
+                &next_key.server_id,
+                rollback.thread,
+                fork_model,
+                fork_reasoning,
+            )?;
+        }
+
+        self.app_store.upsert_thread_snapshot(snapshot);
+        self.set_active_thread(Some(next_key.clone()));
+        Ok(next_key)
     }
 
     /// Set the active thread. Pass `None` to clear.
-    pub fn set_active_thread(&self, key: Option<ThreadKey>) {
-        self.thread_manager
-            .write()
-            .expect("thread_manager lock poisoned")
-            .set_active_thread(key);
+    pub(crate) fn set_active_thread(&self, key: Option<ThreadKey>) {
+        self.app_store.set_active_thread(key);
     }
 
     /// Get the active thread state, if any.
-    pub fn active_thread(&self) -> Option<ThreadState> {
-        self.thread_manager
-            .read()
-            .expect("thread_manager lock poisoned")
-            .active_thread()
-            .cloned()
+    #[cfg(test)]
+    pub(crate) fn active_thread(&self) -> Option<ThreadSnapshot> {
+        let snapshot = self.app_store.snapshot();
+        let key = snapshot.active_thread?;
+        snapshot.threads.get(&key).cloned()
     }
 
     // ── Approvals ─────────────────────────────────────────────────────
@@ -272,7 +374,11 @@ impl MobileClient {
         let session = self.get_session(&server_id)?;
         let result = serde_json::json!({ "approved": true });
         let id_value = serde_json::Value::String(approval.id);
-        session.respond(id_value, result).await
+        let response = session.respond(id_value, result).await;
+        if response.is_ok() {
+            self.app_store.resolve_approval(request_id);
+        }
+        response
     }
 
     /// Deny a pending server request.
@@ -289,43 +395,119 @@ impl MobileClient {
         let session = self.get_session(&server_id)?;
         let result = serde_json::json!({ "approved": false });
         let id_value = serde_json::Value::String(approval.id);
-        session.respond(id_value, result).await
+        let response = session.respond(id_value, result).await;
+        if response.is_ok() {
+            self.app_store.resolve_approval(request_id);
+        }
+        response
+    }
+
+    pub(crate) async fn respond_to_approval(
+        &self,
+        request_id: &str,
+        decision: crate::types::ApprovalDecisionValue,
+    ) -> Result<(), RpcError> {
+        let approval = self
+            .event_processor
+            .resolve_approval(request_id)
+            .ok_or_else(|| RpcError::Server {
+                code: -1,
+                message: format!("no pending approval with id {request_id}"),
+            })?;
+
+        let server_id = if !approval.server_id.is_empty() {
+            approval.server_id.clone()
+        } else {
+            self.find_server_for_approval(&approval).unwrap_or_default()
+        };
+        let session = self.get_session(&server_id)?;
+
+        let decision_value = match approval.method.as_str() {
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                match decision {
+                    crate::types::ApprovalDecisionValue::Accept => "approved",
+                    crate::types::ApprovalDecisionValue::AcceptForSession => "approved_for_session",
+                    crate::types::ApprovalDecisionValue::Decline => "denied",
+                    crate::types::ApprovalDecisionValue::Cancel => "abort",
+                }
+            }
+            _ => match decision {
+                crate::types::ApprovalDecisionValue::Accept => "accept",
+                crate::types::ApprovalDecisionValue::AcceptForSession => "accept_for_session",
+                crate::types::ApprovalDecisionValue::Decline => "decline",
+                crate::types::ApprovalDecisionValue::Cancel => "cancel",
+            },
+        };
+
+        let result = serde_json::json!({ "decision": decision_value });
+        let id_value = serde_json::Value::String(approval.id);
+        let response = session.respond(id_value, result).await;
+        if response.is_ok() {
+            self.app_store.resolve_approval(request_id);
+        }
+        response
+    }
+
+    pub(crate) async fn respond_to_user_input(
+        &self,
+        request_id: &str,
+        answers: Vec<crate::types::PendingUserInputAnswer>,
+    ) -> Result<(), RpcError> {
+        let request = self
+            .app_store
+            .snapshot()
+            .pending_user_inputs
+            .into_iter()
+            .find(|request| request.id == request_id)
+            .ok_or_else(|| RpcError::Server {
+                code: -1,
+                message: format!("no pending user input request with id {request_id}"),
+            })?;
+
+        let payload_answers = answers
+            .into_iter()
+            .map(|answer| {
+                (
+                    answer.question_id,
+                    serde_json::json!({
+                        "answers": answer.answers,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+
+        let session = self.get_session(&request.server_id)?;
+        let response = session
+            .respond(
+                serde_json::Value::String(request.id.clone()),
+                serde_json::json!({ "answers": payload_answers }),
+            )
+            .await;
+        if response.is_ok() {
+            self.app_store.resolve_pending_user_input(request_id);
+        }
+        response
     }
 
     /// Return a snapshot of all pending approvals.
-    pub fn pending_approvals(&self) -> Vec<PendingApproval> {
-        self.event_processor.pending_approvals()
+    #[cfg(test)]
+    pub(crate) fn pending_approvals(&self) -> Vec<PendingApproval> {
+        self.app_store.snapshot().pending_approvals
     }
 
-    /// Access the event processor (for UniFFI wrapper subscription).
-    pub fn event_processor(&self) -> &EventProcessor {
-        &self.event_processor
+    pub(crate) fn app_snapshot(&self) -> AppSnapshot {
+        self.app_store.snapshot()
     }
 
-    // ── Events ────────────────────────────────────────────────────────
-
-    /// Subscribe to the stream of high-level UI events.
-    pub fn subscribe_ui_events(&self) -> broadcast::Receiver<UiEvent> {
-        self.event_processor.subscribe()
+    pub(crate) fn subscribe_app_updates(&self) -> broadcast::Receiver<AppUpdate> {
+        self.app_store.subscribe()
     }
 
     // ── Discovery ─────────────────────────────────────────────────────
 
-    /// Run a one-shot server discovery scan.
-    pub async fn scan_servers(&self) -> Vec<DiscoveredServer> {
-        // Clone the discovery ref without holding the lock across await.
-        let discovery = { self.discovery.read().expect("discovery lock poisoned") };
-        discovery.scan_once().await
-    }
-
-    /// Run a one-shot server discovery scan using platform-resolved mDNS seeds.
-    pub async fn scan_servers_with_mdns(&self, seeds: Vec<MdnsSeed>) -> Vec<DiscoveredServer> {
-        self.scan_servers_with_mdns_context(seeds, None).await
-    }
-
     /// Run a one-shot server discovery scan using platform-resolved mDNS seeds
     /// plus optional network hints from the UI layer.
-    pub async fn scan_servers_with_mdns_context(
+    pub(crate) async fn scan_servers_with_mdns_context(
         &self,
         seeds: Vec<MdnsSeed>,
         local_ipv4: Option<String>,
@@ -334,55 +516,6 @@ impl MobileClient {
         discovery
             .scan_once_with_context(&seeds, local_ipv4.as_deref())
             .await
-    }
-
-    // ── Cache / Parser ────────────────────────────────────────────────
-
-    /// Parse tool call cards from a message text.
-    pub fn parse_tool_calls(&self, text: &str) -> Vec<ToolCallCard> {
-        crate::parser::parse_tool_call_message(text)
-    }
-
-    /// Cache a parsed message by key.
-    pub fn cache_message(&self, key: CacheKey, text: &str) {
-        let tool_calls = crate::parser::parse_tool_call_message(text);
-        let segments = crate::hydration::extract_message_segments(text);
-        let cached = CachedMessage {
-            segments,
-            tool_calls,
-        };
-        self.cache
-            .lock()
-            .expect("cache lock poisoned")
-            .insert(key, cached);
-    }
-
-    /// Look up a cached message by key.
-    /// Returns `None` if not cached. Promotes the entry in LRU order.
-    pub fn get_cached(&self, key: &CacheKey) -> Option<CachedMessage> {
-        self.cache
-            .lock()
-            .expect("cache lock poisoned")
-            .get(key)
-            .cloned()
-    }
-
-    /// Invalidate all cache entries for a given message id.
-    pub fn invalidate_cache(&self, message_id: &str) {
-        self.cache
-            .lock()
-            .expect("cache lock poisoned")
-            .invalidate(message_id);
-    }
-
-    /// Clear the entire message cache.
-    pub fn clear_cache(&self) {
-        self.cache.lock().expect("cache lock poisoned").clear();
-    }
-
-    /// Extract message segments from text without caching.
-    pub fn extract_segments(&self, text: &str) -> Vec<MessageSegment> {
-        crate::hydration::extract_message_segments(text)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -398,6 +531,15 @@ impl MobileClient {
                 code: -1,
                 message: format!("no session for server_id '{server_id}'"),
             })
+    }
+
+    fn snapshot_thread(&self, key: &ThreadKey) -> Result<ThreadSnapshot, RpcError> {
+        self.app_store
+            .snapshot()
+            .threads
+            .get(key)
+            .cloned()
+            .ok_or_else(|| RpcError::Deserialization("thread unavailable".to_string()))
     }
 
     /// Spawn a background task that reads typed server events
@@ -420,10 +562,14 @@ impl MobileClient {
                         ServerEvent::Request(request) => {
                             ep.process_server_request(&sid, &request);
                         }
-                        ServerEvent::LegacyNotification { method, .. } => {
-                            debug!(
-                                "MobileClient: legacy notification for {sid}: {method} — ignored"
-                            );
+                        ServerEvent::LegacyNotification { method, params } => {
+                            if method == "codex/event" || method.starts_with("codex/event/") {
+                                ep.process_legacy_notification(&sid, &method, &params);
+                            } else {
+                                debug!(
+                                    "MobileClient: legacy notification for {sid}: {method} — ignored"
+                                );
+                            }
                         }
                     },
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -460,17 +606,13 @@ impl MobileClient {
     fn find_server_for_approval(&self, approval: &PendingApproval) -> Option<String> {
         let thread_id = approval.thread_id.as_ref()?;
         let sessions = self.sessions.read().expect("sessions lock poisoned");
-        // Try each connected server — the one whose thread manager knows this thread.
-        let tm = self
-            .thread_manager
-            .read()
-            .expect("thread_manager lock poisoned");
+        let app_snapshot = self.app_store.snapshot();
         for (server_id, _session) in sessions.iter() {
             let key = ThreadKey {
                 server_id: server_id.clone(),
                 thread_id: thread_id.clone(),
             };
-            if tm.thread(&key).is_some() {
+            if app_snapshot.threads.contains_key(&key) {
                 return Some(server_id.clone());
             }
         }
@@ -531,7 +673,193 @@ impl MobileClient {
         let session = self.get_session(server_id).map_err(|e| e.to_string())?;
         session.reject(id, error).await.map_err(|e| e.to_string())
     }
+}
 
+fn spawn_store_listener(app_store: Arc<AppStoreReducer>, mut rx: broadcast::Receiver<UiEvent>) {
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create Tokio runtime for app store reducer");
+        runtime.block_on(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => app_store.apply_ui_event(&event),
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    });
+}
+
+pub(crate) fn thread_snapshot_from_generated_thread(
+    server_id: &str,
+    thread: generated::Thread,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+) -> Result<ThreadSnapshot, RpcError> {
+    let upstream_thread: upstream::Thread = crate::rpc::convert_generated_field(thread)
+        .map_err(|e| RpcError::Deserialization(e.to_string()))?;
+    Ok(thread_snapshot_from_upstream_thread(
+        server_id,
+        upstream_thread,
+        model,
+        reasoning_effort,
+    ))
+}
+
+fn thread_snapshot_from_upstream_thread(
+    server_id: &str,
+    upstream_thread: upstream::Thread,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+) -> ThreadSnapshot {
+    let mut info = ThreadInfo::from(upstream_thread.clone());
+    info.model = model.clone();
+    let key = ThreadKey {
+        server_id: server_id.to_string(),
+        thread_id: info.id.clone(),
+    };
+    let items = crate::conversation::hydrate_turns(
+        &upstream_thread.turns,
+        &crate::conversation::HydrationOptions {
+            default_agent_nickname: info.agent_nickname.clone(),
+            default_agent_role: info.agent_role.clone(),
+        },
+    );
+    ThreadSnapshot {
+        key,
+        info,
+        model,
+        reasoning_effort,
+        items,
+        active_turn_id: None,
+        context_tokens_used: None,
+        model_context_window: None,
+        rate_limits: None,
+        realtime_session_id: None,
+    }
+}
+
+fn thread_info_from_generated_thread(thread: generated::Thread) -> Option<ThreadInfo> {
+    let upstream_thread: upstream::Thread = crate::rpc::convert_generated_field(thread).ok()?;
+    Some(ThreadInfo::from(upstream_thread))
+}
+
+pub(crate) fn copy_thread_runtime_fields(source: &ThreadSnapshot, target: &mut ThreadSnapshot) {
+    target.context_tokens_used = source.context_tokens_used;
+    target.model_context_window = source.model_context_window;
+    target.rate_limits = source.rate_limits.clone();
+    target.realtime_session_id = source.realtime_session_id.clone();
+}
+
+fn map_rpc_client_error(error: crate::rpc::RpcClientError) -> RpcError {
+    RpcError::Server {
+        code: -1,
+        message: error.to_string(),
+    }
+}
+
+fn ensure_thread_is_editable(thread: &ThreadSnapshot) -> Result<(), RpcError> {
+    if thread.active_turn_id.is_some() || matches!(thread.info.status, ThreadSummaryStatus::Active)
+    {
+        return Err(RpcError::Deserialization(
+            "Wait for the active turn to finish before editing or forking".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn rollback_depth_for_turn(
+    thread: &ThreadSnapshot,
+    selected_turn_index: usize,
+) -> Result<u32, RpcError> {
+    let total_turns = inferred_turn_count(&thread.items);
+    if total_turns == 0 {
+        return Err(RpcError::Deserialization(
+            "No turn history available".to_string(),
+        ));
+    }
+    if selected_turn_index >= total_turns {
+        return Err(RpcError::Deserialization(
+            "Message is outside available turn history".to_string(),
+        ));
+    }
+    Ok((total_turns - selected_turn_index - 1) as u32)
+}
+
+fn user_boundary_text_for_turn(
+    thread: &ThreadSnapshot,
+    selected_turn_index: usize,
+) -> Result<String, RpcError> {
+    let item = thread
+        .items
+        .iter()
+        .find(|item| {
+            item.is_from_user_turn_boundary
+                && item.source_turn_index == Some(selected_turn_index)
+                && matches!(
+                    &item.content,
+                    crate::conversation::ConversationItemContent::User(_)
+                )
+        })
+        .ok_or_else(|| {
+            RpcError::Deserialization(
+                "Fork from here is only supported for user messages".to_string(),
+            )
+        })?;
+
+    match &item.content {
+        crate::conversation::ConversationItemContent::User(data) => Ok(data.text.clone()),
+        _ => Err(RpcError::Deserialization(
+            "Fork from here is only supported for user messages".to_string(),
+        )),
+    }
+}
+
+fn inferred_turn_count(items: &[crate::conversation::ConversationItem]) -> usize {
+    items
+        .iter()
+        .filter_map(|item| item.source_turn_index)
+        .max()
+        .map(|index| index + 1)
+        .unwrap_or_else(|| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.is_from_user_turn_boundary
+                        && matches!(
+                            &item.content,
+                            crate::conversation::ConversationItemContent::User(_)
+                        )
+                })
+                .count()
+        })
+}
+
+pub(crate) fn reasoning_effort_string(value: generated::ReasoningEffort) -> String {
+    match value {
+        generated::ReasoningEffort::None => "none",
+        generated::ReasoningEffort::Minimal => "minimal",
+        generated::ReasoningEffort::Low => "low",
+        generated::ReasoningEffort::Medium => "medium",
+        generated::ReasoningEffort::High => "high",
+        generated::ReasoningEffort::XHigh => "xhigh",
+    }
+    .to_string()
+}
+
+pub(crate) fn reasoning_effort_from_string(value: &str) -> Option<generated::ReasoningEffort> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(generated::ReasoningEffort::None),
+        "minimal" => Some(generated::ReasoningEffort::Minimal),
+        "low" => Some(generated::ReasoningEffort::Low),
+        "medium" => Some(generated::ReasoningEffort::Medium),
+        "high" => Some(generated::ReasoningEffort::High),
+        "xhigh" => Some(generated::ReasoningEffort::XHigh),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,8 +912,7 @@ mod mobile_client_tests {
             thread_id: "thr_1".into(),
         };
         client.set_active_thread(Some(key.clone()));
-        // active_thread() returns None because the ThreadManager doesn't
-        // have a ThreadState for this key (it was never started/resumed).
+        // active_thread() returns None because no thread snapshot exists yet.
         assert!(client.active_thread().is_none());
     }
 
@@ -594,50 +921,6 @@ mod mobile_client_tests {
         let client = make_client();
         client.set_active_thread(None);
         assert!(client.active_thread().is_none());
-    }
-
-    // -- Parser --
-
-    #[test]
-    fn parse_tool_calls_empty_text() {
-        let client = make_client();
-        let cards = client.parse_tool_calls("");
-        assert!(cards.is_empty());
-    }
-
-    #[test]
-    fn parse_tool_calls_with_tool_header() {
-        let client = make_client();
-        let text = "### 🔧 Command Execution\n**Command:** `ls -la`\n```\nfoo bar\n```\n";
-        let cards = client.parse_tool_calls(text);
-        // Should parse at least one card.
-        assert!(!cards.is_empty());
-    }
-
-    // -- Cache --
-
-    #[test]
-    fn cache_message_and_verify() {
-        let client = make_client();
-        let key = CacheKey {
-            message_id: "msg1".into(),
-            revision_token: "r1".into(),
-            server_id: "srv1".into(),
-            agent_directory_version: 0,
-        };
-        client.cache_message(key.clone(), "Hello world");
-
-        let mut cache = client.cache.lock().unwrap();
-        let cached = cache.get(&key);
-        assert!(cached.is_some());
-    }
-
-    // -- Subscribe --
-
-    #[test]
-    fn subscribe_ui_events_returns_receiver() {
-        let client = make_client();
-        let _rx = client.subscribe_ui_events();
     }
 
     // -- Disconnect unknown server --
@@ -715,6 +998,7 @@ mod mobile_client_tests {
             display_name: "Test".into(),
             host: "127.0.0.1".into(),
             port: addr.port(),
+            websocket_url: None,
             is_local: false,
             tls: false,
         };
@@ -739,6 +1023,7 @@ mod mobile_client_tests {
             display_name: "Bad".into(),
             host: "127.0.0.1".into(),
             port: 1,
+            websocket_url: None,
             is_local: false,
             tls: false,
         };
@@ -772,9 +1057,9 @@ mod mobile_client_tests {
     // -- Discovery (scan_once with no network returns empty) --
 
     #[tokio::test]
-    async fn scan_servers_returns_vec() {
+    async fn scan_servers_with_mdns_context_returns_vec() {
         let client = make_client();
-        let servers = client.scan_servers().await;
+        let servers = client.scan_servers_with_mdns_context(Vec::new(), None).await;
         // With default config and no real network, may return empty.
         // Just verify it doesn't panic and returns a Vec.
         let _ = servers;

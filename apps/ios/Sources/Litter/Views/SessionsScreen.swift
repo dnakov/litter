@@ -7,7 +7,7 @@ private let sessionsScreenSignpostLog = OSLog(
 )
 
 struct SessionsScreen: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     @Environment(ConversationWarmupCoordinator.self) private var conversationWarmup
     @State private var sessionsModel = SessionsModel()
@@ -88,7 +88,6 @@ struct SessionsScreen: View {
                     }
                 )
             }
-            .environment(serverManager)
         }
     }
 
@@ -98,21 +97,17 @@ struct SessionsScreen: View {
     ) -> some View {
         content
             .task {
-                sessionsModel.bind(serverManager: serverManager, appState: appState)
+                sessionsModel.bind(appModel: appModel, appState: appState)
                 sessionsModel.updateSearchQuery(debouncedSessionSearchQuery)
                 await loadSessionsIfNeeded()
             }
             .onAppear {
                 scheduleActiveSessionScrollIfNeeded()
             }
-            .onChange(of: serverManager.hasAnyConnection) { _, connected in
-                guard autoLoadSessions, connected else { return }
-                Task { await loadSessionsIfNeeded(force: true) }
-            }
-            .onChange(of: serverManager.activeThreadKey) { _, _ in
-                scheduleActiveSessionScrollIfNeeded()
-            }
             .onChange(of: connectedServerIds) { _, ids in
+                guard autoLoadSessions, !ids.isEmpty else { return }
+                Task { await loadSessionsIfNeeded(force: true) }
+                scheduleActiveSessionScrollIfNeeded()
                 guard let pickerSheet = directoryPickerSheet else {
                     if let filterId = selectedServerFilterId, !ids.contains(filterId) {
                         selectedServerFilterId = nil
@@ -132,6 +127,9 @@ struct SessionsScreen: View {
                 if let filterId = selectedServerFilterId, !ids.contains(filterId) {
                     selectedServerFilterId = nil
                 }
+            }
+            .onChange(of: activeThreadKey) { _, _ in
+                scheduleActiveSessionScrollIfNeeded()
             }
             .onChange(of: sessionSearchQuery) { _, next in
                 scheduleSessionSearchDebounce(for: next)
@@ -263,17 +261,25 @@ struct SessionsScreen: View {
         sessionSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var archiveTargetThread: ThreadState? {
+    private var archiveTargetThread: AppSessionSummary? {
         guard let archiveTargetKey else { return nil }
-        return serverManager.threads[archiveTargetKey]
+        return sessionsModel.derivedData.allThreads.first(where: { $0.key == archiveTargetKey })
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
         sessionsModel.connectedServerOptions
     }
 
+    private var connectedServers: [HomeDashboardServer] {
+        sessionsModel.connectedServers
+    }
+
     private var ephemeralStateByThreadKey: [ThreadKey: SessionsModel.ThreadEphemeralState] {
         sessionsModel.ephemeralStateByThreadKey
+    }
+
+    private var activeThreadKey: ThreadKey? {
+        appModel.snapshot?.activeThread
     }
 
     private func scheduleSessionSearchDebounce(for nextQuery: String) {
@@ -291,7 +297,7 @@ struct SessionsScreen: View {
     private func defaultNewSessionServerId(preferredServerId: String? = nil) -> String? {
         SessionLaunchSupport.defaultConnectedServerId(
             connectedServerIds: connectedServerIds,
-            activeThreadKey: serverManager.activeThreadKey,
+            activeThreadKey: activeThreadKey,
             preferredServerId: preferredServerId
         )
     }
@@ -299,8 +305,7 @@ struct SessionsScreen: View {
     private var newSessionButton: some View {
         Button {
             if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
-                // For local on-device server, skip directory picker and use /home/codex.
-                if let conn = serverManager.connections[defaultServerId], conn.target == .local {
+                if connectedServers.first(where: { $0.id == defaultServerId })?.isLocal == true {
                     let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
                     Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                 } else {
@@ -343,19 +348,19 @@ struct SessionsScreen: View {
                 } else {
                     Image(systemName: "arrow.clockwise")
                         .litterFont(.subheadline, weight: .semibold)
-                        .foregroundColor(serverManager.hasAnyConnection ? LitterTheme.accent : LitterTheme.textMuted)
+                        .foregroundColor(connectedServers.isEmpty ? LitterTheme.textMuted : LitterTheme.accent)
                 }
             }
         }
-        .disabled(isLoading || !serverManager.hasAnyConnection)
+        .disabled(isLoading || connectedServers.isEmpty)
         .accessibilityLabel("Refresh sessions")
         .accessibilityIdentifier("sessions.refreshButton")
     }
 
     private var serversRow: some View {
         HStack(spacing: 10) {
-            let connected = serverManager.connections.values.filter { $0.isConnected }
-            let activeThread = serverManager.activeThread
+            let connected = connectedServers
+            let activeThread = sessionsModel.derivedData.allThreads.first(where: { $0.key == activeThreadKey })
             let activeThreadEphemeralState = activeThread.flatMap { ephemeralStateByThreadKey[$0.key] }
             if connected.isEmpty {
                 Image(systemName: "xmark.circle")
@@ -397,9 +402,9 @@ struct SessionsScreen: View {
                             Text("Fork")
                         }
                     }
-                    .disabled(isForkingActiveThread || (activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasTurnActive))
+                    .disabled(isForkingActiveThread || (activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasActiveTurn))
                     .litterFont(.caption)
-                    .foregroundColor((activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasTurnActive) ? LitterTheme.textMuted : LitterTheme.accent)
+                    .foregroundColor((activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasActiveTurn) ? LitterTheme.textMuted : LitterTheme.accent)
                 }
             }
         }
@@ -592,7 +597,7 @@ struct SessionsScreen: View {
 
                                     sessionRow(
                                         thread,
-                                        isActive: thread.key == serverManager.activeThreadKey,
+                                        isActive: thread.key == activeThreadKey,
                                         derived: derived,
                                         ephemeralState: ephemeralStateByThreadKey[thread.key],
                                         depth: row.depth,
@@ -658,7 +663,7 @@ struct SessionsScreen: View {
     }
 
     @ViewBuilder
-    private func sessionRowContextMenu(_ thread: ThreadState) -> some View {
+    private func sessionRowContextMenu(_ thread: AppSessionSummary) -> some View {
         Button {
             renamingThreadKey = thread.key
             renameCurrentTitle = thread.sessionTitle
@@ -681,7 +686,7 @@ struct SessionsScreen: View {
     }
 
     private func sessionRow(
-        _ thread: ThreadState,
+        _ thread: AppSessionSummary,
         isActive: Bool,
         derived: SessionsDerivedData,
         ephemeralState: SessionsModel.ThreadEphemeralState?,
@@ -692,8 +697,8 @@ struct SessionsScreen: View {
         onSelectSession: @escaping () -> Void
     ) -> some View {
         let parent = derived.parentByKey[thread.key]
-        let hasTurnActive = ephemeralState?.hasTurnActive ?? thread.hasTurnActive
-        let updatedAt = ephemeralState?.updatedAt ?? thread.updatedAt
+        let hasTurnActive = ephemeralState?.hasTurnActive ?? thread.hasActiveTurn
+        let updatedAt = ephemeralState?.updatedAt ?? thread.updatedAtDate
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 6) {
@@ -718,7 +723,7 @@ struct SessionsScreen: View {
                     if hasTurnActive {
                         PulsingDot().padding(.top, 3)
                     } else if thread.isSubagent {
-                        subagentStatusIndicator(thread.agentStatus).padding(.top, 3)
+                        subagentStatusIndicator(thread.subagentStatus).padding(.top, 3)
                     } else {
                         Circle().fill(LitterTheme.textMuted.opacity(0.4)).frame(width: 8, height: 8).padding(.top, 3)
                     }
@@ -805,7 +810,7 @@ struct SessionsScreen: View {
         }
     }
 
-    private func lineageSummary(for thread: ThreadState, derived: SessionsDerivedData) -> some View {
+    private func lineageSummary(for thread: AppSessionSummary, derived: SessionsDerivedData) -> some View {
         let parent = derived.parentByKey[thread.key]
         let siblings = derived.siblingsByKey[thread.key] ?? []
         let children = derived.childrenByKey[thread.key] ?? []
@@ -872,7 +877,7 @@ struct SessionsScreen: View {
     }
 
     @ViewBuilder
-    private func subagentStatusIndicator(_ status: SubagentStatus) -> some View {
+    private func subagentStatusIndicator(_ status: AppSubagentStatus) -> some View {
         switch status {
         case .completed:
             Image(systemName: "checkmark.circle.fill")
@@ -894,7 +899,7 @@ struct SessionsScreen: View {
                 .litterFont(size: 8)
                 .foregroundColor(LitterTheme.warning)
                 .frame(width: 8, height: 8)
-        default:
+        case .pendingInit, .running, .unknown:
             Circle()
                 .fill(LitterTheme.textMuted.opacity(0.4))
                 .frame(width: 8, height: 8)
@@ -926,12 +931,12 @@ struct SessionsScreen: View {
     }
 
     private func scheduleActiveSessionScrollIfNeeded() {
-        guard serverManager.activeThreadKey != nil else { return }
+        guard activeThreadKey != nil else { return }
         pendingActiveSessionScroll = true
     }
 
     private func scrollToActiveSessionIfNeeded(derived: SessionsDerivedData, proxy: ScrollViewProxy) {
-        guard pendingActiveSessionScroll, let activeKey = serverManager.activeThreadKey else { return }
+        guard pendingActiveSessionScroll, let activeKey = activeThreadKey else { return }
 
         guard let activeThread = derived.filteredThreads.first(where: { $0.key == activeKey }) else {
             pendingActiveSessionScroll = false
@@ -960,7 +965,7 @@ struct SessionsScreen: View {
     private func ancestorThreadKeys(for key: ThreadKey, derived: SessionsDerivedData) -> [ThreadKey] {
         var ancestors: [ThreadKey] = []
         var visited: Set<ThreadKey> = []
-        var cursor: ThreadState? = derived.parentByKey[key]
+        var cursor: AppSessionSummary? = derived.parentByKey[key]
 
         while let thread = cursor, !visited.contains(thread.key) {
             ancestors.append(thread.key)
@@ -990,42 +995,59 @@ struct SessionsScreen: View {
         os_signpost(.begin, log: sessionsScreenSignpostLog, name: "LoadSessions", signpostID: signpostID)
         defer { os_signpost(.end, log: sessionsScreenSignpostLog, name: "LoadSessions", signpostID: signpostID) }
 
-        guard serverManager.hasAnyConnection else {
+        guard !connectedServerIds.isEmpty else {
             isLoading = false
             return
         }
         isLoading = true
-        await serverManager.refreshAllSessions()
+        for serverId in connectedServerIds {
+            _ = try? await appModel.rpc.threadList(
+                serverId: serverId,
+                params: ThreadListParams(
+                    cursor: nil,
+                    limit: nil,
+                    sortKey: nil,
+                    modelProviders: nil,
+                    sourceKinds: nil,
+                    archived: nil,
+                    cwd: nil,
+                    searchTerm: nil
+                )
+            )
+        }
+        await appModel.refreshSnapshot()
         hasLoadedInitialSessions = true
         isLoading = false
     }
 
-    private func refreshSessions() {
-        Task {
-            await loadSessions()
-        }
-    }
-
-    private func resumeSession(_ thread: ThreadState) async {
+    private func resumeSession(_ thread: AppSessionSummary) async {
         guard resumingKey == nil else { return }
         resumingKey = thread.key
         sessionActionErrorMessage = nil
         await conversationWarmup.prewarmIfNeeded()
         workDir = thread.cwd
         appState.currentCwd = thread.cwd
-        let opened = await serverManager.viewThread(
-            thread.key,
-            approvalPolicy: appState.approvalPolicy,
-            sandboxMode: appState.sandboxMode
-        )
+        let opened: Bool
+        do {
+            let response = try await appModel.rpc.threadResume(
+                serverId: thread.key.serverId,
+                params: launchConfig().threadResumeParams(
+                    threadId: thread.key.threadId,
+                    cwdOverride: thread.cwd
+                )
+            )
+            appModel.store.setActiveThread(
+                key: ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
+            )
+            await appModel.refreshSnapshot()
+            opened = true
+        } catch {
+            sessionActionErrorMessage = error.localizedDescription
+            opened = false
+        }
         resumingKey = nil
         guard opened else {
-            if let selectedThread = serverManager.threads[thread.key],
-               case .error(let message) = selectedThread.status {
-                sessionActionErrorMessage = message
-            } else {
-                sessionActionErrorMessage = "Failed to open conversation."
-            }
+            sessionActionErrorMessage = sessionActionErrorMessage ?? "Failed to open conversation."
             return
         }
         onOpenConversation(thread.key)
@@ -1039,40 +1061,52 @@ struct SessionsScreen: View {
         await conversationWarmup.prewarmIfNeeded()
         workDir = cwd
         appState.currentCwd = cwd
-        let model = appState.selectedModel.isEmpty ? nil : appState.selectedModel
-        let startedKey = try? await serverManager.startThread(
-            serverId: serverId,
-            cwd: cwd,
-            model: model,
-            approvalPolicy: appState.approvalPolicy,
-            sandboxMode: appState.sandboxMode
-        )
-        if let startedKey {
+        do {
+            let response = try await appModel.rpc.threadStart(
+                serverId: serverId,
+                params: launchConfig().threadStartParams(cwd: cwd)
+            )
+            let startedKey = ThreadKey(serverId: serverId, threadId: response.thread.id)
+            appModel.store.setActiveThread(key: startedKey)
+            await appModel.refreshSnapshot()
             onOpenConversation(startedKey)
-        } else {
-            sessionActionErrorMessage = "Failed to start a new session."
+        } catch {
+            sessionActionErrorMessage = error.localizedDescription
         }
     }
 
-    private func forkThread(_ thread: ThreadState) async {
+    private func forkThread(_ thread: AppSessionSummary) async {
         guard !isForkingActiveThread else { return }
         isForkingActiveThread = true
         defer { isForkingActiveThread = false }
         do {
-            let nextKey = try await serverManager.forkThread(
-                thread.key,
-                cwd: thread.cwd,
-                approvalPolicy: appState.approvalPolicy,
-                sandboxMode: appState.sandboxMode
+            let response = try await appModel.rpc.threadFork(
+                serverId: thread.key.serverId,
+                params: launchConfig().threadForkParams(
+                    threadId: thread.key.threadId,
+                    cwdOverride: thread.cwd
+                )
             )
-            if let nextCwd = serverManager.activeThread?.cwd, !nextCwd.isEmpty {
-                workDir = nextCwd
-                appState.currentCwd = nextCwd
-            }
+            let nextKey = ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
+            appModel.store.setActiveThread(key: nextKey)
+            await appModel.refreshSnapshot()
+            workDir = thread.cwd
+            appState.currentCwd = thread.cwd
             onOpenConversation(nextKey)
         } catch {
             sessionActionErrorMessage = error.localizedDescription
         }
+    }
+
+    private func launchConfig() -> AppThreadLaunchConfig {
+        let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AppThreadLaunchConfig(
+            model: selectedModel.isEmpty ? nil : selectedModel,
+            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            developerInstructions: nil,
+            persistExtendedHistory: false
+        )
     }
 
     private func submitRename() async {
@@ -1080,7 +1114,10 @@ struct SessionsScreen: View {
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextTitle.isEmpty else { return }
         do {
-            try await serverManager.renameThread(key, to: nextTitle)
+            _ = try await appModel.rpc.threadSetName(
+                serverId: key.serverId,
+                params: ThreadSetNameParams(threadId: key.threadId, name: nextTitle)
+            )
         } catch {
             sessionActionErrorMessage = error.localizedDescription
         }
@@ -1092,13 +1129,13 @@ struct SessionsScreen: View {
     private func confirmArchiveSession() async {
         guard let key = archiveTargetKey else { return }
         do {
-            let previousActiveKey = serverManager.activeThreadKey
-            try await serverManager.archiveThread(key)
-            let nextActiveKey = serverManager.activeThreadKey
-            if nextActiveKey != previousActiveKey {
-                let nextCwd = serverManager.activeThread?.cwd.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                workDir = nextCwd
-                appState.currentCwd = nextCwd
+            _ = try await appModel.rpc.threadArchive(
+                serverId: key.serverId,
+                params: ThreadArchiveParams(threadId: key.threadId)
+            )
+            if appModel.snapshot?.activeThread == nil {
+                workDir = ""
+                appState.currentCwd = ""
             }
         } catch {
             sessionActionErrorMessage = error.localizedDescription
@@ -1112,7 +1149,7 @@ struct SessionsScreen: View {
 }
 
 private struct SessionTreeRow: Identifiable {
-    let thread: ThreadState
+    let thread: AppSessionSummary
     let depth: Int
     let hasChildren: Bool
 
@@ -1136,7 +1173,7 @@ struct PulsingDot: View {
 #if DEBUG
 #Preview("Sessions Screen") {
     LitterPreviewScene(
-        serverManager: LitterPreviewData.makeSidebarManager(),
+        appModel: LitterPreviewData.makeSidebarAppModel(),
         appState: LitterPreviewData.makeAppState()
     ) {
         NavigationStack {

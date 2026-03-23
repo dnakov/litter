@@ -10,18 +10,35 @@ use codex_app_server_protocol::{ServerNotification, ServerRequest};
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::types::{ApprovalKind, PendingApproval, ThreadKey, generated};
+use crate::types::{ApprovalKind, PendingApproval, ThreadKey};
 
 /// High-level events for platform UI consumption.
 ///
 /// Each variant represents a meaningful state change that the Swift/Kotlin
 /// UI layer should react to. These are emitted by the [`EventProcessor`]
 /// after processing typed upstream notifications from the server.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[derive(uniffi::Enum)]
+#[derive(Debug, Clone)]
 pub enum UiEvent {
     // ── Thread/Turn lifecycle ──────────────────────────────────────────
+    ThreadStarted {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::ThreadStartedNotification,
+    },
+    ThreadArchived {
+        key: ThreadKey,
+    },
+    ThreadNameUpdated {
+        key: ThreadKey,
+        thread_name: Option<String>,
+    },
+    ThreadStatusChanged {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::ThreadStatusChangedNotification,
+    },
+    ModelRerouted {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::ModelReroutedNotification,
+    },
     TurnStarted {
         key: ThreadKey,
         turn_id: String,
@@ -30,13 +47,29 @@ pub enum UiEvent {
         key: ThreadKey,
         turn_id: String,
     },
+    TurnDiffUpdated {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::TurnDiffUpdatedNotification,
+    },
+    TurnPlanUpdated {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::TurnPlanUpdatedNotification,
+    },
     ItemStarted {
         key: ThreadKey,
-        notification: generated::ItemStartedNotification,
+        notification: codex_app_server_protocol::ItemStartedNotification,
     },
     ItemCompleted {
         key: ThreadKey,
-        notification: generated::ItemCompletedNotification,
+        notification: codex_app_server_protocol::ItemCompletedNotification,
+    },
+    McpToolCallProgress {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::McpToolCallProgressNotification,
+    },
+    ServerRequestResolved {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::ServerRequestResolvedNotification,
     },
 
     // ── Streaming deltas ───────────────────────────────────────────────
@@ -67,37 +100,32 @@ pub enum UiEvent {
         approval: PendingApproval,
     },
 
+    // ── Account / limits ───────────────────────────────────────────────
+    AccountRateLimitsUpdated {
+        server_id: String,
+        notification: codex_app_server_protocol::AccountRateLimitsUpdatedNotification,
+    },
+
     // ── Realtime voice ─────────────────────────────────────────────────
     RealtimeStarted {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeStartedNotification,
+        notification: codex_app_server_protocol::ThreadRealtimeStartedNotification,
     },
     RealtimeItemAdded {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeItemAddedNotification,
+        notification: codex_app_server_protocol::ThreadRealtimeItemAddedNotification,
     },
     RealtimeOutputAudioDelta {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeOutputAudioDeltaNotification,
+        notification: codex_app_server_protocol::ThreadRealtimeOutputAudioDeltaNotification,
     },
     RealtimeError {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeErrorNotification,
+        notification: codex_app_server_protocol::ThreadRealtimeErrorNotification,
     },
     RealtimeClosed {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeClosedNotification,
-    },
-
-    // ── Account ────────────────────────────────────────────────────────
-    AccountLoginCompleted {
-        notification: generated::AccountLoginCompletedNotification,
-    },
-    AccountUpdated {
-        notification: generated::AccountUpdatedNotification,
-    },
-    AccountRateLimitsUpdated {
-        notification: generated::AccountRateLimitsUpdatedNotification,
+        notification: codex_app_server_protocol::ThreadRealtimeClosedNotification,
     },
 
     // ── Errors ─────────────────────────────────────────────────────────
@@ -181,6 +209,38 @@ impl EventProcessor {
     pub fn process_notification(&self, server_id: &str, notification: &ServerNotification) {
         match notification {
             // ── Turn lifecycle ──────────────────────────────────────
+            ServerNotification::ThreadStarted(n) => {
+                let key = Self::make_key(server_id, &n.thread.id);
+                self.emit(UiEvent::ThreadStarted {
+                    key,
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::ThreadArchived(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::ThreadArchived { key });
+            }
+            ServerNotification::ThreadNameUpdated(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::ThreadNameUpdated {
+                    key,
+                    thread_name: n.thread_name.clone(),
+                });
+            }
+            ServerNotification::ThreadStatusChanged(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::ThreadStatusChanged {
+                    key,
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::ModelRerouted(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::ModelRerouted {
+                    key,
+                    notification: n.clone(),
+                });
+            }
             ServerNotification::TurnStarted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::TurnStarted {
@@ -195,30 +255,48 @@ impl EventProcessor {
                     turn_id: n.turn.id.clone(),
                 });
             }
+            ServerNotification::TurnDiffUpdated(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::TurnDiffUpdated {
+                    key,
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::TurnPlanUpdated(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::TurnPlanUpdated {
+                    key,
+                    notification: n.clone(),
+                });
+            }
 
             // ── Item lifecycle ──────────────────────────────────────
             ServerNotification::ItemStarted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::ItemStarted {
                     key,
-                    notification: generated::ItemStartedNotification {
-                        item: crate::ffi::generated_rpc::convert_generated_field(n.item.clone())
-                            .expect("serialize ItemStartedNotification item"),
-                        thread_id: n.thread_id.clone(),
-                        turn_id: n.turn_id.clone(),
-                    },
+                    notification: n.clone(),
                 });
             }
             ServerNotification::ItemCompleted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::ItemCompleted {
                     key,
-                    notification: generated::ItemCompletedNotification {
-                        item: crate::ffi::generated_rpc::convert_generated_field(n.item.clone())
-                            .expect("serialize ItemCompletedNotification item"),
-                        thread_id: n.thread_id.clone(),
-                        turn_id: n.turn_id.clone(),
-                    },
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::McpToolCallProgress(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::McpToolCallProgress {
+                    key,
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::ServerRequestResolved(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::ServerRequestResolved {
+                    key,
+                    notification: n.clone(),
                 });
             }
 
@@ -271,51 +349,33 @@ impl EventProcessor {
                     delta: n.delta.clone(),
                 });
             }
+            ServerNotification::AccountRateLimitsUpdated(n) => {
+                self.emit(UiEvent::AccountRateLimitsUpdated {
+                    server_id: server_id.to_string(),
+                    notification: n.clone(),
+                });
+            }
 
             // ── Realtime / voice ────────────────────────────────────
             ServerNotification::ThreadRealtimeStarted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeStarted {
                     key,
-                    notification: generated::ThreadRealtimeStartedNotification {
-                        thread_id: n.thread_id.clone(),
-                        session_id: n.session_id.clone(),
-                    },
+                    notification: n.clone(),
                 });
             }
             ServerNotification::ThreadRealtimeItemAdded(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeItemAdded {
                     key,
-                    notification: generated::ThreadRealtimeItemAddedNotification {
-                        thread_id: n.thread_id.clone(),
-                        item: crate::ffi::generated_rpc::convert_generated_field(n.item.clone())
-                            .unwrap_or(generated::JsonValue {
-                                kind: generated::JsonValueKind::Null,
-                                bool_value: None,
-                                i64_value: None,
-                                u64_value: None,
-                                f64_value: None,
-                                string_value: None,
-                                array_items: None,
-                                object_entries: None,
-                            }),
-                    },
+                    notification: n.clone(),
                 });
             }
             ServerNotification::ThreadRealtimeOutputAudioDelta(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeOutputAudioDelta {
                     key,
-                    notification: generated::ThreadRealtimeOutputAudioDeltaNotification {
-                        thread_id: n.thread_id.clone(),
-                        audio: generated::ThreadRealtimeAudioChunk {
-                            data: n.audio.data.clone(),
-                            sample_rate: n.audio.sample_rate,
-                            num_channels: n.audio.num_channels as u32,
-                            samples_per_channel: n.audio.samples_per_channel,
-                        },
-                    },
+                    notification: n.clone(),
                 });
             }
 
@@ -336,20 +396,14 @@ impl EventProcessor {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeError {
                     key,
-                    notification: generated::ThreadRealtimeErrorNotification {
-                        thread_id: n.thread_id.clone(),
-                        message: n.message.clone(),
-                    },
+                    notification: n.clone(),
                 });
             }
             ServerNotification::ThreadRealtimeClosed(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeClosed {
                     key,
-                    notification: generated::ThreadRealtimeClosedNotification {
-                        thread_id: n.thread_id.clone(),
-                        reason: n.reason.clone(),
-                    },
+                    notification: n.clone(),
                 });
             }
 
@@ -361,104 +415,6 @@ impl EventProcessor {
                 let limit = n.token_usage.model_context_window.unwrap_or(0) as u64;
                 self.emit(UiEvent::ContextTokensUpdated { key, used, limit });
             }
-            ServerNotification::AccountLoginCompleted(n) => {
-                self.emit(UiEvent::AccountLoginCompleted {
-                    notification: generated::AccountLoginCompletedNotification {
-                        login_id: n.login_id.clone(),
-                        success: n.success,
-                        error: n.error.clone(),
-                    },
-                });
-            }
-            ServerNotification::AccountUpdated(n) => {
-                self.emit(UiEvent::AccountUpdated {
-                    notification: generated::AccountUpdatedNotification {
-                        auth_mode: n.auth_mode.as_ref().map(|mode| match mode {
-                            codex_app_server_protocol::AuthMode::ApiKey => {
-                                generated::AuthMode::ApiKey
-                            }
-                            codex_app_server_protocol::AuthMode::Chatgpt => {
-                                generated::AuthMode::Chatgpt
-                            }
-                            codex_app_server_protocol::AuthMode::ChatgptAuthTokens => {
-                                generated::AuthMode::ChatgptAuthTokens
-                            }
-                        }),
-                        plan_type: n.plan_type.map(|plan| match plan {
-                            codex_protocol::account::PlanType::Free => generated::PlanType::Free,
-                            codex_protocol::account::PlanType::Go => generated::PlanType::Go,
-                            codex_protocol::account::PlanType::Plus => generated::PlanType::Plus,
-                            codex_protocol::account::PlanType::Pro => generated::PlanType::Pro,
-                            codex_protocol::account::PlanType::Team => generated::PlanType::Team,
-                            codex_protocol::account::PlanType::Business => {
-                                generated::PlanType::Business
-                            }
-                            codex_protocol::account::PlanType::Enterprise => {
-                                generated::PlanType::Enterprise
-                            }
-                            codex_protocol::account::PlanType::Edu => generated::PlanType::Edu,
-                            codex_protocol::account::PlanType::Unknown => {
-                                generated::PlanType::Unknown
-                            }
-                        }),
-                    },
-                });
-            }
-            ServerNotification::AccountRateLimitsUpdated(n) => {
-                self.emit(UiEvent::AccountRateLimitsUpdated {
-                    notification: generated::AccountRateLimitsUpdatedNotification {
-                        rate_limits: generated::RateLimitSnapshot {
-                            limit_id: n.rate_limits.limit_id.clone(),
-                            limit_name: n.rate_limits.limit_name.clone(),
-                            primary: n.rate_limits.primary.as_ref().map(|window| {
-                                generated::RateLimitWindow {
-                                    used_percent: window.used_percent,
-                                    window_duration_mins: window.window_duration_mins,
-                                    resets_at: window.resets_at,
-                                }
-                            }),
-                            secondary: n.rate_limits.secondary.as_ref().map(|window| {
-                                generated::RateLimitWindow {
-                                    used_percent: window.used_percent,
-                                    window_duration_mins: window.window_duration_mins,
-                                    resets_at: window.resets_at,
-                                }
-                            }),
-                            credits: n.rate_limits.credits.as_ref().map(|credits| {
-                                generated::CreditsSnapshot {
-                                    has_credits: credits.has_credits,
-                                    unlimited: credits.unlimited,
-                                    balance: credits.balance.clone(),
-                                }
-                            }),
-                            plan_type: n.rate_limits.plan_type.map(|plan| match plan {
-                                codex_protocol::account::PlanType::Free => {
-                                    generated::PlanType::Free
-                                }
-                                codex_protocol::account::PlanType::Go => generated::PlanType::Go,
-                                codex_protocol::account::PlanType::Plus => {
-                                    generated::PlanType::Plus
-                                }
-                                codex_protocol::account::PlanType::Pro => generated::PlanType::Pro,
-                                codex_protocol::account::PlanType::Team => {
-                                    generated::PlanType::Team
-                                }
-                                codex_protocol::account::PlanType::Business => {
-                                    generated::PlanType::Business
-                                }
-                                codex_protocol::account::PlanType::Enterprise => {
-                                    generated::PlanType::Enterprise
-                                }
-                                codex_protocol::account::PlanType::Edu => generated::PlanType::Edu,
-                                codex_protocol::account::PlanType::Unknown => {
-                                    generated::PlanType::Unknown
-                                }
-                            }),
-                        },
-                    },
-                });
-            }
-
             // ── Everything else: forward as raw JSON ──────────────────
             other => {
                 let method = format!("{other}");
@@ -473,6 +429,21 @@ impl EventProcessor {
         }
     }
 
+    /// Forward a legacy notification as raw JSON for platform-specific handling.
+    pub fn process_legacy_notification(
+        &self,
+        server_id: &str,
+        method: &str,
+        params: &serde_json::Value,
+    ) {
+        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+        self.emit(UiEvent::RawNotification {
+            server_id: server_id.to_string(),
+            method: method.to_string(),
+            params_json,
+        });
+    }
+
     // ── Server request processing ──────────────────────────────────────
 
     /// Process a typed upstream `ServerRequest` that requires user action.
@@ -484,87 +455,118 @@ impl EventProcessor {
     /// approval and the mobile UI already knows how to present the full
     /// upstream question/options payload.
     pub fn process_server_request(&self, server_id: &str, request: &ServerRequest) {
-        let (kind, thread_id, turn_id, item_id, command, path, cwd, reason, request_id, raw_params) =
-            match request {
-                ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
-                    let raw = serde_json::to_value(params).unwrap_or_default();
-                    (
-                        ApprovalKind::Command,
-                        Some(params.thread_id.clone()),
-                        Some(params.turn_id.clone()),
-                        Some(params.item_id.clone()),
-                        params.command.clone(),
-                        None,
-                        params.cwd.as_ref().map(|p| p.display().to_string()),
-                        params.reason.clone(),
-                        request_id,
-                        raw,
-                    )
-                }
-                ServerRequest::FileChangeRequestApproval { request_id, params } => {
-                    let raw = serde_json::to_value(params).unwrap_or_default();
-                    (
-                        ApprovalKind::FileChange,
-                        Some(params.thread_id.clone()),
-                        Some(params.turn_id.clone()),
-                        Some(params.item_id.clone()),
-                        None,
-                        params.grant_root.as_ref().map(|p| p.display().to_string()),
-                        None,
-                        params.reason.clone(),
-                        request_id,
-                        raw,
-                    )
-                }
-                ServerRequest::PermissionsRequestApproval { request_id, params } => {
-                    let raw = serde_json::to_value(params).unwrap_or_default();
-                    (
-                        ApprovalKind::Permissions,
-                        Some(params.thread_id.clone()),
-                        Some(params.turn_id.clone()),
-                        Some(params.item_id.clone()),
-                        None,
-                        None,
-                        None,
-                        params.reason.clone(),
-                        request_id,
-                        raw,
-                    )
-                }
-                ServerRequest::McpServerElicitationRequest { request_id, params } => {
-                    let raw = serde_json::to_value(params).unwrap_or_default();
-                    (
-                        ApprovalKind::McpElicitation,
-                        Some(params.thread_id.clone()),
-                        params.turn_id.clone(),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        request_id,
-                        raw,
-                    )
-                }
-                ServerRequest::ToolRequestUserInput { request_id, params } => {
-                    let _ = request_id;
-                    let params_json =
-                        serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
-                    self.emit(UiEvent::RawNotification {
-                        server_id: server_id.to_string(),
-                        method: "item/tool/requestUserInput".to_string(),
-                        params_json,
-                    });
-                    return;
-                }
-                other => {
-                    warn!(
-                        method = ?other,
-                        "unknown/unhandled server request type — ignoring"
-                    );
-                    return;
-                }
-            };
+        let (
+            kind,
+            method,
+            thread_id,
+            turn_id,
+            item_id,
+            command,
+            path,
+            grant_root,
+            cwd,
+            reason,
+            request_id,
+            raw_params,
+        ) = match request {
+            ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                let raw = serde_json::to_value(params).unwrap_or_default();
+                (
+                    ApprovalKind::Command,
+                    "item/commandExecution/requestApproval",
+                    Some(params.thread_id.clone()),
+                    Some(params.turn_id.clone()),
+                    Some(params.item_id.clone()),
+                    params.command.clone(),
+                    None,
+                    None,
+                    params.cwd.as_ref().map(|p| p.display().to_string()),
+                    params.reason.clone(),
+                    request_id,
+                    raw,
+                )
+            }
+            ServerRequest::FileChangeRequestApproval { request_id, params } => {
+                let raw = serde_json::to_value(params).unwrap_or_default();
+                (
+                    ApprovalKind::FileChange,
+                    "item/fileChange/requestApproval",
+                    Some(params.thread_id.clone()),
+                    Some(params.turn_id.clone()),
+                    Some(params.item_id.clone()),
+                    None,
+                    None,
+                    params.grant_root.as_ref().map(|p| p.display().to_string()),
+                    None,
+                    params.reason.clone(),
+                    request_id,
+                    raw,
+                )
+            }
+            ServerRequest::PermissionsRequestApproval { request_id, params } => {
+                let raw = serde_json::to_value(params).unwrap_or_default();
+                (
+                    ApprovalKind::Permissions,
+                    "item/permissions/requestApproval",
+                    Some(params.thread_id.clone()),
+                    Some(params.turn_id.clone()),
+                    Some(params.item_id.clone()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    params.reason.clone(),
+                    request_id,
+                    raw,
+                )
+            }
+            ServerRequest::McpServerElicitationRequest { request_id, params } => {
+                let raw = serde_json::to_value(params).unwrap_or_default();
+                (
+                    ApprovalKind::McpElicitation,
+                    "mcpServer/elicitation/request",
+                    Some(params.thread_id.clone()),
+                    params.turn_id.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    request_id,
+                    raw,
+                )
+            }
+            ServerRequest::ToolRequestUserInput { request_id, params } => {
+                self.emit_raw_server_request(
+                    server_id,
+                    "item/tool/requestUserInput",
+                    request_id,
+                    params,
+                );
+                return;
+            }
+            ServerRequest::DynamicToolCall { request_id, params } => {
+                self.emit_raw_server_request(server_id, "item/tool/call", request_id, params);
+                return;
+            }
+            ServerRequest::ChatgptAuthTokensRefresh { request_id, params } => {
+                self.emit_raw_server_request(
+                    server_id,
+                    "account/chatgptAuthTokens/refresh",
+                    request_id,
+                    params,
+                );
+                return;
+            }
+            other => {
+                warn!(
+                    method = ?other,
+                    "unknown/unhandled server request type — ignoring"
+                );
+                return;
+            }
+        };
 
         let id = serde_json::to_value(request_id)
             .map(|v| match v {
@@ -577,14 +579,17 @@ impl EventProcessor {
 
         let approval = PendingApproval {
             id,
+            server_id: server_id.to_string(),
             kind,
             thread_id: thread_id.clone(),
             turn_id,
             item_id,
             command,
             path,
+            grant_root,
             cwd,
             reason,
+            method: method.to_string(),
             raw_params_json,
         };
 
@@ -608,6 +613,31 @@ impl EventProcessor {
     fn emit(&self, event: UiEvent) {
         // Ignore the error — it just means there are no active subscribers.
         let _ = self.ui_event_tx.send(event);
+    }
+
+    fn emit_raw_server_request<T: serde::Serialize>(
+        &self,
+        server_id: &str,
+        method: &str,
+        request_id: &impl serde::Serialize,
+        params: &T,
+    ) {
+        let request_id = serde_json::to_value(request_id)
+            .map(|value| match value {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            })
+            .unwrap_or_default();
+        let params_json = serde_json::to_string(&serde_json::json!({
+            "requestId": request_id,
+            "params": params,
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
+        self.emit(UiEvent::RawNotification {
+            server_id: server_id.to_string(),
+            method: method.to_string(),
+            params_json,
+        });
     }
 
     fn make_key(server_id: &str, thread_id: &str) -> ThreadKey {
@@ -665,23 +695,23 @@ mod tests {
         }
     }
 
-    fn generated_item_id(item: &generated::ThreadItem) -> &str {
+    fn upstream_item_id(item: &proto::ThreadItem) -> &str {
         match item {
-            generated::ThreadItem::UserMessage { id, .. }
-            | generated::ThreadItem::AgentMessage { id, .. }
-            | generated::ThreadItem::Plan { id, .. }
-            | generated::ThreadItem::Reasoning { id, .. }
-            | generated::ThreadItem::CommandExecution { id, .. }
-            | generated::ThreadItem::FileChange { id, .. }
-            | generated::ThreadItem::McpToolCall { id, .. }
-            | generated::ThreadItem::DynamicToolCall { id, .. }
-            | generated::ThreadItem::CollabAgentToolCall { id, .. }
-            | generated::ThreadItem::WebSearch { id, .. }
-            | generated::ThreadItem::ImageView { id, .. }
-            | generated::ThreadItem::ImageGeneration { id, .. }
-            | generated::ThreadItem::EnteredReviewMode { id, .. }
-            | generated::ThreadItem::ExitedReviewMode { id, .. }
-            | generated::ThreadItem::ContextCompaction { id, .. } => id,
+            proto::ThreadItem::UserMessage { id, .. }
+            | proto::ThreadItem::AgentMessage { id, .. }
+            | proto::ThreadItem::Plan { id, .. }
+            | proto::ThreadItem::Reasoning { id, .. }
+            | proto::ThreadItem::CommandExecution { id, .. }
+            | proto::ThreadItem::FileChange { id, .. }
+            | proto::ThreadItem::McpToolCall { id, .. }
+            | proto::ThreadItem::DynamicToolCall { id, .. }
+            | proto::ThreadItem::CollabAgentToolCall { id, .. }
+            | proto::ThreadItem::WebSearch { id, .. }
+            | proto::ThreadItem::ImageView { id, .. }
+            | proto::ThreadItem::ImageGeneration { id, .. }
+            | proto::ThreadItem::EnteredReviewMode { id, .. }
+            | proto::ThreadItem::ExitedReviewMode { id, .. }
+            | proto::ThreadItem::ContextCompaction { id, .. } => id,
         }
     }
 
@@ -706,6 +736,61 @@ mod tests {
     }
 
     // ── Turn lifecycle ─────────────────────────────────────────────────
+
+    #[test]
+    fn thread_started() {
+        let notification = ServerNotification::ThreadStarted(proto::ThreadStartedNotification {
+            thread: proto::Thread {
+                id: "thr_1".to_string(),
+                preview: "Preview".to_string(),
+                ephemeral: false,
+                model_provider: "openai".to_string(),
+                created_at: 1,
+                updated_at: 2,
+                status: proto::ThreadStatus::Idle,
+                path: None,
+                cwd: codex_protocol::config_types::AbsolutePath(std::path::PathBuf::from("/tmp")),
+                cli_version: "1.0.0".to_string(),
+                source: proto::SessionSource::Cli,
+                agent_nickname: Some("builder".to_string()),
+                agent_role: Some("worker".to_string()),
+                git_info: None,
+                name: Some("Example".to_string()),
+                turns: Vec::new(),
+            },
+        });
+        let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
+        match evt {
+            UiEvent::ThreadStarted { key, notification } => {
+                assert_eq!(key.server_id, "srv1");
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.thread.id, "thr_1");
+                assert_eq!(
+                    notification.thread.agent_nickname.as_deref(),
+                    Some("builder")
+                );
+            }
+            other => panic!("expected ThreadStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thread_status_changed() {
+        let notification =
+            ServerNotification::ThreadStatusChanged(proto::ThreadStatusChangedNotification {
+                thread_id: "thr_1".to_string(),
+                status: proto::ThreadStatus::Active,
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
+        match evt {
+            UiEvent::ThreadStatusChanged { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.thread_id, "thr_1");
+                assert_eq!(notification.status, proto::ThreadStatus::Active);
+            }
+            other => panic!("expected ThreadStatusChanged, got {other:?}"),
+        }
+    }
 
     #[test]
     fn turn_started() {
@@ -740,6 +825,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn turn_diff_updated() {
+        let notification =
+            ServerNotification::TurnDiffUpdated(proto::TurnDiffUpdatedNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                diff: "--- a\n+++ b".to_string(),
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
+        match evt {
+            UiEvent::TurnDiffUpdated { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.turn_id, "turn_1");
+                assert_eq!(notification.diff, "--- a\n+++ b");
+            }
+            other => panic!("expected TurnDiffUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_plan_updated() {
+        let notification =
+            ServerNotification::TurnPlanUpdated(proto::TurnPlanUpdatedNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                explanation: Some("work".to_string()),
+                plan: vec![proto::TurnPlanStep {
+                    step: "Inspect".to_string(),
+                    status: proto::TurnPlanStepStatus::InProgress,
+                }],
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
+        match evt {
+            UiEvent::TurnPlanUpdated { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.turn_id, "turn_1");
+                assert_eq!(notification.plan.len(), 1);
+                assert_eq!(
+                    notification.plan[0].status,
+                    proto::TurnPlanStepStatus::InProgress
+                );
+            }
+            other => panic!("expected TurnPlanUpdated, got {other:?}"),
+        }
+    }
+
     // ── Item lifecycle ─────────────────────────────────────────────────
 
     #[test]
@@ -755,7 +886,7 @@ mod tests {
                 assert_eq!(key.thread_id, "thr_1");
                 assert_eq!(notification.thread_id, "thr_1");
                 assert_eq!(notification.turn_id, "turn_1");
-                assert_eq!(generated_item_id(&notification.item), "item_1");
+                assert_eq!(upstream_item_id(&notification.item), "item_1");
             }
             other => panic!("expected ItemStarted, got {other:?}"),
         }
@@ -774,9 +905,47 @@ mod tests {
                 assert_eq!(key.thread_id, "thr_1");
                 assert_eq!(notification.thread_id, "thr_1");
                 assert_eq!(notification.turn_id, "turn_1");
-                assert_eq!(generated_item_id(&notification.item), "item_2");
+                assert_eq!(upstream_item_id(&notification.item), "item_2");
             }
             other => panic!("expected ItemCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_tool_call_progress() {
+        let notification =
+            ServerNotification::McpToolCallProgress(proto::McpToolCallProgressNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                item_id: "item_1".to_string(),
+                message: "halfway".to_string(),
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit");
+        match evt {
+            UiEvent::McpToolCallProgress { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.item_id, "item_1");
+                assert_eq!(notification.message, "halfway");
+            }
+            other => panic!("expected McpToolCallProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_request_resolved() {
+        let notification =
+            ServerNotification::ServerRequestResolved(proto::ServerRequestResolvedNotification {
+                thread_id: "thr_1".to_string(),
+                request_id: proto::RequestId::Integer(7),
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit");
+        match evt {
+            UiEvent::ServerRequestResolved { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.thread_id, "thr_1");
+                assert_eq!(notification.request_id, proto::RequestId::Integer(7));
+            }
+            other => panic!("expected ServerRequestResolved, got {other:?}"),
         }
     }
 
@@ -1048,6 +1217,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn account_rate_limits_updated() {
+        let notification =
+            ServerNotification::AccountRateLimitsUpdated(proto::AccountRateLimitsUpdatedNotification {
+                rate_limits: proto::RateLimitSnapshot {
+                    limit_id: Some("primary".to_string()),
+                    limit_name: Some("Primary".to_string()),
+                    primary: Some(proto::RateLimitWindow {
+                        used_percent: 42,
+                        window_duration_mins: Some(60),
+                        resets_at: Some(123456789),
+                    }),
+                    secondary: None,
+                    credits: Some(proto::CreditsSnapshot {
+                        has_credits: true,
+                        unlimited: false,
+                        balance: Some("5.00".to_string()),
+                    }),
+                    plan_type: Some(codex_protocol::account::PlanType::Plus),
+                },
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit");
+        match evt {
+            UiEvent::AccountRateLimitsUpdated {
+                server_id,
+                notification,
+            } => {
+                assert_eq!(server_id, "srv1");
+                assert_eq!(notification.rate_limits.limit_id.as_deref(), Some("primary"));
+                assert_eq!(notification.rate_limits.primary.as_ref().map(|w| w.used_percent), Some(42));
+            }
+            other => panic!("expected AccountRateLimitsUpdated, got {other:?}"),
+        }
+    }
+
     // ── Unknown notifications ──────────────────────────────────────────
 
     #[test]
@@ -1060,6 +1264,91 @@ mod tests {
         match evt.unwrap() {
             UiEvent::RawNotification { method, .. } => {
                 assert!(!method.is_empty());
+            }
+            other => panic!("expected RawNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_notifications_no_longer_fall_through_to_raw() {
+        let notifications = vec![
+            ServerNotification::ThreadStarted(proto::ThreadStartedNotification {
+                thread: proto::Thread {
+                    id: "thr_1".to_string(),
+                    preview: String::new(),
+                    ephemeral: false,
+                    model_provider: "openai".to_string(),
+                    created_at: 1,
+                    updated_at: 1,
+                    status: proto::ThreadStatus::Idle,
+                    path: None,
+                    cwd: codex_protocol::config_types::AbsolutePath(std::path::PathBuf::from(
+                        "/tmp",
+                    )),
+                    cli_version: "1.0.0".to_string(),
+                    source: proto::SessionSource::Cli,
+                    agent_nickname: None,
+                    agent_role: None,
+                    git_info: None,
+                    name: None,
+                    turns: Vec::new(),
+                },
+            }),
+            ServerNotification::ThreadStatusChanged(proto::ThreadStatusChangedNotification {
+                thread_id: "thr_1".to_string(),
+                status: proto::ThreadStatus::Idle,
+            }),
+            ServerNotification::TurnDiffUpdated(proto::TurnDiffUpdatedNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                diff: String::new(),
+            }),
+            ServerNotification::TurnPlanUpdated(proto::TurnPlanUpdatedNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                explanation: None,
+                plan: Vec::new(),
+            }),
+            ServerNotification::ServerRequestResolved(proto::ServerRequestResolvedNotification {
+                thread_id: "thr_1".to_string(),
+                request_id: proto::RequestId::String("abc".to_string()),
+            }),
+            ServerNotification::McpToolCallProgress(proto::McpToolCallProgressNotification {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                item_id: "item_1".to_string(),
+                message: String::new(),
+            }),
+        ];
+
+        for notification in notifications {
+            let evt = process_and_recv("srv1", &notification).expect("should emit");
+            assert!(
+                !matches!(evt, UiEvent::RawNotification { .. }),
+                "typed notification fell through to raw: {evt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_notification_emits_raw() {
+        let proc = EventProcessor::new();
+        let mut rx = proc.subscribe();
+        proc.process_legacy_notification(
+            "srv1",
+            "codex/event/collab_wait_end",
+            &serde_json::json!({ "receiver_agents": [{ "thread_id": "thr_2" }] }),
+        );
+        let evt = rx.try_recv().expect("should emit UiEvent");
+        match evt {
+            UiEvent::RawNotification {
+                server_id,
+                method,
+                params_json,
+            } => {
+                assert_eq!(server_id, "srv1");
+                assert_eq!(method, "codex/event/collab_wait_end");
+                assert!(params_json.contains("receiver_agents"));
             }
             other => panic!("expected RawNotification, got {other:?}"),
         }
@@ -1172,6 +1461,101 @@ mod tests {
                 assert_eq!(approval.kind, ApprovalKind::McpElicitation);
             }
             other => panic!("expected ApprovalRequested, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_request_user_input_is_forwarded_with_request_id() {
+        let request = ServerRequest::ToolRequestUserInput {
+            request_id: proto::RequestId::Integer(13),
+            params: proto::ToolRequestUserInputParams {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                item_id: "item_1".to_string(),
+                questions: vec![proto::ToolRequestUserInputQuestion {
+                    id: "q1".to_string(),
+                    header: "Mode".to_string(),
+                    question: "Pick one".to_string(),
+                    is_other_allowed: false,
+                    is_secret: false,
+                    options: vec![proto::ToolRequestUserInputOption {
+                        label: "Yes".to_string(),
+                        description: Some("Allow it".to_string()),
+                    }],
+                }],
+            },
+        };
+        let evt = request_and_recv("srv1", &request).expect("should emit");
+        match evt {
+            UiEvent::RawNotification {
+                server_id,
+                method,
+                params_json,
+            } => {
+                assert_eq!(server_id, "srv1");
+                assert_eq!(method, "item/tool/requestUserInput");
+                let payload: serde_json::Value =
+                    serde_json::from_str(&params_json).expect("decode raw request payload");
+                assert_eq!(payload["requestId"], json!("13"));
+                assert_eq!(payload["params"]["threadId"], json!("thr_1"));
+            }
+            other => panic!("expected RawNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_tool_call_is_forwarded_with_request_id() {
+        let request = ServerRequest::DynamicToolCall {
+            request_id: proto::RequestId::Integer(14),
+            params: proto::DynamicToolCallParams {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                item_id: "item_1".to_string(),
+                call_id: "call_1".to_string(),
+                tool_name: "show_widget".to_string(),
+                arguments: json!({"title": "Hello"}),
+            },
+        };
+        let evt = request_and_recv("srv1", &request).expect("should emit");
+        match evt {
+            UiEvent::RawNotification {
+                method,
+                params_json,
+                ..
+            } => {
+                assert_eq!(method, "item/tool/call");
+                let payload: serde_json::Value =
+                    serde_json::from_str(&params_json).expect("decode raw request payload");
+                assert_eq!(payload["requestId"], json!("14"));
+                assert_eq!(payload["params"]["toolName"], json!("show_widget"));
+            }
+            other => panic!("expected RawNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chatgpt_auth_tokens_refresh_is_forwarded_with_request_id() {
+        let request = ServerRequest::ChatgptAuthTokensRefresh {
+            request_id: proto::RequestId::Integer(15),
+            params: proto::ChatgptAuthTokensRefreshParams {
+                reason: proto::ChatgptAuthTokensRefreshReason::Unauthorized,
+                previous_account_id: Some("acct-123".to_string()),
+            },
+        };
+        let evt = request_and_recv("srv1", &request).expect("should emit");
+        match evt {
+            UiEvent::RawNotification {
+                method,
+                params_json,
+                ..
+            } => {
+                assert_eq!(method, "account/chatgptAuthTokens/refresh");
+                let payload: serde_json::Value =
+                    serde_json::from_str(&params_json).expect("decode raw request payload");
+                assert_eq!(payload["requestId"], json!("15"));
+                assert_eq!(payload["params"]["previousAccountId"], json!("acct-123"));
+            }
+            other => panic!("expected RawNotification, got {other:?}"),
         }
     }
 

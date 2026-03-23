@@ -1,19 +1,19 @@
 import SwiftUI
 
 struct HomeDashboardView: View {
-    let recentSessions: [ThreadState]
-    let connectedServers: [ServerConnection]
+    let recentSessions: [HomeDashboardRecentSession]
+    let connectedServers: [HomeDashboardServer]
     let openingRecentSessionKey: ThreadKey?
     let isStartingNewSession: Bool
-    let onOpenRecentSession: @MainActor (ThreadState) async -> Void
-    let onOpenServerSessions: (ServerConnection) -> Void
+    let onOpenRecentSession: @MainActor (HomeDashboardRecentSession) async -> Void
+    let onOpenServerSessions: (HomeDashboardServer) -> Void
     let onNewSession: () -> Void
     let onConnectServer: () -> Void
     let onShowSettings: () -> Void
     var onDeleteThread: ((ThreadKey) async -> Void)? = nil
     var onDisconnectServer: ((String) -> Void)? = nil
-    @State private var deleteTargetThread: ThreadState?
-    @State private var disconnectTargetServer: ServerConnection?
+    @State private var deleteTargetThread: HomeDashboardRecentSession?
+    @State private var disconnectTargetServer: HomeDashboardServer?
 
     var body: some View {
         ScrollView {
@@ -47,13 +47,13 @@ struct HomeDashboardView: View {
         )) {
             Button("Cancel", role: .cancel) { disconnectTargetServer = nil }
             Button("Disconnect", role: .destructive) {
-                if let conn = disconnectTargetServer {
-                    onDisconnectServer?(conn.id)
+                if let server = disconnectTargetServer {
+                    onDisconnectServer?(server.id)
                 }
                 disconnectTargetServer = nil
             }
         } message: {
-            Text("Disconnect from \"\(disconnectTargetServer?.server.name ?? "this server")\"?")
+            Text("Disconnect from \"\(disconnectTargetServer?.displayName ?? "this server")\"?")
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -122,16 +122,16 @@ struct HomeDashboardView: View {
                 )
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(connectedServers) { connection in
+                    ForEach(connectedServers) { server in
                         Button {
-                            onOpenServerSessions(connection)
+                            onOpenServerSessions(server)
                         } label: {
-                            connectedServerRow(connection)
+                            connectedServerRow(server)
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button(role: .destructive) {
-                                disconnectTargetServer = connection
+                                disconnectTargetServer = server
                             } label: {
                                 Label("Disconnect Server", systemImage: "bolt.slash")
                             }
@@ -183,10 +183,10 @@ struct HomeDashboardView: View {
         }
     }
 
-    private func recentSessionCard(_ thread: ThreadState) -> some View {
+    private func recentSessionCard(_ thread: HomeDashboardRecentSession) -> some View {
         let subtitle: String = {
-            var parts = [thread.serverName]
-            if let workspace = HomeDashboardSupport.workspaceLabel(for: thread) {
+            var parts = [thread.serverDisplayName]
+            if let workspace = HomeDashboardSupport.workspaceLabel(for: thread.cwd) {
                 parts.append(workspace)
             }
             return parts.joined(separator: " · ")
@@ -205,7 +205,6 @@ struct HomeDashboardView: View {
                 subtitle: subtitle,
                 trailing: trailing
             )
-            // Overlay loading spinner when opening.
             if openingRecentSessionKey == thread.key {
                 HStack {
                     Spacer()
@@ -217,12 +216,12 @@ struct HomeDashboardView: View {
         .accessibilityIdentifier("home.recentSessionCard")
     }
 
-    private func connectedServerRow(_ connection: ServerConnection) -> some View {
+    private func connectedServerRow(_ server: HomeDashboardServer) -> some View {
         SessionServerCardRow(
-            icon: connection.server.source == .local ? "iphone" : "server.rack",
-            title: connection.server.name,
-            subtitle: HomeDashboardSupport.serverSubtitle(for: connection.server),
-            trailing: .status(connected: connection.isConnected)
+            icon: server.isLocal ? "iphone" : "server.rack",
+            title: server.displayName,
+            subtitle: HomeDashboardSupport.serverSubtitle(for: server),
+            trailing: .status(connected: server.health == .connected)
         )
         .accessibilityIdentifier("home.connectedServerRow")
     }
@@ -246,21 +245,5 @@ struct HomeDashboardView: View {
                 .stroke(LitterTheme.border.opacity(0.65), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func statusBadge(_ title: String) -> some View {
-        Text(title)
-            .litterFont(.caption)
-            .foregroundColor(LitterTheme.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(LitterTheme.accent.opacity(0.14))
-            .clipShape(Capsule())
-    }
-
-    private var metadataDivider: some View {
-        Circle()
-            .fill(LitterTheme.textMuted.opacity(0.7))
-            .frame(width: 3, height: 3)
     }
 }

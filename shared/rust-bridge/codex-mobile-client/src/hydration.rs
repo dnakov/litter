@@ -118,7 +118,9 @@ impl From<MessageSegment> for FfiMessageSegment {
     fn from(value: MessageSegment) -> Self {
         match value {
             MessageSegment::Text(text) => Self::Text { text },
-            MessageSegment::InlineImage { data, mime_type } => Self::InlineImage { data, mime_type },
+            MessageSegment::InlineImage { data, mime_type } => {
+                Self::InlineImage { data, mime_type }
+            }
             MessageSegment::CodeBlock { language, code } => Self::CodeBlock { language, code },
         }
     }

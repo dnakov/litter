@@ -3,7 +3,7 @@ import Network
 
 struct DiscoveryView: View {
     var onServerSelected: ((DiscoveredServer) -> Void)?
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     @State private var discovery: NetworkDiscovery
     @State private var sshServer: DiscoveredServer?
     @State private var pendingSSHServer: DiscoveredServer?
@@ -40,7 +40,7 @@ struct DiscoveryView: View {
 
     private var networkServers: [DiscoveredServer] {
         let discovered = discovery.servers.filter { $0.source != .local }
-        let saved = serverManager.loadSavedServers()
+        let saved = SavedServerStore.load()
             .map { $0.toDiscoveredServer() }
             .filter { $0.source != .local }
         let discoveredByHost = discovered.reduce(into: [String: DiscoveredServer]()) { partialResult, server in
@@ -301,6 +301,8 @@ struct DiscoveryView: View {
 
     private func serverRow(_ server: DiscoveredServer) -> some View {
         let rowIdentifier = serverRowAccessibilityIdentifier(for: server)
+        let serverSnapshot = appModel.snapshot?.servers.first(where: { $0.serverId == server.id })
+        let serverHealth = serverSnapshot?.health
         return Button {
             handleTap(server)
         } label: {
@@ -317,14 +319,14 @@ struct DiscoveryView: View {
                         .foregroundColor(LitterTheme.textSecondary)
                 }
                 Spacer()
-                if let health = serverManager.connections[server.id]?.connectionHealth,
+                if let health = serverHealth,
                    health != .disconnected {
-                    Text(health.settingsLabel.lowercased())
+                    Text(health.displayLabel.lowercased())
                         .litterFont(.caption2)
-                        .foregroundColor(health.settingsColor)
+                        .foregroundColor(health.accentColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(health.settingsColor.opacity(0.15))
+                        .background(health.accentColor.opacity(0.15))
                         .cornerRadius(4)
                 } else if connectingServer?.id == server.id {
                     ProgressView().controlSize(.small).tint(LitterTheme.accent)
@@ -357,17 +359,19 @@ struct DiscoveryView: View {
         if let port = server.hasCodexServer ? server.port : server.sshPort {
             parts.append(":\(port)")
         }
-        let conn = serverManager.connections[server.id]
+        let snapshot = appModel.snapshot?.servers.first(where: { $0.serverId == server.id })
+        let isConnected = snapshot?.health == .connected
+        let isKnown = snapshot != nil
         if server.hasCodexServer {
-            if let conn, conn.isConnected {
+            if isConnected {
                 parts.append(" - codex running")
-            } else if conn != nil {
+            } else if isKnown {
                 parts.append(" - codex")
             } else {
                 parts.append(" - codex running")
             }
         } else {
-            parts.append(" - SSH (\(server.source.rawString))")
+            parts.append(" - SSH (\(server.source.rawValue))")
         }
         return parts.joined()
     }
@@ -379,7 +383,7 @@ struct DiscoveryView: View {
     }
 
     private func navigateAfterConnect(_ server: DiscoveredServer) {
-        if serverManager.connections[server.id]?.authStatus == .notLoggedIn {
+        if appModel.snapshot?.servers.first(where: { $0.serverId == server.id })?.account == nil {
             appState.showSettings = true
         } else {
             onServerSelected?(server)
@@ -388,7 +392,7 @@ struct DiscoveryView: View {
 
     @MainActor
     private func handleTapAsync(_ server: DiscoveredServer) async {
-        if serverManager.connections[server.id]?.isConnected == true {
+        if appModel.snapshot?.servers.first(where: { $0.serverId == server.id })?.health == .connected {
             navigateAfterConnect(server)
             return
         }
@@ -645,15 +649,124 @@ struct DiscoveryView: View {
             return
         }
 
-        let connectedServerId = await serverManager.addServer(server, target: target)
+        let connectedServerId: String
+        do {
+            switch target {
+            case .local:
+                connectedServerId = try await appModel.serverBridge.connectLocalServer(
+                    serverId: server.id,
+                    displayName: server.name,
+                    host: "127.0.0.1",
+                    port: 0
+                )
+                SavedServerStore.upsert(server)
+            case .remote(let host, let port):
+                connectedServerId = try await appModel.serverBridge.connectRemoteServer(
+                    serverId: server.id,
+                    displayName: server.name,
+                    host: host,
+                    port: port
+                )
+                SavedServerStore.upsert(server)
+            case .remoteURL(let url):
+                connectedServerId = try await appModel.serverBridge.connectRemoteUrlServer(
+                    serverId: server.id,
+                    displayName: server.name,
+                    websocketUrl: url.absoluteString
+                )
+                SavedServerStore.upsert(server)
+            case .sshThenRemote(let host, let credentials):
+                connectedServerId = try await connectViaSSH(server: server, host: host, credentials: credentials)
+            }
+        } catch {
+            connectingServer = nil
+            connectError = error.localizedDescription
+            return
+        }
+        await appModel.refreshSnapshot()
 
         connectingServer = nil
-        if let connection = serverManager.connections[connectedServerId], connection.isConnected {
-            navigateAfterConnect(connection.server)
+        if appModel.snapshot?.servers.first(where: { $0.serverId == connectedServerId })?.health == .connected {
+            navigateAfterConnect(server)
         } else {
-            let phase = serverManager.connections[connectedServerId]?.connectionPhase
-            connectError = phase?.isEmpty == false ? phase : "Failed to connect"
+            connectError = "Failed to connect"
         }
+    }
+
+    private func connectViaSSH(
+        server: DiscoveredServer,
+        host: String,
+        credentials: SSHCredentials
+    ) async throws -> String {
+        let bootstrap = try await sshConnectAndBootstrap(host: host, credentials: credentials, port: server.resolvedSSHPort)
+        let targetHost = server.sshPortForwardingEnabled ? "127.0.0.1" : bootstrap.normalizedHost
+        let targetPort = server.sshPortForwardingEnabled
+            ? (bootstrap.tunnelLocalPort ?? bootstrap.serverPort)
+            : bootstrap.serverPort
+        let websocketURL = websocketURLString(host: targetHost, port: targetPort)
+
+        do {
+            let serverId = try await appModel.serverBridge.connectRemoteUrlServer(
+                serverId: server.id,
+                displayName: server.name,
+                websocketUrl: websocketURL
+            )
+            await SshSessionStore.shared.record(sessionId: bootstrap.sessionId, for: server.id)
+
+            SavedServerStore.upsert(
+                DiscoveredServer(
+                    id: server.id,
+                    name: server.name,
+                    hostname: server.hostname,
+                    port: server.port ?? bootstrap.serverPort,
+                    sshPort: server.sshPort,
+                    source: server.source,
+                    hasCodexServer: !server.sshPortForwardingEnabled,
+                    wakeMAC: bootstrap.wakeMac ?? server.wakeMAC,
+                    sshPortForwardingEnabled: server.sshPortForwardingEnabled,
+                    websocketURL: server.sshPortForwardingEnabled ? nil : websocketURL
+                )
+            )
+            return serverId
+        } catch {
+            try? await appModel.ssh.sshClose(sessionId: bootstrap.sessionId)
+            throw error
+        }
+    }
+
+    private func sshConnectAndBootstrap(
+        host: String,
+        credentials: SSHCredentials,
+        port: UInt16
+    ) async throws -> FfiSshConnectionResult {
+        switch credentials {
+        case .password(let username, let password):
+            return try await appModel.ssh.sshConnectAndBootstrap(
+                host: host,
+                port: port,
+                username: username,
+                password: password,
+                privateKeyPem: nil,
+                passphrase: nil,
+                acceptUnknownHost: true,
+                workingDir: nil
+            )
+        case .key(let username, let privateKey, let passphrase):
+            return try await appModel.ssh.sshConnectAndBootstrap(
+                host: host,
+                port: port,
+                username: username,
+                password: nil,
+                privateKeyPem: privateKey,
+                passphrase: passphrase,
+                acceptUnknownHost: true,
+                workingDir: nil
+            )
+        }
+    }
+
+    private func websocketURLString(host: String, port: UInt16) -> String {
+        "ws://\(host):\(port)"
     }
 
     // MARK: - Manual Entry
@@ -935,7 +1048,7 @@ private enum ManualConnectionMode: String, CaseIterable, Identifiable {
 #if DEBUG
 #Preview("Discovery") {
     LitterPreviewScene(
-        serverManager: LitterPreviewData.makeServerManager(includeActiveThread: false),
+        appModel: LitterPreviewData.makeDiscoveryAppModel(),
         includeBackground: false
     ) {
         NavigationStack {

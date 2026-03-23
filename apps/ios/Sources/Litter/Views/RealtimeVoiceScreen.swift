@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct RealtimeVoiceScreen: View {
-    let serverManager: ServerManager
+    @Environment(AppModel.self) private var appModel
+    @Environment(VoiceRuntimeController.self) private var voiceRuntime
     let threadKey: ThreadKey
     let onEnd: () -> Void
     let onToggleSpeaker: () -> Void
@@ -13,13 +14,13 @@ struct RealtimeVoiceScreen: View {
     @State private var apiKeyError: String?
     @State private var isRetryingAfterAuthSave = false
     private var session: VoiceSessionState? {
-        guard let session = serverManager.activeVoiceSession,
+        guard let session = voiceRuntime.activeVoiceSession,
               session.threadKey == threadKey else { return nil }
         return session
     }
 
-    private var connection: ServerConnection? {
-        serverManager.connections[threadKey.serverId]
+    private var server: AppServerSnapshot? {
+        appModel.snapshot?.serverSnapshot(for: threadKey.serverId)
     }
 
     private var phase: VoiceSessionPhase {
@@ -66,16 +67,16 @@ struct RealtimeVoiceScreen: View {
 
     private var shouldShowApiKeyPrompt: Bool {
         guard hasCheckedAuth,
-              let connection,
+              let server,
               phase == .connecting else {
             return false
         }
-        switch connection.authStatus {
-        case .chatgpt:
+        switch server.account {
+        case .chatgpt?:
             return true
-        case .notLoggedIn:
+        case nil:
             return true
-        case .apiKey, .unknown:
+        case .apiKey?:
             return false
         }
     }
@@ -105,7 +106,6 @@ struct RealtimeVoiceScreen: View {
                 if let handoffThreadKey {
                     InlineHandoffView(
                         threadKey: handoffThreadKey,
-                        serverManager: serverManager,
                         maxHeight: 220
                     )
                     .padding(.horizontal, 18)
@@ -126,11 +126,21 @@ struct RealtimeVoiceScreen: View {
         }
         .statusBarHidden()
         .task {
-            guard let connection else { return }
-            await connection.checkAuth()
-            await MainActor.run {
-                hasCheckedAuth = true
-                apiKeyError = connection.lastAuthError
+            do {
+                _ = try await appModel.rpc.getAccount(
+                    serverId: threadKey.serverId,
+                    params: GetAccountParams(refreshToken: false)
+                )
+                await appModel.refreshSnapshot()
+                await MainActor.run {
+                    hasCheckedAuth = true
+                    apiKeyError = nil
+                }
+            } catch {
+                await MainActor.run {
+                    hasCheckedAuth = true
+                    apiKeyError = error.localizedDescription
+                }
             }
         }
         .onChange(of: session?.id) { _, next in
@@ -300,32 +310,44 @@ struct RealtimeVoiceScreen: View {
     }
 
     private func saveApiKeyAndRetry() {
-        guard let connection else { return }
         guard !trimmedApiKey.isEmpty, !isSavingApiKey else { return }
 
         isSavingApiKey = true
         apiKeyError = nil
 
         Task {
-            await connection.loginWithApiKey(trimmedApiKey)
-            await connection.checkAuth()
-
             let apiKeySaved: Bool
-            if case .apiKey = connection.authStatus {
-                apiKeySaved = true
-            } else {
+            let authError: String?
+            do {
+                _ = try await appModel.rpc.loginAccount(
+                    serverId: threadKey.serverId,
+                    params: .apiKey(apiKey: trimmedApiKey)
+                )
+                _ = try await appModel.rpc.getAccount(
+                    serverId: threadKey.serverId,
+                    params: GetAccountParams(refreshToken: false)
+                )
+                await appModel.refreshSnapshot()
+                if case .apiKey? = appModel.snapshot?.serverSnapshot(for: threadKey.serverId)?.account {
+                    apiKeySaved = true
+                    authError = nil
+                } else {
+                    apiKeySaved = false
+                    authError = "Failed to save API key"
+                }
+            } catch {
                 apiKeySaved = false
+                authError = error.localizedDescription
             }
-            let authError = connection.lastAuthError
 
             if apiKeySaved {
                 await MainActor.run {
                     isRetryingAfterAuthSave = true
                 }
-                await serverManager.stopActiveVoiceSession()
+                await voiceRuntime.stopActiveVoiceSession()
                 try? await Task.sleep(for: .milliseconds(150))
                 do {
-                    try await serverManager.startVoiceOnThread(threadKey)
+                    try await voiceRuntime.startVoiceOnThread(threadKey)
                 } catch {
                     await MainActor.run {
                         isRetryingAfterAuthSave = false

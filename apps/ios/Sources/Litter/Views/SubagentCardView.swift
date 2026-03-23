@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SubagentCardView: View {
-    @Environment(ServerManager.self) private var serverManager
+    @Environment(AppModel.self) private var appModel
     let data: ConversationMultiAgentActionData
     let serverId: String
     @State private var expanded: Bool
@@ -42,8 +42,8 @@ struct SubagentCardView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(item: $sheetThreadKey) { key in
-            let resolvedKey = serverManager.resolvedThreadKey(for: key.threadId, serverId: key.serverId) ?? key
-            SubagentDetailSheet(threadKey: resolvedKey, serverManager: serverManager, agentLabel: sheetAgentLabel)
+            let resolvedKey = appModel.snapshot?.resolvedThreadKey(for: key.threadId, serverId: key.serverId) ?? key
+            SubagentDetailSheet(threadKey: resolvedKey, agentLabel: sheetAgentLabel)
         }
     }
 
@@ -127,11 +127,11 @@ struct SubagentCardView: View {
         if !row.label.isEmpty && !looksLikeRawId(row.label) {
             return row.label
         }
-        if let resolved = serverManager.resolvedAgentTargetLabel(for: row.label, serverId: serverId) {
+        if let resolved = appModel.snapshot?.resolvedAgentTargetLabel(for: row.label, serverId: serverId) {
             return resolved
         }
         if let threadId = row.threadId,
-           let resolved = serverManager.resolvedAgentTargetLabel(for: threadId, serverId: serverId) {
+           let resolved = appModel.snapshot?.resolvedAgentTargetLabel(for: threadId, serverId: serverId) {
             return resolved
         }
         return row.label
@@ -139,19 +139,17 @@ struct SubagentCardView: View {
 
     private func resolvedThreadKey(for row: AgentRowData) -> ThreadKey? {
         if let threadId = row.threadId {
-            return serverManager.resolvedThreadKey(for: threadId, serverId: serverId)
+            return appModel.snapshot?.resolvedThreadKey(for: threadId, serverId: serverId)
         }
         return nil
     }
 
-    /// Get live status from the actual ThreadState if available, falling back to event data
-    private func liveStatus(for row: AgentRowData) -> String? {
-        if let threadId = row.threadId {
-            let key = serverManager.resolvedThreadKey(for: threadId, serverId: serverId)
-                ?? ThreadKey(serverId: serverId, threadId: threadId)
-            if let thread = serverManager.threads[key] {
-                if thread.hasTurnActive { return "running" }
-                if thread.agentStatus != .unknown { return thread.agentStatus.rawValue }
+    private func liveStatus(for row: AgentRowData) -> AppSubagentStatus? {
+        if let key = resolvedThreadKey(for: row),
+           let summary = appModel.snapshot?.sessionSummary(for: key) {
+            if summary.hasActiveTurn { return .running }
+            if summary.agentStatus != .unknown {
+                return summary.agentStatus
             }
         }
         return row.status
@@ -175,7 +173,7 @@ struct SubagentCardView: View {
             // Line 1: Name + status + Open
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 let statusStr = readableStatus(status)
-                let isActive = SubagentStatus(fromRaw: status ?? "unknown") == .running
+                let isActive = status == .running
 
                 (
                     Text(parts.nickname)
@@ -227,9 +225,8 @@ struct SubagentCardView: View {
         .padding(.vertical, 2)
     }
 
-    private func readableStatus(_ status: String?) -> String {
-        let parsed = SubagentStatus(fromRaw: status ?? "unknown")
-        switch parsed {
+    private func readableStatus(_ status: AppSubagentStatus?) -> String {
+        switch status ?? .unknown {
         case .running: return "is thinking"
         case .pendingInit: return "is awaiting instruction"
         case .completed: return "has completed"
@@ -311,23 +308,25 @@ private struct ShimmerText: ViewModifier {
 // MARK: - Detail Sheet
 
 private struct SubagentDetailSheet: View {
+    @Environment(AppModel.self) private var appModel
     let threadKey: ThreadKey
-    let serverManager: ServerManager
     var agentLabel: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var isLoading = false
 
-    private var thread: ThreadState? {
-        serverManager.threads[threadKey]
+    private var threadSnapshot: AppThreadSnapshot? {
+        appModel.snapshot?.threadSnapshot(for: threadKey)
     }
 
     private var title: String {
-        // Try thread metadata first
-        if let label = thread?.agentDisplayLabel { return label }
-        // Try passed-in label
+        if let label = threadSnapshot.flatMap({ appModel.snapshot?.sessionSummary(for: $0.key)?.agentDisplayLabel }) {
+            return label
+        }
+        if let label = appModel.snapshot?.sessionSummary(for: threadKey)?.agentDisplayLabel {
+            return label
+        }
         if let label = agentLabel, !label.isEmpty, !looksLikeId(label) { return label }
-        // Try agent directory
-        if let resolved = serverManager.resolvedAgentTargetLabel(for: threadKey.threadId, serverId: threadKey.serverId) {
+        if let resolved = appModel.snapshot?.resolvedAgentTargetLabel(for: threadKey.threadId, serverId: threadKey.serverId) {
             return resolved
         }
         return agentLabel ?? "Agent"
@@ -340,9 +339,10 @@ private struct SubagentDetailSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let thread {
+                if let threadSnapshot {
+                    let items = threadSnapshot.hydratedConversationItems.map(\.conversationItem)
                     ScrollView {
-                        if thread.items.isEmpty {
+                        if items.isEmpty {
                             VStack(spacing: 12) {
                                 Spacer().frame(height: 40)
                                 ProgressView()
@@ -355,8 +355,8 @@ private struct SubagentDetailSheet: View {
                             .frame(maxWidth: .infinity)
                         } else {
                             ConversationTurnTimeline(
-                                items: thread.items,
-                                isLive: thread.hasTurnActive,
+                                items: items,
+                                isLive: threadSnapshot.activeTurnId != nil || threadSnapshot.info.status == .active,
                                 renderMode: .rich,
                                 serverId: threadKey.serverId,
                                 agentDirectoryVersion: 0,
@@ -441,16 +441,23 @@ private struct SubagentDetailSheet: View {
     }
 
     private func loadThreadIfNeeded() async {
-        serverManager.ensureThreadPlaceholderForPresentation(threadKey)
-
-        guard let thread = serverManager.threads[threadKey],
-              thread.items.isEmpty,
-              thread.requiresOpenHydration,
-              !isLoading else { return }
+        guard threadSnapshot == nil, !isLoading else { return }
 
         isLoading = true
         defer { isLoading = false }
-        _ = await serverManager.hydrateThreadIfNeeded(threadKey)
+        do {
+            _ = try await appModel.rpc.threadResume(
+                serverId: threadKey.serverId,
+                params: AppThreadLaunchConfig(
+                    model: nil,
+                    approvalPolicy: nil,
+                    sandbox: nil,
+                    developerInstructions: nil,
+                    persistExtendedHistory: false
+                ).threadResumeParams(threadId: threadKey.threadId, cwdOverride: nil)
+            )
+            await appModel.refreshSnapshot()
+        } catch {}
     }
 }
 
@@ -461,7 +468,7 @@ extension ThreadKey: Identifiable {
 private struct AgentRowData {
     let label: String
     let threadId: String?
-    let status: String?
+    let status: AppSubagentStatus?
     let statusMessage: String?
     let prompt: String?
 }
@@ -474,13 +481,13 @@ private struct AgentRowData {
             SubagentCardView(
                 data: ConversationMultiAgentActionData(
                     tool: "spawnAgent",
-                    status: "in_progress",
+                    status: .inProgress,
                     prompt: "Explore /Users/sigkitten/dev/codex-app with a repo-orientation focus. Scan the top-level directories and identify the main modules.",
                     targets: ["Locke [explorer]", "Dalton [explorer]"],
                     receiverThreadIds: ["thread-abc-123", "thread-def-456"],
                     agentStates: [
-                        ConversationMultiAgentState(targetId: "thread-abc-123", status: "running", message: nil),
-                        ConversationMultiAgentState(targetId: "thread-def-456", status: "running", message: nil)
+                        ConversationMultiAgentState(targetId: "thread-abc-123", status: .running, message: nil),
+                        ConversationMultiAgentState(targetId: "thread-def-456", status: .running, message: nil)
                     ]
                 ),
                 serverId: "preview-server"
@@ -489,13 +496,13 @@ private struct AgentRowData {
             SubagentCardView(
                 data: ConversationMultiAgentActionData(
                     tool: "wait",
-                    status: "completed",
+                    status: .completed,
                     prompt: nil,
                     targets: ["Locke [explorer]", "Dalton [explorer]"],
                     receiverThreadIds: ["thread-abc-123", "thread-def-456"],
                     agentStates: [
-                        ConversationMultiAgentState(targetId: "thread-abc-123", status: "completed", message: nil),
-                        ConversationMultiAgentState(targetId: "thread-def-456", status: "errored", message: "context limit")
+                        ConversationMultiAgentState(targetId: "thread-abc-123", status: .completed, message: nil),
+                        ConversationMultiAgentState(targetId: "thread-def-456", status: .errored, message: "context limit")
                     ]
                 ),
                 serverId: "preview-server"

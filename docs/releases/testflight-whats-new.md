@@ -1,14 +1,13 @@
 Summary
 
-- Added realtime voice mode on iPhone: you can launch a live voice session directly from the home screen and use the new fullscreen realtime voice UI.
-- Improved realtime auth flow: the voice screen can save and reuse a local OpenAI API key for realtime without forcing you to log out of ChatGPT OAuth.
-- Better realtime conversation behavior: transcript streaming, autoscroll, inline handoff display, and cross-server session tools are more reliable and easier to follow.
-- Expanded voice session support: lock screen / Dynamic Island live activity, background audio handling, and route behavior were tightened up for longer-running voice sessions.
+- Fixed image input: pasting and attaching images in conversations works correctly again.
+- Fixed local OAuth login: ChatGPT sign-in now opens from a single stable presenter instead of flashing closed.
+- Improved Live Activity UI: the lock screen card and Dynamic Island use a tighter, cleaner layout.
+- Better new-session recents: recent directories are deduplicated and promoted more consistently when starting sessions.
 
 What to test
 
-- Turn on `Experimental > Realtime`, launch voice from the home screen, and confirm the new orb launcher opens the realtime voice screen cleanly.
-- While logged into ChatGPT, start realtime voice and verify you can save, update, and delete the local realtime API key without breaking normal account login.
-- Hold a longer voice conversation and confirm transcript updates persist in order, stay scrolled to the latest content, and handoff activity appears inline without freezing the UI.
-- Trigger a handoff or session lookup flow and confirm the model can find recent sessions, explain what it is doing, and continue after the handoff returns.
-- Lock the device during a live voice session and confirm the Live Activity, lock screen card, and background audio/session behavior remain stable.
+- In a conversation, paste an image and use image input normally. Confirm the attachment appears and sends correctly.
+- Trigger local ChatGPT login on the device and confirm the OAuth sheet stays open until you finish or cancel it.
+- Start a turn that creates a Live Activity and check the lock screen card plus Dynamic Island layout for sizing and readability.
+- Start a new session from a few different directories and confirm the recent-directory picker shows deduplicated entries in the expected order.

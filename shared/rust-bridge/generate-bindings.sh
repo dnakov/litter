@@ -48,14 +48,16 @@ fi
 UPSTREAM_V2="$WORKSPACE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/v2.rs"
 UPSTREAM_COMMON="$WORKSPACE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/common.rs"
 TYPES_OUT="$CRATE_DIR/src/types/codegen_types.generated.rs"
-RPC_OUT="$CRATE_DIR/src/ffi/codegen_rpc.generated.rs"
+RPC_OUT="$CRATE_DIR/src/rpc/generated_client.rs"
+FFI_RPC_OUT="$CRATE_DIR/src/ffi/rpc.rs"
 
 echo "==> Regenerating protocol wrappers..."
 cargo run -p codex-mobile-codegen -- \
     --upstream "$UPSTREAM_V2" \
     --common "$UPSTREAM_COMMON" \
     --out "$TYPES_OUT" \
-    --rpc-out "$RPC_OUT"
+    --rpc-out "$RPC_OUT" \
+    --ffi-rpc-out "$FFI_RPC_OUT"
 
 # ---------------------------------------------------------------------------
 # 1. Build the cdylib so uniffi-bindgen can read its metadata

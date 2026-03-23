@@ -10,9 +10,9 @@ private let conversationViewSignpostLog = OSLog(
 
 struct ConversationView: View {
     @Environment(AppState.self) private var appState
-    let connection: ServerConnection
+    @Environment(AppModel.self) private var appModel
+    let thread: AppThreadSnapshot
     let activeThreadKey: ThreadKey
-    let serverManager: ServerManager
     let transcript: ConversationTranscriptSnapshot
     let pinnedContextItems: [ConversationItem]
     let composer: ConversationComposerSnapshot
@@ -38,7 +38,7 @@ struct ConversationView: View {
         transcript.followScrollToken
     }
 
-    private var agentDirectoryVersion: Int {
+    private var agentDirectoryVersion: UInt64 {
         transcript.agentDirectoryVersion
     }
 
@@ -52,10 +52,6 @@ struct ConversationView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var activeThread: ThreadState? {
-        serverManager.threads[activeThreadKey]
-    }
-
     var body: some View {
         ConversationMessageList(
             items: items,
@@ -63,7 +59,7 @@ struct ConversationView: View {
             followScrollToken: followScrollToken,
             activeThreadKey: activeThreadKey,
             agentDirectoryVersion: agentDirectoryVersion,
-            topInset: activeThread?.isSubagent == true ? topInset + 32 : topInset,
+            topInset: thread.isSubagent ? topInset + 32 : topInset,
             textSizeStep: $conversationTextSizeStep,
             resolveTargetLabel: resolveTargetLabel,
             onWidgetPrompt: sendWidgetPrompt,
@@ -81,12 +77,12 @@ struct ConversationView: View {
             .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
-            if let thread = activeThread, thread.isSubagent {
+            if thread.isSubagent {
                 SubagentBreadcrumbBar(
                     thread: thread,
                     topInset: topInset,
                     onNavigateToParent: {
-                        if let parentId = thread.parentThreadId {
+                        if let parentId = thread.info.parentThreadId {
                             onOpenConversation?(ThreadKey(serverId: thread.serverId, threadId: parentId))
                         }
                     }
@@ -97,8 +93,6 @@ struct ConversationView: View {
             ConversationBottomChrome(
                 pinnedContextItems: pinnedContextItems,
                 composer: composer,
-                connection: connection,
-                serverManager: serverManager,
                 onSend: sendMessage,
                 onFileSearch: searchComposerFiles,
                 bottomInset: bottomInset,
@@ -123,43 +117,60 @@ struct ConversationView: View {
 
     private func sendMessage(_ text: String, attachmentImage: UIImage?, skillMentions: [SkillMentionSelection]) {
         Task {
-            await serverManager.send(
-                text,
-                attachmentImage: attachmentImage,
-                skillMentions: skillMentions,
-                cwd: workDir,
-                model: pendingModelOverride,
-                effort: pendingReasoningOverride,
-                serviceTier: fastMode ? "fast" : nil,
-                approvalPolicy: appState.approvalPolicy,
-                sandboxMode: appState.sandboxMode
-            )
+            do {
+                let payload = try makeComposerPayload(
+                    text: text,
+                    attachmentImage: attachmentImage,
+                    skillMentions: skillMentions
+                )
+                _ = try await appModel.rpc.turnStart(
+                    serverId: activeThreadKey.serverId,
+                    params: payload.turnStartParams(threadId: activeThreadKey.threadId)
+                )
+            } catch {
+                messageActionError = error.localizedDescription
+            }
         }
     }
 
     private func sendWidgetPrompt(_ text: String) {
         guard !text.isEmpty else { return }
         Task {
-            await serverManager.send(
-                text,
-                cwd: workDir,
-                model: pendingModelOverride,
-                effort: pendingReasoningOverride,
-                serviceTier: fastMode ? "fast" : nil,
-                approvalPolicy: appState.approvalPolicy,
-                sandboxMode: appState.sandboxMode
-            )
+            do {
+                let payload = try makeComposerPayload(
+                    text: text,
+                    attachmentImage: nil,
+                    skillMentions: []
+                )
+                _ = try await appModel.rpc.turnStart(
+                    serverId: activeThreadKey.serverId,
+                    params: payload.turnStartParams(threadId: activeThreadKey.threadId)
+                )
+            } catch {
+                messageActionError = error.localizedDescription
+            }
         }
     }
 
     private func resolveTargetLabel(_ target: String) -> String? {
-        serverManager.resolvedAgentTargetLabel(for: target, serverId: activeThreadKey.serverId)
+        appModel.snapshot?.resolvedAgentTargetLabel(for: target, serverId: activeThreadKey.serverId)
     }
 
     private func editMessage(_ item: ConversationItem) {
         Task {
             do {
-                try await serverManager.editMessage(item)
+                guard let selectedTurnIndex = item.sourceTurnIndex, item.isUserItem, item.isFromUserTurnBoundary else {
+                    throw NSError(
+                        domain: "Litter",
+                        code: 1020,
+                        userInfo: [NSLocalizedDescriptionKey: "Only user messages can be edited"]
+                    )
+                }
+                let result = try await appModel.store.editMessage(
+                    key: activeThreadKey,
+                    selectedTurnIndex: UInt32(selectedTurnIndex)
+                )
+                appModel.queueComposerPrefill(threadKey: activeThreadKey, text: result)
             } catch {
                 messageActionError = error.localizedDescription
             }
@@ -169,12 +180,24 @@ struct ConversationView: View {
     private func forkFromMessage(_ item: ConversationItem) {
         Task {
             do {
-                let nextKey = try await serverManager.forkFromMessage(
-                    item,
-                    approvalPolicy: appState.approvalPolicy,
-                    sandboxMode: appState.sandboxMode
+                guard let selectedTurnIndex = item.sourceTurnIndex, item.isUserItem, item.isFromUserTurnBoundary else {
+                    throw NSError(
+                        domain: "Litter",
+                        code: 1016,
+                        userInfo: [NSLocalizedDescriptionKey: "Fork from here is only supported for user messages"]
+                    )
+                }
+                let nextKey = try await appModel.store.forkThreadFromMessage(
+                    key: activeThreadKey,
+                    selectedTurnIndex: UInt32(selectedTurnIndex),
+                    params: launchConfig().threadForkParams(
+                        threadId: activeThreadKey.threadId,
+                        cwdOverride: thread.info.cwd
+                    )
                 )
-                if let nextCwd = serverManager.activeThread?.cwd, !nextCwd.isEmpty {
+                await appModel.refreshSnapshot()
+                let nextCwd = thread.info.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !nextCwd.isEmpty {
                     workDir = nextCwd
                     appState.currentCwd = nextCwd
                 }
@@ -186,28 +209,71 @@ struct ConversationView: View {
     }
 
     private func searchComposerFiles(_ query: String) async throws -> [FuzzyFileSearchResult] {
-        guard connection.isConnected else {
-            throw NSError(
-                domain: "Litter",
-                code: 2001,
-                userInfo: [NSLocalizedDescriptionKey: "No connected server available for file search"]
-            )
-        }
         let searchRoot = workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/" : workDir
-        let resp = try await connection.fuzzyFileSearch(
-            query: query,
-            roots: [searchRoot],
-            cancellationToken: "ios-composer-file-search"
+        return try await appModel.rpc.fuzzyFileSearch(
+            serverId: activeThreadKey.serverId,
+            params: FuzzyFileSearchParams(
+                query: query,
+                roots: [searchRoot],
+                cancellationToken: "ios-composer-file-search"
+            )
+        ).files
+    }
+
+    private func makeComposerPayload(
+        text: String,
+        attachmentImage: UIImage?,
+        skillMentions: [SkillMentionSelection]
+    ) throws -> AppComposerPayload {
+        let preparedAttachment = attachmentImage.flatMap(ConversationAttachmentSupport.prepareImage)
+        var additionalInputs = skillMentions.map { mention in
+            UserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
+        }
+        if let preparedAttachment {
+            additionalInputs.append(preparedAttachment.userInput)
+        }
+        return AppComposerPayload(
+            text: text,
+            additionalInputs: additionalInputs,
+            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            sandboxPolicy: TurnSandboxPolicy(mode: appState.sandboxMode)?.ffiValue,
+            model: pendingModelOverride,
+            effort: ReasoningEffort(wireValue: pendingReasoningOverride),
+            serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
         )
-        return resp.files
+    }
+
+    private func launchConfig() -> AppThreadLaunchConfig {
+        AppThreadLaunchConfig(
+            model: pendingModelOverride,
+            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            developerInstructions: nil,
+            persistExtendedHistory: false
+        )
+    }
+}
+
+private extension AppThreadSnapshot {
+    var serverId: String { key.serverId }
+    var isSubagent: Bool {
+        info.parentThreadId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && ((info.agentNickname?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                || (info.agentRole?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false))
+    }
+
+    var agentDisplayLabel: String? {
+        let nickname = info.agentNickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let role = info.agentRole?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let nickname, !nickname.isEmpty { return nickname }
+        if let role, !role.isEmpty { return role }
+        return nil
     }
 }
 
 private struct ConversationBottomChrome: View {
     let pinnedContextItems: [ConversationItem]
     let composer: ConversationComposerSnapshot
-    let connection: ServerConnection
-    let serverManager: ServerManager
     let onSend: (String, UIImage?, [SkillMentionSelection]) -> Void
     let onFileSearch: (String) async throws -> [FuzzyFileSearchResult]
     var bottomInset: CGFloat = 0
@@ -219,8 +285,6 @@ private struct ConversationBottomChrome: View {
             ConversationPinnedContextStrip(items: pinnedContextItems)
             ConversationInputBar(
                 snapshot: composer,
-                connection: connection,
-                serverManager: serverManager,
                 onSend: onSend,
                 onFileSearch: onFileSearch,
                 bottomInset: bottomInset,
@@ -269,7 +333,7 @@ private struct ConversationMessageList: View {
     let threadStatus: ConversationStatus
     let followScrollToken: Int
     let activeThreadKey: ThreadKey
-    let agentDirectoryVersion: Int
+    let agentDirectoryVersion: UInt64
     var topInset: CGFloat = 0
     @Binding var textSizeStep: Int
     let resolveTargetLabel: (String) -> String?
@@ -778,7 +842,7 @@ private struct ConversationTurnRow: View {
     let showTypingIndicator: Bool
     let renderMode: ConversationTurnRenderMode
     let serverId: String
-    let agentDirectoryVersion: Int
+    let agentDirectoryVersion: UInt64
     @Environment(\.textScale) private var textScale
     let messageActionsDisabled: Bool
     let onToggleExpansion: () -> Void
@@ -1042,9 +1106,8 @@ private struct ScrollToBottomIndicator: View {
 
 private struct ConversationInputBar: View {
     @Environment(AppState.self) private var appState
+    @Environment(AppModel.self) private var appModel
     let snapshot: ConversationComposerSnapshot
-    let connection: ServerConnection
-    let serverManager: ServerManager
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @AppStorage("fastMode") private var fastMode = false
 
@@ -1093,8 +1156,13 @@ private struct ConversationInputBar: View {
     @State private var hasLoggedKeyboardShown = false
     @State private var isComposerFocused = false
 
-    private var pendingUserInputRequest: ServerManager.PendingUserInputRequest? {
+    private var pendingUserInputRequest: PendingUserInputRequest? {
         snapshot.pendingUserInputRequest
+    }
+
+    private var pendingModelOverride: String? {
+        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private var isTurnActive: Bool {
@@ -1163,6 +1231,7 @@ private struct ConversationInputBar: View {
             inputText = prefill.text
             attachedImage = nil
             hideComposerPopups()
+            appModel.clearComposerPrefill(id: prefill.id)
         }
         .onChange(of: isComposerFocused) { _, focused in
             if focused {
@@ -1234,10 +1303,20 @@ private struct ConversationInputBar: View {
 
     private func respondToPendingUserInput(_ answers: [String: [String]]) {
         guard let pendingUserInputRequest else { return }
-        serverManager.respondToPendingUserInput(
-            requestId: pendingUserInputRequest.requestId,
-            answers: answers
-        )
+        let payload: [PendingUserInputAnswer] = pendingUserInputRequest.questions.compactMap { question in
+            guard let selectedAnswers = answers[question.id], !selectedAnswers.isEmpty else { return nil }
+            return PendingUserInputAnswer(questionId: question.id, answers: selectedAnswers)
+        }
+        Task {
+            do {
+                try await appModel.store.respondToUserInput(
+                    requestId: pendingUserInputRequest.id,
+                    answers: payload
+                )
+            } catch {
+                slashErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func handleSend() {
@@ -1274,10 +1353,13 @@ private struct ConversationInputBar: View {
 
     private func stopVoiceRecording() {
         Task {
-            let auth = await connection.getAuthToken()
+            let auth = try? await appModel.rpc.getAuthStatus(
+                serverId: snapshot.threadKey.serverId,
+                params: GetAuthStatusParams(includeToken: true, refreshToken: false)
+            )
             if let text = await voiceManager.stopAndTranscribe(
-                authMethod: auth.method,
-                authToken: auth.token
+                authMethod: auth?.authMethod,
+                authToken: auth?.authToken
             ), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 inputText = text
                 DispatchQueue.main.async {
@@ -1288,7 +1370,19 @@ private struct ConversationInputBar: View {
     }
 
     private func interruptActiveTurn() {
-        Task { await serverManager.interrupt() }
+        Task {
+            do {
+                _ = try await appModel.rpc.turnInterrupt(
+                    serverId: snapshot.threadKey.serverId,
+                    params: TurnInterruptParams(
+                        threadId: snapshot.threadKey.threadId,
+                        turnId: ""
+                    )
+                )
+            } catch {
+                slashErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func openAppSettings() {
@@ -1570,7 +1664,14 @@ private struct ConversationInputBar: View {
 
     private func startReview() async {
         do {
-            try await serverManager.startReviewOnActiveThread()
+            _ = try await appModel.rpc.reviewStart(
+                serverId: snapshot.threadKey.serverId,
+                params: ReviewStartParams(
+                    threadId: snapshot.threadKey.threadId,
+                    target: .uncommittedChanges,
+                    delivery: "inline"
+                )
+            )
         } catch {
             slashErrorMessage = error.localizedDescription
         }
@@ -1578,7 +1679,11 @@ private struct ConversationInputBar: View {
 
     private func renameThread(_ newName: String) async {
         do {
-            try await serverManager.renameActiveThread(newName)
+            _ = try await appModel.rpc.threadSetName(
+                serverId: snapshot.threadKey.serverId,
+                params: ThreadSetNameParams(threadId: snapshot.threadKey.threadId, name: newName)
+            )
+            await appModel.refreshSnapshot()
             showRenamePrompt = false
             renameCurrentThreadTitle = ""
             renameDraft = ""
@@ -1589,11 +1694,21 @@ private struct ConversationInputBar: View {
 
     private func forkConversation() async {
         do {
-            let nextKey = try await serverManager.forkActiveThread(
-                approvalPolicy: appState.approvalPolicy,
-                sandboxMode: appState.sandboxMode
+            let response = try await appModel.rpc.threadFork(
+                serverId: snapshot.threadKey.serverId,
+                params: AppThreadLaunchConfig(
+                    model: pendingModelOverride,
+                    approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+                    sandbox: SandboxMode(wireValue: appState.sandboxMode),
+                    developerInstructions: nil,
+                    persistExtendedHistory: false
+                ).threadForkParams(threadId: snapshot.threadKey.threadId, cwdOverride: workDir)
             )
-            if let nextCwd = serverManager.activeThread?.cwd, !nextCwd.isEmpty {
+            let nextKey = ThreadKey(serverId: snapshot.threadKey.serverId, threadId: response.thread.id)
+            appModel.store.setActiveThread(key: nextKey)
+            await appModel.refreshSnapshot()
+            let nextCwd = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !nextCwd.isEmpty {
                 workDir = nextCwd
                 appState.currentCwd = nextCwd
             }
@@ -1604,7 +1719,7 @@ private struct ConversationInputBar: View {
     }
 
     private func loadExperimentalFeatures() async {
-        guard connection.isConnected else {
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == snapshot.threadKey.serverId })?.health == .connected else {
             experimentalFeatures = []
             slashErrorMessage = "Not connected to a server"
             return
@@ -1612,7 +1727,10 @@ private struct ConversationInputBar: View {
         experimentalFeaturesLoading = true
         defer { experimentalFeaturesLoading = false }
         do {
-            let response = try await connection.listExperimentalFeatures(limit: 200)
+            let response = try await appModel.rpc.experimentalFeatureList(
+                serverId: snapshot.threadKey.serverId,
+                params: ExperimentalFeatureListParams(cursor: nil, limit: 200)
+            )
             experimentalFeatures = response.data.sorted { lhs, rhs in
                 let left = (lhs.displayName?.isEmpty == false ? lhs.displayName! : lhs.name).lowercased()
                 let right = (rhs.displayName?.isEmpty == false ? rhs.displayName! : rhs.name).lowercased()
@@ -1628,7 +1746,7 @@ private struct ConversationInputBar: View {
     }
 
     private func setExperimentalFeature(named featureName: String, enabled: Bool) async {
-        guard connection.isConnected else {
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == snapshot.threadKey.serverId })?.health == .connected else {
             slashErrorMessage = "Not connected to a server"
             return
         }
@@ -1648,7 +1766,25 @@ private struct ConversationInputBar: View {
             )
         }
         do {
-            _ = try await connection.writeConfigValue(keyPath: "features.\(featureName)", value: enabled)
+            _ = try await appModel.rpc.configValueWrite(
+                serverId: snapshot.threadKey.serverId,
+                params: ConfigValueWriteParams(
+                    keyPath: "features.\(featureName)",
+                    value: JsonValue(
+                        kind: .bool,
+                        boolValue: enabled,
+                        i64Value: nil,
+                        u64Value: nil,
+                        f64Value: nil,
+                        stringValue: nil,
+                        arrayItems: nil,
+                        objectEntries: nil
+                    ),
+                    mergeStrategy: .upsert,
+                    filePath: nil,
+                    expectedVersion: nil
+                )
+            )
         } catch {
             slashErrorMessage = error.localizedDescription
             if let rollbackIndex = experimentalFeatures.firstIndex(where: { $0.name == currentFeature.name }) {
@@ -1670,7 +1806,7 @@ private struct ConversationInputBar: View {
     }
 
     private func loadSkills(forceReload: Bool = false, showErrors: Bool) async {
-        guard connection.isConnected else {
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == snapshot.threadKey.serverId })?.health == .connected else {
             skills = []
             mentionSkillPathsByName = [:]
             if showErrors {
@@ -1681,10 +1817,19 @@ private struct ConversationInputBar: View {
         skillsLoading = true
         defer { skillsLoading = false }
         do {
-            let response = try await connection.listSkills(cwds: [workDir], forceReload: forceReload)
-            let loadedSkills = response.data.flatMap(\.skills).sorted { $0.name.lowercased() < $1.name.lowercased() }
+            let response = try await appModel.rpc.skillsList(
+                serverId: snapshot.threadKey.serverId,
+                params: SkillsListParams(
+                    cwds: [AbsolutePath(value: workDir)],
+                    forceReload: forceReload,
+                    perCwdExtraUserRoots: nil
+                )
+            )
+            let loadedSkills = response.data
+                .flatMap { $0.skills }
+                .sorted { $0.name.lowercased() < $1.name.lowercased() }
             skills = loadedSkills
-            let validPaths = Set(loadedSkills.map(\.path.value))
+            let validPaths = Set(loadedSkills.map { $0.path.value })
             mentionSkillPathsByName = mentionSkillPathsByName.filter { _, path in validPaths.contains(path) }
         } catch {
             if showErrors {
@@ -2108,7 +2253,7 @@ private func index(in text: String, offset: Int) -> String.Index? {
 }
 
 struct PendingUserInputPromptView: View {
-    let request: ServerManager.PendingUserInputRequest
+    let request: PendingUserInputRequest
     let onSubmit: ([String: [String]]) -> Void
 
     @State private var selectedAnswers: [String: String] = [:]
@@ -2128,8 +2273,8 @@ struct PendingUserInputPromptView: View {
         )
     }
 
-    private var unsupportedQuestions: [ServerManager.PendingUserInputQuestion] {
-        request.questions.filter { $0.options.isEmpty || $0.isSecret || $0.isOther }
+    private var unsupportedQuestions: [PendingUserInputQuestion] {
+        request.questions.filter { $0.options.isEmpty || $0.isSecret || $0.isOtherAllowed }
     }
 
     private var canSubmit: Bool {
@@ -2156,8 +2301,8 @@ struct PendingUserInputPromptView: View {
 
             ForEach(request.questions, id: \.id) { question in
                 VStack(alignment: .leading, spacing: 6) {
-                    if !question.header.isEmpty {
-                        Text(question.header.uppercased())
+                    if let header = question.header, !header.isEmpty {
+                        Text(header.uppercased())
                             .litterFont(.caption2, weight: .bold)
                             .foregroundColor(LitterTheme.textMuted)
                     }
@@ -2166,7 +2311,7 @@ struct PendingUserInputPromptView: View {
                         .litterFont(.caption)
                         .foregroundColor(LitterTheme.textPrimary)
 
-                    if question.options.isEmpty || question.isSecret || question.isOther {
+                    if question.options.isEmpty || question.isSecret || question.isOtherAllowed {
                         Text("This prompt type is not fully supported in the current iOS client.")
                             .litterFont(.caption2)
                             .foregroundColor(LitterTheme.textSecondary)
@@ -2266,7 +2411,7 @@ struct CameraView: UIViewControllerRepresentable {
 }
 
 private struct SubagentBreadcrumbBar: View {
-    let thread: ThreadState
+    let thread: AppThreadSnapshot
     let topInset: CGFloat
     let onNavigateToParent: () -> Void
 
@@ -2312,7 +2457,7 @@ private struct SubagentBreadcrumbBar: View {
 
 #if DEBUG
 #Preview("Conversation") {
-    LitterPreviewScene(serverManager: LitterPreviewData.makeServerManager(messages: LitterPreviewData.longConversation)) {
+    LitterPreviewScene(appModel: LitterPreviewData.makeConversationAppModel(messages: LitterPreviewData.longConversation)) {
         ContentView()
     }
 }
