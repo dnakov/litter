@@ -65,6 +65,7 @@ final class ServerManager {
     private(set) var agentDirectoryVersion: Int = 0
 
     @ObservationIgnored private let savedServersKey = "codex_saved_servers"
+    @ObservationIgnored private let hiddenServersKey = "codex_hidden_server_hostnames"
     @ObservationIgnored private var voiceHandoffThreads: [String: ThreadKey] = [:]
     private(set) var handoffThreadKeys: [String: ThreadKey] = [:]
     @ObservationIgnored var handoffModel: String?
@@ -6049,6 +6050,23 @@ final class ServerManager {
     func loadSavedServers() -> [SavedServer] {
         guard let data = UserDefaults.standard.data(forKey: savedServersKey) else { return [] }
         return (try? JSONDecoder().decode([SavedServer].self, from: data)) ?? []
+    }
+
+    func hiddenServerHostnames() -> Set<String> {
+        let arr = UserDefaults.standard.stringArray(forKey: hiddenServersKey) ?? []
+        return Set(arr.map { $0.lowercased() })
+    }
+
+    func hideServer(hostname: String) {
+        var hidden = hiddenServerHostnames()
+        hidden.insert(hostname.lowercased())
+        UserDefaults.standard.set(Array(hidden), forKey: hiddenServersKey)
+    }
+
+    func unhideServer(hostname: String) {
+        var hidden = hiddenServerHostnames()
+        hidden.remove(hostname.lowercased())
+        UserDefaults.standard.set(Array(hidden), forKey: hiddenServersKey)
     }
 
     // MARK: - Conversation Restoration

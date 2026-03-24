@@ -133,7 +133,7 @@ struct HomeDashboardView: View {
                             Button(role: .destructive) {
                                 disconnectTargetServer = connection
                             } label: {
-                                Label("Disconnect Server", systemImage: "bolt.slash")
+                                Label("Remove Server", systemImage: "trash")
                             }
                         }
                     }

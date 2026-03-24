@@ -250,31 +250,49 @@ actor SSHSessionManager {
 
     private func loginShell(_ script: String) -> String {
         let base64 = Data(script.utf8).base64EncodedString()
-        return "$SHELL -l -c \"$(echo \(base64) | base64 -d)\""
+        // Source .zshrc/.bashrc explicitly since non-interactive login shells
+        // only load .zprofile, missing tools installed via nvm/sdkman/etc.
+        let rcSource = """
+        [ -f "$HOME/.zshrc" ] && . "$HOME/.zshrc" 2>/dev/null; \
+        [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc" 2>/dev/null;
+        """
+        let wrappedBase64 = Data((rcSource + script).utf8).base64EncodedString()
+        return "$SHELL -l -c \"$(echo \(wrappedBase64) | base64 -d)\""
     }
 
     private func resolveServerLaunchCommand(client: SSHClient) async throws -> ServerLaunchCommand? {
+        let marker = "LITTER_RESOLVE:"
         let script = """
         codex_path="$(command -v codex 2>/dev/null || true)"
         if [ -n "$codex_path" ] && [ -f "$codex_path" ] && [ -x "$codex_path" ]; then
-          printf 'codex:%s' "$codex_path"
+          printf '\(marker)codex:%s' "$codex_path"
         elif [ -x "$HOME/.bun/bin/codex" ]; then
-          printf 'codex:%s' "$HOME/.bun/bin/codex"
+          printf '\(marker)codex:%s' "$HOME/.bun/bin/codex"
         elif [ -x "$HOME/.volta/bin/codex" ]; then
-          printf 'codex:%s' "$HOME/.volta/bin/codex"
+          printf '\(marker)codex:%s' "$HOME/.volta/bin/codex"
         elif [ -x "$HOME/.cargo/bin/codex" ]; then
-          printf 'codex:%s' "$HOME/.cargo/bin/codex"
+          printf '\(marker)codex:%s' "$HOME/.cargo/bin/codex"
+        elif [ -x "$HOME/.nvm/versions/node/$(cat "$HOME/.nvm/alias/default" 2>/dev/null)/bin/codex" ]; then
+          printf '\(marker)codex:%s' "$HOME/.nvm/versions/node/$(cat "$HOME/.nvm/alias/default" 2>/dev/null)/bin/codex"
+        elif nvm_codex="$(find "$HOME/.nvm/versions/node" -maxdepth 2 -name codex -type f 2>/dev/null | head -1)" && [ -x "$nvm_codex" ]; then
+          printf '\(marker)codex:%s' "$nvm_codex"
         else
           app_server_path="$(command -v codex-app-server 2>/dev/null || true)"
           if [ -n "$app_server_path" ] && [ -f "$app_server_path" ] && [ -x "$app_server_path" ]; then
-            printf 'codex-app-server:%s' "$app_server_path"
+            printf '\(marker)codex-app-server:%s' "$app_server_path"
           elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
-            printf 'codex-app-server:%s' "$HOME/.cargo/bin/codex-app-server"
+            printf '\(marker)codex-app-server:%s' "$HOME/.cargo/bin/codex-app-server"
           fi
         fi
         """
-        let output = String(buffer: try await client.executeCommand(loginShell(script)))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawOutput = String(buffer: try await client.executeCommand(loginShell(script)))
+        // Extract the marker line to ignore shell noise (MOTD, nvm messages, etc.)
+        let output: String
+        if let markerRange = rawOutput.range(of: marker) {
+            output = String(rawOutput[markerRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            output = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !output.isEmpty else { return nil }
         let parts = output.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return nil }

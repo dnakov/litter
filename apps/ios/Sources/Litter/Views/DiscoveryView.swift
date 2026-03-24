@@ -261,7 +261,8 @@ struct DiscoveryView: View {
     // MARK: - Sections
 
     private var allServers: [DiscoveredServer] {
-        localServers + networkServers
+        let hidden = serverManager.hiddenServerHostnames()
+        return localServers + networkServers.filter { !hidden.contains($0.hostname.lowercased()) }
     }
 
     private var serversSection: some View {
@@ -284,6 +285,16 @@ struct DiscoveryView: View {
             } else {
                 ForEach(allServers) { server in
                     serverRow(server)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if server.source != .local {
+                                Button(role: .destructive) {
+                                    serverManager.removeServer(id: server.id)
+                                    serverManager.hideServer(hostname: server.hostname)
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            }
+                        }
                 }
             }
 

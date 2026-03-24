@@ -15,7 +15,7 @@ use codex_core::auth::load_auth_dot_json;
 use codex_core::auth::save_auth;
 use codex_core::config::ConfigBuilder;
 use codex_core::config_loader::LoaderOverrides;
-use codex_core::features::Feature;
+use codex_features::Feature;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
@@ -140,6 +140,7 @@ pub extern "C" fn codex_start_server(out_port: *mut u16) -> i32 {
                     LoaderOverrides::default(),
                     false,
                     AppServerTransport::WebSocket { bind_address },
+                    SessionSource::Custom("litter".to_string()),
                 )
                 .await
             });
