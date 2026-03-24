@@ -15,6 +15,7 @@ struct DiscoveryView: View {
     @State private var manualWakeMAC = ""
     @State private var manualUseSSHPortForward = true
     @State private var autoSSHStarted = false
+    @State private var hiddenHostnames: Set<String> = []
     @State private var connectingServer: DiscoveredServer?
     @State private var wakingServer: DiscoveredServer?
     @State private var connectError: String?
@@ -149,6 +150,7 @@ struct DiscoveryView: View {
     }
 
     private func handleAppear() {
+        hiddenHostnames = serverManager.hiddenServerHostnames()
         refreshDiscovery()
         guard autoStartDiscovery else { return }
         maybeStartSimulatorAutoSSH()
@@ -261,8 +263,7 @@ struct DiscoveryView: View {
     // MARK: - Sections
 
     private var allServers: [DiscoveredServer] {
-        let hidden = serverManager.hiddenServerHostnames()
-        return localServers + networkServers.filter { !hidden.contains($0.hostname.lowercased()) }
+        localServers + networkServers.filter { !hiddenHostnames.contains($0.hostname.lowercased()) }
     }
 
     private var serversSection: some View {
@@ -288,8 +289,13 @@ struct DiscoveryView: View {
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             if server.source != .local {
                                 Button(role: .destructive) {
-                                    serverManager.removeServer(id: server.id)
-                                    serverManager.hideServer(hostname: server.hostname)
+                                    let hostname = server.hostname
+                                    let serverId = server.id
+                                    hiddenHostnames.insert(hostname.lowercased())
+                                    serverManager.hideServer(hostname: hostname)
+                                    if serverManager.connections[serverId] != nil {
+                                        serverManager.removeServer(id: serverId)
+                                    }
                                 } label: {
                                     Label("Remove", systemImage: "trash")
                                 }
