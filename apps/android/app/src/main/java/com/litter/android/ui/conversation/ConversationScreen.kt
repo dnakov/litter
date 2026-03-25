@@ -20,8 +20,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -56,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.state.contextPercent
 import com.litter.android.state.hasActiveTurn
+import com.litter.android.state.isIpcConnected
+import com.litter.android.ui.ChatWallpaperBackground
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import kotlinx.coroutines.launch
@@ -89,10 +93,22 @@ fun ConversationScreen(
     LaunchedEffect(threadKey) {
         try {
             appModel.store.setActiveThread(threadKey)
-            appModel.rpc.threadResume(
-                threadKey.serverId,
-                com.litter.android.state.AppThreadLaunchConfig().toThreadResumeParams(threadKey.threadId),
-            )
+            val server = appModel.snapshot.value?.servers?.find { it.serverId == threadKey.serverId }
+            if (server?.isIpcConnected == true) {
+                try {
+                    appModel.externalResumeThread(threadKey)
+                } catch (_: Exception) {
+                    appModel.rpc.threadResume(
+                        threadKey.serverId,
+                        com.litter.android.state.AppThreadLaunchConfig().toThreadResumeParams(threadKey.threadId),
+                    )
+                }
+            } else {
+                appModel.rpc.threadResume(
+                    threadKey.serverId,
+                    com.litter.android.state.AppThreadLaunchConfig().toThreadResumeParams(threadKey.threadId),
+                )
+            }
             appModel.refreshSnapshot()
         } catch (_: Exception) {}
     }
@@ -152,166 +168,175 @@ fun ConversationScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        HeaderBar(
-            thread = thread,
-            onBack = onBack,
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        ChatWallpaperBackground()
 
-        // Message list with gradient fade and scroll FAB
-        Box(modifier = Modifier.weight(1f)) {
-            if (thread == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = LitterTheme.accent)
-                }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp)
-                        .drawWithContent {
-                            drawContent()
-                            // Top gradient fade
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colors = listOf(LitterTheme.background, Color.Transparent),
-                                    startY = 0f,
-                                    endY = 48f,
-                                ),
-                            )
-                        },
-                ) {
-                    item { Spacer(Modifier.height(16.dp)) }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+        ) {
+            HeaderBar(
+                thread = thread,
+                onBack = onBack,
+            )
 
-                    items(
-                        items = timelineEntries,
-                        key = { entry ->
+            // Message list with gradient fade and scroll FAB
+            Box(modifier = Modifier.weight(1f)) {
+                if (thread == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = LitterTheme.accent)
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp)
+                            .drawWithContent {
+                                drawContent()
+                                // Top gradient fade
+                                drawRect(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(LitterTheme.background, Color.Transparent),
+                                        startY = 0f,
+                                        endY = 48f,
+                                    ),
+                                )
+                            },
+                    ) {
+                        item { Spacer(Modifier.height(16.dp)) }
+
+                        items(
+                            items = timelineEntries,
+                            key = { entry ->
+                                when (entry) {
+                                    is TimelineEntry.Single -> entry.item.id
+                                    is TimelineEntry.Exploration -> entry.group.id
+                                }
+                            },
+                        ) { entry ->
                             when (entry) {
-                                is TimelineEntry.Single -> entry.item.id
-                                is TimelineEntry.Exploration -> entry.group.id
+                                is TimelineEntry.Single -> {
+                                    ConversationTimelineItem(
+                                        item = entry.item,
+                                        isLiveTurn = isThinking,
+                                        onEditMessage = { turnIndex ->
+                                            scope.launch {
+                                                val prefill = appModel.store.editMessage(threadKey, turnIndex)
+                                                appModel.queueComposerPrefill(prefill)
+                                            }
+                                        },
+                                        onForkFromMessage = { turnIndex ->
+                                            scope.launch {
+                                                try {
+                                                    val config = com.litter.android.state.AppThreadLaunchConfig(model = thread.model)
+                                                    val cwd = thread.info.cwd ?: "~"
+                                                    val newKey = appModel.store.forkThreadFromMessage(
+                                                        threadKey, turnIndex, config.toThreadForkParams(threadKey.threadId, cwd),
+                                                    )
+                                                    appModel.store.setActiveThread(newKey)
+                                                    appModel.refreshSnapshot()
+                                                } catch (_: Exception) {}
+                                            }
+                                        },
+                                    )
+                                }
+
+                                is TimelineEntry.Exploration -> {
+                                    ExplorationGroupRow(group = entry.group)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
+
+                        // Streaming cursor
+                        if (isThinking) {
+                            item {
+                                StreamingCursor()
+                            }
+                        }
+
+                        item { Spacer(Modifier.height(80.dp)) }
+                    }
+                }
+
+                // Scroll-to-bottom FAB
+                if (!isAtBottom && timelineEntries.isNotEmpty()) {
+                    SmallFloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                listState.animateScrollToItem(timelineEntries.size)
                             }
                         },
-                    ) { entry ->
-                        when (entry) {
-                            is TimelineEntry.Single -> {
-                                ConversationTimelineItem(
-                                    item = entry.item,
-                                    isLiveTurn = isThinking,
-                                    onEditMessage = { turnIndex ->
-                                        scope.launch {
-                                            val prefill = appModel.store.editMessage(threadKey, turnIndex)
-                                            appModel.queueComposerPrefill(prefill)
-                                        }
-                                    },
-                                    onForkFromMessage = { turnIndex ->
-                                        scope.launch {
-                                            try {
-                                                val config = com.litter.android.state.AppThreadLaunchConfig(model = thread.model)
-                                                val cwd = thread.info.cwd ?: "~"
-                                                val newKey = appModel.store.forkThreadFromMessage(
-                                                    threadKey, turnIndex, config.toThreadForkParams(threadKey.threadId, cwd),
-                                                )
-                                                appModel.store.setActiveThread(newKey)
-                                                appModel.refreshSnapshot()
-                                            } catch (_: Exception) {}
-                                        }
-                                    },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 8.dp),
+                        containerColor = LitterTheme.surface,
+                        contentColor = LitterTheme.textPrimary,
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowDown, "Scroll to bottom", modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                // Interrupt FAB
+                if (isThinking) {
+                    FloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                val turnId = thread?.activeTurnId ?: return@launch
+                                appModel.rpc.turnInterrupt(
+                                    threadKey.serverId,
+                                    TurnInterruptParams(threadId = threadKey.threadId, turnId = turnId),
                                 )
                             }
-
-                            is TimelineEntry.Exploration -> {
-                                ExplorationGroupRow(group = entry.group)
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(16.dp),
+                        containerColor = LitterTheme.danger,
+                        contentColor = Color.White,
+                        elevation = FloatingActionButtonDefaults.elevation(0.dp),
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                     }
+                }
+            }
 
-                    // Streaming cursor
-                    if (isThinking) {
-                        item {
-                            StreamingCursor()
-                        }
+            // Pinned context strip
+            if (pinnedContext != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LitterTheme.codeBackground)
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    pinnedContext.first?.let { todo ->
+                        Text("Plan $todo", color = LitterTheme.accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                     }
-
-                    item { Spacer(Modifier.height(80.dp)) }
+                    pinnedContext.second?.let { diff ->
+                        Text(diff, color = LitterTheme.toolCallFileChange, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
 
-            // Scroll-to-bottom FAB
-            if (!isAtBottom && timelineEntries.isNotEmpty()) {
-                SmallFloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            listState.animateScrollToItem(timelineEntries.size)
-                        }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp),
-                    containerColor = LitterTheme.surface,
-                    contentColor = LitterTheme.textPrimary,
-                ) {
-                    Icon(Icons.Default.KeyboardArrowDown, "Scroll to bottom", modifier = Modifier.size(20.dp))
-                }
-            }
-
-            // Interrupt FAB
-            if (isThinking) {
-                FloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            val turnId = thread?.activeTurnId ?: return@launch
-                            appModel.rpc.turnInterrupt(
-                                threadKey.serverId,
-                                TurnInterruptParams(threadId = threadKey.threadId, turnId = turnId),
-                            )
-                        }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
-                    containerColor = LitterTheme.danger,
-                    contentColor = Color.White,
-                    elevation = FloatingActionButtonDefaults.elevation(0.dp),
-                ) {
-                    Icon(Icons.Default.Stop, contentDescription = "Interrupt")
-                }
-            }
+            // Composer bar
+            ComposerBar(
+                threadKey = threadKey,
+                contextPercent = thread?.contextPercent ?: 0,
+                isThinking = isThinking,
+                rateLimits = remember(snapshot, threadKey) {
+                    snapshot?.servers?.firstOrNull { it.serverId == threadKey.serverId }?.rateLimits
+                },
+                onToggleModelSelector = { showModelSelector = !showModelSelector },
+                onNavigateToSessions = onNavigateToSessions,
+                onShowDirectoryPicker = onShowDirectoryPicker,
+                pendingUserInput = pendingInput,
+            )
         }
-
-        // Pinned context strip
-        if (pinnedContext != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(LitterTheme.codeBackground)
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                pinnedContext.first?.let { todo ->
-                    Text("Plan $todo", color = LitterTheme.accent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                }
-                pinnedContext.second?.let { diff ->
-                    Text(diff, color = LitterTheme.toolCallFileChange, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-        }
-
-        // Composer bar
-        ComposerBar(
-            threadKey = threadKey,
-            contextPercent = thread?.contextPercent ?: 0,
-            isThinking = isThinking,
-            rateLimits = remember(snapshot, threadKey) {
-                snapshot?.servers?.firstOrNull { it.serverId == threadKey.serverId }?.rateLimits
-            },
-            onToggleModelSelector = { showModelSelector = !showModelSelector },
-            onNavigateToSessions = onNavigateToSessions,
-            onShowDirectoryPicker = onShowDirectoryPicker,
-            pendingUserInput = pendingInput,
-        )
     }
 }
 

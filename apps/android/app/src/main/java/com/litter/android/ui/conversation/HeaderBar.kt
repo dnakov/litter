@@ -55,6 +55,7 @@ import com.litter.android.state.accentColor
 import com.litter.android.state.AppThreadLaunchConfig
 import com.litter.android.state.hasActiveTurn
 import com.litter.android.state.isConnected
+import com.litter.android.state.isIpcConnected
 import com.litter.android.state.resolvedModel
 import com.litter.android.state.statusColor
 import com.litter.android.ui.LocalAppModel
@@ -156,13 +157,30 @@ fun HeaderBar(
                 if (cwd != null) {
                     val abbreviated = cwd.replace(Regex("^/home/[^/]+"), "~")
                         .replace(Regex("^/Users/[^/]+"), "~")
-                    Text(
-                        text = abbreviated,
-                        color = LitterTheme.textMuted,
-                        fontSize = 10.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = abbreviated,
+                            color = LitterTheme.textMuted,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (server?.isIpcConnected == true) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "IPC",
+                                color = LitterTheme.accentStrong,
+                                fontSize = 10.sp,
+                                modifier = Modifier
+                                    .background(
+                                        LitterTheme.accentStrong.copy(alpha = 0.14f),
+                                        RoundedCornerShape(999.dp),
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -185,10 +203,21 @@ fun HeaderBar(
                                 return@launch
                             }
                             val config = AppThreadLaunchConfig(model = thread.model)
-                            appModel.rpc.threadResume(
-                                thread.key.serverId,
-                                config.toThreadResumeParams(thread.key.threadId),
-                            )
+                            if (server?.isIpcConnected == true) {
+                                try {
+                                    appModel.externalResumeThread(thread.key)
+                                } catch (_: Exception) {
+                                    appModel.rpc.threadResume(
+                                        thread.key.serverId,
+                                        config.toThreadResumeParams(thread.key.threadId),
+                                    )
+                                }
+                            } else {
+                                appModel.rpc.threadResume(
+                                    thread.key.serverId,
+                                    config.toThreadResumeParams(thread.key.threadId),
+                                )
+                            }
                         } finally {
                             isReloading = false
                         }

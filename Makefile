@@ -23,6 +23,9 @@ IOS_SIM_DEVICE ?= iPhone 17 Pro
 IOS_SCHEME ?= Litter
 XCODE_CONFIG ?= Debug
 CARGO_FEATURES ?=
+ANDROID_ABIS ?= arm64-v8a
+ANDROID_RUST_PROFILE ?= android-dev
+ANDROID_RELEASE_ABIS ?= arm64-v8a,x86_64
 
 SCCACHE := $(shell command -v sccache 2>/dev/null)
 ifneq ($(SCCACHE),)
@@ -56,10 +59,20 @@ STAMP_BINDINGS_K := $(STAMPS)/bindings-kotlin
 STAMP_IOS_SYSTEM := $(STAMPS)/ios-system-frameworks
 STAMP_XCGEN := $(STAMPS)/xcgen
 
+empty :=
+space := $(empty) $(empty)
+ANDROID_ABIS_SAFE := $(subst $(space),_,$(subst /,_,$(ANDROID_ABIS)))
+ANDROID_RUST_PROFILE_SAFE := $(subst /,_,$(ANDROID_RUST_PROFILE))
+STAMP_RUST_ANDROID := $(STAMPS)/rust-android-$(ANDROID_RUST_PROFILE_SAFE)-$(ANDROID_ABIS_SAFE)
+ANDROID_RUST_SOURCES := $(shell find $(RUST_DIR) \
+	-path '*/target' -prune -o \
+	-path '*/generated' -prune -o \
+	-type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' -o -name 'build.rs' \) -print 2>/dev/null)
+
 $(shell mkdir -p $(STAMPS))
 
 .PHONY: all ios ios-sim ios-device ios-device-fast ios-run \
-	android android-debug android-install \
+	android android-fast android-release android-debug android-install \
 	rust-ios rust-ios-package rust-ios-device-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
 	sync patch unpatch xcgen ios-frameworks \
@@ -86,7 +99,10 @@ ios-device-fast: ios-build-device-fast
 ios-run: ios
 	@open $(IOS_DIR)/Litter.xcodeproj
 
-android: rust-android android-debug
+android: android-fast
+android-fast: rust-android android-debug
+android-release:
+	@$(MAKE) android-fast ANDROID_RUST_PROFILE=release ANDROID_ABIS="$(ANDROID_RELEASE_ABIS)"
 
 rust-ios: rust-ios-package
 
@@ -108,9 +124,11 @@ rust-test:
 
 rust-host-dev: rust-check rust-test
 
-rust-android: $(STAMP_SYNC) $(STAMP_BINDINGS_K)
+rust-android: $(STAMP_RUST_ANDROID)
+$(STAMP_RUST_ANDROID): $(STAMP_SYNC) $(STAMP_BINDINGS_K) $(ANDROID_RUST_SOURCES) tools/scripts/build-android-rust.sh Makefile
 	@echo "==> Building Rust for Android..."
-	@cd $(ROOT) && $(DEV_CARGO_ENV) ./tools/scripts/build-android-rust.sh
+	@cd $(ROOT) && ANDROID_ABIS="$(ANDROID_ABIS)" ANDROID_RUST_PROFILE="$(ANDROID_RUST_PROFILE)" $(DEV_CARGO_ENV) ./tools/scripts/build-android-rust.sh
+	@touch $@
 
 help:
 	@printf '%s\n' \
@@ -119,6 +137,8 @@ help:
 		'make ios-device-fast    fast device lane using raw staticlib outputs' \
 		'make rust-ios-package   full Rust iOS package lane (bindings + xcframework)' \
 		'make rust-ios-device-fast fast Rust iOS device lane (raw staticlib only)' \
+		'make android            fast Android dev build (default ABI/profile: arm64-v8a/android-dev)' \
+		'make android-release    Android build using release Rust profile and multi-ABI output' \
 		'make rust-check         host cargo check for shared crates' \
 		'make rust-test          host cargo test for shared crates'
 
@@ -237,7 +257,7 @@ testflight: ios
 	@echo "==> Uploading to TestFlight..."
 	@$(IOS_SCRIPTS)/testflight-upload.sh
 
-play-upload: android
+play-upload: android-release
 	@echo "==> Uploading to Google Play..."
 	@$(ANDROID_DIR)/scripts/play-upload.sh
 
@@ -257,7 +277,7 @@ clean-ios:
 clean-android:
 	@echo "==> Cleaning Android artifacts..."
 	@rm -rf $(ANDROID_JNI)/arm64-v8a $(ANDROID_JNI)/x86_64
-	@rm -f $(STAMP_BINDINGS_K)
+	@rm -f $(STAMP_BINDINGS_K) $(STAMPS)/rust-android-*
 	@cd $(ANDROID_DIR) && ./gradlew clean 2>/dev/null || true
 
 rebuild-bindings:

@@ -18,6 +18,7 @@ struct HomeDashboardServer: Identifiable, Hashable {
     let host: String
     let port: UInt16
     let isLocal: Bool
+    let hasIpc: Bool
     let health: AppServerHealth
     let sourceLabel: String
 
@@ -78,8 +79,9 @@ enum HomeDashboardSupport {
                     host: server.host,
                     port: server.port,
                     isLocal: server.isLocal,
+                    hasIpc: server.hasIpc,
                     health: server.health,
-                    sourceLabel: server.isLocal ? "local" : "remote"
+                    sourceLabel: server.connectionModeLabel
                 )
             }
             .sorted { lhs, rhs in

@@ -57,7 +57,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.state.AppThreadLaunchConfig
+import com.litter.android.state.SavedServerStore
+import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.isConnected
+import com.litter.android.state.isIpcConnected
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
@@ -78,6 +81,7 @@ fun HomeDashboardScreen(
     onStartVoice: (() -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
 
@@ -305,6 +309,7 @@ fun HomeDashboardScreen(
                                 appModel.refreshSnapshot()
                             }
                             is ConfirmAction.DisconnectServer -> {
+                                SavedServerStore.remove(context, action.server.serverId)
                                 appModel.serverBridge.disconnectServer(action.server.serverId)
                                 appModel.refreshSnapshot()
                             }
@@ -469,7 +474,7 @@ private fun ServerCard(
                 fontSize = 14.sp,
             )
             Text(
-                text = "${server.host}:${server.port}",
+                text = "${server.host}:${server.port} · ${server.connectionModeLabel}",
                 color = LitterTheme.textSecondary,
                 fontSize = 11.sp,
             )
@@ -480,11 +485,27 @@ private fun ServerCard(
             )
         }
 
-        Text(
-            text = server.statusLabel,
-            color = server.statusColor,
-            fontSize = 11.sp,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (server.isIpcConnected) {
+                Text(
+                    text = "IPC",
+                    color = LitterTheme.accentStrong,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .background(
+                            LitterTheme.accentStrong.copy(alpha = 0.14f),
+                            RoundedCornerShape(4.dp),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = server.statusLabel,
+                color = server.statusColor,
+                fontSize = 11.sp,
+            )
+        }
     }
 }
 

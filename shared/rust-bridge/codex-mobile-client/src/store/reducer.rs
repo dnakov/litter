@@ -73,6 +73,10 @@ impl AppStoreReducer {
                 .servers
                 .get(&config.server_id)
                 .and_then(|existing| existing.available_models.clone());
+            let existing_has_ipc = snapshot
+                .servers
+                .get(&config.server_id)
+                .is_some_and(|existing| existing.has_ipc);
             snapshot.servers.insert(
                 config.server_id.clone(),
                 ServerSnapshot {
@@ -81,6 +85,7 @@ impl AppStoreReducer {
                     host: config.host.clone(),
                     port: config.port,
                     is_local: config.is_local,
+                    has_ipc: existing_has_ipc,
                     health,
                     account: existing_account,
                     requires_openai_auth,
@@ -330,6 +335,18 @@ impl AppStoreReducer {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
             if let Some(server) = snapshot.servers.get_mut(server_id) {
                 server.available_models = models;
+            }
+        }
+        self.emit(AppUpdate::ServerChanged {
+            server_id: server_id.to_string(),
+        });
+    }
+
+    pub fn update_server_ipc_state(&self, server_id: &str, has_ipc: bool) {
+        {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            if let Some(server) = snapshot.servers.get_mut(server_id) {
+                server.has_ipc = has_ipc;
             }
         }
         self.emit(AppUpdate::ServerChanged {

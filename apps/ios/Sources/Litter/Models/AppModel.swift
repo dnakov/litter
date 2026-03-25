@@ -250,6 +250,18 @@ final class AppModel {
         }
     }
 
+    func startTurn(key: ThreadKey, payload: AppComposerPayload) async throws {
+        do {
+            try await store.startTurn(
+                key: key,
+                params: payload.turnStartParams(threadId: key.threadId)
+            )
+        } catch {
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
     func ensureThreadLoaded(
         key: ThreadKey,
         maxAttempts: Int = 5
@@ -266,7 +278,7 @@ final class AppModel {
                     serverId: currentKey.serverId,
                     params: ThreadReadParams(
                         threadId: currentKey.threadId,
-                        includeTurns: false
+                        includeTurns: true
                     )
                 )
                 currentKey = ThreadKey(serverId: currentKey.serverId, threadId: response.thread.id)

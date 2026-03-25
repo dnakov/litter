@@ -50,6 +50,36 @@ data class SavedServer(
         websocketURL?.let { put("websocketURL", it) }
     }
 
+    val prefersSshConnection: Boolean
+        get() = websocketURL == null && (
+            sshPortForwardingEnabled ||
+                (hasCodexServer && port == 22) ||
+                (!hasCodexServer && (
+                    sshPort != null ||
+                        source == "ssh" ||
+                        port == 22
+                ))
+        )
+
+    val canConnectViaSsh: Boolean
+        get() = websocketURL == null && (
+            sshPort != null ||
+                sshPortForwardingEnabled ||
+                source == "ssh" ||
+                port == 22 ||
+                !hasCodexServer
+        )
+
+    val resolvedSshPort: Int
+        get() = sshPort ?: port.takeIf { it > 0 } ?: 22
+
+    val directCodexPort: Int?
+        get() = when {
+            websocketURL != null -> null
+            hasCodexServer && !prefersSshConnection && port > 0 -> port
+            else -> null
+        }
+
     companion object {
         fun fromJson(obj: JSONObject): SavedServer = SavedServer(
             id = obj.getString("id"),
@@ -78,7 +108,7 @@ data class SavedServer(
                 FfiDiscoverySource.MANUAL -> "manual"
                 FfiDiscoverySource.LOCAL -> "local"
             },
-            hasCodexServer = server.reachable,
+            hasCodexServer = server.codexPort != null,
         )
     }
 }

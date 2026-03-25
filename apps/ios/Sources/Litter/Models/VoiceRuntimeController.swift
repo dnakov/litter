@@ -487,9 +487,9 @@ final class VoiceRuntimeController: VoiceActions {
         guard let appModel else { return }
         let key = ThreadKey(serverId: serverId, threadId: threadId)
         do {
-            _ = try await appModel.rpc.turnStart(
-                serverId: key.serverId,
-                params: AppComposerPayload(
+            try await appModel.startTurn(
+                key: key,
+                payload: AppComposerPayload(
                     text: transcript,
                     additionalInputs: [],
                     approvalPolicy: nil,
@@ -497,7 +497,7 @@ final class VoiceRuntimeController: VoiceActions {
                     model: model,
                     effort: ReasoningEffort(wireValue: effort),
                     serviceTier: fastMode ? .fast : nil
-                ).turnStartParams(threadId: key.threadId)
+                )
             )
             handoffManager.reportTurnSent(handoffId: handoffId, baseItemCount: 0)
             startHandoffStreamPolling(handoffId: handoffId, key: key)

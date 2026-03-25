@@ -34,6 +34,7 @@ pub struct ServerSnapshot {
     pub host: String,
     pub port: u16,
     pub is_local: bool,
+    pub has_ipc: bool,
     pub health: ServerHealthSnapshot,
     pub account: Option<generated::Account>,
     pub requires_openai_auth: bool,

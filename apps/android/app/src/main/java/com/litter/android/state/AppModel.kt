@@ -19,6 +19,7 @@ import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.MessageParser
 import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
+import uniffi.codex_mobile_client.ThreadKey
 
 /**
  * Central app state singleton. Thin wrapper over Rust [AppStore] — all business
@@ -125,8 +126,38 @@ class AppModel private constructor(context: android.content.Context) {
             val snap = store.snapshot()
             _snapshot.value = snap
             _lastError.value = null
+            val serverSummary = snap.servers.joinToString(separator = " | ") { server ->
+                "${server.serverId}:${server.displayName}:${server.host}:${server.port}:${server.health}"
+            }
+            android.util.Log.d("AppModel", "snapshot servers=${snap.servers.size} [$serverSummary]")
         } catch (e: Exception) {
             _lastError.value = e.message
+        }
+    }
+
+    suspend fun startTurn(
+        key: ThreadKey,
+        payload: AppComposerPayload,
+    ) {
+        try {
+            store.startTurn(key, payload.toTurnStartParams(key.threadId))
+            _lastError.value = null
+        } catch (e: Exception) {
+            _lastError.value = e.message
+            throw e
+        }
+    }
+
+    suspend fun externalResumeThread(
+        key: ThreadKey,
+        hostId: String? = null,
+    ) {
+        try {
+            store.externalResumeThread(key, hostId)
+            _lastError.value = null
+        } catch (e: Exception) {
+            _lastError.value = e.message
+            throw e
         }
     }
 

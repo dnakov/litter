@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.litter.android.core.bridge"
     compileSdk = 35
+    ndkVersion = System.getenv("ANDROID_NDK_VERSION")?.takeIf { it.isNotBlank() } ?: "30.0.14904198"
 
     defaultConfig {
         minSdk = 26

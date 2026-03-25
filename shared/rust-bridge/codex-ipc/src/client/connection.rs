@@ -1,17 +1,15 @@
-//! IPC connection managing read/write loop tasks over a split UnixStream.
+//! IPC connection managing read/write loop tasks over an async byte stream.
 
 use std::sync::Arc;
 
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{debug, error, warn};
 
 use crate::client::pending::PendingRequests;
 use crate::error::TransportError;
 use crate::handler::RequestHandler;
-use crate::protocol::envelope::{
-    ClientDiscoveryResponse, DiscoveryAnswer, Envelope, Response,
-};
+use crate::protocol::envelope::{ClientDiscoveryResponse, DiscoveryAnswer, Envelope, Response};
 use crate::protocol::method::Method;
 use crate::protocol::params::{TypedBroadcast, TypedRequest};
 use crate::transport::frame;
@@ -27,13 +25,17 @@ pub struct IpcConnection {
 }
 
 impl IpcConnection {
-    /// Spawn read and write loop tasks over the given split UnixStream halves.
-    pub fn spawn(
-        reader: OwnedReadHalf,
-        writer: OwnedWriteHalf,
+    /// Spawn read and write loop tasks over split async I/O halves.
+    pub fn spawn<R, W>(
+        reader: R,
+        writer: W,
         pending: Arc<PendingRequests>,
         handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>>,
-    ) -> Self {
+    ) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (write_tx, write_rx) = mpsc::channel::<Envelope>(256);
         let (broadcast_tx, _) = broadcast::channel::<TypedBroadcast>(256);
 
@@ -90,13 +92,15 @@ impl IpcConnection {
         self.pending.clear();
     }
 
-    async fn read_loop(
-        mut reader: OwnedReadHalf,
+    async fn read_loop<R>(
+        mut reader: R,
         pending: Arc<PendingRequests>,
         handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>>,
         write_tx: mpsc::Sender<Envelope>,
         broadcast_tx: broadcast::Sender<TypedBroadcast>,
-    ) {
+    ) where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
         loop {
             let raw = match frame::read_frame(&mut reader).await {
                 Ok(data) => data,
@@ -167,20 +171,16 @@ impl IpcConnection {
                         drop(guard);
                         // Spawn handler so we don't block the read loop.
                         tokio::spawn(async move {
-                            let response_envelope = match h
-                                .handle_request(method, typed)
-                                .await
-                            {
+                            let response_envelope = match h.handle_request(method, typed).await {
                                 Ok(result) => Envelope::Response(Response::Success {
                                     request_id,
                                     method: method_str,
                                     handled_by_client_id: source_client_id,
                                     result,
                                 }),
-                                Err(error) => Envelope::Response(Response::Error {
-                                    request_id,
-                                    error,
-                                }),
+                                Err(error) => {
+                                    Envelope::Response(Response::Error { request_id, error })
+                                }
                             };
                             let _ = write_tx.send(response_envelope).await;
                         });
@@ -201,10 +201,10 @@ impl IpcConnection {
         }
     }
 
-    async fn write_loop(
-        mut writer: OwnedWriteHalf,
-        mut write_rx: mpsc::Receiver<Envelope>,
-    ) {
+    async fn write_loop<W>(mut writer: W, mut write_rx: mpsc::Receiver<Envelope>)
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         while let Some(envelope) = write_rx.recv().await {
             let json_str = match serde_json::to_string(&envelope) {
                 Ok(s) => s,

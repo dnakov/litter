@@ -6,6 +6,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKSPACE_DIR="$REPO_DIR/shared/rust-bridge"
 OUT_DIR="$REPO_DIR/apps/android/core/bridge/src/main/jniLibs"
 SYNC_SCRIPT="$REPO_DIR/apps/ios/scripts/sync-codex.sh"
+DEFAULT_ANDROID_ABIS="arm64-v8a"
+DEFAULT_ANDROID_RUST_PROFILE="android-dev"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: cargo is required" >&2
@@ -29,16 +31,66 @@ fi
 echo "==> Preparing codex submodule..."
 "$SYNC_SCRIPT" --preserve-current
 
+ABI_INPUT="${ANDROID_ABIS:-$DEFAULT_ANDROID_ABIS}"
+ABI_INPUT="${ABI_INPUT//,/ }"
+read -r -a REQUESTED_ABIS <<<"$ABI_INPUT"
+RUST_PROFILE="${ANDROID_RUST_PROFILE:-$DEFAULT_ANDROID_RUST_PROFILE}"
+
+if [ "${#REQUESTED_ABIS[@]}" -eq 0 ]; then
+  REQUESTED_ABIS=("$DEFAULT_ANDROID_ABIS")
+fi
+
+declare -a ABI_ARGS=()
+SELECTED_ABIS=""
+SELECTED_RUST_TARGETS=""
+
+for abi in "${REQUESTED_ABIS[@]}"; do
+  case "$abi" in
+    arm64-v8a|aarch64-linux-android)
+      ABI_NAME="arm64-v8a"
+      RUST_TARGET="aarch64-linux-android"
+      ;;
+    x86_64|x86-64|x86_64-linux-android)
+      ABI_NAME="x86_64"
+      RUST_TARGET="x86_64-linux-android"
+      ;;
+    *)
+      echo "error: unsupported Android ABI '$abi' (supported: arm64-v8a, x86_64)" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ " $SELECTED_ABIS " != *" $ABI_NAME "* ]]; then
+    ABI_ARGS+=(-t "$ABI_NAME")
+    SELECTED_ABIS="$SELECTED_ABIS $ABI_NAME"
+  fi
+
+  if [[ " $SELECTED_RUST_TARGETS " != *" $RUST_TARGET "* ]]; then
+    SELECTED_RUST_TARGETS="$SELECTED_RUST_TARGETS $RUST_TARGET"
+  fi
+done
+
+read -r -a RUST_TARGETS <<<"${SELECTED_RUST_TARGETS# }"
+
+echo "==> Selected Android ABIs: ${SELECTED_ABIS# }"
+echo "==> Android Rust profile: $RUST_PROFILE"
+
 echo "==> Installing Android Rust targets..."
-rustup target add aarch64-linux-android x86_64-linux-android
+rustup target add "${RUST_TARGETS[@]}"
 
 mkdir -p "$OUT_DIR"
 
+for abi_dir in arm64-v8a x86_64; do
+  if [[ " $SELECTED_ABIS " != *" $abi_dir "* ]]; then
+    rm -rf "$OUT_DIR/$abi_dir"
+  fi
+done
+
 echo "==> Building codex_mobile_client Android shared libs..."
 cd "$WORKSPACE_DIR"
-cargo ndk -t arm64-v8a -t x86_64 -o "$OUT_DIR" build --release -p codex-mobile-client
+cargo ndk "${ABI_ARGS[@]}" -o "$OUT_DIR" build --profile "$RUST_PROFILE" -p codex-mobile-client
 
 echo "==> Building codex_bridge Android shared libs..."
-cargo ndk -t arm64-v8a -t x86_64 -o "$OUT_DIR" build --release -p codex-bridge
+cargo ndk "${ABI_ARGS[@]}" -o "$OUT_DIR" build --profile "$RUST_PROFILE" -p codex-bridge
 
 echo "==> Done. Android JNI libs are in: $OUT_DIR"

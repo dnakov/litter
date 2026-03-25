@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use codex_app_server_client::{
@@ -17,14 +18,36 @@ use codex_app_server_protocol::{
     ClientNotification, ClientRequest, JSONRPCErrorError, RequestId, Result as JsonRpcResult,
     ServerNotification, ServerRequest,
 };
+use codex_ipc::{IpcClient, TypedBroadcast};
 use serde_json::Value as JsonValue;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
+use crate::ssh::SshClient;
 use crate::transport::{RpcError, TransportError};
 
 const REMOTE_RECONNECT_MAX_ATTEMPTS: u32 = 5;
 const REMOTE_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+
+#[cfg(target_os = "android")]
+fn append_android_debug_log(line: &str) {
+    use std::io::Write;
+
+    let Some(codex_home) = std::env::var_os("CODEX_HOME") else {
+        return;
+    };
+    let path = PathBuf::from(codex_home).join("mobile-debug.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn append_android_debug_log(_line: &str) {}
 
 // ---------------------------------------------------------------------------
 // InProcessConfig
@@ -289,6 +312,15 @@ pub struct ServerConfig {
     pub tls: bool,
 }
 
+#[derive(Default)]
+pub struct RemoteSessionResources {
+    pub ssh_client: Option<Arc<SshClient>>,
+    pub ssh_pid: Option<u32>,
+    pub ipc_client: Option<IpcClient>,
+    pub ipc_ssh_client: Option<Arc<SshClient>>,
+    pub ipc_bridge_pid: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // ConnectionHealth
 // ---------------------------------------------------------------------------
@@ -373,10 +405,29 @@ pub struct ServerSession {
     health_rx: watch::Receiver<ConnectionHealth>,
     command_tx: mpsc::Sender<SessionCommand>,
     event_tx: broadcast::Sender<ServerEvent>,
+    ipc_event_tx: broadcast::Sender<TypedBroadcast>,
+    ipc_client: Option<IpcClient>,
+    ssh_client: Option<Arc<SshClient>>,
+    ssh_pid: Option<u32>,
+    ipc_ssh_client: Option<Arc<SshClient>>,
+    ipc_bridge_pid: Option<u32>,
     worker_handle: tokio::task::JoinHandle<()>,
+    ipc_forward_handle: StdMutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl ServerSession {
+    fn ipc_forward_handle_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<tokio::task::JoinHandle<()>>> {
+        match self.ipc_forward_handle.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!("ServerSession: recovering poisoned ipc_forward_handle lock");
+                error.into_inner()
+            }
+        }
+    }
+
     /// Connect to a local (in-process) Codex server.
     pub async fn connect_local(
         config: ServerConfig,
@@ -601,7 +652,14 @@ impl ServerSession {
             health_rx,
             command_tx,
             event_tx,
+            ipc_event_tx: broadcast::channel::<TypedBroadcast>(32).0,
+            ipc_client: None,
+            ssh_client: None,
+            ssh_pid: None,
+            ipc_ssh_client: None,
+            ipc_bridge_pid: None,
             worker_handle,
+            ipc_forward_handle: StdMutex::new(None),
         })
     }
 
@@ -610,6 +668,13 @@ impl ServerSession {
     /// Uses the upstream `RemoteAppServerClient` which handles the
     /// initialize/initialized handshake, request routing, and event streaming.
     pub async fn connect_remote(config: ServerConfig) -> Result<Self, TransportError> {
+        Self::connect_remote_with_resources(config, RemoteSessionResources::default()).await
+    }
+
+    pub async fn connect_remote_with_resources(
+        config: ServerConfig,
+        resources: RemoteSessionResources,
+    ) -> Result<Self, TransportError> {
         let (health_tx, health_rx) = watch::channel(ConnectionHealth::Connecting {
             attempt: 1,
             max_attempts: REMOTE_RECONNECT_MAX_ATTEMPTS,
@@ -779,6 +844,10 @@ impl ServerSession {
                                 "[codex-mobile-client] remote event stream ended url={}",
                                 reconnect_url
                             );
+                            append_android_debug_log(&format!(
+                                "event_stream_ended url={}",
+                                reconnect_url
+                            ));
                             if reconnect_remote_client(
                                 &mut client,
                                 &reconnect_args,
@@ -797,6 +866,10 @@ impl ServerSession {
                                 reconnect_url,
                                 message
                             );
+                            append_android_debug_log(&format!(
+                                "event_disconnected url={} message={}",
+                                reconnect_url, message
+                            ));
                             if reconnect_remote_client(
                                 &mut client,
                                 &reconnect_args,
@@ -821,13 +894,39 @@ impl ServerSession {
             config.display_name, url
         );
 
+        let (ipc_event_tx, _) = broadcast::channel::<TypedBroadcast>(256);
+        let ipc_forward_handle = resources.ipc_client.as_ref().map(|ipc_client| {
+            let mut broadcasts = ipc_client.subscribe_broadcasts();
+            let ipc_event_tx = ipc_event_tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    match broadcasts.recv().await {
+                        Ok(event) => {
+                            let _ = ipc_event_tx.send(event);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!("ipc broadcast stream lagged by {skipped} events");
+                        }
+                    }
+                }
+            })
+        });
+
         Ok(Self {
             config,
             health_tx,
             health_rx,
             command_tx,
             event_tx,
+            ipc_event_tx,
+            ipc_client: resources.ipc_client,
+            ssh_client: resources.ssh_client,
+            ssh_pid: resources.ssh_pid,
+            ipc_ssh_client: resources.ipc_ssh_client,
+            ipc_bridge_pid: resources.ipc_bridge_pid,
             worker_handle,
+            ipc_forward_handle: StdMutex::new(ipc_forward_handle),
         })
     }
 
@@ -898,6 +997,18 @@ impl ServerSession {
         self.event_tx.subscribe()
     }
 
+    pub fn has_ipc(&self) -> bool {
+        self.ipc_client.is_some()
+    }
+
+    pub fn ipc_client(&self) -> Option<IpcClient> {
+        self.ipc_client.clone()
+    }
+
+    pub fn ipc_broadcasts(&self) -> Option<broadcast::Receiver<TypedBroadcast>> {
+        self.has_ipc().then(|| self.ipc_event_tx.subscribe())
+    }
+
     /// Respond to a server-initiated request.
     pub async fn respond(&self, id: JsonValue, result: JsonValue) -> Result<(), RpcError> {
         let request_id = json_value_to_request_id(&id)?;
@@ -938,6 +1049,24 @@ impl ServerSession {
     pub async fn disconnect(&self) {
         let _ = self.health_tx.send(ConnectionHealth::Disconnected);
         let _ = self.command_tx.send(SessionCommand::Shutdown).await;
+        if let Some(handle) = self.ipc_forward_handle_lock().take() {
+            handle.abort();
+        }
+        if let Some(ipc_client) = self.ipc_client.clone() {
+            ipc_client.disconnect().await;
+        }
+        if let Some(ipc_ssh_client) = self.ipc_ssh_client.as_ref() {
+            ipc_ssh_client.disconnect().await;
+        }
+        if let Some(ssh_client) = self.ssh_client.as_ref() {
+            if let Some(pid) = self.ipc_bridge_pid {
+                let _ = ssh_client.exec(&format!("kill {pid} 2>/dev/null")).await;
+            }
+            if let Some(pid) = self.ssh_pid {
+                let _ = ssh_client.exec(&format!("kill {pid} 2>/dev/null")).await;
+            }
+            ssh_client.disconnect().await;
+        }
         // Give the worker a moment to shut down gracefully.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         self.worker_handle.abort();
@@ -982,6 +1111,10 @@ async fn reconnect_remote_client(
     health_tx: &watch::Sender<ConnectionHealth>,
 ) -> bool {
     for attempt in 1..=REMOTE_RECONNECT_MAX_ATTEMPTS {
+        append_android_debug_log(&format!(
+            "reconnect_start url={} attempt={}/{}",
+            websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
+        ));
         info!(
             "remote reconnect start url={} attempt={}/{}",
             websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
@@ -1006,6 +1139,10 @@ async fn reconnect_remote_client(
                     "[codex-mobile-client] remote reconnect success url={} attempt={}/{}",
                     websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
                 );
+                append_android_debug_log(&format!(
+                    "reconnect_success url={} attempt={}/{}",
+                    websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
+                ));
                 return true;
             }
             Err(error) => {
@@ -1017,6 +1154,10 @@ async fn reconnect_remote_client(
                     "[codex-mobile-client] remote reconnect failed url={} attempt={}/{} error={}",
                     websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS, error
                 );
+                append_android_debug_log(&format!(
+                    "reconnect_failed url={} attempt={}/{} error={}",
+                    websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS, error
+                ));
                 if attempt < REMOTE_RECONNECT_MAX_ATTEMPTS {
                     tokio::time::sleep(REMOTE_RECONNECT_DELAY).await;
                 }
@@ -1066,6 +1207,7 @@ fn route_app_server_event(
                 "[codex-mobile-client] remote event server request {:?}",
                 request
             );
+            append_android_debug_log(&format!("server_request={request:?}"));
             let _ = event_tx.send(ServerEvent::Request(request.clone()));
         }
         AppServerEvent::Lagged { skipped } => {
@@ -1073,6 +1215,7 @@ fn route_app_server_event(
         }
         AppServerEvent::Disconnected { message } => {
             warn!("event: disconnected: {message}");
+            append_android_debug_log(&format!("disconnected={message}"));
             let _ = health_tx.send(ConnectionHealth::Disconnected);
         }
     }

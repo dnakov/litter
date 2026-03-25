@@ -114,6 +114,14 @@ pub struct ThreadQueuedFollowupsChangedParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExternalResumeThreadParams {
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryCacheInvalidateParams {
     pub query_key: Vec<serde_json::Value>,
 }
@@ -221,6 +229,12 @@ pub struct OkResult {
     pub ok: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalResumeThreadResult {
+    pub ok: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Typed dispatch enums
 // ---------------------------------------------------------------------------
@@ -242,15 +256,13 @@ pub enum TypedBroadcast {
 impl TypedBroadcast {
     pub fn from_broadcast(b: &Broadcast) -> Self {
         match Method::from_wire(&b.method) {
-            Some(Method::ClientStatusChanged) => {
-                match serde_json::from_value(b.params.clone()) {
-                    Ok(p) => TypedBroadcast::ClientStatusChanged(p),
-                    Err(_) => TypedBroadcast::Unknown {
-                        method: b.method.clone(),
-                        params: b.params.clone(),
-                    },
-                }
-            }
+            Some(Method::ClientStatusChanged) => match serde_json::from_value(b.params.clone()) {
+                Ok(p) => TypedBroadcast::ClientStatusChanged(p),
+                Err(_) => TypedBroadcast::Unknown {
+                    method: b.method.clone(),
+                    params: b.params.clone(),
+                },
+            },
             Some(Method::ThreadStreamStateChanged) => {
                 match serde_json::from_value(b.params.clone()) {
                     Ok(p) => TypedBroadcast::ThreadStreamStateChanged(p),
@@ -283,15 +295,13 @@ impl TypedBroadcast {
                     },
                 }
             }
-            Some(Method::QueryCacheInvalidate) => {
-                match serde_json::from_value(b.params.clone()) {
-                    Ok(p) => TypedBroadcast::QueryCacheInvalidate(p),
-                    Err(_) => TypedBroadcast::Unknown {
-                        method: b.method.clone(),
-                        params: b.params.clone(),
-                    },
-                }
-            }
+            Some(Method::QueryCacheInvalidate) => match serde_json::from_value(b.params.clone()) {
+                Ok(p) => TypedBroadcast::QueryCacheInvalidate(p),
+                Err(_) => TypedBroadcast::Unknown {
+                    method: b.method.clone(),
+                    params: b.params.clone(),
+                },
+            },
             _ => TypedBroadcast::Unknown {
                 method: b.method.clone(),
                 params: b.params.clone(),

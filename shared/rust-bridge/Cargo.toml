@@ -42,6 +42,13 @@ url = "2.5"
 strip = true
 lto = true
 
+[profile.android-dev]
+inherits = "release"
+lto = false
+strip = false
+debug = 1
+codegen-units = 16
+
 [patch.crates-io]
 webrtc-audio-processing-sys = { path = "../third_party/webrtc-audio-processing-sys" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }

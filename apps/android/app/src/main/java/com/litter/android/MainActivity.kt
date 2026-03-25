@@ -21,6 +21,7 @@ import com.litter.android.state.TurnForegroundService
 import com.litter.android.ui.AnimatedSplashScreen
 import com.litter.android.ui.LitterApp
 import com.litter.android.ui.LitterAppTheme
+import com.litter.android.ui.WallpaperManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
 
         try {
             appModel = AppModel.init(this)
+            WallpaperManager.initialize(this)
             appModel.start()
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "AppModel.start() failed", e)
@@ -80,8 +82,6 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             // Connect local in-process server (same as iOS — no separate process)
             connectLocalServer()
-            // Reconnect any saved remote servers
-            lifecycleController.reconnectSavedServers(this@MainActivity, appModel)
         }
     }
 

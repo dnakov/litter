@@ -2,6 +2,8 @@ package com.litter.android.ui.settings
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,12 +68,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.state.SavedServerStore
+import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.isConnected
+import com.litter.android.state.isIpcConnected
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterColorThemeType
 import com.litter.android.ui.BerkeleyMono
+import com.litter.android.ui.WallpaperBackdrop
+import com.litter.android.ui.WallpaperManager
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LitterThemeIndexEntry
 import com.litter.android.ui.LitterThemeManager
@@ -210,7 +216,25 @@ private fun SettingsTopLevel(
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(server.displayName, color = LitterTheme.textPrimary, fontSize = 13.sp)
-                        Text(server.statusLabel, color = server.statusColor, fontSize = 11.sp)
+                        Text(
+                            "${server.statusLabel} · ${server.connectionModeLabel}",
+                            color = server.statusColor,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    if (server.isIpcConnected) {
+                        Text(
+                            "IPC",
+                            color = LitterTheme.accentStrong,
+                            fontSize = 10.sp,
+                            modifier = Modifier
+                                .background(
+                                    LitterTheme.accentStrong.copy(alpha = 0.14f),
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
                     }
                     TextButton(onClick = {
                         scope.launch {
@@ -235,8 +259,24 @@ private fun SettingsTopLevel(
 @Composable
 private fun AppearanceScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var textSizeStep by remember { mutableFloatStateOf(com.litter.android.ui.TextSizePrefs.currentStep.toFloat()) }
     var showThemePicker by remember { mutableStateOf<LitterColorThemeType?>(null) }
+    var wallpaperError by remember { mutableStateOf<String?>(null) }
+    val wallpaperPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri == null) {
+                return@rememberLauncherForActivityResult
+            }
+            scope.launch {
+                wallpaperError =
+                    if (WallpaperManager.setCustomFromUri(uri)) {
+                        null
+                    } else {
+                        "Unable to save wallpaper from the selected image."
+                    }
+            }
+        }
 
     Column(
         Modifier
@@ -293,57 +333,115 @@ private fun AppearanceScreen(onBack: () -> Unit) {
                 Text("Pinch in conversations to adjust, or use this slider.", color = LitterTheme.textMuted, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
             }
 
+            // Wallpaper picker
+            item { SectionHeader("Chat Wallpaper") }
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 48.dp, height = 72.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, LitterTheme.border.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
+                    ) {
+                        WallpaperBackdrop(Modifier.fillMaxSize())
+                    }
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TextButton(
+                            onClick = { wallpaperPicker.launch("image/*") },
+                            contentPadding = ButtonDefaults.TextButtonContentPadding,
+                        ) {
+                            Text("Choose from Library", color = LitterTheme.accent)
+                        }
+                        if (WallpaperManager.isWallpaperSet) {
+                            TextButton(
+                                onClick = {
+                                    WallpaperManager.clear()
+                                    wallpaperError = null
+                                },
+                                contentPadding = ButtonDefaults.TextButtonContentPadding,
+                            ) {
+                                Text("Remove Wallpaper", color = LitterTheme.danger)
+                            }
+                        }
+                        if (!wallpaperError.isNullOrBlank()) {
+                            Text(
+                                wallpaperError!!,
+                                color = LitterTheme.danger,
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
+            }
+
             // Conversation preview
             item { SectionHeader("Preview") }
             item {
                 val scale = com.litter.android.ui.ConversationTextSize.fromStep(textSizeStep.toInt()).scale
                 val previewFontSize = (14f * scale).sp
-                Column(
-                    Modifier.fillMaxWidth()
-                        .background(LitterTheme.background, RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
                 ) {
-                    // User bubble
-                    Text(
-                        "Hey, why is prod on fire",
-                        color = LitterTheme.textPrimary,
-                        fontSize = previewFontSize,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                            .padding(10.dp),
-                    )
-                    // Tool call card
-                    Row(
+                    WallpaperBackdrop(Modifier.fillMaxSize())
+                    Column(
                         Modifier
                             .fillMaxWidth()
-                            .background(LitterTheme.surface, RoundedCornerShape(8.dp))
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Text("✓", color = LitterTheme.success, fontSize = 12.sp)
-                        Spacer(Modifier.width(6.dp))
-                        Text("rg 'TODO: fix later' --count", color = LitterTheme.toolCallCommand, fontFamily = BerkeleyMono, fontSize = (previewFontSize.value - 2).sp)
-                        Spacer(Modifier.weight(1f))
-                        Text("0.3s", color = LitterTheme.textMuted, fontSize = 10.sp)
+                        // User bubble
+                        Text(
+                            "Hey, why is prod on fire",
+                            color = LitterTheme.textPrimary,
+                            fontSize = previewFontSize,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                                .padding(10.dp),
+                        )
+                        // Tool call card
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(LitterTheme.surface, RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("✓", color = LitterTheme.success, fontSize = 12.sp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("rg 'TODO: fix later' --count", color = LitterTheme.toolCallCommand, fontFamily = BerkeleyMono, fontSize = (previewFontSize.value - 2).sp)
+                            Spacer(Modifier.weight(1f))
+                            Text("0.3s", color = LitterTheme.textMuted, fontSize = 10.sp)
+                        }
+                        // Assistant bubble
+                        Text(
+                            "Found the issue. Someone deployed this:\n\n```python\nif is_friday():\n    yolo_deploy(skip_tests=True)\n```\n\nI'm not mad, just disappointed.",
+                            color = LitterTheme.textBody,
+                            fontSize = previewFontSize,
+                        )
+                        // User reply
+                        Text(
+                            "That was you",
+                            color = LitterTheme.textPrimary,
+                            fontSize = previewFontSize,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                                .padding(10.dp),
+                        )
                     }
-                    // Assistant bubble
-                    Text(
-                        "Found the issue. Someone deployed this:\n\n```python\nif is_friday():\n    yolo_deploy(skip_tests=True)\n```\n\nI'm not mad, just disappointed.",
-                        color = LitterTheme.textBody,
-                        fontSize = previewFontSize,
-                    )
-                    // User reply
-                    Text(
-                        "That was you",
-                        color = LitterTheme.textPrimary,
-                        fontSize = previewFontSize,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                            .padding(10.dp),
-                    )
                 }
             }
 

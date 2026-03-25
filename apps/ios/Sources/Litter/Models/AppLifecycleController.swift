@@ -20,40 +20,100 @@ final class AppLifecycleController {
     func reconnectSavedServers(appModel: AppModel) async {
         for savedServer in SavedServerStore.load() {
             let server = savedServer.toDiscoveredServer()
-            guard let target = server.connectionTarget else { continue }
             if appModel.snapshot?.serverSnapshot(for: server.id)?.isConnected == true {
                 continue
             }
 
             do {
-                switch target {
-                case .local:
-                    _ = try await appModel.serverBridge.connectLocalServer(
+                if let target = server.connectionTarget {
+                    switch target {
+                    case .local:
+                        _ = try await appModel.serverBridge.connectLocalServer(
+                            serverId: server.id,
+                            displayName: server.name,
+                            host: "127.0.0.1",
+                            port: 0
+                        )
+                    case .remote(let host, let port):
+                        _ = try await appModel.serverBridge.connectRemoteServer(
+                            serverId: server.id,
+                            displayName: server.name,
+                            host: host,
+                            port: port
+                        )
+                    case .remoteURL(let url):
+                        _ = try await appModel.serverBridge.connectRemoteUrlServer(
+                            serverId: server.id,
+                            displayName: server.name,
+                            websocketUrl: url.absoluteString
+                        )
+                    case .sshThenRemote(let host, let credentials):
+                        try await reconnectSSHServer(
+                            appModel: appModel,
+                            serverId: server.id,
+                            displayName: server.name,
+                            host: host,
+                            port: server.resolvedSSHPort,
+                            credentials: credentials
+                        )
+                    }
+                } else if let credential = try SSHCredentialStore.shared.load(
+                    host: server.hostname,
+                    port: Int(server.resolvedSSHPort)
+                ) {
+                    try await reconnectSSHServer(
+                        appModel: appModel,
                         serverId: server.id,
                         displayName: server.name,
-                        host: "127.0.0.1",
-                        port: 0
+                        host: server.hostname,
+                        port: server.resolvedSSHPort,
+                        credentials: credential.toConnectionCredential()
                     )
-                case .remote(let host, let port):
-                    _ = try await appModel.serverBridge.connectRemoteServer(
-                        serverId: server.id,
-                        displayName: server.name,
-                        host: host,
-                        port: port
-                    )
-                case .remoteURL(let url):
-                    _ = try await appModel.serverBridge.connectRemoteUrlServer(
-                        serverId: server.id,
-                        displayName: server.name,
-                        websocketUrl: url.absoluteString
-                    )
-                case .sshThenRemote:
-                    continue
                 }
             } catch {}
         }
 
         await appModel.refreshSnapshot()
+    }
+
+    private func reconnectSSHServer(
+        appModel: AppModel,
+        serverId: String,
+        displayName: String,
+        host: String,
+        port: UInt16,
+        credentials: SSHCredentials
+    ) async throws {
+        switch credentials {
+        case .password(let username, let password):
+            _ = try await appModel.ssh.sshConnectRemoteServer(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: password,
+                privateKeyPem: nil,
+                passphrase: nil,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                ipcSocketPathOverride: nil
+            )
+        case .key(let username, let privateKey, let passphrase):
+            _ = try await appModel.ssh.sshConnectRemoteServer(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: nil,
+                privateKeyPem: privateKey,
+                passphrase: passphrase,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                ipcSocketPathOverride: nil
+            )
+        }
     }
 
     func appDidEnterBackground(

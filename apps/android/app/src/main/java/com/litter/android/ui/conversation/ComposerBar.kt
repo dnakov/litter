@@ -408,11 +408,10 @@ fun ComposerBar(
                         reasoningEffort = effort,
                         serviceTier = tier,
                     )
-                    val params = payload.toTurnStartParams(threadKey.threadId)
                     text = ""
                     scope.launch {
                         try {
-                            appModel.rpc.turnStart(threadKey.serverId, params)
+                            appModel.startTurn(threadKey, payload)
                         } catch (e: Exception) {
                             // Restore text on failure
                             text = payload.text

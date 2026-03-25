@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::sync::{broadcast, RwLock};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{RwLock, broadcast};
 
 use crate::client::connection::IpcConnection;
 use crate::client::pending::PendingRequests;
@@ -14,12 +15,12 @@ use crate::handler::RequestHandler;
 use crate::protocol::envelope::{Broadcast, Envelope, Request, Response};
 use crate::protocol::method::Method;
 use crate::protocol::params::{
-    InitializeParams, InitializeResult, ThreadFollowerCommandApprovalDecisionParams,
-    ThreadFollowerEditLastUserTurnParams, ThreadFollowerFileApprovalDecisionParams,
-    ThreadFollowerInterruptTurnParams, ThreadFollowerSetCollaborationModeParams,
-    ThreadFollowerSetModelAndReasoningParams, ThreadFollowerSetQueuedFollowUpsStateParams,
-    ThreadFollowerStartTurnParams, ThreadFollowerSteerTurnParams,
-    ThreadFollowerSubmitMcpServerElicitationResponseParams,
+    ExternalResumeThreadParams, InitializeParams, InitializeResult,
+    ThreadFollowerCommandApprovalDecisionParams, ThreadFollowerEditLastUserTurnParams,
+    ThreadFollowerFileApprovalDecisionParams, ThreadFollowerInterruptTurnParams,
+    ThreadFollowerSetCollaborationModeParams, ThreadFollowerSetModelAndReasoningParams,
+    ThreadFollowerSetQueuedFollowUpsStateParams, ThreadFollowerStartTurnParams,
+    ThreadFollowerSteerTurnParams, ThreadFollowerSubmitMcpServerElicitationResponseParams,
     ThreadFollowerSubmitUserInputParams, TypedBroadcast,
 };
 use crate::transport::socket;
@@ -63,11 +64,21 @@ impl IpcClient {
     /// for reconnection).
     pub async fn connect_with_config(config: &IpcClientConfig) -> Result<Self, IpcError> {
         let stream = socket::connect_unix(&config.socket_path).await?;
-        let (reader, writer) = stream.into_split();
+        Self::connect_with_stream(config, stream).await
+    }
+
+    /// Connect using any async stream that carries framed IPC traffic.
+    pub async fn connect_with_stream<S>(
+        config: &IpcClientConfig,
+        stream: S,
+    ) -> Result<Self, IpcError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (reader, writer) = tokio::io::split(stream);
 
         let pending = Arc::new(PendingRequests::new());
-        let handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>> =
-            Arc::new(RwLock::new(None));
+        let handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>> = Arc::new(RwLock::new(None));
 
         let connection = IpcConnection::spawn(reader, writer, pending, handler);
 
@@ -79,7 +90,7 @@ impl IpcClient {
         let envelope = Envelope::Request(Request {
             request_id: request_id.clone(),
             source_client_id: "initializing-client".to_string(),
-            version: 0,
+            version: Method::Initialize.current_version(),
             method: Method::Initialize.wire_name().to_string(),
             params: serde_json::to_value(&init_params)
                 .map_err(|e| IpcError::Protocol(format!("failed to serialize init params: {e}")))?,
@@ -156,15 +167,16 @@ impl IpcClient {
             .await
             .map_err(|_| IpcError::Transport(TransportError::ConnectionClosed))?;
 
-        let response =
-            tokio::time::timeout(self.inner.config.request_timeout, rx)
-                .await
-                .map_err(|_| IpcError::Request(RequestError::Timeout))?
-                .map_err(|_| IpcError::NotConnected)??;
+        let response = tokio::time::timeout(self.inner.config.request_timeout, rx)
+            .await
+            .map_err(|_| IpcError::Request(RequestError::Timeout))?
+            .map_err(|_| IpcError::NotConnected)??;
 
         match response {
             Response::Success { result, .. } => Ok(result),
-            Response::Error { error, .. } => Err(IpcError::Request(RequestError::from_wire(&error))),
+            Response::Error { error, .. } => {
+                Err(IpcError::Request(RequestError::from_wire(&error)))
+            }
         }
     }
 
@@ -306,11 +318,15 @@ impl IpcClient {
         &self,
         params: ThreadFollowerSetQueuedFollowUpsStateParams,
     ) -> Result<serde_json::Value, IpcError> {
-        self.send_request(
-            Method::ThreadFollowerSetQueuedFollowUpsState,
-            &params,
-            None,
-        )
-        .await
+        self.send_request(Method::ThreadFollowerSetQueuedFollowUpsState, &params, None)
+            .await
+    }
+
+    pub async fn external_resume_thread(
+        &self,
+        params: ExternalResumeThreadParams,
+    ) -> Result<serde_json::Value, IpcError> {
+        self.send_request(Method::ExternalResumeThread, &params, None)
+            .await
     }
 }

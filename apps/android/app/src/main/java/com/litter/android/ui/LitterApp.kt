@@ -87,12 +87,18 @@ fun LitterApp(appModel: AppModel) {
             }
         }
 
-        Box(
-            modifier = Modifier
+        val rootModifier = if (currentRoute is Route.Conversation) {
+            Modifier
                 .fillMaxSize()
                 .background(LitterTheme.background)
-                .systemBarsPadding(),
-        ) {
+        } else {
+            Modifier
+                .fillMaxSize()
+                .background(LitterTheme.background)
+                .systemBarsPadding()
+        }
+
+        Box(modifier = rootModifier) {
             when (val route = currentRoute) {
                 is Route.Home -> {
                     HomeDashboardScreen(

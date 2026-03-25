@@ -9,19 +9,42 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use russh::ChannelMsg;
+use russh::ChannelStream;
 use russh::client::{self, Handle, Msg};
 use russh_keys::decode_secret_key;
 use russh_keys::{HashAlg, PublicKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio_tungstenite::connect_async;
 use tracing::{debug, error, info, warn};
+
+#[cfg(target_os = "android")]
+fn append_android_debug_log(line: &str) {
+    use std::io::Write;
+
+    let Some(codex_home) = std::env::var_os("CODEX_HOME") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(codex_home).join("mobile-debug.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn append_android_debug_log(_line: &str) {}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /// Credentials for establishing an SSH connection.
+#[derive(Clone)]
 pub struct SshCredentials {
     pub host: String,
     pub port: u16,
@@ -30,6 +53,7 @@ pub struct SshCredentials {
 }
 
 /// Authentication method.
+#[derive(Clone)]
 pub enum SshAuth {
     Password(String),
     PrivateKey {
@@ -335,6 +359,19 @@ impl SshClient {
         remote_host: &str,
         remote_port: u16,
     ) -> Result<u16, SshError> {
+        let (actual_port, task) = self
+            .spawn_forward_port(local_port, remote_host, remote_port)
+            .await?;
+        self.forward_tasks.lock().await.push(task);
+        Ok(actual_port)
+    }
+
+    async fn spawn_forward_port(
+        &self,
+        local_port: u16,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<(u16, tokio::task::JoinHandle<()>), SshError> {
         let listener = TcpListener::bind(format!("127.0.0.1:{local_port}"))
             .await
             .map_err(|e| SshError::PortForwardFailed(format!("bind: {e}")))?;
@@ -355,11 +392,19 @@ impl SshClient {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("port forward accept error: {e}");
+                        append_android_debug_log(&format!(
+                            "ssh_forward_accept_error listen=127.0.0.1:{} remote={}:{} error={}",
+                            actual_port, remote_host, remote_port, e
+                        ));
                         break;
                     }
                 };
 
                 debug!("port forward: accepted connection from {peer_addr}");
+                append_android_debug_log(&format!(
+                    "ssh_forward_accept listen=127.0.0.1:{} remote={}:{} peer={}",
+                    actual_port, remote_host, remote_port, peer_addr
+                ));
 
                 let handle = Arc::clone(&handle);
                 let remote_host = remote_host.clone();
@@ -379,20 +424,95 @@ impl SshClient {
                             Ok(ch) => ch,
                             Err(e) => {
                                 error!("port forward: open direct-tcpip failed: {e}");
+                                append_android_debug_log(&format!(
+                                    "ssh_forward_direct_tcpip_failed listen=127.0.0.1:{} remote={}:{} peer={} error={}",
+                                    actual_port, remote_host, remote_port, peer_addr, e
+                                ));
                                 return;
                             }
                         }
                     };
 
-                    if let Err(e) = proxy_connection(local_stream, ssh_channel).await {
+                    append_android_debug_log(&format!(
+                        "ssh_forward_direct_tcpip_opened listen=127.0.0.1:{} remote={}:{} peer={}",
+                        actual_port, remote_host, remote_port, peer_addr
+                    ));
+
+                    if let Err(e) = proxy_connection(local_stream, ssh_channel, actual_port, &remote_host, remote_port, peer_addr).await {
                         debug!("port forward proxy ended: {e}");
+                        append_android_debug_log(&format!(
+                            "ssh_forward_proxy_error listen=127.0.0.1:{} remote={}:{} peer={} error={}",
+                            actual_port, remote_host, remote_port, peer_addr, e
+                        ));
                     }
                 });
             }
         });
 
-        self.forward_tasks.lock().await.push(task);
-        Ok(actual_port)
+        Ok((actual_port, task))
+    }
+
+    /// Open a direct streamlocal channel to a remote Unix socket path.
+    pub async fn open_streamlocal(
+        &self,
+        socket_path: &str,
+    ) -> Result<ChannelStream<Msg>, SshError> {
+        let handle = self.handle.lock().await;
+        if handle.is_closed() {
+            return Err(SshError::Disconnected);
+        }
+        let channel = handle
+            .channel_open_direct_streamlocal(socket_path)
+            .await
+            .map_err(|e| {
+                SshError::ConnectionFailed(format!("open direct-streamlocal {socket_path}: {e}"))
+            })?;
+        Ok(channel.into_stream())
+    }
+
+    /// Resolve the default remote Codex IPC socket path for the current SSH user.
+    pub async fn resolve_remote_ipc_socket_path(&self) -> Result<String, SshError> {
+        const SCRIPT: &str = r#"uid="$(id -u 2>/dev/null || printf '0')"
+tmp="${TMPDIR:-${TMP:-/tmp}}"
+tmp="${tmp%/}"
+printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
+        let result = self.exec(SCRIPT).await?;
+        let path = result.stdout.trim().to_string();
+        if path.is_empty() {
+            return Err(SshError::ExecFailed {
+                exit_code: result.exit_code,
+                stderr: "failed to resolve remote IPC socket path".to_string(),
+            });
+        }
+        Ok(path)
+    }
+
+    /// Return the requested IPC socket path if it exists on the remote host.
+    pub async fn remote_ipc_socket_if_present(
+        &self,
+        override_path: Option<&str>,
+    ) -> Result<Option<String>, SshError> {
+        let socket_path = match override_path {
+            Some(path) => path.to_string(),
+            None => self.resolve_remote_ipc_socket_path().await?,
+        };
+        let check = format!(
+            "if [ -S {path} ]; then printf '%s' {path}; fi",
+            path = shell_quote(&socket_path),
+        );
+        let result = self.exec(&check).await?;
+        if result.exit_code != 0 {
+            return Err(SshError::ExecFailed {
+                exit_code: result.exit_code,
+                stderr: result.stderr,
+            });
+        }
+        let resolved = result.stdout.trim();
+        if resolved.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(resolved.to_string()))
+        }
     }
 
     // --------------------------------------------------------------------
@@ -424,16 +544,15 @@ impl SshClient {
         for offset in 0..PORT_CANDIDATES {
             let port = DEFAULT_REMOTE_PORT + offset;
 
-            // Check if something is already listening on this port.
+            // Do not blindly reuse an already-listening port here. During SSH
+            // bootstrap we have no proof that the listener is actually a healthy
+            // Codex app-server, and reusing an unrelated or stale process can
+            // produce a tunnel that accepts TCP but immediately resets the
+            // WebSocket handshake. Skip occupied ports and launch a fresh
+            // server on the next free candidate instead.
             if self.is_port_listening(port).await {
-                info!("port {port} already listening, reusing");
-                let local_port = self.forward_port(0, port).await?;
-                return Ok(SshBootstrapResult {
-                    server_port: port,
-                    tunnel_local_port: local_port,
-                    server_version: None,
-                    pid: None,
-                });
+                info!("port {port} already listening, skipping occupied candidate");
+                continue;
             }
 
             let listen_addr = if prefer_ipv6 {
@@ -457,7 +576,7 @@ impl SshClient {
 
             // --- 3. Wait for the server to start listening ---------------
             let mut started = false;
-            for attempt in 0..60 {
+            for _attempt in 0..60 {
                 if self.is_port_listening(port).await {
                     started = true;
                     break;
@@ -478,16 +597,6 @@ impl SshClient {
                                 tail
                             },
                         });
-                    }
-                }
-
-                // After several attempts, if the process is alive, assume it's okay.
-                if attempt >= 8 {
-                    if let Some(p) = pid {
-                        if self.is_process_alive(p).await {
-                            started = true;
-                            break;
-                        }
                     }
                 }
 
@@ -512,11 +621,33 @@ impl SshClient {
                 continue;
             }
 
-            // --- 4. Set up local port forwarding -------------------------
+            // --- 4. Prove the websocket endpoint is actually ready -------
             let remote_loopback = if prefer_ipv6 { "::1" } else { "127.0.0.1" };
+            let (probe_port, probe_task) =
+                self.spawn_forward_port(0, remote_loopback, port).await?;
+            let websocket_ready = self
+                .wait_for_forwarded_websocket_ready(probe_port, pid, &log_path)
+                .await;
+            probe_task.abort();
+
+            if let Err(error) = websocket_ready {
+                warn!("remote websocket readiness probe failed on port {port}: {error}");
+                if let Some(p) = pid {
+                    let _ = self.exec(&format!("kill {p} 2>/dev/null")).await;
+                }
+                if offset == PORT_CANDIDATES - 1 {
+                    return Err(SshError::ExecFailed {
+                        exit_code: 1,
+                        stderr: error,
+                    });
+                }
+                continue;
+            }
+
+            // --- 5. Set up local port forwarding -------------------------
             let local_port = self.forward_port_to(0, remote_loopback, port).await?;
 
-            // --- 5. Optionally read server version -----------------------
+            // --- 6. Optionally read server version -----------------------
             let version = self.read_server_version(codex_binary.path()).await;
 
             return Ok(SshBootstrapResult {
@@ -573,12 +704,16 @@ elif [ -x "$HOME/.cargo/bin/codex" ]; then
   printf 'codex:%s' "$HOME/.cargo/bin/codex"
 elif [ -x "$HOME/.local/bin/codex" ]; then
   printf 'codex:%s' "$HOME/.local/bin/codex"
+elif [ -x "/opt/homebrew/bin/codex" ]; then
+  printf 'codex:%s' "/opt/homebrew/bin/codex"
 elif [ -x "/usr/local/bin/codex" ]; then
   printf 'codex:%s' "/usr/local/bin/codex"
 else
   app_server_path="$(command -v codex-app-server 2>/dev/null || true)"
   if [ -n "$app_server_path" ] && [ -f "$app_server_path" ] && [ -x "$app_server_path" ]; then
     printf 'app-server:%s' "$app_server_path"
+  elif [ -x "/opt/homebrew/bin/codex-app-server" ]; then
+    printf 'app-server:%s' "/opt/homebrew/bin/codex-app-server"
   elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
     printf 'app-server:%s' "$HOME/.cargo/bin/codex-app-server"
   fi
@@ -589,9 +724,17 @@ fi"#,
         let result = self.exec(&script).await?;
         let raw = result.stdout.trim();
         if raw.is_empty() {
+            let diagnostics = self.fetch_codex_resolver_diagnostics().await;
             return Err(SshError::ExecFailed {
                 exit_code: 1,
-                stderr: "codex/codex-app-server not found on remote host".into(),
+                stderr: if diagnostics.is_empty() {
+                    "codex/codex-app-server not found on remote host".into()
+                } else {
+                    format!(
+                        "codex/codex-app-server not found on remote host\nresolver diagnostics:\n{}",
+                        diagnostics
+                    )
+                },
             });
         }
         if let Some(path) = raw.strip_prefix("codex:") {
@@ -604,6 +747,46 @@ fi"#,
             exit_code: 1,
             stderr: format!("unexpected remote codex binary selector: {raw}"),
         })
+    }
+
+    async fn fetch_codex_resolver_diagnostics(&self) -> String {
+        let script = format!(
+            r#"{profile_init}
+printf 'shell=%s\n' "${{SHELL:-}}"
+printf 'path=%s\n' "${{PATH:-}}"
+printf 'whoami='; whoami 2>/dev/null || true
+printf 'pwd='; pwd 2>/dev/null || true
+printf 'command -v codex='
+command -v codex 2>/dev/null || printf '<missing>'
+printf '\n'
+printf 'command -v codex-app-server='
+command -v codex-app-server 2>/dev/null || printf '<missing>'
+printf '\n'
+for candidate in \
+  "$HOME/.volta/bin/codex" \
+  "$HOME/.cargo/bin/codex" \
+  "$HOME/.local/bin/codex" \
+  "/opt/homebrew/bin/codex" \
+  "/usr/local/bin/codex" \
+  "$HOME/.cargo/bin/codex-app-server" \
+  "/opt/homebrew/bin/codex-app-server" \
+  "/usr/local/bin/codex-app-server"
+do
+  if [ -e "$candidate" ]; then
+    if [ -x "$candidate" ]; then
+      printf 'candidate=%s [exists executable]\n' "$candidate"
+    else
+      printf 'candidate=%s [exists not-executable]\n' "$candidate"
+    fi
+  fi
+done"#,
+            profile_init = PROFILE_INIT
+        );
+
+        match self.exec(&script).await {
+            Ok(result) => result.stdout.trim().to_string(),
+            Err(error) => format!("failed to collect resolver diagnostics: {error}"),
+        }
     }
 
     /// Check if a TCP port is currently listening on the remote host.
@@ -644,6 +827,46 @@ fi"#
         }
     }
 
+    async fn wait_for_forwarded_websocket_ready(
+        &self,
+        local_port: u16,
+        pid: Option<u32>,
+        log_path: &str,
+    ) -> Result<(), String> {
+        let websocket_url = format!("ws://127.0.0.1:{local_port}");
+        let mut last_error = String::new();
+
+        for _ in 0..20 {
+            match connect_async(&websocket_url).await {
+                Ok((mut websocket, _)) => {
+                    let _ = websocket.close(None).await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    last_error = error.to_string();
+                }
+            }
+
+            if let Some(p) = pid {
+                if !self.is_process_alive(p).await {
+                    let tail = self.fetch_log_tail(log_path).await;
+                    return Err(if tail.is_empty() { last_error } else { tail });
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let tail = self.fetch_log_tail(log_path).await;
+        Err(if tail.is_empty() {
+            format!("websocket readiness probe failed: {last_error}")
+        } else if last_error.is_empty() {
+            tail
+        } else {
+            format!("{tail}\nwebsocket readiness probe failed: {last_error}")
+        })
+    }
+
     /// Attempt to read the server version from `codex --version`.
     async fn read_server_version(&self, codex_path: &str) -> Option<String> {
         let cmd = format!(
@@ -673,7 +896,13 @@ fi"#
 async fn proxy_connection(
     local: tokio::net::TcpStream,
     mut ssh_channel: russh::Channel<Msg>,
+    local_port: u16,
+    remote_host: &str,
+    remote_port: u16,
+    peer_addr: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let remote_host = remote_host.to_string();
+
     // `make_writer` clones internal senders so it can be used independently
     // from `channel.wait()` which takes `&mut self`.
     let mut ssh_writer = ssh_channel.make_writer();
@@ -682,6 +911,7 @@ async fn proxy_connection(
     let (mut local_read, mut local_write) = local.into_split();
 
     // Spawn local -> remote copying.
+    let local_to_remote_remote_host = remote_host.clone();
     let local_to_remote = tokio::spawn(async move {
         let mut buf = vec![0u8; 32768];
         loop {
@@ -689,10 +919,20 @@ async fn proxy_connection(
                 Ok(0) => break,
                 Ok(n) => {
                     if ssh_writer.write_all(&buf[..n]).await.is_err() {
+                        append_android_debug_log(&format!(
+                            "ssh_forward_local_to_remote_write_failed listen=127.0.0.1:{} remote={}:{} peer={}",
+                            local_port, local_to_remote_remote_host, remote_port, peer_addr
+                        ));
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(error) => {
+                    append_android_debug_log(&format!(
+                        "ssh_forward_local_read_error listen=127.0.0.1:{} remote={}:{} peer={} error={}",
+                        local_port, local_to_remote_remote_host, remote_port, peer_addr, error
+                    ));
+                    break;
+                }
             }
         }
         // Dropping ssh_writer signals we are done writing to the channel.
@@ -703,11 +943,34 @@ async fn proxy_connection(
         match ssh_channel.wait().await {
             Some(ChannelMsg::Data { data }) => {
                 if local_write.write_all(&data).await.is_err() {
+                    append_android_debug_log(&format!(
+                        "ssh_forward_local_write_failed listen=127.0.0.1:{} remote={}:{} peer={}",
+                        local_port, remote_host, remote_port, peer_addr
+                    ));
                     break;
                 }
             }
-            Some(ChannelMsg::Eof | ChannelMsg::Close) => break,
-            None => break,
+            Some(ChannelMsg::Eof) => {
+                append_android_debug_log(&format!(
+                    "ssh_forward_channel_eof listen=127.0.0.1:{} remote={}:{} peer={}",
+                    local_port, remote_host, remote_port, peer_addr
+                ));
+                break;
+            }
+            Some(ChannelMsg::Close) => {
+                append_android_debug_log(&format!(
+                    "ssh_forward_channel_close listen=127.0.0.1:{} remote={}:{} peer={}",
+                    local_port, remote_host, remote_port, peer_addr
+                ));
+                break;
+            }
+            None => {
+                append_android_debug_log(&format!(
+                    "ssh_forward_channel_ended listen=127.0.0.1:{} remote={}:{} peer={}",
+                    local_port, remote_host, remote_port, peer_addr
+                ));
+                break;
+            }
             _ => {}
         }
     }

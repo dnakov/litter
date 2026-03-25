@@ -18,6 +18,7 @@ val hasUploadSigning = listOf(uploadStoreFile, uploadStorePassword, uploadKeyAli
 android {
     namespace = "com.sigkitten.litter.android"
     compileSdk = 35
+    ndkVersion = projectPropOrEnv("ANDROID_NDK_VERSION") ?: "30.0.14904198"
 
     defaultConfig {
         applicationId = "com.sigkitten.litter.android"

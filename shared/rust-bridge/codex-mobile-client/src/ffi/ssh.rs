@@ -1,5 +1,6 @@
 use crate::ffi::ClientError;
-use crate::ffi::shared::shared_runtime;
+use crate::ffi::shared::{shared_mobile_client, shared_runtime};
+use crate::session::connection::ServerConfig;
 use crate::ssh::{ExecResult, SshAuth, SshClient, SshCredentials, SshError};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -130,16 +131,13 @@ impl SshBridge {
             "ssh-{}",
             self.next_ssh_session_id.fetch_add(1, Ordering::Relaxed)
         );
-        self.ssh_sessions
-            .lock()
-            .expect("ssh_sessions lock poisoned")
-            .insert(
-                session_id.clone(),
-                ManagedSshSession {
-                    client: Arc::clone(&session),
-                    pid: bootstrap.pid,
-                },
-            );
+        self.ssh_sessions_lock().insert(
+            session_id.clone(),
+            ManagedSshSession {
+                client: Arc::clone(&session),
+                pid: bootstrap.pid,
+            },
+        );
 
         Ok(FfiSshConnectionResult {
             session_id,
@@ -154,9 +152,7 @@ impl SshBridge {
 
     pub async fn ssh_close(&self, session_id: String) -> Result<(), ClientError> {
         let session = self
-            .ssh_sessions
-            .lock()
-            .expect("ssh_sessions lock poisoned")
+            .ssh_sessions_lock()
             .remove(&session_id)
             .ok_or_else(|| {
                 ClientError::InvalidParams(format!("unknown SSH session id: {session_id}"))
@@ -177,9 +173,64 @@ impl SshBridge {
         .map_err(|e| ClientError::Rpc(format!("task join error: {e}")))?;
         Ok(())
     }
+
+    pub async fn ssh_connect_remote_server(
+        &self,
+        server_id: String,
+        display_name: String,
+        host: String,
+        port: u16,
+        username: String,
+        password: Option<String>,
+        private_key_pem: Option<String>,
+        passphrase: Option<String>,
+        accept_unknown_host: bool,
+        working_dir: Option<String>,
+        ipc_socket_path_override: Option<String>,
+    ) -> Result<String, ClientError> {
+        let normalized_host = normalize_ssh_host(&host);
+        let auth = ssh_auth(password, private_key_pem, passphrase)?;
+        let credentials = SshCredentials {
+            host: normalized_host.clone(),
+            port,
+            username,
+            auth,
+        };
+        let config = ServerConfig {
+            server_id,
+            display_name,
+            host: normalized_host,
+            port: 0,
+            websocket_url: None,
+            is_local: false,
+            tls: false,
+        };
+        shared_mobile_client()
+            .connect_remote_over_ssh(
+                config,
+                credentials,
+                accept_unknown_host,
+                working_dir,
+                ipc_socket_path_override,
+            )
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))
+    }
 }
 
 impl SshBridge {
+    fn ssh_sessions_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, ManagedSshSession>> {
+        match self.ssh_sessions.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!("SshBridge: recovering poisoned ssh_sessions lock");
+                error.into_inner()
+            }
+        }
+    }
+
     pub(crate) async fn ssh_read_wake_mac(&self, session: Arc<SshClient>) -> Option<String> {
         const WAKE_MAC_SCRIPT: &str = r#"iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
 if [ -z "$iface" ]; then iface="en0"; fi

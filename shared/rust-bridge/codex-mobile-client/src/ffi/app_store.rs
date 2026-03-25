@@ -112,6 +112,30 @@ impl AppStore {
             .map_err(ClientError::Serialization)
     }
 
+    pub async fn start_turn(
+        &self,
+        key: ThreadKey,
+        params: generated::TurnStartParams,
+    ) -> Result<(), ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            c.start_turn(&key.server_id, params)
+                .await
+                .map_err(|e| ClientError::Rpc(e.to_string()))
+        })
+    }
+
+    pub async fn external_resume_thread(
+        &self,
+        key: ThreadKey,
+        host_id: Option<String>,
+    ) -> Result<(), ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            c.external_resume_thread(&key.server_id, &key.thread_id, host_id)
+                .await
+                .map_err(|e| ClientError::Rpc(e.to_string()))
+        })
+    }
+
     pub fn subscribe_updates(&self) -> AppStoreSubscription {
         AppStoreSubscription {
             rx: std::sync::Mutex::new(Some(self.inner.subscribe_app_updates())),

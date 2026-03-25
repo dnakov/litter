@@ -13,6 +13,7 @@ uniffi = { version = "0.31.0", features = ["tokio"] }
 codex-app-server = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
+codex-ipc = { path = "../codex-ipc" }
 codex-protocol = { workspace = true }
 codex-core = { workspace = true }
 codex-config = { workspace = true }

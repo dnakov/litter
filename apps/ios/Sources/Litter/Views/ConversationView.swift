@@ -129,10 +129,7 @@ struct ConversationView: View {
                     attachmentImage: attachmentImage,
                     skillMentions: skillMentions
                 )
-                _ = try await appModel.rpc.turnStart(
-                    serverId: activeThreadKey.serverId,
-                    params: payload.turnStartParams(threadId: activeThreadKey.threadId)
-                )
+                try await appModel.startTurn(key: activeThreadKey, payload: payload)
                 NSLog(
                     "[ConversationView] sendMessage turnStart returned server=%@ thread=%@",
                     activeThreadKey.serverId,
@@ -159,10 +156,7 @@ struct ConversationView: View {
                     attachmentImage: nil,
                     skillMentions: []
                 )
-                _ = try await appModel.rpc.turnStart(
-                    serverId: activeThreadKey.serverId,
-                    params: payload.turnStartParams(threadId: activeThreadKey.threadId)
-                )
+                try await appModel.startTurn(key: activeThreadKey, payload: payload)
             } catch {
                 messageActionError = error.localizedDescription
             }

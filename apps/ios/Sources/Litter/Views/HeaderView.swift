@@ -69,11 +69,23 @@ struct HeaderView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
 
-                        Text(sessionDirectoryLabel)
-                            .litterFont(.caption2, weight: .semibold)
-                            .foregroundColor(LitterTheme.textSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        HStack(spacing: 6) {
+                            Text(sessionDirectoryLabel)
+                                .litterFont(.caption2, weight: .semibold)
+                                .foregroundColor(LitterTheme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            if server?.isIpcConnected == true {
+                                Text("IPC")
+                                    .litterFont(.caption2, weight: .bold)
+                                    .foregroundColor(LitterTheme.accentStrong)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(LitterTheme.accentStrong.opacity(0.14))
+                                    .clipShape(Capsule())
+                            }
+                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)

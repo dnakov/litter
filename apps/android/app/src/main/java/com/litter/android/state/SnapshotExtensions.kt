@@ -34,6 +34,15 @@ val AppServerHealth.accentColor: Color
 val AppServerSnapshot.isConnected: Boolean
     get() = health == AppServerHealth.CONNECTED
 
+val AppServerSnapshot.isIpcConnected: Boolean
+    get() = hasIpc && !isLocal && isConnected
+
+val AppServerSnapshot.connectionModeLabel: String
+    get() = when {
+        isLocal -> "local"
+        else -> "remote"
+    }
+
 val AppServerSnapshot.statusLabel: String
     get() = when {
         health == AppServerHealth.CONNECTED && !isLocal && account == null -> "Sign in required"

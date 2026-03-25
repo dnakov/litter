@@ -337,6 +337,7 @@ enum LitterPreviewData {
             host: sampleServer.hostname,
             port: UInt16(sampleServer.port ?? 8390),
             isLocal: false,
+            hasIpc: true,
             health: .connected,
             account: .chatgpt(email: "builder@example.com", planType: .plus),
             requiresOpenaiAuth: false,

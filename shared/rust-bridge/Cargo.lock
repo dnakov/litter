@@ -1952,6 +1952,7 @@ dependencies = [
  "codex-core",
  "codex-feedback",
  "codex-ios-audio",
+ "codex-ipc",
  "codex-protocol",
  "futures",
  "lru 0.12.5",

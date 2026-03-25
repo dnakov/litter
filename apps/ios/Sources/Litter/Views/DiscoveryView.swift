@@ -227,15 +227,12 @@ struct DiscoveryView: View {
                         .foregroundColor(LitterTheme.textSecondary)
                 }
                 Spacer()
+                if serverSnapshot?.isIpcConnected == true {
+                    statusTag(label: "ipc", color: LitterTheme.accentStrong)
+                }
                 if let health = serverHealth,
                    health != .disconnected {
-                    Text(health.displayLabel.lowercased())
-                        .litterFont(.caption2)
-                        .foregroundColor(health.accentColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(health.accentColor.opacity(0.15))
-                        .cornerRadius(4)
+                    statusTag(label: health.displayLabel.lowercased(), color: health.accentColor)
                 } else if connectingServer?.id == server.id {
                     ProgressView().controlSize(.small).tint(LitterTheme.accent)
                 } else if wakingServer?.id == server.id {
@@ -286,7 +283,21 @@ struct DiscoveryView: View {
         } else {
             parts.append(" - SSH (\(server.source.rawValue))")
         }
+        if snapshot?.isIpcConnected == true {
+            parts.append(" - ipc")
+        }
         return parts.joined()
+    }
+
+    @ViewBuilder
+    private func statusTag(label: String, color: Color) -> some View {
+        Text(label)
+            .litterFont(.caption2)
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .cornerRadius(4)
     }
 
     private func connectedSnapshot(for server: DiscoveredServer) -> AppServerSnapshot? {
@@ -619,50 +630,42 @@ struct DiscoveryView: View {
         host: String,
         credentials: SSHCredentials
     ) async throws -> String {
-        let bootstrap = try await sshConnectAndBootstrap(host: host, credentials: credentials, port: server.resolvedSSHPort)
-        let targetHost = server.sshPortForwardingEnabled ? "127.0.0.1" : bootstrap.normalizedHost
-        let targetPort = server.sshPortForwardingEnabled
-            ? (bootstrap.tunnelLocalPort ?? bootstrap.serverPort)
-            : bootstrap.serverPort
-        let websocketURL = websocketURLString(host: targetHost, port: targetPort)
-
-        do {
-            let serverId = try await appModel.serverBridge.connectRemoteUrlServer(
-                serverId: server.id,
-                displayName: server.name,
-                websocketUrl: websocketURL
+        let serverId = try await sshConnectAndConnectServer(
+            serverId: server.id,
+            displayName: server.name,
+            host: host,
+            credentials: credentials,
+            port: server.resolvedSSHPort
+        )
+        SavedServerStore.upsert(
+            DiscoveredServer(
+                id: server.id,
+                name: server.name,
+                hostname: server.hostname,
+                port: nil,
+                sshPort: server.resolvedSSHPort,
+                source: server.source,
+                hasCodexServer: false,
+                wakeMAC: server.wakeMAC,
+                sshPortForwardingEnabled: true,
+                websocketURL: nil
             )
-            await SshSessionStore.shared.record(sessionId: bootstrap.sessionId, for: server.id)
-
-            SavedServerStore.upsert(
-                DiscoveredServer(
-                    id: server.id,
-                    name: server.name,
-                    hostname: server.hostname,
-                    port: server.port ?? bootstrap.serverPort,
-                    sshPort: server.sshPort,
-                    source: server.source,
-                    hasCodexServer: !server.sshPortForwardingEnabled,
-                    wakeMAC: bootstrap.wakeMac ?? server.wakeMAC,
-                    sshPortForwardingEnabled: server.sshPortForwardingEnabled,
-                    websocketURL: server.sshPortForwardingEnabled ? nil : websocketURL
-                )
-            )
-            return serverId
-        } catch {
-            try? await appModel.ssh.sshClose(sessionId: bootstrap.sessionId)
-            throw error
-        }
+        )
+        return serverId
     }
 
-    private func sshConnectAndBootstrap(
+    private func sshConnectAndConnectServer(
+        serverId: String,
+        displayName: String,
         host: String,
         credentials: SSHCredentials,
         port: UInt16
-    ) async throws -> FfiSshConnectionResult {
+    ) async throws -> String {
         switch credentials {
         case .password(let username, let password):
-            return try await appModel.ssh.sshConnectAndBootstrap(
+            return try await appModel.ssh.sshConnectRemoteServer(
+                serverId: serverId,
+                displayName: displayName,
                 host: host,
                 port: port,
                 username: username,
@@ -670,10 +673,13 @@ struct DiscoveryView: View {
                 privateKeyPem: nil,
                 passphrase: nil,
                 acceptUnknownHost: true,
-                workingDir: nil
+                workingDir: nil,
+                ipcSocketPathOverride: nil
             )
         case .key(let username, let privateKey, let passphrase):
-            return try await appModel.ssh.sshConnectAndBootstrap(
+            return try await appModel.ssh.sshConnectRemoteServer(
+                serverId: serverId,
+                displayName: displayName,
                 host: host,
                 port: port,
                 username: username,
@@ -681,13 +687,10 @@ struct DiscoveryView: View {
                 privateKeyPem: privateKey,
                 passphrase: passphrase,
                 acceptUnknownHost: true,
-                workingDir: nil
+                workingDir: nil,
+                ipcSocketPathOverride: nil
             )
         }
-    }
-
-    private func websocketURLString(host: String, port: UInt16) -> String {
-        "ws://\(host):\(port)"
     }
 
     // MARK: - Manual Entry

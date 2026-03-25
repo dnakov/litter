@@ -32,6 +32,7 @@ Current automated checks:
 | App launch | App launches and can start local bridge-backed session | App launches and does not auto-start local bridge |
 | Connect local/on-device | Success (`ServerConfig.local`) | Expected failure with clear "disabled" error |
 | Connect remote server | Success | Success |
+| SSH-discovered remote server | Prompts for SSH credentials, connects through SSH port forwarding, and never attempts `ws://host:22` directly | Same |
 | Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC | N/A (local startup disabled) |
 | Remote transport drop | Reconnect behavior via Rust `AppStore` updates and resumed RPC notifications | Same |
 | Thread start/resume fallback sandbox | `workspace-write` with `danger-full-access` fallback when linux sandbox missing | Same |
@@ -67,7 +68,12 @@ Current automated checks:
 - `Clear recent directories` requires destructive confirmation.
 - Back behavior parity:
   - Android: `Back` navigates up before dismissing sheet.
-  - iOS: dismiss is blocked while not at root; cancel navigates up first.
+- iOS: dismiss is blocked while not at root; cancel navigates up first.
+
+### Appearance
+
+- Chat wallpaper can be chosen from the photo library, persists across relaunch, and can be removed from Settings.
+- Conversation screen and appearance preview both render the selected wallpaper instead of the fallback theme gradient.
 
 ## Tool Call Card Parity Matrix (iOS + Android)
 
