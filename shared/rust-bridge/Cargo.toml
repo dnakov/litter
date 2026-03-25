@@ -2,6 +2,7 @@
 members = [
     "codex-bridge",
     "codex-ios-audio",
+    "codex-ipc",
     "codex-mobile-client",
     "uniffi-bindgen",
     "codegen",

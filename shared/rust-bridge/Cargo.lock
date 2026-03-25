@@ -1871,6 +1871,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-ipc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "codex-app-server-protocol",
+ "codex-protocol",
+ "futures",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "codex-keyring-store"
 version = "0.0.0"
 dependencies = [
