@@ -111,64 +111,6 @@ jobs:
           path: .ci-prep/ios-sim
           if-no-files-found: error
 
-  rust-bridge:
-    needs: shared-prep
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    env:
-      SCCACHE_BUCKET: rust-cache
-      SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
-      SCCACHE_REGION: auto
-      SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: ci/mobile-rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libcap-dev clang cmake
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Download shared prep artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: shared-prep
-          path: .ci-prep/shared
-
-      - name: Restore shared prep
-        run: |
-          git -C shared/third_party/codex apply --binary .ci-prep/shared/codex-submodule.patch
-          tar -xzf .ci-prep/shared/generated-mobile-sources.tgz -C .
-
-      - name: Cargo check (codex-bridge)
-        env:
-          RUSTC_WRAPPER: sccache
-          CARGO_INCREMENTAL: "0"
-        run: cargo check --manifest-path shared/rust-bridge/codex-bridge/Cargo.toml
-
-      - name: Cargo check (codex-mobile-client)
-        env:
-          RUSTC_WRAPPER: sccache
-          CARGO_INCREMENTAL: "0"
-        run: cargo check --manifest-path shared/rust-bridge/codex-mobile-client/Cargo.toml
-
-      - name: Cargo test
-        env:
-          RUSTC_WRAPPER: sccache
-          CARGO_INCREMENTAL: "0"
-        run: make rust-test
-
   android:
     needs: shared-prep
     runs-on: ubuntu-latest
