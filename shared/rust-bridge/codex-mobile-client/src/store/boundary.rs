@@ -90,12 +90,16 @@ impl TryFrom<super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
     type Error = String;
 
     fn try_from(thread: super::snapshot::ThreadSnapshot) -> Result<Self, Self::Error> {
+        let hydrated_conversation_items = merged_hydrated_items(
+            thread.items,
+            thread.local_overlay_items,
+        );
         Ok(Self {
             key: thread.key,
             info: thread.info,
             model: thread.model,
             reasoning_effort: thread.reasoning_effort,
-            hydrated_conversation_items: thread.items.into_iter().map(Into::into).collect(),
+            hydrated_conversation_items,
             active_turn_id: thread.active_turn_id,
             context_tokens_used: thread.context_tokens_used,
             model_context_window: thread.model_context_window,
@@ -106,6 +110,36 @@ impl TryFrom<super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
                 .map_err(|error| format!("serialize rate limits: {error}"))?,
             realtime_session_id: thread.realtime_session_id,
         })
+    }
+}
+
+fn merged_hydrated_items(
+    items: Vec<crate::conversation::ConversationItem>,
+    local_overlay_items: Vec<crate::conversation::ConversationItem>,
+) -> Vec<HydratedConversationItem> {
+    let mut merged = items;
+    for overlay in local_overlay_items {
+        if merged.iter().all(|existing| !same_overlay_semantics(&overlay, existing)) {
+            merged.push(overlay);
+        }
+    }
+    merged.into_iter().map(Into::into).collect()
+}
+
+fn same_overlay_semantics(
+    lhs: &crate::conversation::ConversationItem,
+    rhs: &crate::conversation::ConversationItem,
+) -> bool {
+    if lhs.id == rhs.id {
+        return true;
+    }
+
+    match (&lhs.content, &rhs.content) {
+        (
+            crate::conversation::ConversationItemContent::UserInputResponse(lhs_data),
+            crate::conversation::ConversationItemContent::UserInputResponse(rhs_data),
+        ) => lhs.source_turn_id == rhs.source_turn_id && lhs_data == rhs_data,
+        _ => false,
     }
 }
 

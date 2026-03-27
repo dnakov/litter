@@ -140,6 +140,24 @@ data class SavedServer(
     )
 
     companion object {
+        fun normalizeWakeMac(raw: String?): String? {
+            val compact = raw
+                ?.trim()
+                ?.replace(":", "")
+                ?.replace("-", "")
+                ?.lowercase()
+                ?: return null
+            if (compact.length != 12 || compact.any { !it.isDigit() && it !in 'a'..'f' }) {
+                return null
+            }
+            return buildString {
+                compact.chunked(2).forEachIndexed { index, chunk ->
+                    if (index > 0) append(':')
+                    append(chunk)
+                }
+            }
+        }
+
         fun fromJson(obj: JSONObject): SavedServer = SavedServer(
             id = obj.getString("id"),
             name = obj.optString("name", ""),
@@ -230,5 +248,18 @@ object SavedServerStore {
         val existing = load(context).toMutableList()
         existing.removeAll { it.id == serverId }
         save(context, existing)
+    }
+
+    fun rename(context: Context, serverId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+
+        val existing = load(context)
+        val renamed = existing.map { server ->
+            if (server.id == serverId) server.copy(name = trimmed) else server
+        }
+        if (renamed != existing) {
+            save(context, renamed)
+        }
     }
 }

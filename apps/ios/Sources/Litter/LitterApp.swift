@@ -22,6 +22,7 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         codex_ios_system_init()
         LLog.bootstrap()
+        OpenAIApiKeyStore.shared.applyToEnvironment()
         // Pre-initialize Rust bridges (tokio runtime) on a background thread
         // before SwiftUI accesses AppModel.shared, avoiding a priority inversion
         // where the main thread blocks on lower-QoS tokio worker init.

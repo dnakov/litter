@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 import uniffi.codex_mobile_client.AppServerRpc
 import uniffi.codex_mobile_client.AppSnapshotRecord
 import uniffi.codex_mobile_client.AppStore
@@ -18,9 +21,11 @@ import uniffi.codex_mobile_client.AppStoreUpdateRecord
 import uniffi.codex_mobile_client.DiscoveryBridge
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.MessageParser
+import uniffi.codex_mobile_client.ModelListParams
 import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
 import uniffi.codex_mobile_client.ThreadKey
+import uniffi.codex_mobile_client.ThreadListParams
 
 /**
  * Central app state singleton. Thin wrapper over Rust [AppStore] — all business
@@ -30,6 +35,12 @@ import uniffi.codex_mobile_client.ThreadKey
  * via the Rust subscription stream.
  */
 class AppModel private constructor(context: android.content.Context) {
+
+    data class ComposerPrefillRequest(
+        val requestId: Long,
+        val threadKey: ThreadKey,
+        val text: String,
+    )
 
     companion object {
         private var _instance: AppModel? = null
@@ -52,7 +63,9 @@ class AppModel private constructor(context: android.content.Context) {
     val discovery: DiscoveryBridge
     val serverBridge: ServerBridge
     val ssh: SshBridge
+    val sshSessionStore: SshSessionStore
     val parser: MessageParser
+    val launchState: AppLaunchState
     val appContext: android.content.Context = context
 
     init {
@@ -63,7 +76,9 @@ class AppModel private constructor(context: android.content.Context) {
         discovery = DiscoveryBridge()
         serverBridge = ServerBridge()
         ssh = SshBridge()
+        sshSessionStore = SshSessionStore(ssh)
         parser = MessageParser()
+        launchState = AppLaunchState(context)
     }
 
     // --- Observable state ----------------------------------------------------
@@ -73,19 +88,28 @@ class AppModel private constructor(context: android.content.Context) {
 
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
+    private val loadingModelServerIds = mutableSetOf<String>()
+    private val loadingRateLimitServerIds = mutableSetOf<String>()
+    private val sessionListMutex = Mutex()
 
     // --- Composer prefill queue (for edit message / slash commands) -----------
 
-    private var pendingPrefill: String? = null
+    private val nextComposerPrefillRequestId = AtomicLong(0)
+    private val _composerPrefillRequest = MutableStateFlow<ComposerPrefillRequest?>(null)
+    val composerPrefillRequest: StateFlow<ComposerPrefillRequest?> = _composerPrefillRequest.asStateFlow()
 
-    fun queueComposerPrefill(text: String) {
-        pendingPrefill = text
+    fun queueComposerPrefill(threadKey: ThreadKey, text: String) {
+        _composerPrefillRequest.value = ComposerPrefillRequest(
+            requestId = nextComposerPrefillRequestId.incrementAndGet(),
+            threadKey = threadKey,
+            text = text,
+        )
     }
 
-    fun clearComposerPrefill(): String? {
-        val text = pendingPrefill
-        pendingPrefill = null
-        return text
+    fun clearComposerPrefill(requestId: Long) {
+        if (_composerPrefillRequest.value?.requestId == requestId) {
+            _composerPrefillRequest.value = null
+        }
     }
 
     // --- Subscription lifecycle ----------------------------------------------
@@ -125,7 +149,7 @@ class AppModel private constructor(context: android.content.Context) {
 
     suspend fun refreshSnapshot() {
         try {
-            val snap = store.snapshot()
+            val snap = applySavedServerNames(store.snapshot())
             _snapshot.value = snap
             _lastError.value = null
             val serverSummary = snap.servers.joinToString(separator = " | ") { server ->
@@ -138,6 +162,146 @@ class AppModel private constructor(context: android.content.Context) {
             )
         } catch (e: Exception) {
             _lastError.value = e.message
+        }
+    }
+
+    private fun applySavedServerNames(snapshot: AppSnapshotRecord): AppSnapshotRecord {
+        val nameByServerId = SavedServerStore.load(appContext)
+            .mapNotNull { server ->
+                val trimmed = server.name.trim()
+                if (trimmed.isEmpty()) null else server.id to trimmed
+            }
+            .toMap()
+        if (nameByServerId.isEmpty()) return snapshot
+
+        return snapshot.copy(
+            servers = snapshot.servers.map { server ->
+                val savedName = nameByServerId[server.serverId]
+                if (savedName != null && savedName != server.displayName) {
+                    server.copy(displayName = savedName)
+                } else {
+                    server
+                }
+            },
+            sessionSummaries = snapshot.sessionSummaries.map { summary ->
+                val savedName = nameByServerId[summary.key.serverId]
+                if (savedName != null && savedName != summary.serverDisplayName) {
+                    summary.copy(serverDisplayName = savedName)
+                } else {
+                    summary
+                }
+            },
+        )
+    }
+
+    suspend fun restartLocalServer() {
+        val currentLocal = snapshot.value?.servers?.firstOrNull { it.isLocal }
+        val serverId = currentLocal?.serverId ?: "local"
+        val displayName = currentLocal?.displayName ?: "This Device"
+        runCatching { serverBridge.disconnectServer(serverId) }
+        serverBridge.connectLocalServer(
+            serverId = serverId,
+            displayName = displayName,
+            host = "127.0.0.1",
+            port = 0u,
+        )
+        restoreStoredLocalChatGptAuth(serverId)
+        try {
+            refreshSessions(listOf(serverId))
+        } catch (_: Exception) {
+        }
+        refreshSnapshot()
+    }
+
+    suspend fun refreshSessions(serverIds: Collection<String>? = null) {
+        val targetServerIds = (serverIds?.toList() ?: snapshot.value?.servers
+            ?.filter { it.isConnected }
+            ?.map { it.serverId }
+            .orEmpty())
+            .distinct()
+
+        if (targetServerIds.isEmpty()) {
+            return
+        }
+
+        sessionListMutex.withLock {
+            try {
+                for (serverId in targetServerIds) {
+                    rpc.threadList(
+                        serverId,
+                        ThreadListParams(
+                            cursor = null,
+                            limit = null,
+                            sortKey = null,
+                            modelProviders = null,
+                            sourceKinds = null,
+                            archived = null,
+                            cwd = null,
+                            searchTerm = null,
+                        ),
+                    )
+                }
+                refreshSnapshot()
+                _lastError.value = null
+            } catch (e: Exception) {
+                _lastError.value = e.message
+                throw e
+            }
+        }
+    }
+
+    suspend fun loadConversationMetadataIfNeeded(serverId: String) {
+        loadAvailableModelsIfNeeded(serverId)
+        loadRateLimitsIfNeeded(serverId)
+    }
+
+    suspend fun loadAvailableModelsIfNeeded(serverId: String) {
+        val server = snapshot.value?.servers?.firstOrNull { it.serverId == serverId } ?: return
+        if (!server.isConnected) return
+        if (server.availableModels != null) return
+        if (!loadingModelServerIds.add(serverId)) return
+        try {
+            rpc.modelList(
+                serverId,
+                ModelListParams(cursor = null, limit = null, includeHidden = false),
+            )
+            refreshSnapshot()
+        } catch (e: Exception) {
+            _lastError.value = e.message
+        } finally {
+            loadingModelServerIds.remove(serverId)
+        }
+    }
+
+    suspend fun loadRateLimitsIfNeeded(serverId: String) {
+        val server = snapshot.value?.servers?.firstOrNull { it.serverId == serverId } ?: return
+        if (!server.isConnected) return
+        if (server.account == null) return
+        if (server.rateLimits != null) return
+        if (!loadingRateLimitServerIds.add(serverId)) return
+        try {
+            rpc.getAccountRateLimits(serverId)
+            refreshSnapshot()
+        } catch (e: Exception) {
+            _lastError.value = e.message
+        } finally {
+            loadingRateLimitServerIds.remove(serverId)
+        }
+    }
+
+    suspend fun restoreStoredLocalChatGptAuth(serverId: String) {
+        val tokens = ChatGPTOAuthTokenStore(appContext).load() ?: return
+        runCatching {
+            rpc.loginAccount(
+                serverId,
+                uniffi.codex_mobile_client.LoginAccountParams.ChatgptAuthTokens(
+                    accessToken = tokens.accessToken,
+                    chatgptAccountId = tokens.accountId,
+                    chatgptPlanType = tokens.planType,
+                ),
+            )
+        }.onFailure { error ->
+            _lastError.value = error.message
         }
     }
 

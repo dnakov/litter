@@ -11,6 +11,16 @@ import uniffi.codex_mobile_client.ThreadStartParams
 import uniffi.codex_mobile_client.TurnStartParams
 import uniffi.codex_mobile_client.UserInput
 
+data class ComposerImageAttachment(
+    val data: ByteArray,
+    val mimeType: String,
+) {
+    val dataUri: String
+        get() = "data:$mimeType;base64,${android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)}"
+
+    fun toUserInput(): UserInput.Image = UserInput.Image(url = dataUri)
+}
+
 /**
  * UI-facing config for creating/resuming threads.
  * Converts to Rust RPC param types.
@@ -38,8 +48,8 @@ data class AppThreadLaunchConfig(
         ephemeral = null,
         dynamicTools = null,
         mockExperimentalField = null,
-        experimentalRawEvents = true,
-        persistExtendedHistory = true,
+        experimentalRawEvents = false,
+        persistExtendedHistory = persistHistory,
     )
 
     fun toThreadResumeParams(threadId: String, cwd: String? = null): ThreadResumeParams =
@@ -58,10 +68,10 @@ data class AppThreadLaunchConfig(
             baseInstructions = null,
             developerInstructions = developerInstructions,
             personality = null,
-            persistExtendedHistory = true,
+            persistExtendedHistory = persistHistory,
         )
 
-    fun toThreadForkParams(sourceThreadId: String, cwd: String): ThreadForkParams =
+    fun toThreadForkParams(sourceThreadId: String, cwd: String? = null): ThreadForkParams =
         ThreadForkParams(
             threadId = sourceThreadId,
             path = null,
@@ -76,7 +86,7 @@ data class AppThreadLaunchConfig(
             baseInstructions = null,
             developerInstructions = developerInstructions,
             ephemeral = false,
-            persistExtendedHistory = true,
+            persistExtendedHistory = persistHistory,
         )
 }
 
@@ -86,7 +96,7 @@ data class AppThreadLaunchConfig(
  */
 data class AppComposerPayload(
     val text: String,
-    val images: List<ByteArray> = emptyList(),
+    val additionalInputs: List<UserInput> = emptyList(),
     val approvalPolicy: AskForApproval? = null,
     val sandboxPolicy: SandboxPolicy? = null,
     val model: String? = null,
@@ -94,12 +104,10 @@ data class AppComposerPayload(
     val serviceTier: ServiceTier? = null,
 ) {
     fun toTurnStartParams(threadId: String): TurnStartParams {
-        val input = mutableListOf<UserInput>()
+        val input = additionalInputs.toMutableList()
         if (text.isNotBlank()) {
-            input.add(UserInput.Text(text = text, textElements = emptyList()))
+            input.add(0, UserInput.Text(text = text, textElements = emptyList()))
         }
-        // Images would be added as UserInput.LocalImage or UserInput.Image here
-        // once image attachment is wired up
 
         return TurnStartParams(
             threadId = threadId,

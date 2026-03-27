@@ -14,7 +14,6 @@ use chrono::{TimeZone, Utc};
 use clap::{Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
 use mobile_log_shared::StoredLogEvent;
-use reqwest::header::AUTHORIZATION;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -43,8 +42,6 @@ struct ServeArgs {
     #[arg(long, default_value = "0.0.0.0:8585")]
     bind: String,
     #[arg(long)]
-    token: String,
-    #[arg(long)]
     data_dir: Option<PathBuf>,
     #[arg(long, default_value_t = true)]
     private_only: bool,
@@ -54,8 +51,6 @@ struct ServeArgs {
 struct ClientArgs {
     #[arg(long, default_value = "http://127.0.0.1:8585")]
     base_url: String,
-    #[arg(long)]
-    token: String,
     #[arg(long)]
     device_id: Option<String>,
     #[arg(long)]
@@ -86,7 +81,6 @@ struct AppState {
 }
 
 struct AppStateInner {
-    token: String,
     private_only: bool,
     data_dir: PathBuf,
     db: Mutex<Connection>,
@@ -160,13 +154,62 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         inner: Arc::new(AppStateInner {
-            token: args.token,
             private_only: args.private_only,
             data_dir,
             db: Mutex::new(connection),
-            live_tx,
+            live_tx: live_tx.clone(),
         }),
     };
+
+    // Print incoming events to stdout (like a built-in tail)
+    let mut console_rx = live_tx.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match console_rx.recv().await {
+                Ok(event) => {
+                    let ts = chrono::Utc
+                        .timestamp_millis_opt(event.timestamp_ms)
+                        .single()
+                        .map(|t| t.format("%H:%M:%S%.3f").to_string())
+                        .unwrap_or_else(|| event.timestamp_ms.to_string());
+                    let level_color = match event.level.as_str() {
+                        "ERROR" => "\x1b[31m",
+                        "WARN" => "\x1b[33m",
+                        "INFO" => "\x1b[32m",
+                        "DEBUG" => "\x1b[36m",
+                        "TRACE" => "\x1b[90m",
+                        _ => "\x1b[0m",
+                    };
+                    let reset = "\x1b[0m";
+                    let dim = "\x1b[90m";
+                    let device = if event.device_name.is_empty() {
+                        &event.device_id
+                    } else {
+                        &event.device_name
+                    };
+                    let sub = event
+                        .subsystem
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&event.subsystem);
+                    eprint!(
+                        "{dim}{ts}{reset} {dim}[{device}]{reset} {level_color}{:<5}{reset} {dim}{}{reset} {}",
+                        event.level, sub, event.message
+                    );
+                    if let Some(ref fields) = event.fields_json {
+                        if fields != "null" && !fields.is_empty() {
+                            eprint!(" {dim}{fields}{reset}");
+                        }
+                    }
+                    eprintln!();
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("\x1b[33m[collector] skipped {n} events\x1b[0m");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -175,7 +218,9 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tail", get(tail_logs))
         .with_state(state);
 
-    let listener = TcpListener::bind(&args.bind).await?;
+    let addr: SocketAddr = args.bind.parse()?;
+    let listener = TcpListener::bind(&addr).await?;
+    eprintln!("\x1b[32m[collector]\x1b[0m listening on {addr}");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -194,7 +239,7 @@ async fn post_logs(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &addr, &headers)?;
+    authorize(&state, &addr)?;
     let batch_id = required_header(&headers, "X-Batch-Id")?;
     let device_id = required_header(&headers, "X-Device-Id")?;
     let state_clone = state.clone();
@@ -225,9 +270,9 @@ async fn query_logs(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(params): Query<QueryParams>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    authorize(&state, &addr, &headers)?;
+    authorize(&state, &addr)?;
     let state_clone = state.clone();
     let rows = tokio::task::spawn_blocking(move || query_events(&state_clone, &params))
         .await
@@ -259,9 +304,9 @@ async fn tail_logs(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(params): Query<QueryParams>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    authorize(&state, &addr, &headers)?;
+    authorize(&state, &addr)?;
     let rx = state.inner.live_tx.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(move |item| {
         let params = params.clone();
@@ -547,23 +592,11 @@ fn init_db(connection: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-fn authorize(state: &AppState, addr: &SocketAddr, headers: &HeaderMap) -> Result<(), ApiError> {
+fn authorize(state: &AppState, addr: &SocketAddr) -> Result<(), ApiError> {
     if state.inner.private_only && !is_private(addr.ip()) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "collector only accepts private-network clients".into(),
-        ));
-    }
-
-    let provided = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    let expected = format!("Bearer {}", state.inner.token);
-    if provided != expected {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "invalid bearer token".into(),
         ));
     }
     Ok(())
@@ -615,7 +648,6 @@ async fn run_query(args: ClientArgs) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/v1/query", args.base_url.trim_end_matches('/')))
-        .headers(client_headers(&args.token)?)
         .query(&QueryParams {
             device_id: args.device_id,
             platform: args.platform,
@@ -654,7 +686,6 @@ async fn run_tail(args: ClientArgs) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("{}/v1/tail", args.base_url.trim_end_matches('/')))
-        .headers(client_headers(&args.token)?)
         .query(&QueryParams {
             device_id: args.device_id,
             platform: args.platform,
@@ -700,8 +731,15 @@ async fn run_tail(args: ClientArgs) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let reset = "\x1b[0m";
                 let dim = "\x1b[90m";
-                let sub = event.subsystem.rsplit("::").next().unwrap_or(&event.subsystem);
-                print!("{dim}{ts}{reset} {level_color}{:<5}{reset} {dim}{}{reset} {}", event.level, sub, event.message);
+                let sub = event
+                    .subsystem
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&event.subsystem);
+                print!(
+                    "{dim}{ts}{reset} {level_color}{:<5}{reset} {dim}{}{reset} {}",
+                    event.level, sub, event.message
+                );
                 if let Some(ref fields) = event.fields_json {
                     if fields != "null" && !fields.is_empty() {
                         print!(" {dim}{fields}{reset}");
@@ -714,15 +752,6 @@ async fn run_tail(args: ClientArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn client_headers(token: &str) -> Result<HeaderMap, Box<dyn std::error::Error>> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))?,
-    );
-    Ok(headers)
 }
 
 fn internal_error(err: serde_json::Error) -> ApiError {
@@ -836,7 +865,6 @@ mod tests {
         let (live_tx, _) = broadcast::channel(8);
         let state = AppState {
             inner: Arc::new(AppStateInner {
-                token: "token".into(),
                 private_only: false,
                 data_dir: temp_dir.clone(),
                 db: Mutex::new(connection),

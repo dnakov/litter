@@ -17,6 +17,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.litter.android.state.AppLifecycleController
 import com.litter.android.state.AppModel
+import com.litter.android.state.OpenAIApiKeyStore
 import com.litter.android.state.TurnForegroundService
 import com.litter.android.ui.AnimatedSplashScreen
 import com.litter.android.ui.LitterApp
@@ -34,6 +35,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        OpenAIApiKeyStore(applicationContext).applyToEnvironment()
 
         try {
             appModel = AppModel.init(this)
@@ -119,6 +121,7 @@ class MainActivity : ComponentActivity() {
                 host = "127.0.0.1",
                 port = 0u, // port 0 = in-process, Rust handles it
             )
+            appModel.restoreStoredLocalChatGptAuth("local")
             // Load thread list for the local server
             appModel.rpc.threadList(
                 "local",

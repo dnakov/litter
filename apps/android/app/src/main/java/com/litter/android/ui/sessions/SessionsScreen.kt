@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -37,11 +38,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -60,7 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.litter.android.state.AppThreadLaunchConfig
+import com.litter.android.state.isConnected
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.home.HomeDashboardSupport
@@ -74,51 +73,137 @@ import uniffi.codex_mobile_client.ThreadSetNameParams
 fun SessionsScreen(
     serverId: String?,
     title: String,
+    sessionsUiState: SessionsUiState,
     onOpenConversation: (ThreadKey) -> Unit,
+    onNewSession: (() -> Unit)? = null,
     onBack: () -> Unit,
     onInfo: (() -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
+    val connectedServerIds = remember(snapshot) {
+        snapshot?.servers
+            ?.filter { it.isConnected }
+            ?.map { it.serverId }
+            ?.sorted()
+            .orEmpty()
+    }
 
     var searchQuery by remember { mutableStateOf("") }
-    var sortMode by remember { mutableStateOf(WorkspaceSortMode.RECENT) }
-    var collapsedGroups by remember { mutableStateOf(setOf<String>()) }
-    var forkOnly by remember { mutableStateOf(false) }
-    var showDirectoryPicker by remember { mutableStateOf(false) }
-    var isCreating by remember { mutableStateOf(false) }
-
-    val derived = remember(snapshot, searchQuery, serverId, sortMode, forkOnly) {
+    var showSortMenu by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var hasLoadedInitialSessions by remember { mutableStateOf(false) }
+    var pendingActiveSessionScroll by remember { mutableStateOf(false) }
+    val derived = remember(
+        snapshot,
+        searchQuery,
+        serverId,
+        sessionsUiState.sortMode,
+        sessionsUiState.showOnlyForks,
+    ) {
         val summaries = snapshot?.sessionSummaries ?: emptyList()
         SessionsDerivation.derive(
             summaries = summaries,
             serverFilter = serverId,
             searchQuery = searchQuery,
-            sortMode = sortMode,
-            forkOnly = forkOnly,
+            sortMode = sessionsUiState.sortMode,
+            forkOnly = sessionsUiState.showOnlyForks,
         )
     }
 
     val listState = rememberLazyListState()
 
-    // C3: Auto-scroll to active session
-    LaunchedEffect(Unit) {
-        val activeKey = snapshot?.activeThread ?: return@LaunchedEffect
-        var flatIndex = 0
-        for (group in derived.groups) {
-            flatIndex++ // group header
-            val flatNodes = flattenNodes(group.nodes)
-            val matchIndex = flatNodes.indexOfFirst {
-                it.summary.key.serverId == activeKey.serverId &&
-                    it.summary.key.threadId == activeKey.threadId
-            }
-            if (matchIndex >= 0) {
-                listState.scrollToItem(flatIndex + matchIndex)
-                break
-            }
-            flatIndex += flatNodes.size
+    fun scheduleActiveSessionScrollIfNeeded() {
+        if (snapshot?.activeThread != null) {
+            pendingActiveSessionScroll = true
         }
+    }
+
+    suspend fun scrollToActiveSessionIfNeeded() {
+        val activeKey = snapshot?.activeThread ?: return
+        if (!pendingActiveSessionScroll) return
+
+        val activeThread = derived.filteredThreads.firstOrNull { it.key == activeKey } ?: run {
+            pendingActiveSessionScroll = false
+            return
+        }
+
+        val activeGroupKey = derived.workspaceGroupKeyByThreadKey[activeKey]
+            ?: SessionsDerivation.workspaceGroupKey(activeThread)
+        if (activeGroupKey in sessionsUiState.collapsedWorkspaceGroupKeys) {
+            sessionsUiState.expandWorkspaceGroup(activeGroupKey)
+            return
+        }
+
+        val collapsedAncestor = ancestorThreadKeys(activeKey, derived.parentByKey)
+            .asReversed()
+            .firstOrNull { it in sessionsUiState.collapsedSessionNodeKeys }
+        if (collapsedAncestor != null) {
+            sessionsUiState.expandSessionNode(collapsedAncestor)
+            return
+        }
+
+        val flatIndex = flatListIndexForThread(
+            groups = derived.groups,
+            activeKey = activeKey,
+            collapsedWorkspaceGroupKeys = sessionsUiState.collapsedWorkspaceGroupKeys,
+            collapsedSessionNodeKeys = sessionsUiState.collapsedSessionNodeKeys,
+        ) ?: run {
+            pendingActiveSessionScroll = false
+            return
+        }
+
+        pendingActiveSessionScroll = false
+        listState.scrollToItem(flatIndex)
+    }
+
+    suspend fun loadSessions(force: Boolean = false) {
+        if (isLoading) return
+        if (!force && hasLoadedInitialSessions) return
+        if (connectedServerIds.isEmpty()) {
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        try {
+            appModel.refreshSessions(connectedServerIds)
+            hasLoadedInitialSessions = true
+        } catch (_: Exception) {
+        } finally {
+            isLoading = false
+        }
+    }
+
+    LaunchedEffect(connectedServerIds) {
+        if (connectedServerIds.isEmpty()) {
+            isLoading = false
+            return@LaunchedEffect
+        }
+        loadSessions(force = hasLoadedInitialSessions)
+        scheduleActiveSessionScrollIfNeeded()
+    }
+
+    LaunchedEffect(snapshot?.activeThread) {
+        scheduleActiveSessionScrollIfNeeded()
+    }
+
+    LaunchedEffect(derived.workspaceGroupKeys) {
+        sessionsUiState.pruneWorkspaceGroupKeys(derived.workspaceGroupKeys.toSet())
+    }
+
+    LaunchedEffect(derived.allThreadKeys) {
+        sessionsUiState.pruneSessionNodeKeys(derived.allThreadKeys.toSet())
+    }
+
+    LaunchedEffect(
+        pendingActiveSessionScroll,
+        derived.filteredThreadKeys,
+        sessionsUiState.collapsedWorkspaceGroupKeys,
+        sessionsUiState.collapsedSessionNodeKeys,
+    ) {
+        scrollToActiveSessionIfNeeded()
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -148,6 +233,30 @@ fun SessionsScreen(
                 color = LitterTheme.textMuted,
                 fontSize = 12.sp,
             )
+            IconButton(
+                onClick = { scope.launch { loadSessions(force = true) } },
+                enabled = !isLoading && connectedServerIds.isNotEmpty(),
+                modifier = Modifier.size(32.dp),
+            ) {
+                if (isLoading && hasLoadedInitialSessions) {
+                    CircularProgressIndicator(
+                        color = LitterTheme.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp),
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Refresh sessions",
+                        tint = if (connectedServerIds.isEmpty()) {
+                            LitterTheme.textMuted
+                        } else {
+                            LitterTheme.accent
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
             if (onInfo != null) {
                 IconButton(onClick = onInfo, modifier = Modifier.size(32.dp)) {
                     Icon(
@@ -162,31 +271,20 @@ fun SessionsScreen(
 
         if (serverId != null) {
             Button(
-                onClick = { showDirectoryPicker = true },
-                enabled = !isCreating,
+                onClick = { onNewSession?.invoke() },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = LitterTheme.accent,
                     contentColor = Color.Black,
-                    disabledContainerColor = LitterTheme.accent.copy(alpha = 0.55f),
-                    disabledContentColor = Color.Black,
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
             ) {
-                if (isCreating) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Color.Black,
-                    )
-                } else {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
                 Spacer(Modifier.width(6.dp))
                 Text("New Session")
             }
@@ -218,14 +316,37 @@ fun SessionsScreen(
                 )
             }
             FilterChip(
-                selected = forkOnly,
-                onClick = { forkOnly = !forkOnly },
+                selected = sessionsUiState.showOnlyForks,
+                onClick = { sessionsUiState.showOnlyForks = !sessionsUiState.showOnlyForks },
                 label = { Text("Forks", fontSize = 11.sp) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = LitterTheme.accent,
                     selectedLabelColor = Color.Black,
                 ),
             )
+            Box {
+                FilterChip(
+                    selected = sessionsUiState.sortMode != WorkspaceSortMode.RECENT,
+                    onClick = { showSortMenu = true },
+                    label = { Text(sessionsUiState.sortMode.title, fontSize = 11.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = LitterTheme.accent,
+                        selectedLabelColor = Color.Black,
+                    ),
+                )
+                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                    WorkspaceSortMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.title) },
+                            onClick = {
+                                sessionsUiState.sortMode = mode
+                                showSortMenu = false
+                                scheduleActiveSessionScrollIfNeeded()
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         // Session list
@@ -236,8 +357,8 @@ fun SessionsScreen(
                 .padding(horizontal = 16.dp),
         ) {
             for (group in derived.groups) {
-                val groupKey = "${group.serverId}|${group.cwd}"
-                val isCollapsed = groupKey in collapsedGroups
+                val groupKey = SessionsDerivation.workspaceGroupKey(group.serverId, group.cwd)
+                val isCollapsed = groupKey in sessionsUiState.collapsedWorkspaceGroupKeys
 
                 // Group header
                 item(key = "header-$groupKey") {
@@ -246,11 +367,7 @@ fun SessionsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                collapsedGroups = if (isCollapsed) {
-                                    collapsedGroups - groupKey
-                                } else {
-                                    collapsedGroups + groupKey
-                                }
+                                sessionsUiState.toggleWorkspaceGroup(groupKey)
                             }
                             .padding(vertical = 8.dp),
                     ) {
@@ -279,12 +396,23 @@ fun SessionsScreen(
                 // Session nodes (if expanded)
                 if (!isCollapsed) {
                     items(
-                        items = flattenNodes(group.nodes),
+                        items = visibleSessionRows(group.nodes, sessionsUiState.collapsedSessionNodeKeys),
                         key = { "${it.summary.key.serverId}/${it.summary.key.threadId}" },
                     ) { node ->
                         SessionNodeRow(
                             node = node,
-                            onClick = { onOpenConversation(node.summary.key) },
+                            hasChildren = node.children.isNotEmpty(),
+                            isCollapsed = node.summary.key in sessionsUiState.collapsedSessionNodeKeys,
+                            onToggleCollapse = {
+                                if (node.children.isNotEmpty()) {
+                                    sessionsUiState.toggleSessionNode(node.summary.key)
+                                    scheduleActiveSessionScrollIfNeeded()
+                                }
+                            },
+                            onClick = {
+                                appModel.launchState.updateCurrentCwd(node.summary.cwd)
+                                onOpenConversation(node.summary.key)
+                            },
                         )
                     }
                 }
@@ -293,48 +421,15 @@ fun SessionsScreen(
             item { Spacer(Modifier.height(32.dp)) }
         }
     }
-
-    if (showDirectoryPicker && serverId != null) {
-        ModalBottomSheet(
-            onDismissRequest = { showDirectoryPicker = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = LitterTheme.background,
-        ) {
-            DirectoryPickerSheet(
-                serverId = serverId,
-                onSelect = { cwd ->
-                    showDirectoryPicker = false
-                    scope.launch {
-                        isCreating = true
-                        try {
-                            val config = AppThreadLaunchConfig()
-                            val resp = appModel.rpc.threadStart(
-                                serverId,
-                                config.toThreadStartParams(cwd),
-                            )
-                            val key = ThreadKey(
-                                serverId = serverId,
-                                threadId = resp.thread.id,
-                            )
-                            appModel.store.setActiveThread(key)
-                            appModel.refreshSnapshot()
-                            onOpenConversation(key)
-                        } catch (_: Exception) {
-                        } finally {
-                            isCreating = false
-                        }
-                    }
-                },
-                onDismiss = { showDirectoryPicker = false },
-            )
-        }
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionNodeRow(
     node: SessionTreeNode,
+    hasChildren: Boolean,
+    isCollapsed: Boolean,
+    onToggleCollapse: () -> Unit,
     onClick: () -> Unit,
 ) {
     val appModel = LocalAppModel.current
@@ -357,6 +452,29 @@ private fun SessionNodeRow(
                 .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .let { modifier ->
+                        if (hasChildren) {
+                            modifier.clickable(onClick = onToggleCollapse)
+                        } else {
+                            modifier
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (hasChildren) {
+                    Icon(
+                        if (isCollapsed) Icons.Default.ChevronRight else Icons.Default.ExpandMore,
+                        contentDescription = if (isCollapsed) "Expand session children" else "Collapse session children",
+                        tint = LitterTheme.textMuted,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+
             // Active turn indicator
             if (summary.hasActiveTurn) {
                 Box(
@@ -479,13 +597,55 @@ private fun SessionNodeRow(
     Spacer(Modifier.height(4.dp))
 }
 
-/** Flatten tree nodes to a list for LazyColumn rendering. */
-private fun flattenNodes(nodes: List<SessionTreeNode>): List<SessionTreeNode> {
+private fun visibleSessionRows(
+    nodes: List<SessionTreeNode>,
+    collapsedSessionNodeKeys: Set<ThreadKey>,
+): List<SessionTreeNode> {
     val result = mutableListOf<SessionTreeNode>()
     fun walk(node: SessionTreeNode) {
         result.add(node)
-        node.children.forEach { walk(it) }
+        if (node.summary.key !in collapsedSessionNodeKeys) {
+            node.children.forEach { walk(it) }
+        }
     }
     nodes.forEach { walk(it) }
     return result
+}
+
+private fun flatListIndexForThread(
+    groups: List<WorkspaceSessionGroup>,
+    activeKey: ThreadKey,
+    collapsedWorkspaceGroupKeys: Set<String>,
+    collapsedSessionNodeKeys: Set<ThreadKey>,
+): Int? {
+    var flatIndex = 0
+    for (group in groups) {
+        val groupKey = SessionsDerivation.workspaceGroupKey(group.serverId, group.cwd)
+        flatIndex += 1
+        if (groupKey in collapsedWorkspaceGroupKeys) {
+            continue
+        }
+
+        val visibleNodes = visibleSessionRows(group.nodes, collapsedSessionNodeKeys)
+        val matchIndex = visibleNodes.indexOfFirst { it.summary.key == activeKey }
+        if (matchIndex >= 0) {
+            return flatIndex + matchIndex
+        }
+        flatIndex += visibleNodes.size
+    }
+    return null
+}
+
+private fun ancestorThreadKeys(
+    key: ThreadKey,
+    parentByKey: Map<ThreadKey, uniffi.codex_mobile_client.AppSessionSummary>,
+): List<ThreadKey> {
+    val ancestors = mutableListOf<ThreadKey>()
+    val visited = mutableSetOf<ThreadKey>()
+    var cursor = parentByKey[key]
+    while (cursor != null && visited.add(cursor.key)) {
+        ancestors += cursor.key
+        cursor = parentByKey[cursor.key]
+    }
+    return ancestors
 }

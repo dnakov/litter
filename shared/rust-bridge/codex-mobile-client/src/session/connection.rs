@@ -525,7 +525,7 @@ impl ServerSession {
             feedback,
             config_warnings: Vec::new(),
             session_source,
-            enable_codex_api_key_env: false,
+            enable_codex_api_key_env: true,
             initialize: InitializeParams {
                 client_info: ClientInfo {
                     name: "Litter".to_string(),
@@ -669,160 +669,160 @@ impl ServerSession {
         let worker_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    command = command_rx.recv() => {
-                        let Some(command) = command else { break; };
-                        match command {
-                            SessionCommand::Request { request, response_tx } => {
-                                let request_debug = format!("{request:?}");
-                                info!(
-                                    "remote request start url={} request={}",
-                                    reconnect_url,
-                                    request_debug
-                                );
-let request_retry = request.clone();
-                                let mut result = match client.request(request).await {
-                                    Ok(Ok(value)) => Ok(value),
-                                    Ok(Err(error)) => Err(RpcError::Server {
-                                        code: error.code,
-                                        message: error.message,
-                                    }),
-                                    Err(e) => Err(RpcError::Transport(
-                                        TransportError::SendFailed(e.to_string()),
-                                    )),
-                                };
-                                match &result {
-                                    Ok(value) => {
-                                        info!(
-                                            "remote request success url={} response={}",
-                                            reconnect_url,
-                                            value
-                                        );
-}
-                                    Err(error) => {
-                                        warn!(
-                                            "remote request error url={} error={} request={}",
-                                            reconnect_url,
-                                            error,
-                                            request_debug
-                                        );
-}
-                                }
-                                if matches!(result, Err(RpcError::Transport(_)))
-                                    && reconnect_remote_client(
-                                        &mut client,
-                                        &reconnect_args,
-                                        &reconnect_url,
-                                        &health_tx_clone,
-                                    )
-                                    .await
-                                {
-                                    result = match client.request(request_retry).await {
-                                        Ok(Ok(value)) => Ok(value),
-                                        Ok(Err(error)) => Err(RpcError::Server {
-                                            code: error.code,
-                                            message: error.message,
-                                        }),
-                                        Err(e) => Err(RpcError::Transport(
-                                            TransportError::SendFailed(e.to_string()),
-                                        )),
-                                    };
-                                    match &result {
-                                        Ok(value) => {
-                                            info!(
-                                                "remote request retry success url={} response={}",
-                                                reconnect_url,
-                                                value
-                                            );
-}
-                                        Err(error) => {
-                                            warn!(
-                                                "remote request retry error url={} error={} request={}",
-                                                reconnect_url,
-                                                error,
-                                                request_debug
-                                            );
-}
+                                    command = command_rx.recv() => {
+                                        let Some(command) = command else { break; };
+                                        match command {
+                                            SessionCommand::Request { request, response_tx } => {
+                                                let request_debug = format!("{request:?}");
+                                                info!(
+                                                    "remote request start url={} request={}",
+                                                    reconnect_url,
+                                                    request_debug
+                                                );
+                let request_retry = request.clone();
+                                                let mut result = match client.request(request).await {
+                                                    Ok(Ok(value)) => Ok(value),
+                                                    Ok(Err(error)) => Err(RpcError::Server {
+                                                        code: error.code,
+                                                        message: error.message,
+                                                    }),
+                                                    Err(e) => Err(RpcError::Transport(
+                                                        TransportError::SendFailed(e.to_string()),
+                                                    )),
+                                                };
+                                                match &result {
+                                                    Ok(value) => {
+                                                        info!(
+                                                            "remote request success url={} response={}",
+                                                            reconnect_url,
+                                                            value
+                                                        );
+                }
+                                                    Err(error) => {
+                                                        warn!(
+                                                            "remote request error url={} error={} request={}",
+                                                            reconnect_url,
+                                                            error,
+                                                            request_debug
+                                                        );
+                }
+                                                }
+                                                if matches!(result, Err(RpcError::Transport(_)))
+                                                    && reconnect_remote_client(
+                                                        &mut client,
+                                                        &reconnect_args,
+                                                        &reconnect_url,
+                                                        &health_tx_clone,
+                                                    )
+                                                    .await
+                                                {
+                                                    result = match client.request(request_retry).await {
+                                                        Ok(Ok(value)) => Ok(value),
+                                                        Ok(Err(error)) => Err(RpcError::Server {
+                                                            code: error.code,
+                                                            message: error.message,
+                                                        }),
+                                                        Err(e) => Err(RpcError::Transport(
+                                                            TransportError::SendFailed(e.to_string()),
+                                                        )),
+                                                    };
+                                                    match &result {
+                                                        Ok(value) => {
+                                                            info!(
+                                                                "remote request retry success url={} response={}",
+                                                                reconnect_url,
+                                                                value
+                                                            );
+                }
+                                                        Err(error) => {
+                                                            warn!(
+                                                                "remote request retry error url={} error={} request={}",
+                                                                reconnect_url,
+                                                                error,
+                                                                request_debug
+                                                            );
+                }
+                                                    }
+                                                }
+                                                let _ = response_tx.send(result);
+                                            }
+                                            SessionCommand::Notify { notification, response_tx } => {
+                                                let result = client
+                                                    .notify(notification)
+                                                    .await
+                                                    .map_err(|e| {
+                                                        RpcError::Transport(TransportError::SendFailed(
+                                                            e.to_string(),
+                                                        ))
+                                                    });
+                                                let _ = response_tx.send(result);
+                                            }
+                                            SessionCommand::Resolve { request_id, result, response_tx } => {
+                                                let res = client
+                                                    .resolve_server_request(request_id, result)
+                                                    .await
+                                                    .map_err(|e| {
+                                                        RpcError::Transport(TransportError::SendFailed(
+                                                            e.to_string(),
+                                                        ))
+                                                    });
+                                                let _ = response_tx.send(res);
+                                            }
+                                            SessionCommand::Reject { request_id, error, response_tx } => {
+                                                let res = client
+                                                    .reject_server_request(request_id, error)
+                                                    .await
+                                                    .map_err(|e| {
+                                                        RpcError::Transport(TransportError::SendFailed(
+                                                            e.to_string(),
+                                                        ))
+                                                    });
+                                                let _ = response_tx.send(res);
+                                            }
+                                            SessionCommand::Shutdown => {
+                                                let _ = client.shutdown().await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    event = client.next_event() => {
+                                        let Some(event) = event else {
+                                            warn!("remote event stream ended for {}", reconnect_url);
+                append_android_debug_log(&format!(
+                                                "event_stream_ended url={}",
+                                                reconnect_url
+                                            ));
+                                            if reconnect_remote_client(
+                                                &mut client,
+                                                &reconnect_args,
+                                                &reconnect_url,
+                                                &health_tx_clone,
+                                            )
+                                            .await {
+                                                continue;
+                                            }
+                                            break;
+                                        };
+                                        if let AppServerEvent::Disconnected { message } = &event {
+                                            warn!("remote session disconnected for {}: {}", reconnect_url, message);
+                append_android_debug_log(&format!(
+                                                "event_disconnected url={} message={}",
+                                                reconnect_url, message
+                                            ));
+                                            if reconnect_remote_client(
+                                                &mut client,
+                                                &reconnect_args,
+                                                &reconnect_url,
+                                                &health_tx_clone,
+                                            )
+                                            .await {
+                                                continue;
+                                            }
+                                            break;
+                                        }
+                                        route_app_server_event(&evt_tx, &health_tx_clone, &event);
                                     }
                                 }
-                                let _ = response_tx.send(result);
-                            }
-                            SessionCommand::Notify { notification, response_tx } => {
-                                let result = client
-                                    .notify(notification)
-                                    .await
-                                    .map_err(|e| {
-                                        RpcError::Transport(TransportError::SendFailed(
-                                            e.to_string(),
-                                        ))
-                                    });
-                                let _ = response_tx.send(result);
-                            }
-                            SessionCommand::Resolve { request_id, result, response_tx } => {
-                                let res = client
-                                    .resolve_server_request(request_id, result)
-                                    .await
-                                    .map_err(|e| {
-                                        RpcError::Transport(TransportError::SendFailed(
-                                            e.to_string(),
-                                        ))
-                                    });
-                                let _ = response_tx.send(res);
-                            }
-                            SessionCommand::Reject { request_id, error, response_tx } => {
-                                let res = client
-                                    .reject_server_request(request_id, error)
-                                    .await
-                                    .map_err(|e| {
-                                        RpcError::Transport(TransportError::SendFailed(
-                                            e.to_string(),
-                                        ))
-                                    });
-                                let _ = response_tx.send(res);
-                            }
-                            SessionCommand::Shutdown => {
-                                let _ = client.shutdown().await;
-                                break;
-                            }
-                        }
-                    }
-                    event = client.next_event() => {
-                        let Some(event) = event else {
-                            warn!("remote event stream ended for {}", reconnect_url);
-append_android_debug_log(&format!(
-                                "event_stream_ended url={}",
-                                reconnect_url
-                            ));
-                            if reconnect_remote_client(
-                                &mut client,
-                                &reconnect_args,
-                                &reconnect_url,
-                                &health_tx_clone,
-                            )
-                            .await {
-                                continue;
-                            }
-                            break;
-                        };
-                        if let AppServerEvent::Disconnected { message } = &event {
-                            warn!("remote session disconnected for {}: {}", reconnect_url, message);
-append_android_debug_log(&format!(
-                                "event_disconnected url={} message={}",
-                                reconnect_url, message
-                            ));
-                            if reconnect_remote_client(
-                                &mut client,
-                                &reconnect_args,
-                                &reconnect_url,
-                                &health_tx_clone,
-                            )
-                            .await {
-                                continue;
-                            }
-                            break;
-                        }
-                        route_app_server_event(&evt_tx, &health_tx_clone, &event);
-                    }
-                }
             }
             debug!("remote session worker exited");
         });
@@ -1063,7 +1063,7 @@ async fn reconnect_remote_client(
             "remote reconnect start url={} attempt={}/{}",
             websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
         );
-let _ = health_tx.send(ConnectionHealth::Connecting {
+        let _ = health_tx.send(ConnectionHealth::Connecting {
             attempt,
             max_attempts: REMOTE_RECONNECT_MAX_ATTEMPTS,
         });
@@ -1075,7 +1075,7 @@ let _ = health_tx.send(ConnectionHealth::Connecting {
                     "remote server session reconnected: {} (attempt {attempt}/{})",
                     websocket_url, REMOTE_RECONNECT_MAX_ATTEMPTS
                 );
-append_android_debug_log(&format!(
+                append_android_debug_log(&format!(
                     "reconnect_success url={} attempt={}/{}",
                     websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS
                 ));
@@ -1086,7 +1086,7 @@ append_android_debug_log(&format!(
                     "remote server reconnect failed: {} (attempt {attempt}/{}) - {}",
                     websocket_url, REMOTE_RECONNECT_MAX_ATTEMPTS, error
                 );
-append_android_debug_log(&format!(
+                append_android_debug_log(&format!(
                     "reconnect_failed url={} attempt={}/{} error={}",
                     websocket_url, attempt, REMOTE_RECONNECT_MAX_ATTEMPTS, error
                 ));
@@ -1113,11 +1113,11 @@ fn route_app_server_event(
     match event {
         AppServerEvent::ServerNotification(notification) => {
             info!("remote event notification {:?}", notification);
-let _ = event_tx.send(ServerEvent::Notification(notification.clone()));
+            let _ = event_tx.send(ServerEvent::Notification(notification.clone()));
         }
         AppServerEvent::ServerRequest(request) => {
             info!("remote event server request {:?}", request);
-append_android_debug_log(&format!("server_request={request:?}"));
+            append_android_debug_log(&format!("server_request={request:?}"));
             let _ = event_tx.send(ServerEvent::Request(request.clone()));
         }
         AppServerEvent::Lagged { skipped } => {

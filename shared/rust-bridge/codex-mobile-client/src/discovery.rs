@@ -331,11 +331,8 @@ impl DiscoveryService {
         // Emit intermediate LAN progress until all sources finish.
         loop {
             // Poll the JoinSet with a short timeout so we can emit LAN progress.
-            let result = tokio::time::timeout(
-                Duration::from_millis(250),
-                join_set.join_next(),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(Duration::from_millis(250), join_set.join_next()).await;
 
             match result {
                 Ok(Some(Ok((source, servers)))) => {
@@ -535,7 +532,8 @@ impl DiscoveryService {
 
     /// LAN subnet probe: detect local IP, scan /24 subnet in parallel.
     async fn scan_lan_probe(&self, local_ipv4_hint: Option<Ipv4Addr>) -> Vec<DiscoveredServer> {
-        self.scan_lan_probe_with_progress(local_ipv4_hint, None).await
+        self.scan_lan_probe_with_progress(local_ipv4_hint, None)
+            .await
     }
 
     async fn scan_lan_probe_with_progress(
@@ -584,12 +582,15 @@ impl DiscoveryService {
                 if reachable_ports.is_empty() {
                     return None;
                 }
-                Some(server_from_reachable_ports(
-                    &host_str,
-                    &reachable_ports,
-                    DiscoverySource::LanProbe,
-                    timeout,
-                ).await)
+                Some(
+                    server_from_reachable_ports(
+                        &host_str,
+                        &reachable_ports,
+                        DiscoverySource::LanProbe,
+                        timeout,
+                    )
+                    .await,
+                )
             }));
         }
 
@@ -642,12 +643,11 @@ impl DiscoveryService {
                     &reachable_ports,
                     DiscoverySource::Tailscale,
                     timeout,
-                ).await;
+                )
+                .await;
                 server.display_name = display;
                 if !hostname.is_empty() {
-                    server
-                        .metadata
-                        .insert("hostname".to_string(), hostname);
+                    server.metadata.insert("hostname".to_string(), hostname);
                 }
                 Some(server)
             }));
@@ -747,8 +747,7 @@ impl DiscoveryService {
                     .filter(|&p| p != SSH_PORT)
                     .collect();
                 if let Some(port) =
-                    first_reachable_port(&host, &codex_only_ports, self.config.probe_timeout)
-                        .await
+                    first_reachable_port(&host, &codex_only_ports, self.config.probe_timeout).await
                 {
                     codex_port = Some(port);
                     reachable = true;
@@ -762,9 +761,7 @@ impl DiscoveryService {
             let mut metadata = seed.txt;
             metadata.insert("service_type".to_string(), seed.service_type);
             if let Some(sp) = ssh_port {
-                if let Some(banner) =
-                    grab_ssh_banner(&host, sp, self.config.probe_timeout).await
-                {
+                if let Some(banner) = grab_ssh_banner(&host, sp, self.config.probe_timeout).await {
                     if let Some(os) = parse_ssh_banner_os(&banner) {
                         metadata.insert("os".to_string(), os);
                     }
@@ -823,12 +820,15 @@ impl DiscoveryService {
                 if reachable_ports.is_empty() {
                     return None;
                 }
-                Some(server_from_reachable_ports(
-                    &ip,
-                    &reachable_ports,
-                    DiscoverySource::ArpScan,
-                    timeout,
-                ).await)
+                Some(
+                    server_from_reachable_ports(
+                        &ip,
+                        &reachable_ports,
+                        DiscoverySource::ArpScan,
+                        timeout,
+                    )
+                    .await,
+                )
             }));
         }
 

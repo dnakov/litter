@@ -21,10 +21,7 @@ impl PendingRequests {
 
     /// Register a new pending request. Returns a receiver that will be resolved
     /// when the response arrives.
-    pub fn insert(
-        &self,
-        request_id: String,
-    ) -> oneshot::Receiver<Result<Response, IpcError>> {
+    pub fn insert(&self, request_id: String) -> oneshot::Receiver<Result<Response, IpcError>> {
         let (tx, rx) = oneshot::channel();
         self.inner.lock().unwrap().insert(request_id, tx);
         rx

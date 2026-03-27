@@ -49,6 +49,7 @@ final class AppLifecycleController {
                             host: "127.0.0.1",
                             port: 0
                         )
+                        await appModel.restoreStoredLocalChatGPTAuth(serverId: server.id)
                     case .remote(let host, let port):
                         _ = try await appModel.serverBridge.connectRemoteServer(
                             serverId: server.id,

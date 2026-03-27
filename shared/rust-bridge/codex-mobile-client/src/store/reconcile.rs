@@ -27,7 +27,7 @@ impl MobileClient {
                 wire_method,
                 server_id
             );
-}
+        }
         match wire_method {
             "thread/start" => {
                 let response = downcast_public_rpc_response::<generated::ThreadStartResponse>(

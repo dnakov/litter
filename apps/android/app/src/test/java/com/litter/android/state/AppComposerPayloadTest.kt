@@ -1,0 +1,65 @@
+package com.litter.android.state
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import uniffi.codex_mobile_client.AbsolutePath
+import uniffi.codex_mobile_client.UserInput
+
+class AppComposerPayloadTest {
+    @Test
+    fun turnStartParamsPrependsTextAndPreservesAdditionalInputs() {
+        val payload =
+            AppComposerPayload(
+                text = "Describe this",
+                additionalInputs =
+                    listOf(
+                        UserInput.Skill(name = "swiftui-pro", path = AbsolutePath("/Users/sigkitten/.codex/skills/swiftui-pro/SKILL.md")),
+                        ComposerImageAttachment(
+                            data = byteArrayOf(0x01, 0x02, 0x03),
+                            mimeType = "image/png",
+                        ).toUserInput(),
+                        UserInput.Mention(name = "helper", path = "app://agent"),
+                    ),
+            )
+
+        val params = payload.toTurnStartParams(threadId = "thread-123")
+
+        assertEquals(4, params.input.size)
+
+        val textInput = params.input[0] as UserInput.Text
+        assertEquals("Describe this", textInput.text)
+
+        val skillInput = params.input[1] as UserInput.Skill
+        assertEquals("swiftui-pro", skillInput.name)
+        assertEquals("/Users/sigkitten/.codex/skills/swiftui-pro/SKILL.md", skillInput.path.value)
+
+        val imageInput = params.input[2] as UserInput.Image
+        assertTrue(imageInput.url.startsWith("data:image/png;base64,"))
+
+        val mentionInput = params.input[3] as UserInput.Mention
+        assertEquals("helper", mentionInput.name)
+        assertEquals("app://agent", mentionInput.path)
+    }
+
+    @Test
+    fun turnStartParamsAllowsAttachmentOnlyPayloads() {
+        val payload =
+            AppComposerPayload(
+                text = "",
+                additionalInputs =
+                    listOf(
+                        ComposerImageAttachment(
+                            data = byteArrayOf(0x0A, 0x0B),
+                            mimeType = "image/jpeg",
+                        ).toUserInput(),
+                    ),
+            )
+
+        val params = payload.toTurnStartParams(threadId = "thread-456")
+
+        assertEquals(1, params.input.size)
+        val imageInput = params.input.single() as UserInput.Image
+        assertTrue(imageInput.url.startsWith("data:image/jpeg;base64,"))
+    }
+}

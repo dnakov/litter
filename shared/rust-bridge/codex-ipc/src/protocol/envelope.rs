@@ -34,10 +34,7 @@ pub enum Response {
         result: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
-    Error {
-        request_id: String,
-        error: String,
-    },
+    Error { request_id: String, error: String },
 }
 
 impl Response {
@@ -106,7 +103,10 @@ mod tests {
     fn roundtrip_success_response_envelope() {
         let json_str = r#"{"type":"response","requestId":"uuid","resultType":"success","method":"thread-follower-start-turn","handledByClientId":"client-id","result":{}}"#;
         let envelope: Envelope = serde_json::from_str(json_str).unwrap();
-        assert!(matches!(envelope, Envelope::Response(Response::Success { .. })));
+        assert!(matches!(
+            envelope,
+            Envelope::Response(Response::Success { .. })
+        ));
         if let Envelope::Response(ref resp) = envelope {
             assert_eq!(resp.request_id(), "uuid");
         }
@@ -120,7 +120,10 @@ mod tests {
     fn roundtrip_error_response_envelope() {
         let json_str = r#"{"type":"response","requestId":"uuid","resultType":"error","error":"no-client-found"}"#;
         let envelope: Envelope = serde_json::from_str(json_str).unwrap();
-        assert!(matches!(envelope, Envelope::Response(Response::Error { .. })));
+        assert!(matches!(
+            envelope,
+            Envelope::Response(Response::Error { .. })
+        ));
         if let Envelope::Response(ref resp) = envelope {
             assert_eq!(resp.request_id(), "uuid");
             if let Response::Error { error, .. } = resp {

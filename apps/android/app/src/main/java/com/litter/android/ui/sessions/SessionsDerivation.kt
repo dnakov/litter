@@ -2,6 +2,7 @@ package com.litter.android.ui.sessions
 
 import com.litter.android.ui.home.HomeDashboardSupport
 import uniffi.codex_mobile_client.AppSessionSummary
+import uniffi.codex_mobile_client.ThreadKey
 
 /**
  * Tree node for session fork relationships.
@@ -28,9 +29,19 @@ data class SessionsDerivedData(
     val groups: List<WorkspaceSessionGroup>,
     val totalCount: Int,
     val filteredCount: Int,
+    val allThreadKeys: List<ThreadKey>,
+    val filteredThreads: List<AppSessionSummary>,
+    val filteredThreadKeys: List<ThreadKey>,
+    val workspaceGroupKeys: List<String>,
+    val workspaceGroupKeyByThreadKey: Map<ThreadKey, String>,
+    val parentByKey: Map<ThreadKey, AppSessionSummary>,
 )
 
-enum class WorkspaceSortMode { RECENT, NAME, DATE }
+enum class WorkspaceSortMode(val title: String) {
+    RECENT("Most Recent"),
+    NAME("Name"),
+    DATE("Date"),
+}
 
 /**
  * Pure functions for deriving session tree structure from flat AppSessionSummary list.
@@ -46,6 +57,7 @@ object SessionsDerivation {
         sortMode: WorkspaceSortMode = WorkspaceSortMode.RECENT,
     ): SessionsDerivedData {
         val totalCount = summaries.size
+        val allThreadKeys = summaries.map { it.key }
 
         // Filter
         var filtered = summaries.toList()
@@ -67,16 +79,20 @@ object SessionsDerivation {
         }
 
         val filteredCount = filtered.size
+        val filteredThreadKeys = filtered.map { it.key }
 
         // Build parent→children map
-        val byThreadId = filtered.associateBy { it.key.threadId }
-        val childrenMap = mutableMapOf<String, MutableList<AppSessionSummary>>()
+        val byThreadKey = filtered.associateBy { it.key.serverId to it.key.threadId }
+        val childrenMap = mutableMapOf<Pair<String, String>, MutableList<AppSessionSummary>>()
         val roots = mutableListOf<AppSessionSummary>()
+        val parentByKey = mutableMapOf<ThreadKey, AppSessionSummary>()
 
         for (session in filtered) {
             val parentId = session.parentThreadId
-            if (parentId != null && parentId in byThreadId) {
-                childrenMap.getOrPut(parentId) { mutableListOf() }.add(session)
+            val parentKey = parentId?.let { session.key.serverId to it }
+            if (parentKey != null && parentKey in byThreadKey) {
+                childrenMap.getOrPut(parentKey) { mutableListOf() }.add(session)
+                parentByKey[session.key] = byThreadKey.getValue(parentKey)
             } else {
                 roots.add(session)
             }
@@ -84,7 +100,7 @@ object SessionsDerivation {
 
         // Build trees from roots
         fun buildTree(summary: AppSessionSummary, depth: Int): SessionTreeNode {
-            val children = childrenMap[summary.key.threadId]
+            val children = childrenMap[summary.key.serverId to summary.key.threadId]
                 ?.sortedByDescending { it.updatedAt ?: 0L }
                 ?.map { buildTree(it, depth + 1) }
                 ?: emptyList()
@@ -105,8 +121,16 @@ object SessionsDerivation {
         }
 
         // Build groups
+        val workspaceGroupKeyByThreadKey = mutableMapOf<ThreadKey, String>()
         val groups = groupMap.map { (key, nodes) ->
             val (serverId, serverName, cwd) = groupMeta[key]!!
+            fun register(nodes: List<SessionTreeNode>) {
+                nodes.forEach { node ->
+                    workspaceGroupKeyByThreadKey[node.summary.key] = key
+                    register(node.children)
+                }
+            }
+            register(nodes)
             val latestUpdate = nodes.maxOfLatest()
             WorkspaceSessionGroup(
                 serverId = serverId,
@@ -129,8 +153,20 @@ object SessionsDerivation {
             groups = sortedGroups,
             totalCount = totalCount,
             filteredCount = filteredCount,
+            allThreadKeys = allThreadKeys,
+            filteredThreads = filtered,
+            filteredThreadKeys = filteredThreadKeys,
+            workspaceGroupKeys = sortedGroups.map { workspaceGroupKey(it.serverId, it.cwd) },
+            workspaceGroupKeyByThreadKey = workspaceGroupKeyByThreadKey,
+            parentByKey = parentByKey,
         )
     }
+
+    fun workspaceGroupKey(summary: AppSessionSummary): String =
+        workspaceGroupKey(summary.key.serverId, summary.cwd)
+
+    fun workspaceGroupKey(serverId: String, cwd: String?): String =
+        "$serverId|${normalizedCwd(cwd)}"
 
     fun normalizedCwd(cwd: String?): String {
         if (cwd.isNullOrBlank()) return "~"

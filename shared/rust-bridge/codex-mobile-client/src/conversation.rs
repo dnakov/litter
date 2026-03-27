@@ -50,6 +50,8 @@ pub enum ConversationItemContent {
     DynamicToolCall(DynamicToolCallData),
     MultiAgentAction(MultiAgentActionData),
     WebSearch(WebSearchData),
+    Widget(WidgetData),
+    UserInputResponse(UserInputResponseData),
     Divider(DividerData),
     Error(ErrorData),
     Note(NoteData),
@@ -220,6 +222,43 @@ pub struct WebSearchData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action_json: Option<String>,
     pub is_in_progress: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetData {
+    pub title: String,
+    pub widget_html: String,
+    pub width: f64,
+    pub height: f64,
+    pub status: String,
+    pub is_finalized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputResponseOptionData {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputResponseQuestionData {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    pub answer: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<UserInputResponseOptionData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputResponseData {
+    pub questions: Vec<UserInputResponseQuestionData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -462,6 +501,18 @@ fn convert_thread_item(
             duration_ms,
             ..
         } => {
+            if let Some(widget) =
+                widget_data_from_dynamic_tool_call(tool, arguments, status, content_items.as_deref())
+            {
+                return Some(ConversationItem {
+                    id: item_id.to_string(),
+                    content: ConversationItemContent::Widget(widget),
+                    source_turn_id: source_turn_id.map(String::from),
+                    source_turn_index,
+                    timestamp: None,
+                    is_from_user_turn_boundary: false,
+                });
+            }
             let content_summary = content_items.as_ref().map(|items| {
                 items
                     .iter()
@@ -628,6 +679,63 @@ fn render_user_input(inputs: &[UserInput]) -> (String, Vec<String>) {
         }
     }
     (text_parts.join("\n"), images)
+}
+
+fn widget_data_from_dynamic_tool_call(
+    tool: &str,
+    arguments: &serde_json::Value,
+    status: &DynamicToolCallStatus,
+    content_items: Option<&[DynamicToolCallOutputContentItem]>,
+) -> Option<WidgetData> {
+    if !tool.eq_ignore_ascii_case("show_widget") {
+        return None;
+    }
+
+    let status_label = format_dynamic_status(status);
+    let is_finalized = !matches!(status, DynamicToolCallStatus::InProgress);
+    let object = arguments.as_object()?;
+    let widget_html = object
+        .get("widget_code")
+        .or_else(|| object.get("widgetCode"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            content_items.and_then(|items| {
+                items.iter().find_map(|item| match item {
+                    DynamicToolCallOutputContentItem::InputText { text } => Some(text.clone()),
+                    DynamicToolCallOutputContentItem::InputImage { .. } => None,
+                })
+            })
+        })?;
+    let title = object
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Widget")
+        .to_string();
+    let width = json_number_field(object, &["width"]).unwrap_or(800.0);
+    let height = json_number_field(object, &["height"]).unwrap_or(600.0);
+
+    Some(WidgetData {
+        title,
+        widget_html,
+        width,
+        height,
+        status: status_label,
+        is_finalized,
+    })
+}
+
+fn json_number_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<f64> {
+    keys.iter().find_map(|key| {
+        object.get(*key).and_then(|value| match value {
+            serde_json::Value::Number(number) => number.as_f64(),
+            serde_json::Value::String(text) => text.parse::<f64>().ok(),
+            _ => None,
+        })
+    })
 }
 
 fn convert_command_action(action: &CommandAction) -> CommandActionData {
@@ -1152,7 +1260,12 @@ mod tests {
                 ThreadItem::DynamicToolCall {
                     id: "dyn-1".into(),
                     tool: "show_widget".into(),
-                    arguments: serde_json::json!({ "title": "Widget" }),
+                    arguments: serde_json::json!({
+                        "title": "Widget",
+                        "widget_code": "<svg></svg>",
+                        "width": 640,
+                        "height": 360
+                    }),
                     status: DynamicToolCallStatus::Completed,
                     content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
                         text: "rendered".into(),
@@ -1188,7 +1301,7 @@ mod tests {
         ));
         assert!(matches!(
             items[1].content,
-            ConversationItemContent::DynamicToolCall(_)
+            ConversationItemContent::Widget(_)
         ));
         assert!(matches!(
             items[2].content,

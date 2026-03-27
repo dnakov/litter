@@ -11,6 +11,7 @@ struct RealtimeVoiceScreen: View {
     @State private var apiKey = ""
     @State private var isSavingApiKey = false
     @State private var hasCheckedAuth = false
+    @State private var hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
     @State private var apiKeyError: String?
     @State private var isRetryingAfterAuthSave = false
     private var session: VoiceSessionState? {
@@ -96,17 +97,11 @@ struct RealtimeVoiceScreen: View {
         guard hasCheckedAuth,
               let server,
               server.isLocal,
-              phase == .connecting else {
+              phase == .connecting,
+              !hasStoredApiKey else {
             return false
         }
-        switch server.account {
-        case .chatgpt?:
-            return true
-        case nil:
-            return true
-        case .apiKey?:
-            return false
-        }
+        return true
     }
 
     private var trimmedApiKey: String {
@@ -162,11 +157,13 @@ struct RealtimeVoiceScreen: View {
                 await appModel.refreshSnapshot()
                 await MainActor.run {
                     hasCheckedAuth = true
+                    hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
                     apiKeyError = nil
                 }
             } catch {
                 await MainActor.run {
                     hasCheckedAuth = true
+                    hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
                     apiKeyError = error.localizedDescription
                 }
             }
@@ -299,7 +296,7 @@ struct RealtimeVoiceScreen: View {
                 .font(LitterFont.styled(.headline, weight: .semibold))
                 .foregroundColor(.white)
 
-            Text("Enter your OpenAI API key to enable realtime voice on this device. If you are logged in with ChatGPT, that login stays active and this key is saved alongside it for realtime.")
+            Text("Enter your OpenAI API key for this device. Litter will store it in the local Codex environment as OPENAI_API_KEY.")
                 .font(LitterFont.styled(.caption))
                 .foregroundColor(.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
@@ -340,7 +337,7 @@ struct RealtimeVoiceScreen: View {
     private func saveApiKeyAndRetry() {
         guard !trimmedApiKey.isEmpty, !isSavingApiKey else { return }
         guard server?.isLocal == true else {
-            apiKeyError = "Realtime API keys are only saved on the local server."
+            apiKeyError = "API keys are only saved on the local server."
             return
         }
 
@@ -348,28 +345,27 @@ struct RealtimeVoiceScreen: View {
         apiKeyError = nil
 
         Task {
-            let apiKeySaved: Bool
-            let authError: String?
+            var apiKeySaved = false
+            var authError: String?
             do {
-                _ = try await appModel.rpc.loginAccount(
-                    serverId: threadKey.serverId,
-                    params: .apiKey(apiKey: trimmedApiKey)
-                )
-                _ = try await appModel.rpc.getAccount(
-                    serverId: threadKey.serverId,
-                    params: GetAccountParams(refreshToken: false)
-                )
-                await appModel.refreshSnapshot()
-                if case .apiKey? = appModel.snapshot?.serverSnapshot(for: threadKey.serverId)?.account {
-                    apiKeySaved = true
-                    authError = nil
-                } else {
-                    apiKeySaved = false
-                    authError = "Failed to save API key"
+                try OpenAIApiKeyStore.shared.save(trimmedApiKey)
+                if case .apiKey? = server?.account {
+                    _ = try await appModel.rpc.logoutAccount(serverId: threadKey.serverId)
                 }
+                await voiceRuntime.stopActiveVoiceSession()
+                try await appModel.restartLocalServer()
+                let persisted = OpenAIApiKeyStore.shared.hasStoredKey
+                guard persisted else {
+                    authError = "API key did not persist locally."
+                    throw CancellationError()
+                }
+                apiKeySaved = true
+                authError = nil
             } catch {
                 apiKeySaved = false
-                authError = error.localizedDescription
+                if authError == nil {
+                    authError = error.localizedDescription
+                }
             }
 
             if apiKeySaved {
@@ -392,6 +388,7 @@ struct RealtimeVoiceScreen: View {
                 isSavingApiKey = false
                 hasCheckedAuth = true
                 if apiKeySaved {
+                    hasStoredApiKey = true
                     apiKey = ""
                 }
                 if !apiKeySaved {

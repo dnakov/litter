@@ -24,6 +24,7 @@
 		0E130B9217359464AA4F5CBB /* SessionsDerivation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC90A9241820BC40C754C2F9 /* SessionsDerivation.swift */; };
 		0F0C608E59628780225BF4EB /* MessageContentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC0DA287A546D443E4A5655 /* MessageContentBridge.swift */; };
 		0FA2D55FE17D4AD9A910FB74 /* gruvbox-light-hard.json in Resources */ = {isa = PBXBuildFile; fileRef = 9AF7E00FF3D6A3D37B161855 /* gruvbox-light-hard.json */; };
+		123438277614AD5D2F7CDBC4 /* OpenAIApiKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3374916FC10F81E9D1C0FCE5 /* OpenAIApiKeyStore.swift */; };
 		12DFDF3CB3E5E98FCDBC7B18 /* UniFFICodexClient.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E99E2C5AC63F243A2FB746 /* UniFFICodexClient.generated.swift */; };
 		15378E713092362B622ADF95 /* BerkeleyMono-Bold-Oblique.otf in Resources */ = {isa = PBXBuildFile; fileRef = 3CB07F43FD670F05B9A43C55 /* BerkeleyMono-Bold-Oblique.otf */; };
 		1826E3705168EF9BD2E823A9 /* TipJarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FAF7AE3EEBD36B367083892 /* TipJarView.swift */; };
@@ -359,6 +360,7 @@
 		318F2F8563E91AB97950F5DA /* DirectoryPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryPickerView.swift; sourceTree = "<group>"; };
 		33000D9825376F952524F20C /* ConversationAttachmentSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAttachmentSupport.swift; sourceTree = "<group>"; };
 		33402D8F29D5CAA2DD07ED9F /* ChatGPTOAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGPTOAuthTests.swift; sourceTree = "<group>"; };
+		3374916FC10F81E9D1C0FCE5 /* OpenAIApiKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIApiKeyStore.swift; sourceTree = "<group>"; };
 		33DE469299079F6EDB067A49 /* gruvbox-dark-hard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "gruvbox-dark-hard.json"; sourceTree = "<group>"; };
 		34141C0068C950ECBC391996 /* github-light-default.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "github-light-default.json"; sourceTree = "<group>"; };
 		347FEEBE4E54174740D93E9D /* ConversationAttachmentSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationAttachmentSupportTests.swift; sourceTree = "<group>"; };
@@ -878,6 +880,7 @@
 				7DD7A3A61A3B02E7E5BF0FBD /* LLog.swift */,
 				E2C54AE62D2865D1C7750F7A /* NetworkDiscovery.swift */,
 				CEA3937208B56CDD6E4E7406 /* NetworkMonitor.swift */,
+				3374916FC10F81E9D1C0FCE5 /* OpenAIApiKeyStore.swift */,
 				17B9830779CEF4EA2F95D85E /* PushProxyClient.swift */,
 				4CAFD307068C8BB4C5662367 /* RecentDirectoryStore.swift */,
 				0F4C10A9AB37FCCDDA975381 /* SavedServer.swift */,
@@ -1316,6 +1319,7 @@
 				1AF5B0CFD0F28F0A7E787A04 /* MessageRenderCache.swift in Sources */,
 				FF4D813592AD383AD342CFFB /* NetworkDiscovery.swift in Sources */,
 				7C5976CCE6B23D8E6A8FDB90 /* NetworkMonitor.swift in Sources */,
+				123438277614AD5D2F7CDBC4 /* OpenAIApiKeyStore.swift in Sources */,
 				24B302B9C08601CF5EBAC0E4 /* PreviewSupport.swift in Sources */,
 				EAD20D467654A309CA42FEFA /* PushProxyClient.swift in Sources */,
 				D416C8F96EC0ED100EC5F9FA /* RealtimeVoiceScreen.swift in Sources */,
@@ -1437,6 +1441,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LOG_COLLECTOR_URL = "$(LOG_COLLECTOR_URL)";
 				OTHER_LDFLAGS = "$(inherited) -lc++ -lz -lcodex_mobile_client";
 				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter;
 				SDKROOT = iphoneos;
@@ -1479,6 +1484,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LOG_COLLECTOR_URL = "$(LOG_COLLECTOR_URL)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter;
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = Sources/Litter/Bridge/codex_bridge_objc.h;

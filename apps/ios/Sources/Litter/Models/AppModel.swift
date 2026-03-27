@@ -105,6 +105,40 @@ final class AppModel {
         }
     }
 
+    func restartLocalServer() async throws {
+        let currentLocal = snapshot?.servers.first(where: \.isLocal)
+        let serverId = currentLocal?.serverId ?? "local"
+        let displayName = currentLocal?.displayName ?? "This Device"
+        serverBridge.disconnectServer(serverId: serverId)
+        _ = try await serverBridge.connectLocalServer(
+            serverId: serverId,
+            displayName: displayName,
+            host: "127.0.0.1",
+            port: 0
+        )
+        await restoreStoredLocalChatGPTAuth(serverId: serverId)
+        await refreshSnapshot()
+    }
+
+    func restoreStoredLocalChatGPTAuth(serverId: String) async {
+        guard let tokens = (try? ChatGPTOAuthTokenStore.shared.load()) ?? nil else {
+            return
+        }
+
+        do {
+            _ = try await rpc.loginAccount(
+                serverId: serverId,
+                params: .chatgptAuthTokens(
+                    accessToken: tokens.accessToken,
+                    chatgptAccountId: tokens.accountID,
+                    chatgptPlanType: tokens.planType
+                )
+            )
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func applySnapshot(_ snapshot: AppSnapshotRecord?) {
         self.snapshot = snapshot
         if snapshot != nil {

@@ -24,17 +24,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -56,7 +61,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.litter.android.state.AppThreadLaunchConfig
 import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.contextPercent
 import com.litter.android.state.resolvedModel
@@ -69,6 +73,7 @@ import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppThreadSnapshot
 import uniffi.codex_mobile_client.ThreadKey
+import uniffi.codex_mobile_client.ThreadSetNameParams
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -83,6 +88,8 @@ fun ConversationInfoScreen(
     val appModel = LocalAppModel.current
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
+    var showRenameDialog by remember(threadKey) { mutableStateOf(false) }
+    var renameText by remember(threadKey) { mutableStateOf("") }
 
     val isServerOnly = threadKey == null
     val resolvedServerId = threadKey?.serverId ?: serverId
@@ -161,17 +168,24 @@ fun ConversationInfoScreen(
                             scope.launch {
                                 val t = thread ?: return@launch
                                 val tk = threadKey ?: return@launch
-                                val config = AppThreadLaunchConfig(model = t.model)
-                                val cwd = t.info.cwd ?: "~"
                                 try {
                                     val newKey = appModel.store.forkThreadFromMessage(
-                                        tk, 0u, config.toThreadForkParams(tk.threadId, cwd),
+                                        tk,
+                                        0u,
+                                        appModel.launchState.threadForkParams(
+                                            tk.threadId,
+                                            cwdOverride = t.info.cwd,
+                                        ),
                                     )
                                     appModel.store.setActiveThread(newKey)
                                     appModel.refreshSnapshot()
                                     onBack()
                                 } catch (_: Exception) {}
                             }
+                        },
+                        onRename = {
+                            renameText = thread?.info?.title.orEmpty()
+                            showRenameDialog = true
                         },
                     )
                 }
@@ -247,6 +261,47 @@ fun ConversationInfoScreen(
 
             item { Spacer(Modifier.height(32.dp)) }
         }
+    }
+
+    if (showRenameDialog && threadKey != null) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename Thread") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val trimmed = renameText.trim()
+                    if (trimmed.isEmpty()) return@TextButton
+                    showRenameDialog = false
+                    scope.launch {
+                        try {
+                            appModel.rpc.threadSetName(
+                                threadKey.serverId,
+                                ThreadSetNameParams(
+                                    threadId = threadKey.threadId,
+                                    name = trimmed,
+                                ),
+                            )
+                            appModel.refreshSnapshot()
+                        } catch (_: Exception) {}
+                    }
+                }) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 
@@ -822,6 +877,7 @@ private fun InfoRow(label: String, value: String) {
 private fun ActionButtonsRow(
     onChangeWallpaper: () -> Unit,
     onFork: () -> Unit,
+    onRename: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -836,6 +892,11 @@ private fun ActionButtonsRow(
             icon = Icons.Default.ContentCopy,
             label = "Fork",
             onClick = onFork,
+        )
+        ActionCircleButton(
+            icon = Icons.Default.Edit,
+            label = "Rename",
+            onClick = onRename,
         )
     }
 }

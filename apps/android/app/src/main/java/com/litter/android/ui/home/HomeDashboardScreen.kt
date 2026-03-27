@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -36,6 +37,7 @@ import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -66,7 +68,6 @@ import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
-import com.litter.android.ui.sessions.DirectoryPickerSheet
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppSessionSummary
@@ -77,6 +78,7 @@ import uniffi.codex_mobile_client.ThreadKey
 fun HomeDashboardScreen(
     onOpenConversation: (ThreadKey) -> Unit,
     onOpenSessions: (serverId: String, title: String) -> Unit,
+    onNewSession: () -> Unit,
     onShowDiscovery: () -> Unit,
     onShowSettings: () -> Unit,
     onStartVoice: (() -> Unit)? = null,
@@ -86,11 +88,9 @@ fun HomeDashboardScreen(
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
 
-    // Directory picker state
-    var showDirectoryPicker by remember { mutableStateOf(false) }
-    var pickerServerId by remember { mutableStateOf<String?>(null) }
-    var isCreating by remember { mutableStateOf(false) }
     var showTipJar by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<AppServerSnapshot?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     val snap = snapshot
     val servers = remember(snap) {
@@ -150,28 +150,14 @@ fun HomeDashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Button(
-                    onClick = {
-                        val firstServer = servers.firstOrNull()
-                        if (firstServer != null) {
-                            pickerServerId = firstServer.serverId
-                            showDirectoryPicker = true
-                        }
-                    },
+                    onClick = onNewSession,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = LitterTheme.accent,
                         contentColor = Color.Black,
                     ),
                     modifier = Modifier.weight(1f),
                 ) {
-                    if (isCreating) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = Color.Black,
-                        )
-                    } else {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    }
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("New Session")
                 }
@@ -204,7 +190,10 @@ fun HomeDashboardScreen(
             items(recentSessions, key = { "${it.key.serverId}/${it.key.threadId}" }) { session ->
                 SessionCard(
                     session = session,
-                    onClick = { onOpenConversation(session.key) },
+                    onClick = {
+                        appModel.launchState.updateCurrentCwd(session.cwd)
+                        onOpenConversation(session.key)
+                    },
                     onDelete = {
                         confirmAction = ConfirmAction.ArchiveSession(session)
                     },
@@ -227,6 +216,10 @@ fun HomeDashboardScreen(
                 ServerCard(
                     server = server,
                     onClick = { onOpenSessions(server.serverId, server.displayName) },
+                    onRename = {
+                        renameText = server.displayName
+                        renameTarget = server
+                    },
                     onDisconnect = {
                         confirmAction = ConfirmAction.DisconnectServer(server)
                     },
@@ -319,6 +312,7 @@ fun HomeDashboardScreen(
                             }
                             is ConfirmAction.DisconnectServer -> {
                                 SavedServerStore.remove(context, action.server.serverId)
+                                appModel.sshSessionStore.close(action.server.serverId)
                                 appModel.serverBridge.disconnectServer(action.server.serverId)
                                 appModel.refreshSnapshot()
                             }
@@ -336,44 +330,38 @@ fun HomeDashboardScreen(
             },
         )
     }
-
-    // Directory picker sheet
-    if (showDirectoryPicker && pickerServerId != null) {
-        ModalBottomSheet(
-            onDismissRequest = { showDirectoryPicker = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = LitterTheme.background,
-        ) {
-            DirectoryPickerSheet(
-                serverId = pickerServerId!!,
-                onSelect = { cwd ->
-                    showDirectoryPicker = false
+    renameTarget?.let { server ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Server") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val trimmed = renameText.trim()
+                    if (trimmed.isEmpty()) return@TextButton
                     scope.launch {
-                        isCreating = true
-                        try {
-                            val config = AppThreadLaunchConfig()
-                            val resp = appModel.rpc.threadStart(
-                                pickerServerId!!,
-                                config.toThreadStartParams(cwd),
-                            )
-                            val key = ThreadKey(
-                                serverId = pickerServerId!!,
-                                threadId = resp.thread.id,
-                            )
-                            appModel.store.setActiveThread(key)
-                            appModel.refreshSnapshot()
-                            onOpenConversation(key)
-                        } catch (_: Exception) {
-                        } finally {
-                            isCreating = false
-                        }
+                        SavedServerStore.rename(context, server.serverId, trimmed)
+                        appModel.refreshSnapshot()
                     }
-                },
-                onDismiss = { showDirectoryPicker = false },
-            )
-        }
+                    renameTarget = null
+                }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
-
     if (showTipJar) {
         ModalBottomSheet(
             onDismissRequest = { showTipJar = false },
@@ -467,62 +455,96 @@ private fun SessionCard(
 private fun ServerCard(
     server: AppServerSnapshot,
     onClick: () -> Unit,
+    onRename: (() -> Unit)?,
     onDisconnect: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // Health dot
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(server.statusColor),
-        )
-        Spacer(Modifier.width(10.dp))
+    var showMenu by remember { mutableStateOf(false) }
 
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = server.displayName,
-                color = LitterTheme.textPrimary,
-                fontSize = 14.sp,
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LitterTheme.surface, RoundedCornerShape(10.dp))
+                .clickable(onClick = onClick)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(server.statusColor),
             )
-            Text(
-                text = "${server.host}:${server.port} · ${server.connectionModeLabel}",
-                color = LitterTheme.textSecondary,
-                fontSize = 11.sp,
-            )
-            Text(
-                text = HomeDashboardSupport.maskedAccountLabel(server),
-                color = LitterTheme.textMuted,
-                fontSize = 10.sp,
-            )
+            Spacer(Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = server.displayName,
+                    color = LitterTheme.textPrimary,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    text = "${server.host}:${server.port} · ${server.connectionModeLabel}",
+                    color = LitterTheme.textSecondary,
+                    fontSize = 11.sp,
+                )
+                Text(
+                    text = HomeDashboardSupport.maskedAccountLabel(server),
+                    color = LitterTheme.textMuted,
+                    fontSize = 10.sp,
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (server.isIpcConnected) {
+                    Text(
+                        text = "IPC",
+                        color = LitterTheme.accentStrong,
+                        fontSize = 10.sp,
+                        modifier = Modifier
+                            .background(
+                                LitterTheme.accentStrong.copy(alpha = 0.14f),
+                                RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    text = server.statusLabel,
+                    color = server.statusColor,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.width(4.dp))
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Server actions",
+                        tint = LitterTheme.textSecondary,
+                    )
+                }
+            }
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (server.isIpcConnected) {
-                Text(
-                    text = "IPC",
-                    color = LitterTheme.accentStrong,
-                    fontSize = 10.sp,
-                    modifier = Modifier
-                        .background(
-                            LitterTheme.accentStrong.copy(alpha = 0.14f),
-                            RoundedCornerShape(4.dp),
-                        )
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            if (!server.isLocal && onRename != null) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    onClick = {
+                        showMenu = false
+                        onRename()
+                    },
                 )
-                Spacer(Modifier.width(8.dp))
             }
-            Text(
-                text = server.statusLabel,
-                color = server.statusColor,
-                fontSize = 11.sp,
+            DropdownMenuItem(
+                text = { Text("Disconnect") },
+                onClick = {
+                    showMenu = false
+                    onDisconnect()
+                },
             )
         }
     }

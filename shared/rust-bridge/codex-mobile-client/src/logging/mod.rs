@@ -11,7 +11,7 @@ use arc_swap::ArcSwap;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use mobile_log_shared::StoredLogEvent;
-use reqwest::header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tracing::Subscriber;
@@ -84,7 +84,6 @@ pub struct LogInput {
 pub struct PersistedLogConfig {
     pub enabled: bool,
     pub collector_url: Option<String>,
-    pub bearer_token: Option<String>,
     pub min_level: LogLevelName,
     pub device_id: String,
     pub device_name: Option<String>,
@@ -97,7 +96,6 @@ impl Default for PersistedLogConfig {
         Self {
             enabled: false,
             collector_url: None,
-            bearer_token: None,
             min_level: LogLevelName::Info,
             device_id: Uuid::new_v4().to_string(),
             device_name: None,
@@ -341,7 +339,6 @@ impl LogPipeline {
 
                     if fresh.enabled != current.enabled
                         || fresh.collector_url != current.collector_url
-                        || fresh.bearer_token != current.bearer_token
                         || fresh.min_level != current.min_level
                         || fresh.device_id != current.device_id
                     {
@@ -390,10 +387,19 @@ impl LogPipeline {
         }
 
         next.collector_url = clean_opt(next.collector_url);
-        next.bearer_token = clean_opt(next.bearer_token);
         next.device_name = clean_opt(next.device_name);
         next.app_version = clean_opt(next.app_version);
         next.build = clean_opt(next.build);
+
+        // Env vars override
+        if let Ok(url) = std::env::var("LOG_COLLECTOR_URL") {
+            if !url.is_empty() {
+                next.collector_url = Some(url);
+            }
+        }
+        if next.collector_url.is_some() {
+            next.enabled = true;
+        }
 
         if let Ok(json) = serde_json::to_vec_pretty(&next) {
             let _ = std::fs::write(&self.config_path, json);
@@ -404,6 +410,30 @@ impl LogPipeline {
 
     pub fn log(&self, input: LogInput) {
         let config = self.config.load_full();
+
+        // Debug: write to file so we can verify log() is actually being called
+        let debug_path = self
+            .pending_dir
+            .parent()
+            .map(|p| p.join("_debug_log_calls.txt"));
+        if let Some(ref path) = debug_path {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(
+                    f,
+                    "log() called: enabled={} level={:?} min={:?} msg={}",
+                    config.enabled,
+                    input.level,
+                    config.min_level,
+                    &input.message[..input.message.len().min(80)]
+                );
+            }
+        }
+
         if !config.enabled || input.level < config.min_level {
             return;
         }
@@ -439,7 +469,15 @@ impl LogPipeline {
     }
 
     async fn run_writer(self: Arc<Self>, mut rx: mpsc::Receiver<QueueItem>) {
+        // Debug: confirm writer task started
+        if let Some(spool) = self.pending_dir.parent() {
+            let _ = std::fs::write(
+                spool.join("_debug_writer_started.txt"),
+                format!("writer started at {}\n", now_ms()),
+            );
+        }
         let mut batch = BatchBuffer::default();
+        let mut recv_count: u64 = 0;
         loop {
             let maybe_item = if batch.is_empty() {
                 rx.recv().await
@@ -447,7 +485,30 @@ impl LogPipeline {
                 match tokio::time::timeout(self.options.roll_interval, rx.recv()).await {
                     Ok(item) => item,
                     Err(_) => {
-                        let _ = self.persist_batch(batch.take()).await;
+                        let batch_len = batch.items.len();
+                        if let Some(spool) = self.pending_dir.parent() {
+                            let _ = std::fs::write(
+                                spool.join("_debug_writer_roll.txt"),
+                                format!(
+                                    "roll timeout fired at {} recv_count={} batch_items={}\n",
+                                    now_ms(),
+                                    recv_count,
+                                    batch_len
+                                ),
+                            );
+                        }
+                        let result = self.persist_batch(batch.take()).await;
+                        if let Some(spool) = self.pending_dir.parent() {
+                            let _ = std::fs::write(
+                                spool.join("_debug_persist_result.txt"),
+                                format!(
+                                    "persist_batch result: {:?} items={}\npending_dir={}\n",
+                                    result,
+                                    batch_len,
+                                    self.pending_dir.display()
+                                ),
+                            );
+                        }
                         continue;
                     }
                 }
@@ -462,6 +523,24 @@ impl LogPipeline {
 
             match item {
                 QueueItem::Event(event) => {
+                    recv_count += 1;
+                    if recv_count <= 3 {
+                        if let Some(spool) = self.pending_dir.parent() {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(spool.join("_debug_writer_recv.txt"))
+                            {
+                                let _ = writeln!(
+                                    f,
+                                    "recv #{} msg={}",
+                                    recv_count,
+                                    &event.message[..event.message.len().min(60)]
+                                );
+                            }
+                        }
+                    }
                     if batch.push(event).is_err() {
                         continue;
                     }
@@ -494,8 +573,7 @@ impl LogPipeline {
             let writer = BufWriter::new(file);
             let mut encoder = GzEncoder::new(writer, Compression::default());
             for item in &batch.items {
-                serde_json::to_writer(&mut encoder, item)
-                    .map_err(std::io::Error::other)?;
+                serde_json::to_writer(&mut encoder, item).map_err(std::io::Error::other)?;
                 encoder.write_all(b"\n")?;
             }
             let writer = encoder.finish()?;
@@ -516,7 +594,9 @@ impl LogPipeline {
                 source: "rust".to_string(),
                 subsystem: "logging".to_string(),
                 category: "spool".to_string(),
-                message: format!("deleted {deleted} bytes from pending spool after exceeding disk cap"),
+                message: format!(
+                    "deleted {deleted} bytes from pending spool after exceeding disk cap"
+                ),
                 session_id: None,
                 server_id: None,
                 thread_id: None,
@@ -540,14 +620,25 @@ impl LogPipeline {
 
             match result {
                 Ok(processed) if processed > 0 => {
+                    self.write_upload_status("success", format!("processed={processed}"));
                     attempts = 0;
                     continue;
                 }
                 Ok(_) => {
+                    let config = self.config.load_full();
+                    let detail = if !config.enabled {
+                        ("disabled", "logging disabled".to_string())
+                    } else if config.collector_url.is_none() {
+                        ("disabled", "collector_url missing".to_string())
+                    } else {
+                        ("idle", "no pending uploads".to_string())
+                    };
+                    self.write_upload_status(detail.0, detail.1);
                     attempts = 0;
                     self.upload_notify.notified().await;
                 }
-                Err(_) => {
+                Err(err) => {
+                    self.write_upload_status("error", err);
                     attempts = attempts.saturating_add(1);
                     let backoff = backoff_delay(attempts);
                     tokio::select! {
@@ -567,29 +658,44 @@ impl LogPipeline {
         let Some(base_url) = config.collector_url.as_ref() else {
             return Ok(0);
         };
-        let Some(token) = config.bearer_token.as_ref() else {
-            return Ok(0);
-        };
 
-        let files = pending_batch_paths(&self.pending_dir).await.map_err(|e| e.to_string())?;
+        let files = pending_batch_paths(&self.pending_dir)
+            .await
+            .map_err(|e| e.to_string())?;
         if files.is_empty() {
             return Ok(0);
         }
 
         let mut processed = 0usize;
         for path in files {
-            upload_file(
-                &self.http,
-                &path,
-                base_url,
-                token,
-                &config.device_id,
-            )
-            .await?;
+            upload_file(&self.http, &path, base_url, &config.device_id).await?;
             processed += 1;
         }
 
         Ok(processed)
+    }
+
+    fn write_upload_status(&self, state: &str, detail: String) {
+        let Some(spool_dir) = self.pending_dir.parent() else {
+            return;
+        };
+        let config = self.config.load_full();
+        let pending_count = std::fs::read_dir(&self.pending_dir)
+            .ok()
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or_default();
+        let _ = std::fs::write(
+            spool_dir.join("_debug_upload_status.txt"),
+            format!(
+                "timestamp_ms={}\nstate={}\ndetail={}\ncollector_url={}\ndevice_id={}\npending_count={}\n",
+                now_ms(),
+                state,
+                detail,
+                config.collector_url.as_deref().unwrap_or("<none>"),
+                config.device_id,
+                pending_count,
+            ),
+        );
     }
 }
 
@@ -678,10 +784,22 @@ fn synthetic_event(
 }
 
 fn load_config(path: &Path) -> PersistedLogConfig {
-    std::fs::read(path)
+    let mut config: PersistedLogConfig = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // Env vars override file-based config
+    if let Ok(url) = std::env::var("LOG_COLLECTOR_URL") {
+        if !url.is_empty() {
+            config.collector_url = Some(url);
+        }
+    }
+    if config.collector_url.is_some() {
+        config.enabled = true;
+    }
+
+    config
 }
 
 async fn pending_batch_paths(pending_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -709,7 +827,11 @@ async fn prune_pending_dir(pending_dir: PathBuf, max_pending_bytes: u64) -> std:
                 continue;
             }
             total_size += metadata.len();
-            entries.push((path, metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH), metadata.len()));
+            entries.push((
+                path,
+                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                metadata.len(),
+            ));
         }
 
         if total_size <= max_pending_bytes {
@@ -737,7 +859,6 @@ async fn upload_file(
     http: &reqwest::Client,
     path: &Path,
     base_url: &str,
-    token: &str,
     device_id: &str,
 ) -> Result<(), String> {
     let batch_id = path
@@ -750,14 +871,12 @@ async fn upload_file(
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|err| format!("invalid auth header: {err}"))?,
-    );
     headers.insert("X-Batch-Id", header_value(&batch_id)?);
     headers.insert("X-Device-Id", header_value(device_id)?);
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson"));
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson"),
+    );
     headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
 
     let url = format!("{}/v1/logs", base_url.trim_end_matches('/'));
@@ -770,9 +889,13 @@ async fn upload_file(
         .map_err(|err| format!("upload failed for {batch_id}: {err}"))?;
 
     if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<failed to read response body>".to_string());
         return Err(format!(
-            "collector rejected {batch_id} with status {}",
-            response.status()
+            "collector rejected {batch_id} with status {status}: {body}",
         ));
     }
 
@@ -790,7 +913,8 @@ fn backoff_delay(attempt: u32) -> Duration {
     let capped = attempt.min(6);
     let base = 1u64 << capped;
     let jitter = (attempt as u64 * 137) % 700;
-    Duration::from_secs(base).saturating_add(Duration::from_millis(jitter))
+    Duration::from_secs(base)
+        .saturating_add(Duration::from_millis(jitter))
         .min(DEFAULT_MAX_BACKOFF)
 }
 
@@ -886,7 +1010,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("codex-mobile-log-test-{name}-{}", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("codex-mobile-log-test-{name}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("temp dir");
         path
     }
@@ -905,7 +1030,6 @@ mod tests {
         pipeline.configure(PersistedLogConfig {
             enabled: true,
             collector_url: None,
-            bearer_token: None,
             min_level: LogLevelName::Debug,
             device_id: "device-1".into(),
             device_name: Some("test-device".into()),
@@ -940,7 +1064,6 @@ mod tests {
         let config = PersistedLogConfig {
             enabled: true,
             collector_url: None,
-            bearer_token: None,
             min_level: LogLevelName::Trace,
             device_id: "device-1".into(),
             device_name: Some("phone".into()),

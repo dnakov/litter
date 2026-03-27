@@ -103,7 +103,10 @@ impl AppStore {
         AppSnapshotRecord::try_from(self.inner.app_snapshot()).map_err(ClientError::Serialization)
     }
 
-    pub async fn thread_snapshot(&self, key: ThreadKey) -> Result<Option<AppThreadSnapshot>, ClientError> {
+    pub async fn thread_snapshot(
+        &self,
+        key: ThreadKey,
+    ) -> Result<Option<AppThreadSnapshot>, ClientError> {
         self.inner
             .snapshot_thread(&key)
             .ok()

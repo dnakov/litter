@@ -46,6 +46,9 @@ class VoiceRuntimeController {
 
     companion object {
         val shared: VoiceRuntimeController by lazy { VoiceRuntimeController() }
+        private const val LOCAL_SERVER_ID = "local"
+        private const val VOICE_PREFS_NAME = "litter.voice"
+        private const val PERSISTED_LOCAL_VOICE_THREAD_ID_KEY = "litter.voice.local.thread_id"
         private const val TARGET_SAMPLE_RATE = 24000
         private const val AEC_SAMPLE_RATE = 48000
         private const val INPUT_DECAY_MS = 450L
@@ -92,18 +95,18 @@ class VoiceRuntimeController {
 
     // ── Session lifecycle ────────────────────────────────────────────────────
 
+    suspend fun preparePinnedLocalVoiceThread(
+        appModel: AppModel,
+        cwd: String,
+        model: String? = null,
+    ): ThreadKey? = ensurePinnedLocalVoiceThread(appModel, cwd = cwd, model = model)
+
     suspend fun startPinnedLocalVoiceCall(
         appModel: AppModel, cwd: String, model: String? = null, effort: String? = null,
-    ) {
-        val snap = appModel.snapshot.value ?: return
-        val localServer = snap.servers.firstOrNull { it.isLocal } ?: return
-        val config = AppThreadLaunchConfig(model = model)
-        val threadKey: ThreadKey
-        try {
-            val resp = appModel.rpc.threadStart(localServer.serverId, config.toThreadStartParams(cwd))
-            threadKey = ThreadKey(serverId = localServer.serverId, threadId = resp.thread.id)
-        } catch (_: Exception) { return }
+    ): ThreadKey? {
+        val threadKey = preparePinnedLocalVoiceThread(appModel, cwd = cwd, model = model) ?: return null
         startRealtimeSession(appModel, threadKey)
+        return threadKey
     }
 
     suspend fun startVoiceOnThread(appModel: AppModel, key: ThreadKey) {
@@ -420,6 +423,8 @@ class VoiceRuntimeController {
         }
 
         try {
+            cleanupKnownRealtimeVoiceSessions(appModel, keepThreadKey = threadKey)
+
             // Subscribe BEFORE starting realtime — otherwise we miss the RealtimeStarted event
             android.util.Log.i("VoiceRuntime", "Subscribing to updates first...")
             val subscription = appModel.store.subscribeUpdates()
@@ -459,6 +464,90 @@ class VoiceRuntimeController {
         } catch (e: Exception) {
             android.util.Log.e("VoiceRuntime", "startRealtimeSession failed", e)
             _activeSession.value = _activeSession.value
+        }
+    }
+
+    private suspend fun ensurePinnedLocalVoiceThread(
+        appModel: AppModel,
+        cwd: String,
+        model: String? = null,
+    ): ThreadKey? {
+        val serverId = ensureLocalServerConnected(appModel) ?: return null
+        val launchConfig = appModel.launchState.launchConfig(modelOverride = model)
+
+        persistedLocalVoiceThreadId(appModel)?.let { storedThreadId ->
+            val key = ThreadKey(serverId = serverId, threadId = storedThreadId)
+            try {
+                appModel.rpc.threadResume(
+                    key.serverId,
+                    launchConfig.toThreadResumeParams(
+                        threadId = key.threadId,
+                        cwd = preferredVoiceThreadCwd(appModel, key, fallback = cwd),
+                    ),
+                )
+                appModel.store.setActiveThread(key)
+                appModel.refreshSnapshot()
+                return key
+            } catch (_: Exception) {
+                setPersistedLocalVoiceThreadId(appModel, null)
+            }
+        }
+
+        return try {
+            val response = appModel.rpc.threadStart(
+                serverId,
+                launchConfig.toThreadStartParams(
+                    preferredVoiceThreadCwd(appModel, key = null, fallback = cwd),
+                ),
+            )
+            val key = ThreadKey(serverId = serverId, threadId = response.thread.id)
+            appModel.store.setActiveThread(key)
+            setPersistedLocalVoiceThreadId(appModel, key.threadId)
+            appModel.refreshSnapshot()
+            key
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun ensureLocalServerConnected(appModel: AppModel): String? {
+        appModel.snapshot.value?.servers?.firstOrNull { it.isLocal && it.isConnected }?.let { server ->
+            return server.serverId
+        }
+
+        val currentLocal = appModel.snapshot.value?.servers?.firstOrNull { it.isLocal }
+        val serverId = currentLocal?.serverId ?: LOCAL_SERVER_ID
+        val displayName = currentLocal?.displayName ?: "Local"
+        return try {
+            appModel.serverBridge.connectLocalServer(serverId, displayName, "127.0.0.1", 0u)
+            appModel.restoreStoredLocalChatGptAuth(serverId)
+            appModel.refreshSnapshot()
+            serverId
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun cleanupKnownRealtimeVoiceSessions(
+        appModel: AppModel,
+        keepThreadKey: ThreadKey? = null,
+    ) {
+        val candidates = linkedSetOf<ThreadKey>()
+        _activeSession.value?.threadKey
+            ?.takeIf { it.threadId.isNotBlank() }
+            ?.let(candidates::add)
+        persistedLocalVoiceThreadId(appModel)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { candidates.add(ThreadKey(serverId = LOCAL_SERVER_ID, threadId = it)) }
+
+        for (candidate in candidates) {
+            if (candidate == keepThreadKey) continue
+            runCatching {
+                appModel.rpc.threadRealtimeStop(
+                    candidate.serverId,
+                    ThreadRealtimeStopParams(threadId = candidate.threadId),
+                )
+            }
         }
     }
 
@@ -522,10 +611,9 @@ class VoiceRuntimeController {
         when (action) {
             is uniffi.codex_mobile_client.HandoffAction.StartThread -> {
                 try {
-                    val config = AppThreadLaunchConfig()
                     val resp = appModel.rpc.threadStart(
                         action.targetServerId,
-                        config.toThreadStartParams(action.cwd),
+                        appModel.launchState.threadStartParams(action.cwd),
                     )
                     handoffManager?.uniffiReportThreadCreated(action.handoffId, action.targetServerId, resp.thread.id)
                 } catch (e: Exception) {
@@ -783,6 +871,55 @@ class VoiceRuntimeController {
             samples[i] = buf.getShort().toFloat() / Short.MAX_VALUE
         }
         return samples
+    }
+
+    private fun persistedLocalVoiceThreadId(appModel: AppModel): String? {
+        val stored = voicePrefs(appModel)
+            .getString(PERSISTED_LOCAL_VOICE_THREAD_ID_KEY, null)
+            ?.trim()
+            .orEmpty()
+        return stored.ifEmpty { null }
+    }
+
+    private fun setPersistedLocalVoiceThreadId(appModel: AppModel, threadId: String?) {
+        val trimmed = threadId?.trim().orEmpty()
+        val editor = voicePrefs(appModel).edit()
+        if (trimmed.isEmpty()) {
+            editor.remove(PERSISTED_LOCAL_VOICE_THREAD_ID_KEY)
+        } else {
+            editor.putString(PERSISTED_LOCAL_VOICE_THREAD_ID_KEY, trimmed)
+        }
+        editor.apply()
+    }
+
+    private fun voicePrefs(appModel: AppModel) =
+        appModel.appContext.getSharedPreferences(VOICE_PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun preferredVoiceThreadCwd(
+        appModel: AppModel,
+        key: ThreadKey?,
+        fallback: String,
+    ): String {
+        val existingCwd = key
+            ?.let { threadKey ->
+                appModel.snapshot.value
+                    ?.threads
+                    ?.firstOrNull { it.key == threadKey }
+                    ?.info
+                    ?.cwd
+                    ?.trim()
+            }
+            .orEmpty()
+        if (existingCwd.isNotEmpty()) {
+            return existingCwd
+        }
+
+        val trimmedFallback = fallback.trim()
+        if (trimmedFallback.isNotEmpty()) {
+            return trimmedFallback
+        }
+
+        return appModel.launchState.snapshot.value.currentCwd.trim().ifEmpty { "/" }
     }
 
     // ── Cleanup ──────────────────────────────────────────────────────────────

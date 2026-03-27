@@ -210,6 +210,7 @@ final class VoiceRuntimeController: VoiceActions {
             host: "127.0.0.1",
             port: 0
         )
+        await requireAppModel().restoreStoredLocalChatGPTAuth(serverId: serverId)
         await requireAppModel().refreshSnapshot()
         syncHandoffServers()
         return serverId

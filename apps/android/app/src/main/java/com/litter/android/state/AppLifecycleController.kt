@@ -53,6 +53,7 @@ class AppLifecycleController {
                                 host = server.hostname,
                                 port = server.port.toUShort(),
                             )
+                            appModel.restoreStoredLocalChatGptAuth(server.id)
                         }
                         server.websocketURL != null -> {
                             appModel.serverBridge.connectRemoteUrlServer(

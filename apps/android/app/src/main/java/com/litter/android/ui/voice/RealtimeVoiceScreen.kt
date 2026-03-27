@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.litter.android.state.OpenAIApiKeyStore
 import com.litter.android.state.VoiceRuntimeController
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalAppModel
@@ -76,7 +77,6 @@ import uniffi.codex_mobile_client.AppVoiceSessionPhase
 import uniffi.codex_mobile_client.AppVoiceSpeaker
 import uniffi.codex_mobile_client.AppVoiceTranscriptEntry
 import uniffi.codex_mobile_client.GetAccountParams
-import uniffi.codex_mobile_client.LoginAccountParams
 import uniffi.codex_mobile_client.ThreadKey
 
 @Composable
@@ -86,6 +86,7 @@ fun RealtimeVoiceScreen(
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
+    val apiKeyStore = remember(context) { OpenAIApiKeyStore(context.applicationContext) }
     val voiceController = remember { VoiceRuntimeController.shared }
     val activeSession by voiceController.activeVoiceSession.collectAsState()
     val snapshot by appModel.snapshot.collectAsState()
@@ -104,6 +105,7 @@ fun RealtimeVoiceScreen(
     var apiKey by remember { mutableStateOf("") }
     var apiKeyError by remember { mutableStateOf<String?>(null) }
     var isSavingKey by remember { mutableStateOf(false) }
+    var hasStoredApiKey by remember { mutableStateOf(apiKeyStore.hasStoredKey()) }
     var isSpeakerOn by remember { mutableStateOf(true) }
     var hasMicPermission by remember {
         mutableStateOf(
@@ -123,8 +125,7 @@ fun RealtimeVoiceScreen(
     val server = remember(snapshot, threadKey) {
         snapshot?.servers?.firstOrNull { it.serverId == threadKey.serverId }
     }
-    val hasApiKey = server?.account is Account.ApiKey
-    val needsApiKey = hasCheckedAuth && server?.isLocal == true && !hasApiKey
+    val needsApiKey = hasCheckedAuth && server?.isLocal == true && !hasStoredApiKey
     val phaseColor = voicePhaseColor(phase)
     val transcriptSignature = transcriptEntries.lastOrNull()?.let { "${it.itemId}:${it.text.length}" }
 
@@ -139,6 +140,7 @@ fun RealtimeVoiceScreen(
         } catch (e: Exception) {
             apiKeyError = e.localizedMessage
         }
+        hasStoredApiKey = apiKeyStore.hasStoredKey()
         hasCheckedAuth = true
     }
 
@@ -148,8 +150,8 @@ fun RealtimeVoiceScreen(
         }
     }
 
-    LaunchedEffect(hasApiKey, hasCheckedAuth, hasMicPermission) {
-        if (hasCheckedAuth && hasApiKey && hasMicPermission && !hasStartedRealtime) {
+    LaunchedEffect(hasStoredApiKey, hasCheckedAuth, hasMicPermission) {
+        if (hasCheckedAuth && hasStoredApiKey && hasMicPermission && !hasStartedRealtime) {
             hasStartedRealtime = true
             voiceController.startVoiceOnThread(appModel, threadKey)
         }
@@ -247,7 +249,7 @@ fun RealtimeVoiceScreen(
                     val trimmedKey = apiKey.trim()
                     if (trimmedKey.isEmpty() || isSavingKey) return@RealtimeApiKeyPrompt
                     if (server?.isLocal != true) {
-                        apiKeyError = "Realtime API keys are only saved on the local server."
+                        apiKeyError = "API keys are only saved on the local server."
                         return@RealtimeApiKeyPrompt
                     }
 
@@ -257,24 +259,18 @@ fun RealtimeVoiceScreen(
 
                     scope.launch {
                         try {
-                            appModel.rpc.loginAccount(
-                                threadKey.serverId,
-                                LoginAccountParams.ApiKey(apiKey = trimmedKey),
-                            )
-                            appModel.rpc.getAccount(
-                                threadKey.serverId,
-                                GetAccountParams(refreshToken = false),
-                            )
-                            appModel.refreshSnapshot()
-
-                            val updatedServer = appModel.snapshot.value
-                                ?.servers
-                                ?.firstOrNull { it.serverId == threadKey.serverId }
-                            if (updatedServer?.account !is Account.ApiKey) {
-                                throw IllegalStateException("Failed to save API key")
+                            apiKeyStore.save(trimmedKey)
+                            if (server?.account is Account.ApiKey) {
+                                appModel.rpc.logoutAccount(threadKey.serverId)
                             }
-
                             voiceController.stopActiveVoiceSession(appModel)
+                            appModel.restartLocalServer()
+                            hasStoredApiKey = apiKeyStore.hasStoredKey()
+                            if (!hasStoredApiKey) {
+                                hasStartedRealtime = false
+                                apiKeyError = "API key did not persist locally."
+                                return@launch
+                            }
                             delay(150)
                             voiceController.startVoiceOnThread(appModel, threadKey)
                             apiKey = ""
@@ -474,7 +470,7 @@ private fun RealtimeApiKeyPrompt(
             )
 
             Text(
-                text = "Enter your OpenAI API key to enable realtime voice on this device. If you are logged in with ChatGPT, that login stays active and this key is saved alongside it for realtime.",
+                text = "Enter your OpenAI API key for this device. Litter will store it in the local Codex environment as OPENAI_API_KEY.",
                 color = Color.White.copy(alpha = 0.78f),
                 fontSize = 12.sp,
                 lineHeight = 18.sp,

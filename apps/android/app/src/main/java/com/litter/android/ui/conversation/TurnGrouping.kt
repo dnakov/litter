@@ -50,9 +50,11 @@ import uniffi.codex_mobile_client.MessagePhase
  * A group of conversation items belonging to the same turn.
  */
 data class TranscriptTurn(
+    val id: String,
     val turnId: String?,
     val items: List<HydratedConversationItem>,
     val isActiveTurn: Boolean,
+    val isCollapsedByDefault: Boolean,
 ) {
     val userPrompt: String?
         get() = items.firstOrNull { it.content is HydratedConversationItemContent.User }
@@ -85,39 +87,99 @@ data class TranscriptTurn(
 }
 
 /**
- * Groups a flat list of hydrated items into turns by [sourceTurnId].
+ * Groups a flat list of hydrated items into UI turns with the same boundary rules
+ * as iOS: explicit user turn boundaries split turns, and streaming tails merge
+ * back into the live turn instead of rendering as separate groups.
  */
-fun groupIntoTurns(
+fun buildTranscriptTurns(
     items: List<HydratedConversationItem>,
     activeTurnId: String?,
+    isStreaming: Boolean,
+    expandedRecentTurnCount: Int,
 ): List<TranscriptTurn> {
     if (items.isEmpty()) return emptyList()
 
-    val turns = mutableListOf<TranscriptTurn>()
-    var currentTurnId: String? = items.first().sourceTurnId
-    var currentItems = mutableListOf<HydratedConversationItem>()
+    val groupedItems = mergeTrailingStreamingGroups(groupItems(items), isStreaming)
+    val collapseBoundary = maxOf(0, groupedItems.size - expandedRecentTurnCount)
+    val lastIndex = groupedItems.lastIndex
 
+    return groupedItems.mapIndexed { index, turnItems ->
+        val turnId = turnItems.firstNotNullOfOrNull { it.sourceTurnId }
+        TranscriptTurn(
+            id = turnIdentifier(turnItems, index),
+            turnId = turnId,
+            items = turnItems,
+            isActiveTurn = (isStreaming && index == lastIndex) || turnId == activeTurnId,
+            isCollapsedByDefault = index < collapseBoundary,
+        )
+    }
+}
+
+private fun groupItems(items: List<HydratedConversationItem>): List<List<HydratedConversationItem>> {
+    val groups = mutableListOf<List<HydratedConversationItem>>()
+    var current = mutableListOf<HydratedConversationItem>()
+    var currentSourceTurnId: String? = null
     for (item in items) {
-        if (item.sourceTurnId != currentTurnId && currentItems.isNotEmpty()) {
-            turns.add(TranscriptTurn(
-                turnId = currentTurnId,
-                items = currentItems.toList(),
-                isActiveTurn = currentTurnId == activeTurnId,
-            ))
-            currentTurnId = item.sourceTurnId
-            currentItems = mutableListOf()
+        val startsNewTurn =
+            current.isNotEmpty() && (
+                item.isFromUserTurnBoundary ||
+                    (
+                        item.sourceTurnId != null &&
+                            currentSourceTurnId != null &&
+                            item.sourceTurnId != currentSourceTurnId
+                        )
+                )
+
+        if (startsNewTurn) {
+            groups += current.toList()
+            current = mutableListOf()
         }
-        currentItems.add(item)
-    }
-    if (currentItems.isNotEmpty()) {
-        turns.add(TranscriptTurn(
-            turnId = currentTurnId,
-            items = currentItems.toList(),
-            isActiveTurn = currentTurnId == activeTurnId,
-        ))
+        current += item
+
+        currentSourceTurnId = when {
+            currentSourceTurnId == null -> item.sourceTurnId
+            current.size == 1 -> current.firstOrNull()?.sourceTurnId
+            else -> currentSourceTurnId
+        }
     }
 
-    return turns
+    if (current.isNotEmpty()) {
+        groups += current.toList()
+    }
+
+    return groups
+}
+
+private fun mergeTrailingStreamingGroups(
+    groups: List<List<HydratedConversationItem>>,
+    isStreaming: Boolean,
+): List<List<HydratedConversationItem>> {
+    if (!isStreaming || groups.size <= 1) return groups
+
+    val liveTurnStartIndex = groups.indexOfLast { containsLiveTurnBoundary(it) }
+    if (liveTurnStartIndex == -1 || liveTurnStartIndex >= groups.lastIndex) return groups
+
+    val mergedLiveTurn = groups.subList(liveTurnStartIndex, groups.size).flatten()
+    return buildList {
+        addAll(groups.subList(0, liveTurnStartIndex))
+        add(mergedLiveTurn)
+    }
+}
+
+private fun containsLiveTurnBoundary(items: List<HydratedConversationItem>): Boolean {
+    return items.any { item ->
+        item.isFromUserTurnBoundary || item.content is HydratedConversationItemContent.User
+    }
+}
+
+private fun turnIdentifier(items: List<HydratedConversationItem>, ordinal: Int): String {
+    val first = items.firstOrNull() ?: return "turn-$ordinal"
+    val sourceTurnId = items.firstNotNullOfOrNull { it.sourceTurnId }
+    return if (sourceTurnId != null) {
+        "turn-$sourceTurnId-${first.id}"
+    } else {
+        "turn-${first.id}"
+    }
 }
 
 /**

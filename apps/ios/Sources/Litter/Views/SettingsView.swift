@@ -241,6 +241,7 @@ private struct SettingsConnectionAccountSection: View {
     @State private var apiKey = ""
     @State private var isAuthWorking = false
     @State private var authError: String?
+    @State private var hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
 
     var body: some View {
         Section {
@@ -269,7 +270,14 @@ private struct SettingsConnectionAccountSection: View {
             }
             .listRowBackground(LitterTheme.surface.opacity(0.6))
 
-            if server.isLocal, server.account == nil {
+            if server.isLocal, hasStoredApiKey {
+                Text("Local OpenAI API key is saved.")
+                    .litterFont(.caption)
+                    .foregroundColor(LitterTheme.accent)
+                    .listRowBackground(LitterTheme.surface.opacity(0.6))
+            }
+
+            if server.isLocal, !isChatGPTAccount {
                 Button {
                     Task {
                         isAuthWorking = true
@@ -291,11 +299,15 @@ private struct SettingsConnectionAccountSection: View {
                 .listRowBackground(LitterTheme.surface.opacity(0.6))
             }
 
-            if server.isLocal, allowsLocalRealtimeApiKey {
+            if server.isLocal, allowsLocalEnvApiKey {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 6) {
-                        if isChatGPTAccount {
-                            Text("Save an API key for local realtime while keeping your ChatGPT login.")
+                        if hasStoredApiKey {
+                            Text("OpenAI API key saved in the local environment.")
+                                .litterFont(.caption)
+                                .foregroundColor(LitterTheme.textSecondary)
+                        } else if isChatGPTAccount {
+                            Text("Save an API key in the local Codex environment.")
                                 .litterFont(.caption)
                                 .foregroundColor(LitterTheme.textSecondary)
                         }
@@ -305,7 +317,7 @@ private struct SettingsConnectionAccountSection: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
-                    Button("Save") {
+                    Button {
                         let key = apiKey.trimmingCharacters(in: .whitespaces)
                         guard !key.isEmpty else { return }
                         Task {
@@ -313,6 +325,8 @@ private struct SettingsConnectionAccountSection: View {
                             await saveApiKey(key)
                             isAuthWorking = false
                         }
+                    } label: {
+                        Text(hasStoredApiKey ? "Update API Key" : "Save API Key")
                     }
                     .litterFont(.caption)
                     .foregroundColor(LitterTheme.accent)
@@ -338,15 +352,13 @@ private struct SettingsConnectionAccountSection: View {
             Text("Account")
                 .foregroundColor(LitterTheme.textSecondary)
         }
+        .task(id: server.serverId) {
+            hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
+        }
     }
 
-    private var allowsLocalRealtimeApiKey: Bool {
-        switch server.account {
-        case nil, .chatgpt?:
-            return true
-        case .apiKey?:
-            return false
-        }
+    private var allowsLocalEnvApiKey: Bool {
+        server.isLocal
     }
 
     private var isChatGPTAccount: Bool {
@@ -420,11 +432,16 @@ private struct SettingsConnectionAccountSection: View {
         }
         do {
             authError = nil
-            _ = try await appModel.rpc.loginAccount(
-                serverId: server.serverId,
-                params: .apiKey(apiKey: key)
-            )
-            await appModel.refreshSnapshot()
+            try OpenAIApiKeyStore.shared.save(key)
+            if case .apiKey? = server.account {
+                _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+            }
+            try await appModel.restartLocalServer()
+            hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
+            guard hasStoredApiKey else {
+                authError = "API key did not persist locally."
+                return
+            }
         } catch {
             authError = error.localizedDescription
         }
@@ -437,8 +454,9 @@ private struct SettingsConnectionAccountSection: View {
         }
         do {
             try? ChatGPTOAuthTokenStore.shared.clear()
+            try? OpenAIApiKeyStore.shared.clear()
             _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
-            await appModel.refreshSnapshot()
+            try await appModel.restartLocalServer()
             authError = nil
         } catch {
             authError = error.localizedDescription

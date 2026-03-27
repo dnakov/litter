@@ -1,5 +1,11 @@
 package com.litter.android.ui.conversation
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,13 +27,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
@@ -42,12 +54,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
+import com.litter.android.state.ComposerImageAttachment
 import com.litter.android.state.AppComposerPayload
 import com.litter.android.state.VoiceTranscriptionManager
 import kotlinx.coroutines.Job
@@ -62,11 +76,14 @@ import com.litter.android.ui.BerkeleyMono
 import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.scaled
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.ThreadKey
+import uniffi.codex_mobile_client.TurnInterruptParams
 
 /** Slash command definitions matching iOS. */
-private data class SlashCommand(val name: String, val description: String)
+internal data class SlashCommand(val name: String, val description: String)
+internal data class SlashInvocation(val command: SlashCommand, val args: String?)
 
 private val SLASH_COMMANDS = listOf(
     SlashCommand("model", "Change model or reasoning effort"),
@@ -84,24 +101,42 @@ private val SLASH_COMMANDS = listOf(
  * Bottom composer bar with text input, send, voice, slash commands,
  * @file search, and inline pending user input.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ComposerBar(
     threadKey: ThreadKey,
+    activeTurnId: String?,
     contextPercent: Int,
     isThinking: Boolean,
     rateLimits: uniffi.codex_mobile_client.RateLimitSnapshot? = null,
     onToggleModelSelector: (() -> Unit)? = null,
     onNavigateToSessions: (() -> Unit)? = null,
     onShowDirectoryPicker: (() -> Unit)? = null,
+    onShowRenameDialog: ((String?) -> Unit)? = null,
+    onShowPermissionsSheet: (() -> Unit)? = null,
+    onShowExperimentalSheet: (() -> Unit)? = null,
+    onShowSkillsSheet: (() -> Unit)? = null,
+    onSlashError: ((String) -> Unit)? = null,
     pendingUserInput: PendingUserInputRequest? = null,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val composerPrefillRequest by appModel.composerPrefillRequest.collectAsState()
     var text by remember { mutableStateOf("") }
+    var attachedImage by remember { mutableStateOf<ComposerImageAttachment?>(null) }
+    var showAttachMenu by remember { mutableStateOf(false) }
     val transcriptionManager = remember { VoiceTranscriptionManager() }
     val isRecording by transcriptionManager.isRecording.collectAsState()
     val isTranscribing by transcriptionManager.isTranscribing.collectAsState()
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        attachedImage = readAttachmentFromUri(context, uri)
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        bitmap ?: return@rememberLauncherForActivityResult
+        attachedImage = prepareBitmapAttachment(bitmap)
+    }
 
     // Slash command state
     val slashQuery by remember {
@@ -149,11 +184,57 @@ fun ComposerBar(
     // Pending user input answers
     var userInputAnswers by remember { mutableStateOf(mapOf<String, String>()) }
 
-    // Check for prefill text (from edit message flow)
-    LaunchedEffect(Unit) {
-        appModel.clearComposerPrefill()?.let { prefill ->
-            text = prefill
+    // Only consume edit-message prefill for the intended thread.
+    LaunchedEffect(composerPrefillRequest?.requestId, threadKey) {
+        val prefill = composerPrefillRequest ?: return@LaunchedEffect
+        if (prefill.threadKey != threadKey) return@LaunchedEffect
+        text = prefill.text
+        attachedImage = null
+        appModel.clearComposerPrefill(prefill.requestId)
+    }
+
+    fun dispatchSlashCommand(commandName: String, args: String?): Boolean {
+        when (commandName) {
+            "model" -> onToggleModelSelector?.invoke()
+            "new" -> onShowDirectoryPicker?.invoke()
+            "resume" -> onNavigateToSessions?.invoke()
+            "rename" -> onShowRenameDialog?.invoke(args)
+            "skills" -> onShowSkillsSheet?.invoke()
+            "permissions" -> onShowPermissionsSheet?.invoke()
+            "experimental" -> onShowExperimentalSheet?.invoke()
+            "fork" -> scope.launch {
+                try {
+                    val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd
+                    appModel.store.forkThreadFromMessage(
+                        threadKey,
+                        0u,
+                        appModel.launchState.threadForkParams(
+                            sourceThreadId = threadKey.threadId,
+                            cwdOverride = cwd,
+                            modelOverride = appModel.launchState.snapshot.value.selectedModel.trim().ifEmpty { null },
+                        ),
+                    )
+                } catch (e: Exception) {
+                    onSlashError?.invoke(e.message ?: "Failed to fork conversation")
+                }
+            }
+            "review" -> scope.launch {
+                try {
+                    appModel.rpc.reviewStart(
+                        threadKey.serverId,
+                        uniffi.codex_mobile_client.ReviewStartParams(
+                            threadId = threadKey.threadId,
+                            target = uniffi.codex_mobile_client.ReviewTarget.UncommittedChanges,
+                            delivery = null,
+                        ),
+                    )
+                } catch (e: Exception) {
+                    onSlashError?.invoke(e.message ?: "Failed to start review")
+                }
+            }
+            else -> return false
         }
+        return true
     }
 
     Column(
@@ -162,6 +243,44 @@ fun ComposerBar(
             .background(LitterTheme.surface)
             .imePadding(),
     ) {
+        if (attachedImage != null) {
+            val previewBitmap = remember(attachedImage?.data) {
+                attachedImage?.data?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp),
+            ) {
+                Box {
+                    previewBitmap?.let { bitmap ->
+                        androidx.compose.foundation.Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .size(60.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                    IconButton(
+                        onClick = { attachedImage = null },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(22.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), CircleShape),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Remove attachment",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+            }
+        }
+
         // Inline pending user input prompt (above composer)
         if (pendingUserInput != null) {
             Column(
@@ -232,32 +351,6 @@ fun ComposerBar(
                 )
             }
         }
-        // Context bar: rate limit badges + context badge (matching iOS)
-        val hasIndicators = contextPercent > 0 || rateLimits?.primary != null
-        if (hasIndicators) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Rate limit badges
-                rateLimits?.primary?.let { window ->
-                    RateLimitBadge(window)
-                    Spacer(Modifier.width(6.dp))
-                }
-                rateLimits?.secondary?.let { window ->
-                    RateLimitBadge(window)
-                    Spacer(Modifier.width(6.dp))
-                }
-                // Context usage badge
-                if (contextPercent > 0) {
-                    ContextBadge(contextPercent)
-                }
-            }
-        }
-
         // Input row
         Row(
             modifier = Modifier
@@ -265,6 +358,19 @@ fun ComposerBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            if (!isRecording && !isTranscribing && !isThinking) {
+                IconButton(
+                    onClick = { showAttachMenu = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Attach image",
+                        tint = LitterTheme.textPrimary,
+                    )
+                }
+            }
+
             // Voice transcription button
             IconButton(
                 onClick = {
@@ -343,27 +449,9 @@ fun ComposerBar(
                             },
                             onClick = {
                                 showSlashMenu = false
-                                text = ""
-                                when (cmd.name) {
-                                    "model" -> onToggleModelSelector?.invoke()
-                                    "new" -> onShowDirectoryPicker?.invoke()
-                                    "resume" -> onNavigateToSessions?.invoke()
-                                    "fork" -> scope.launch {
-                                        try {
-                                            val config = com.litter.android.state.AppThreadLaunchConfig(model = null)
-                                            val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd ?: "~"
-                                            appModel.store.forkThreadFromMessage(threadKey, 0u, config.toThreadForkParams(threadKey.threadId, cwd))
-                                        } catch (_: Exception) {}
-                                    }
-                                    "rename" -> {
-                                        // Will be handled by ConversationScreen showing a dialog
-                                    }
-                                    "review" -> scope.launch {
-                                        try {
-                                            appModel.rpc.reviewStart(threadKey.serverId, uniffi.codex_mobile_client.ReviewStartParams(threadId = threadKey.threadId, target = uniffi.codex_mobile_client.ReviewTarget.UncommittedChanges, delivery = null))
-                                        } catch (_: Exception) {}
-                                    }
-                                    // skills, permissions, experimental — open respective sheets
+                                if (dispatchSlashCommand(cmd.name, args = null)) {
+                                    text = ""
+                                    attachedImage = null
                                 }
                             },
                         )
@@ -392,50 +480,208 @@ fun ComposerBar(
 
             Spacer(Modifier.width(4.dp))
 
-            // Send button
-            val canSend = text.isNotBlank() && !isThinking
+            // Send / stop button
+            val canSend = (text.isNotBlank() || attachedImage != null) && !isThinking
             IconButton(
                 onClick = {
-                    if (!canSend) return@IconButton
-                    // Apply pending overrides from HeaderBar
-                    val effort = HeaderOverrides.pendingEffort?.let { e ->
-                        try { ReasoningEffort.valueOf(e.uppercase()) } catch (_: Exception) { null }
+                    if (isThinking) {
+                        val turnId = activeTurnId ?: return@IconButton
+                        scope.launch {
+                            try {
+                                appModel.rpc.turnInterrupt(
+                                    threadKey.serverId,
+                                    TurnInterruptParams(threadId = threadKey.threadId, turnId = turnId),
+                                )
+                            } catch (_: Exception) {}
+                        }
+                        return@IconButton
                     }
+                    if (!canSend) return@IconButton
+                    parseSlashCommandInvocation(text)?.let { invocation ->
+                        if (dispatchSlashCommand(invocation.command.name, invocation.args)) {
+                            text = ""
+                            attachedImage = null
+                            return@IconButton
+                        }
+                    }
+                    // Apply pending overrides from HeaderBar
+                    val launchState = appModel.launchState.snapshot.value
+                    val pendingModel = launchState.selectedModel.trim().ifEmpty { null }
+                    val effort = launchState.reasoningEffort.trim().ifEmpty { null }?.let(::reasoningEffortFromServerValue)
                     val tier = if (HeaderOverrides.pendingFastMode) ServiceTier.FAST else null
+                    val attachmentToSend = attachedImage
                     val payload = AppComposerPayload(
                         text = text.trim(),
-                        model = HeaderOverrides.pendingModel,
+                        additionalInputs = listOfNotNull(attachmentToSend?.toUserInput()),
+                        approvalPolicy = appModel.launchState.approvalPolicyValue(),
+                        sandboxPolicy = appModel.launchState.turnSandboxPolicy(),
+                        model = pendingModel,
                         reasoningEffort = effort,
                         serviceTier = tier,
                     )
                     text = ""
+                    attachedImage = null
                     scope.launch {
                         try {
                             appModel.startTurn(threadKey, payload)
                         } catch (e: Exception) {
                             // Restore text on failure
                             text = payload.text
+                            attachedImage = attachmentToSend
                         }
                     }
                 },
-                enabled = canSend,
+                enabled = isThinking || canSend,
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
                     .background(
-                        if (canSend) LitterTheme.accent else Color.Transparent,
+                        when {
+                            isThinking -> LitterTheme.danger
+                            canSend -> LitterTheme.accent
+                            else -> Color.Transparent
+                        },
                         CircleShape,
                     ),
             ) {
                 Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (canSend) Color.Black else LitterTheme.textMuted,
+                    imageVector = if (isThinking) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
+                    contentDescription = if (isThinking) "Interrupt" else "Send",
+                    tint = when {
+                        isThinking -> Color.White
+                        canSend -> Color.Black
+                        else -> LitterTheme.textMuted
+                    },
                     modifier = Modifier.size(18.dp),
                 )
             }
         }
+
+        val hasIndicators = contextPercent > 0 || rateLimits?.primary != null || rateLimits?.secondary != null
+        if (hasIndicators) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                rateLimits?.primary?.let { window ->
+                    RateLimitBadge(window)
+                    Spacer(Modifier.width(6.dp))
+                }
+                rateLimits?.secondary?.let { window ->
+                    RateLimitBadge(window)
+                    Spacer(Modifier.width(6.dp))
+                }
+                if (contextPercent > 0) {
+                    ContextBadge(contextPercent)
+                }
+            }
+        }
     }
+
+    if (showAttachMenu) {
+        ModalBottomSheet(
+            onDismissRequest = { showAttachMenu = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = LitterTheme.background,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Attach",
+                    color = LitterTheme.textPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                AttachmentActionRow(
+                    title = "Photo Library",
+                    onClick = {
+                        showAttachMenu = false
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                )
+
+                AttachmentActionRow(
+                    title = "Take Photo",
+                    onClick = {
+                        showAttachMenu = false
+                        cameraLauncher.launch(null)
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun reasoningEffortFromServerValue(value: String): ReasoningEffort? =
+    when (value.trim().lowercase()) {
+        "none" -> ReasoningEffort.NONE
+        "minimal" -> ReasoningEffort.MINIMAL
+        "low" -> ReasoningEffort.LOW
+        "medium" -> ReasoningEffort.MEDIUM
+        "high" -> ReasoningEffort.HIGH
+        "xhigh" -> ReasoningEffort.X_HIGH
+        else -> null
+    }
+
+@Composable
+private fun AttachmentActionRow(
+    title: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(LitterTheme.surface, RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, color = LitterTheme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+private fun readAttachmentFromUri(context: android.content.Context, uri: Uri): ComposerImageAttachment? {
+    val resolver = context.contentResolver
+    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    val mimeType = resolver.getType(uri).orEmpty()
+    return prepareImageAttachment(bytes, mimeType)
+}
+
+private fun prepareBitmapAttachment(bitmap: Bitmap): ComposerImageAttachment? {
+    val output = ByteArrayOutputStream()
+    val format = if (bitmap.hasAlpha()) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+    val mimeType = if (bitmap.hasAlpha()) "image/png" else "image/jpeg"
+    val quality = if (bitmap.hasAlpha()) 100 else 85
+    if (!bitmap.compress(format, quality, output)) return null
+    return ComposerImageAttachment(output.toByteArray(), mimeType)
+}
+
+private fun prepareImageAttachment(bytes: ByteArray, mimeTypeHint: String): ComposerImageAttachment? {
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+    val inferredMime = mimeTypeHint.lowercase()
+    if (inferredMime == "image/png" && bitmap.hasAlpha()) {
+        return ComposerImageAttachment(bytes, "image/png")
+    }
+    return prepareBitmapAttachment(bitmap)
+}
+
+internal fun parseSlashCommandInvocation(text: String): SlashInvocation? {
+    val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+    if (!firstLine.startsWith("/")) return null
+    val commandText = firstLine.drop(1).trim()
+    if (commandText.isEmpty()) return null
+    val parts = commandText.split(Regex("\\s+"), limit = 2)
+    val command = SLASH_COMMANDS.firstOrNull { it.name == parts.first().lowercase() } ?: return null
+    val args = parts.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+    return SlashInvocation(command = command, args = args)
 }
 
 // ── Rate Limit Badge (matching iOS RateLimitBadgeView) ───────────────────────

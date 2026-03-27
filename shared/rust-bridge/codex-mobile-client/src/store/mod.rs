@@ -14,7 +14,7 @@ pub use boundary::{
 pub use reducer::AppStoreReducer;
 pub use snapshot::{
     AppSnapshot, ServerConnectionProgressSnapshot, ServerConnectionStepKind,
-    ServerConnectionStepSnapshot, ServerConnectionStepState, ServerHealthSnapshot,
-    ServerSnapshot, ThreadSnapshot, VoiceSessionSnapshot,
+    ServerConnectionStepSnapshot, ServerConnectionStepState, ServerHealthSnapshot, ServerSnapshot,
+    ThreadSnapshot, VoiceSessionSnapshot,
 };
 pub use updates::AppUpdate;

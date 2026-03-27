@@ -11,9 +11,7 @@ pub const MAX_FRAME_SIZE: u32 = 256 * 1024 * 1024;
 ///
 /// Wire format: 4-byte little-endian u32 length, followed by that many bytes
 /// of UTF-8 payload.
-pub async fn read_frame<R: AsyncRead + Unpin>(
-    reader: &mut R,
-) -> Result<String, TransportError> {
+pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String, TransportError> {
     let mut len_buf = [0u8; 4];
     let n = reader.read(&mut len_buf).await?;
     if n == 0 {

@@ -752,6 +752,7 @@ struct DiscoveryView: View {
                     host: "127.0.0.1",
                     port: 0
                 )
+                await appModel.restoreStoredLocalChatGPTAuth(serverId: server.id)
                 SavedServerStore.upsert(server)
             case .remote(let host, let port):
                 startedAsyncBootstrap = false

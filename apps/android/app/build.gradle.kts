@@ -29,6 +29,7 @@ android {
         buildConfigField("boolean", "ENABLE_ON_DEVICE_BRIDGE", "true")
         buildConfigField("String", "RUNTIME_STARTUP_MODE", "\"hybrid\"")
         buildConfigField("String", "APP_RUNTIME_TRANSPORT", "\"app_bridge_rpc_transport\"")
+        buildConfigField("String", "LOG_COLLECTOR_URL", "\"${System.getenv("LOG_COLLECTOR_URL") ?: ""}\"")
         manifestPlaceholders["runtimeStartupMode"] = "hybrid"
         manifestPlaceholders["enableOnDeviceBridge"] = "true"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

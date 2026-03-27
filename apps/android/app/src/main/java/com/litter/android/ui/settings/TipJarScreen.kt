@@ -1,10 +1,13 @@
 package com.litter.android.ui.settings
 
 import android.app.Activity
+import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,14 +38,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.Image
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.android.billingclient.api.AcknowledgePurchaseParams
@@ -58,7 +60,7 @@ import com.android.billingclient.api.QueryPurchasesParams
 import com.litter.android.ui.LitterTheme
 
 private data class TipProduct(
-    val productId: String,
+    val productIds: List<String>,
     val iconRes: Int,
     val displayName: String,
     val fallbackPrice: String,
@@ -66,16 +68,42 @@ private data class TipProduct(
     val isPurchased: Boolean = false,
 )
 
+private const val TIP_JAR_TAG = "TipJar"
+
 private val TIP_PRODUCTS = listOf(
-    TipProduct("tip_10", com.sigkitten.litter.android.R.drawable.tip_cat_10, "$9.99 Tip", "$9.99"),
-    TipProduct("tip_25", com.sigkitten.litter.android.R.drawable.tip_cat_25, "$24.99 Tip", "$24.99"),
-    TipProduct("tip_50", com.sigkitten.litter.android.R.drawable.tip_cat_50, "$49.99 Tip", "$49.99"),
-    TipProduct("tip_100", com.sigkitten.litter.android.R.drawable.tip_cat_100, "$99.99 Tip", "$99.99"),
+    TipProduct(
+        productIds = listOf("tip_10", "com.sigkitten.litter.tip.10", "com.sigkitten.litter.android.tip.10"),
+        iconRes = com.sigkitten.litter.android.R.drawable.tip_cat_10,
+        displayName = "$9.99 Tip",
+        fallbackPrice = "$9.99",
+    ),
+    TipProduct(
+        productIds = listOf("tip_25", "com.sigkitten.litter.tip.25", "com.sigkitten.litter.android.tip.25"),
+        iconRes = com.sigkitten.litter.android.R.drawable.tip_cat_25,
+        displayName = "$24.99 Tip",
+        fallbackPrice = "$24.99",
+    ),
+    TipProduct(
+        productIds = listOf("tip_50", "com.sigkitten.litter.tip.50", "com.sigkitten.litter.android.tip.50"),
+        iconRes = com.sigkitten.litter.android.R.drawable.tip_cat_50,
+        displayName = "$49.99 Tip",
+        fallbackPrice = "$49.99",
+    ),
+    TipProduct(
+        productIds = listOf("tip_100", "com.sigkitten.litter.tip.100", "com.sigkitten.litter.android.tip.100"),
+        iconRes = com.sigkitten.litter.android.R.drawable.tip_cat_100,
+        displayName = "$99.99 Tip",
+        fallbackPrice = "$99.99",
+    ),
 )
 
 private sealed class TipJarState {
     data object Loading : TipJarState()
-    data class Ready(val products: List<TipProduct>, val justPurchased: Boolean = false) : TipJarState()
+    data class Ready(
+        val products: List<TipProduct>,
+        val justPurchased: Boolean = false,
+        val message: String? = null,
+    ) : TipJarState()
     data object Purchasing : TipJarState()
     data class Error(val message: String) : TipJarState()
 }
@@ -119,28 +147,50 @@ fun TipJarScreen(onBack: () -> Unit) {
         billingClient.startConnection(object : BillingClientStateListener {
             override fun onBillingSetupFinished(billingResult: BillingResult) {
                 if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
-                    state = TipJarState.Ready(TIP_PRODUCTS)
+                    Log.w(
+                        TIP_JAR_TAG,
+                        "Billing setup failed code=${billingResult.responseCode} message=${billingResult.debugMessage}",
+                    )
+                    state = TipJarState.Ready(
+                        products = TIP_PRODUCTS,
+                        message = "Google Play Billing is unavailable for this install.",
+                    )
                     return
                 }
 
                 // Query product details
-                val productList = TIP_PRODUCTS.map { tip ->
-                    QueryProductDetailsParams.Product.newBuilder()
-                        .setProductId(tip.productId)
-                        .setProductType(BillingClient.ProductType.INAPP)
-                        .build()
-                }
+                val requestedProductIds = TIP_PRODUCTS
+                    .flatMap { it.productIds }
+                    .distinct()
+                val productList = requestedProductIds
+                    .map { productId ->
+                        QueryProductDetailsParams.Product.newBuilder()
+                            .setProductId(productId)
+                            .setProductType(BillingClient.ProductType.INAPP)
+                            .build()
+                    }
                 val params = QueryProductDetailsParams.newBuilder()
                     .setProductList(productList)
                     .build()
 
                 billingClient.queryProductDetailsAsync(params) { result, detailsList ->
                     if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                        state = TipJarState.Ready(TIP_PRODUCTS)
+                        Log.w(
+                            TIP_JAR_TAG,
+                            "Product detail query failed code=${result.responseCode} message=${result.debugMessage}",
+                        )
+                        state = TipJarState.Ready(
+                            products = TIP_PRODUCTS,
+                            message = "Google Play did not return tip products for this install.",
+                        )
                         return@queryProductDetailsAsync
                     }
 
                     val detailsMap = detailsList.associateBy { it.productId }
+                    Log.i(
+                        TIP_JAR_TAG,
+                        "Resolved tip products=${detailsMap.keys.sorted()} requested=$requestedProductIds",
+                    )
 
                     // Query owned purchases (non-consumables persist here)
                     billingClient.queryPurchasesAsync(
@@ -163,23 +213,32 @@ fun TipJarScreen(onBack: () -> Unit) {
                             .toSet()
 
                         val products = TIP_PRODUCTS.map { tip ->
+                            val matchedId = tip.productIds.firstOrNull(detailsMap::containsKey)
                             tip.copy(
-                                details = detailsMap[tip.productId],
-                                isPurchased = tip.productId in ownedProductIds,
+                                details = matchedId?.let(detailsMap::get),
+                                isPurchased = tip.productIds.any(ownedProductIds::contains),
                             )
                         }
                         val hadPurchases = cachedProducts.any { it.isPurchased }
                         val hasPurchasesNow = products.any { it.isPurchased }
+                        val message = if (products.none { it.details != null }) {
+                            "Tips are unavailable in this build. Google Play did not match any configured tip products."
+                        } else {
+                            null
+                        }
                         cachedProducts = products
                         state = TipJarState.Ready(
                             products,
                             justPurchased = !hadPurchases && hasPurchasesNow,
+                            message = message,
                         )
                     }
                 }
             }
 
-            override fun onBillingServiceDisconnected() {}
+            override fun onBillingServiceDisconnected() {
+                Log.w(TIP_JAR_TAG, "Billing service disconnected")
+            }
         })
     }
 
@@ -277,6 +336,16 @@ fun TipJarScreen(onBack: () -> Unit) {
                 }
 
                 is TipJarState.Ready -> {
+                    if (currentState.message != null) {
+                        item {
+                            Text(
+                                currentState.message,
+                                color = LitterTheme.danger,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
                     items(currentState.products) { tip ->
                         if (tip.isPurchased) {
                             Row(
@@ -308,17 +377,18 @@ fun TipJarScreen(onBack: () -> Unit) {
                             }
                         } else {
                             val price = tip.details?.oneTimePurchaseOfferDetails?.formattedPrice ?: tip.fallbackPrice
+                            val interactionSource = remember { MutableInteractionSource() }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        val details = tip.details
-                                        if (details == null) {
-                                            state = TipJarState.Error("Tips are not available right now")
-                                            return@clickable
-                                        }
+                                    .clickable(
+                                        enabled = tip.details != null,
+                                        interactionSource = interactionSource,
+                                        indication = null,
+                                    ) {
+                                        val details = tip.details ?: return@clickable
                                         val activity = context as? Activity ?: return@clickable
                                         state = TipJarState.Purchasing
                                         val flowParams = BillingFlowParams.newBuilder()
@@ -349,7 +419,7 @@ fun TipJarScreen(onBack: () -> Unit) {
                                 )
                                 Text(
                                     price,
-                                    color = LitterTheme.accent,
+                                    color = if (tip.details != null) LitterTheme.accent else LitterTheme.textSecondary,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold,
                                 )

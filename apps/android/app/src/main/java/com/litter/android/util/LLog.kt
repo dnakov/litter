@@ -2,16 +2,17 @@ package com.litter.android.util
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
 import android.provider.Settings
 import android.util.Log
 import com.litter.android.core.bridge.UniffiInit
+import com.sigkitten.litter.android.BuildConfig
 import org.json.JSONObject
 import uniffi.codex_mobile_client.LogConfig
 import uniffi.codex_mobile_client.LogEvent
 import uniffi.codex_mobile_client.LogLevel
 import uniffi.codex_mobile_client.LogSource
 import uniffi.codex_mobile_client.Logs
-import java.io.File
 
 object LLog {
     @Volatile private var bootstrapped = false
@@ -23,15 +24,15 @@ object LLog {
             if (bootstrapped) return
             UniffiInit.ensure(context)
 
-            val codexHome = File(context.filesDir, "codex-home").apply { mkdirs() }
-            val configFile = File(codexHome, "log-spool/config.json")
-            if (!configFile.exists()) {
-                logs.configure(
+            // Propagate collector config to env vars so Rust picks them up directly
+            val collectorUrl = BuildConfig.LOG_COLLECTOR_URL.takeIf { it.isNotEmpty() }
+            if (collectorUrl != null) Os.setenv("LOG_COLLECTOR_URL", collectorUrl, false)
+
+            logs.configure(
                     LogConfig(
-                        enabled = false,
+                        enabled = false, // Rust will enable based on env vars
                         collectorUrl = null,
-                        bearerToken = null,
-                        minLevel = LogLevel.INFO,
+                        minLevel = LogLevel.DEBUG,
                         deviceId = Settings.Secure.getString(
                             context.contentResolver,
                             Settings.Secure.ANDROID_ID,
@@ -41,7 +42,6 @@ object LLog {
                         build = appBuild(context),
                     ),
                 )
-            }
 
             bootstrapped = true
         }

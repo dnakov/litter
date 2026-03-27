@@ -20,14 +20,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.litter.android.state.AppModel
 import com.litter.android.state.NetworkDiscovery
+import com.litter.android.state.VoiceRuntimeController
+import com.litter.android.state.connectionModeLabel
 import kotlinx.coroutines.launch
 import com.litter.android.ui.conversation.ApprovalOverlay
 import com.litter.android.ui.conversation.ConversationInfoScreen
 import com.litter.android.ui.conversation.ConversationScreen
 import com.litter.android.ui.discovery.DiscoveryScreen
 import com.litter.android.ui.home.HomeDashboardScreen
+import com.litter.android.ui.home.HomeDashboardSupport
 import com.litter.android.ui.settings.AccountSheet
 import com.litter.android.ui.settings.SettingsSheet
+import com.litter.android.ui.sessions.DirectoryPickerServerOption
+import com.litter.android.ui.sessions.DirectoryPickerSheet
+import com.litter.android.ui.sessions.SessionLaunchSupport
+import com.litter.android.ui.sessions.SessionsUiState
 import uniffi.codex_mobile_client.ThreadKey
 
 /**
@@ -46,7 +53,10 @@ fun LitterApp(appModel: AppModel) {
     val context = LocalContext.current
 
     // Initialize text size preference
-    LaunchedEffect(Unit) { TextSizePrefs.initialize(context) }
+    LaunchedEffect(Unit) {
+        TextSizePrefs.initialize(context)
+        ConversationPrefs.initialize(context)
+    }
 
     CompositionLocalProvider(
         LocalAppModel provides appModel,
@@ -58,14 +68,17 @@ fun LitterApp(appModel: AppModel) {
         // Navigation state
         var navStack by remember { mutableStateOf<List<Route>>(listOf(Route.Home)) }
         val currentRoute = navStack.lastOrNull() ?: Route.Home
+        val sessionsUiState = remember { SessionsUiState() }
 
         // Global sheet state
         var showDiscovery by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showAccountForServer by remember { mutableStateOf<String?>(null) }
+        var directoryPickerServerId by remember { mutableStateOf<String?>(null) }
 
         // Network discovery
         val networkDiscovery = remember { NetworkDiscovery(appModel.discovery) }
+        val voiceController = remember { VoiceRuntimeController.shared }
 
         // Navigate helpers
         val navigate = remember {
@@ -77,12 +90,50 @@ fun LitterApp(appModel: AppModel) {
         val navigateToConversation = remember {
             { key: ThreadKey -> navStack = listOf(Route.Home, Route.Conversation(key)) }
         }
+        val connectedServerOptions = remember(snapshot) {
+            snapshot?.let { snap ->
+                HomeDashboardSupport.sortedConnectedServers(snap).map { server ->
+                    DirectoryPickerServerOption(
+                        id = server.serverId,
+                        name = server.displayName,
+                        sourceLabel = server.connectionModeLabel,
+                    )
+                }
+            } ?: emptyList()
+        }
+
+        suspend fun startNewSession(serverId: String, cwd: String) {
+            val response = appModel.rpc.threadStart(
+                serverId,
+                appModel.launchState.threadStartParams(cwd),
+            )
+            val key = ThreadKey(serverId = serverId, threadId = response.thread.id)
+            appModel.store.setActiveThread(key)
+            appModel.refreshSnapshot()
+            navigateToConversation(key)
+        }
+
+        fun openDirectoryPicker(preferredServerId: String? = null) {
+            val targetServerId = SessionLaunchSupport.defaultConnectedServerId(
+                connectedServerIds = connectedServerOptions.map { it.id },
+                activeThreadKey = snapshot?.activeThread,
+                preferredServerId = preferredServerId,
+            )
+            if (targetServerId == null) {
+                showDiscovery = true
+            } else {
+                directoryPickerServerId = targetServerId
+            }
+        }
 
         // Auto-navigate to active thread when it changes
         LaunchedEffect(snapshot?.activeThread) {
             val activeKey = snapshot?.activeThread ?: return@LaunchedEffect
-            val alreadyShowing = currentRoute is Route.Conversation &&
-                (currentRoute as Route.Conversation).key == activeKey
+            val alreadyShowing = when (val route = currentRoute) {
+                is Route.Conversation -> route.key == activeKey
+                is Route.RealtimeVoice -> route.key == activeKey
+                else -> false
+            }
             if (!alreadyShowing) {
                 navStack = listOf(Route.Home, Route.Conversation(activeKey))
             }
@@ -107,28 +158,20 @@ fun LitterApp(appModel: AppModel) {
                         onOpenSessions = { serverId, title ->
                             navigate(Route.Sessions(serverId, title))
                         },
+                        onNewSession = { openDirectoryPicker() },
                         onShowDiscovery = { showDiscovery = true },
                         onShowSettings = { showSettings = true },
                         onStartVoice = {
                             scope.launch {
-                                try {
-                                    // Ensure local server is connected
-                                    val snap = appModel.snapshot.value
-                                    var localServer = snap?.servers?.firstOrNull { it.isLocal }
-                                    if (localServer == null) {
-                                        appModel.serverBridge.connectLocalServer("local", "Local", "127.0.0.1", 0u)
-                                        appModel.refreshSnapshot()
-                                        localServer = appModel.snapshot.value?.servers?.firstOrNull { it.isLocal }
-                                    }
-                                    if (localServer != null) {
-                                        // Create a thread, then navigate to voice screen
-                                        // The voice screen handles auth check and starting the realtime session
-                                        val config = com.litter.android.state.AppThreadLaunchConfig()
-                                        val resp = appModel.rpc.threadStart(localServer.serverId, config.toThreadStartParams("~"))
-                                        val threadKey = ThreadKey(serverId = localServer.serverId, threadId = resp.thread.id)
-                                        navigate(Route.RealtimeVoice(threadKey))
-                                    }
-                                } catch (_: Exception) {}
+                                val launchState = appModel.launchState.snapshot.value
+                                val threadKey = voiceController.preparePinnedLocalVoiceThread(
+                                    appModel = appModel,
+                                    cwd = launchState.currentCwd.ifBlank { "~" },
+                                    model = launchState.selectedModel.ifBlank { null },
+                                )
+                                if (threadKey != null) {
+                                    navigate(Route.RealtimeVoice(threadKey))
+                                }
                             }
                         },
                     )
@@ -138,7 +181,9 @@ fun LitterApp(appModel: AppModel) {
                     com.litter.android.ui.sessions.SessionsScreen(
                         serverId = route.serverId,
                         title = route.title,
+                        sessionsUiState = sessionsUiState,
                         onOpenConversation = navigateToConversation,
+                        onNewSession = { openDirectoryPicker(route.serverId) },
                         onBack = navigateBack,
                         onInfo = { navigate(Route.ServerInfo(route.serverId)) },
                     )
@@ -149,6 +194,7 @@ fun LitterApp(appModel: AppModel) {
                         threadKey = route.key,
                         onBack = navigateBack,
                         onInfo = { navigate(Route.ConversationInfo(route.key)) },
+                        onShowDirectoryPicker = { openDirectoryPicker(route.key.serverId) },
                     )
                 }
 
@@ -279,8 +325,29 @@ fun LitterApp(appModel: AppModel) {
                 SettingsSheet(
                     onDismiss = { showSettings = false },
                     onOpenAccount = { serverId ->
+                        showSettings = false
                         showAccountForServer = serverId
                     },
+                )
+            }
+        }
+
+        if (directoryPickerServerId != null) {
+            ModalBottomSheet(
+                onDismissRequest = { directoryPickerServerId = null },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                DirectoryPickerSheet(
+                    servers = connectedServerOptions,
+                    initialServerId = directoryPickerServerId!!,
+                    onSelect = { serverId, cwd ->
+                        directoryPickerServerId = null
+                        scope.launch {
+                            runCatching { startNewSession(serverId, cwd) }
+                        }
+                    },
+                    onDismiss = { directoryPickerServerId = null },
                 )
             }
         }

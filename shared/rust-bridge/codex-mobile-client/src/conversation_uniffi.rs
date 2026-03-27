@@ -26,6 +26,8 @@ pub enum HydratedConversationItemContent {
     DynamicToolCall(HydratedDynamicToolCallData),
     MultiAgentAction(HydratedMultiAgentActionData),
     WebSearch(HydratedWebSearchData),
+    Widget(HydratedWidgetData),
+    UserInputResponse(HydratedUserInputResponseData),
     Divider(HydratedDividerData),
     Error(HydratedErrorData),
     Note(HydratedNoteData),
@@ -169,6 +171,36 @@ pub struct HydratedWebSearchData {
     pub is_in_progress: bool,
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HydratedWidgetData {
+    pub title: String,
+    pub widget_html: String,
+    pub width: f64,
+    pub height: f64,
+    pub status: String,
+    pub is_finalized: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HydratedUserInputResponseOptionData {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HydratedUserInputResponseQuestionData {
+    pub id: String,
+    pub header: Option<String>,
+    pub question: String,
+    pub answer: String,
+    pub options: Vec<HydratedUserInputResponseOptionData>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HydratedUserInputResponseData {
+    pub questions: Vec<HydratedUserInputResponseQuestionData>,
+}
+
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum HydratedDividerData {
     ContextCompaction {
@@ -292,6 +324,19 @@ impl From<conversation::ConversationItemContent> for HydratedConversationItemCon
                 action_json: data.action_json,
                 is_in_progress: data.is_in_progress,
             }),
+            ItemContent::Widget(data) => Self::Widget(HydratedWidgetData {
+                title: data.title,
+                widget_html: data.widget_html,
+                width: data.width,
+                height: data.height,
+                status: data.status,
+                is_finalized: data.is_finalized,
+            }),
+            ItemContent::UserInputResponse(data) => {
+                Self::UserInputResponse(HydratedUserInputResponseData {
+                    questions: data.questions.into_iter().map(Into::into).collect(),
+                })
+            }
             ItemContent::Divider(data) => Self::Divider(data.into()),
             ItemContent::Error(data) => Self::Error(HydratedErrorData {
                 title: data.title,
@@ -352,6 +397,27 @@ impl From<conversation::MultiAgentStateData> for HydratedMultiAgentStateData {
             target_id: value.target_id,
             status: AppSubagentStatus::from_raw(&value.status),
             message: value.message,
+        }
+    }
+}
+
+impl From<conversation::UserInputResponseOptionData> for HydratedUserInputResponseOptionData {
+    fn from(value: conversation::UserInputResponseOptionData) -> Self {
+        Self {
+            label: value.label,
+            description: value.description,
+        }
+    }
+}
+
+impl From<conversation::UserInputResponseQuestionData> for HydratedUserInputResponseQuestionData {
+    fn from(value: conversation::UserInputResponseQuestionData) -> Self {
+        Self {
+            id: value.id,
+            header: value.header,
+            question: value.question,
+            answer: value.answer,
+            options: value.options.into_iter().map(Into::into).collect(),
         }
     }
 }

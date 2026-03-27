@@ -9,20 +9,22 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use serde::Deserialize;
 use russh::ChannelMsg;
 use russh::ChannelStream;
 use russh::client::{self, Handle, Msg};
-use russh_keys::decode_secret_key;
-use russh_keys::{HashAlg, PublicKey};
+use russh::keys::decode_secret_key;
+use russh::keys::HashAlg;
+use russh::keys::PrivateKeyWithHashAlg;
+use russh::keys::PublicKey;
+use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tracing::{debug, error, info, warn};
 
-use base64::Engine;
 use crate::logging::{LogLevelName, log_rust};
+use base64::Engine;
 
 fn append_bridge_log(level: LogLevelName, line: &str) {
     log_rust(level, "ssh", "bridge", line.to_string(), None);
@@ -143,16 +145,20 @@ struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
         let fp = format!("{}", server_public_key.fingerprint(HashAlg::Sha256));
-        let accepted = (self.host_key_cb)(&fp).await;
-        if !accepted {
-            *self.rejected_fingerprint.lock().await = Some(fp);
+        let rejected_fingerprint = Arc::clone(&self.rejected_fingerprint);
+        let callback = Arc::clone(&self.host_key_cb);
+        async move {
+            let accepted = callback(&fp).await;
+            if !accepted {
+                *rejected_fingerprint.lock().await = Some(fp);
+            }
+            Ok(accepted)
         }
-        Ok(accepted)
     }
 }
 
@@ -255,7 +261,7 @@ impl SshClient {
         }
 
         // --- Authenticate -----------------------------------------------
-        let auth_ok = match &credentials.auth {
+        let auth_result = match &credentials.auth {
             SshAuth::Password(pw) => handle
                 .authenticate_password(&credentials.username, pw)
                 .await
@@ -273,8 +279,20 @@ impl SshClient {
             } => {
                 let key = decode_secret_key(key_pem, passphrase.as_deref())
                     .map_err(|e| SshError::AuthFailed(format!("bad private key: {e}")))?;
+                let key = PrivateKeyWithHashAlg::new(
+                    Arc::new(key),
+                    handle.best_supported_rsa_hash().await.map_err(|e| {
+                        warn!("SSH RSA hash negotiation failed addr={} error={:?}", addr, e);
+                        append_bridge_info_log(&format!(
+                            "ssh_auth_failed addr={} method=key_hash error_display={} error_debug={:?}",
+                            addr, e, e
+                        ));
+                        SshError::AuthFailed(format!("{e}"))
+                    })?
+                    .flatten(),
+                );
                 handle
-                    .authenticate_publickey(&credentials.username, Arc::new(key))
+                    .authenticate_publickey(&credentials.username, key)
                     .await
                     .map_err(|e| {
                         warn!("SSH key auth failed addr={} error={:?}", addr, e);
@@ -287,8 +305,11 @@ impl SshClient {
             }
         };
 
-        if !auth_ok {
-            warn!("SSH auth rejected by server addr={} username={}", addr, credentials.username);
+        if !auth_result.success() {
+            warn!(
+                "SSH auth rejected by server addr={} username={}",
+                addr, credentials.username
+            );
             append_bridge_info_log(&format!(
                 "ssh_auth_rejected addr={} username={}",
                 addr, credentials.username
@@ -479,7 +500,8 @@ impl SshClient {
                 )));
             }
         }
-        self.forward_port_to(local_port, remote_host, remote_port).await
+        self.forward_port_to(local_port, remote_host, remote_port)
+            .await
     }
 
     pub async fn abort_forward_port(&self, local_port: u16) -> bool {
@@ -564,7 +586,16 @@ impl SshClient {
                         actual_port, remote_host, remote_port, peer_addr
                     ));
 
-                    if let Err(e) = proxy_connection(local_stream, ssh_channel, actual_port, &remote_host, remote_port, peer_addr).await {
+                    if let Err(e) = proxy_connection(
+                        local_stream,
+                        ssh_channel,
+                        actual_port,
+                        &remote_host,
+                        remote_port,
+                        peer_addr,
+                    )
+                    .await
+                    {
                         debug!("port forward proxy ended: {e}");
                         append_android_debug_log(&format!(
                             "ssh_forward_proxy_error listen=127.0.0.1:{} remote={}:{} peer={} error={}",
@@ -675,7 +706,10 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
     ) -> Result<SshBootstrapResult, SshError> {
         let shell = self.detect_remote_shell().await;
         self.bootstrap_codex_server_with_binary_and_shell(
-            codex_binary, working_dir, prefer_ipv6, shell,
+            codex_binary,
+            working_dir,
+            prefer_ipv6,
+            shell,
         )
         .await
     }
@@ -687,7 +721,6 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
         prefer_ipv6: bool,
         shell: RemoteShell,
     ) -> Result<SshBootstrapResult, SshError> {
-
         // --- 2. Try candidate ports until one works ---------------------
         let cd_prefix = match (shell, working_dir) {
             (RemoteShell::Posix, Some(dir)) => format!("cd {} && ", shell_quote(dir)),
@@ -707,10 +740,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
 
             if self.is_port_listening_shell(port, shell).await {
                 info!("port {port} already listening, probing existing candidate");
-                append_bridge_info_log(&format!(
-                    "ssh_bootstrap_reuse_probe_start port={}",
-                    port
-                ));
+                append_bridge_info_log(&format!("ssh_bootstrap_reuse_probe_start port={}", port));
 
                 let (probe_port, probe_task) =
                     self.spawn_forward_port(0, remote_loopback, port).await?;
@@ -719,14 +749,22 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                     RemoteShell::PowerShell => "NUL",
                 };
                 let websocket_ready = self
-                    .wait_for_forwarded_websocket_ready(probe_port, None, null_path)
+                    .wait_for_forwarded_websocket_ready(
+                        probe_port,
+                        None,
+                        shell,
+                        null_path,
+                        None,
+                    )
                     .await;
                 probe_task.abort();
 
                 match websocket_ready {
                     Ok(()) => {
                         let local_port = self.forward_port_to(0, remote_loopback, port).await?;
-                        let version = self.read_server_version_shell(codex_binary.path(), shell).await;
+                        let version = self
+                            .read_server_version_shell(codex_binary.path(), shell)
+                            .await;
                         append_bridge_info_log(&format!(
                             "ssh_bootstrap_reuse_success port={} local_port={} version={}",
                             port,
@@ -758,12 +796,15 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             } else {
                 format!("127.0.0.1:{port}")
             };
-            let log_path = match shell {
-                RemoteShell::Posix => format!("/tmp/codex-mobile-server-{port}.log"),
+            let (log_path, stderr_log_path) = match shell {
+                RemoteShell::Posix => (format!("/tmp/codex-mobile-server-{port}.log"), None),
                 // Resolved at command time via Join-Path, not in a quoted string.
-                RemoteShell::PowerShell => {
-                    format!("(Join-Path $env:TEMP 'codex-mobile-server-{port}.log')")
-                }
+                RemoteShell::PowerShell => (
+                    format!("(Join-Path $env:TEMP 'codex-mobile-server-{port}.log')"),
+                    Some(format!(
+                        "(Join-Path $env:TEMP 'codex-mobile-server-{port}-err.log')"
+                    )),
+                ),
             };
 
             let launch_cmd = match shell {
@@ -772,21 +813,24 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                      </dev/null >{log} 2>&1 & echo $!",
                     profile_init = PROFILE_INIT,
                     cd_prefix = cd_prefix,
-                    launch = server_launch_command(&codex_binary, &format!("ws://{listen_addr}"), shell),
+                    launch =
+                        server_launch_command(&codex_binary, &format!("ws://{listen_addr}"), shell),
                     log = shell_quote(&log_path),
                 ),
                 RemoteShell::PowerShell => {
-                    let log_err = format!("(Join-Path $env:TEMP 'codex-mobile-server-{port}-err.log')");
+                    let (file_path, argument_list) =
+                        windows_start_process_spec(codex_binary, &format!("ws://{listen_addr}"));
                     format!(
-                        r#"{cd_prefix}$logFile = {log}; $errFile = {log_err}; $proc = Start-Process -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError $errFile -FilePath {bin} -ArgumentList {args}; Write-Host $proc.Id"#,
+                        r#"{cd_prefix}$logFile = {log}; $errFile = {log_err}; $proc = Start-Process -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError $errFile -FilePath {file_path} -ArgumentList {argument_list}; Write-Host $proc.Id"#,
                         cd_prefix = cd_prefix,
                         log = log_path,
-                        log_err = log_err,
-                        bin = ps_quote(codex_binary.path()),
-                        args = ps_quote(&format!("app-server --listen ws://{listen_addr}")),
+                        log_err = stderr_log_path
+                            .as_deref()
+                            .expect("windows stderr log path"),
+                        file_path = file_path,
+                        argument_list = argument_list,
                     )
                 }
-
             };
 
             let launch_result = self.exec_shell(&launch_cmd, shell).await?;
@@ -810,7 +854,13 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                 // If the process died, check logs for "address already in use".
                 if let Some(p) = pid {
                     if !self.is_process_alive_shell(p, shell).await {
-                        let tail = self.fetch_log_tail_shell(&log_path, shell).await;
+                        let tail = self
+                            .fetch_process_log_tail_shell(
+                                &log_path,
+                                stderr_log_path.as_deref(),
+                                shell,
+                            )
+                            .await;
                         if tail.to_ascii_lowercase().contains("address already in use") {
                             break; // try next port
                         }
@@ -829,7 +879,9 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             }
 
             if !started {
-                let tail = self.fetch_log_tail_shell(&log_path, shell).await;
+                let tail = self
+                    .fetch_process_log_tail_shell(&log_path, stderr_log_path.as_deref(), shell)
+                    .await;
                 if tail.to_ascii_lowercase().contains("address already in use") {
                     continue; // try next port
                 }
@@ -850,7 +902,13 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             let (probe_port, probe_task) =
                 self.spawn_forward_port(0, remote_loopback, port).await?;
             let websocket_ready = self
-                .wait_for_forwarded_websocket_ready(probe_port, pid, &log_path)
+                .wait_for_forwarded_websocket_ready(
+                    probe_port,
+                    pid,
+                    shell,
+                    &log_path,
+                    stderr_log_path.as_deref(),
+                )
                 .await;
             probe_task.abort();
 
@@ -863,7 +921,9 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                 if let Some(p) = pid {
                     let kill_cmd = match shell {
                         RemoteShell::Posix => format!("kill {p} 2>/dev/null"),
-                        RemoteShell::PowerShell => format!("Stop-Process -Id {p} -Force -ErrorAction SilentlyContinue"),
+                        RemoteShell::PowerShell => {
+                            format!("Stop-Process -Id {p} -Force -ErrorAction SilentlyContinue")
+                        }
                     };
                     let _ = self.exec_shell(&kill_cmd, shell).await;
                 }
@@ -880,7 +940,9 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             let local_port = self.forward_port_to(0, remote_loopback, port).await?;
 
             // --- 6. Optionally read server version -----------------------
-            let version = self.read_server_version_shell(codex_binary.path(), shell).await;
+            let version = self
+                .read_server_version_shell(codex_binary.path(), shell)
+                .await;
             append_bridge_info_log(&format!(
                 "ssh_bootstrap_success port={} local_port={} pid={:?} version={}",
                 port,
@@ -1078,7 +1140,8 @@ fi"#
 
     /// Read the last 25 lines of a remote log file.
     async fn fetch_log_tail(&self, log_path: &str) -> String {
-        self.fetch_log_tail_shell(log_path, RemoteShell::Posix).await
+        self.fetch_log_tail_shell(log_path, RemoteShell::Posix)
+            .await
     }
 
     async fn fetch_log_tail_shell(&self, log_path: &str, shell: RemoteShell) -> String {
@@ -1101,11 +1164,27 @@ fi"#
         }
     }
 
+    async fn fetch_process_log_tail_shell(
+        &self,
+        stdout_log_path: &str,
+        stderr_log_path: Option<&str>,
+        shell: RemoteShell,
+    ) -> String {
+        let stdout_tail = self.fetch_log_tail_shell(stdout_log_path, shell).await;
+        let stderr_tail = match stderr_log_path {
+            Some(path) => self.fetch_log_tail_shell(path, shell).await,
+            None => String::new(),
+        };
+        format_process_logs(&stdout_tail, &stderr_tail)
+    }
+
     async fn wait_for_forwarded_websocket_ready(
         &self,
         local_port: u16,
         pid: Option<u32>,
-        log_path: &str,
+        shell: RemoteShell,
+        stdout_log_path: &str,
+        stderr_log_path: Option<&str>,
     ) -> Result<(), String> {
         let websocket_url = format!("ws://127.0.0.1:{local_port}");
         let mut last_error = String::new();
@@ -1135,8 +1214,10 @@ fi"#
             }
 
             if let Some(p) = pid {
-                if !self.is_process_alive(p).await {
-                    let tail = self.fetch_log_tail(log_path).await;
+                if !self.is_process_alive_shell(p, shell).await {
+                    let tail = self
+                        .fetch_process_log_tail_shell(stdout_log_path, stderr_log_path, shell)
+                        .await;
                     return Err(if tail.is_empty() { last_error } else { tail });
                 }
             }
@@ -1144,7 +1225,9 @@ fi"#
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
 
-        let tail = self.fetch_log_tail(log_path).await;
+        let tail = self
+            .fetch_process_log_tail_shell(stdout_log_path, stderr_log_path, shell)
+            .await;
         Err(if tail.is_empty() {
             format!("websocket readiness probe failed: {last_error}")
         } else if last_error.is_empty() {
@@ -1156,7 +1239,8 @@ fi"#
 
     /// Attempt to read the server version from `codex --version`.
     async fn read_server_version(&self, codex_path: &str) -> Option<String> {
-        self.read_server_version_shell(codex_path, RemoteShell::Posix).await
+        self.read_server_version_shell(codex_path, RemoteShell::Posix)
+            .await
     }
 
     async fn read_server_version_shell(
@@ -1170,10 +1254,7 @@ fi"#
                 PROFILE_INIT,
                 shell_quote(codex_path)
             ),
-            RemoteShell::PowerShell => format!(
-                "& {} --version 2>$null",
-                ps_quote(codex_path)
-            ),
+            RemoteShell::PowerShell => format!("& {} --version 2>$null", ps_quote(codex_path)),
         };
         match self.exec_shell(&cmd, shell).await {
             Ok(r) if r.exit_code == 0 => {
@@ -1216,7 +1297,11 @@ fi"#
     /// Execute a command using the appropriate shell. For PowerShell commands,
     /// wraps in `powershell -NoProfile -Command "..."` since Windows OpenSSH
     /// defaults to cmd.exe.
-    pub(crate) async fn exec_shell(&self, command: &str, shell: RemoteShell) -> Result<ExecResult, SshError> {
+    pub(crate) async fn exec_shell(
+        &self,
+        command: &str,
+        shell: RemoteShell,
+    ) -> Result<ExecResult, SshError> {
         match shell {
             RemoteShell::Posix => self.exec(command).await,
             RemoteShell::PowerShell => {
@@ -1258,7 +1343,10 @@ fi"#
         match shell {
             RemoteShell::PowerShell => {
                 let result = self
-                    .exec_shell(r#"Write-Output "$env:OS"; Write-Output "$env:PROCESSOR_ARCHITECTURE""#, shell)
+                    .exec_shell(
+                        r#"Write-Output "$env:OS"; Write-Output "$env:PROCESSOR_ARCHITECTURE""#,
+                        shell,
+                    )
                     .await?;
                 let mut lines = result.stdout.lines();
                 let os = lines.next().unwrap_or_default().trim();
@@ -1609,6 +1697,34 @@ impl RemoteCodexBinary {
     }
 }
 
+fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (String, String) {
+    let args = match binary {
+        RemoteCodexBinary::Codex(_) => vec![
+            ps_quote("app-server"),
+            ps_quote("--listen"),
+            ps_quote(listen_url),
+        ],
+        RemoteCodexBinary::AppServer(_) => vec![ps_quote("--listen"), ps_quote(listen_url)],
+    };
+
+    if is_windows_cmd_script(binary.path()) {
+        let command = match binary {
+            RemoteCodexBinary::Codex(path) => {
+                format!(r#""{}" app-server --listen {}"#, cmd_quote(path), listen_url)
+            }
+            RemoteCodexBinary::AppServer(path) => {
+                format!(r#""{}" --listen {}"#, cmd_quote(path), listen_url)
+            }
+        };
+        (
+            "$env:ComSpec".to_string(),
+            format!("@('/d', '/c', {})", ps_quote(&format!(r#""{command}""#))),
+        )
+    } else {
+        (ps_quote(binary.path()), format!("@({})", args.join(", ")))
+    }
+}
+
 fn server_launch_command(
     binary: &RemoteCodexBinary,
     listen_url: &str,
@@ -1635,6 +1751,15 @@ fn server_launch_command(
                 format!("{} --listen {}", ps_quote(path), ps_quote(listen_url))
             }
         },
+    }
+}
+
+fn format_process_logs(stdout: &str, stderr: &str) -> String {
+    match (stdout.trim(), stderr.trim()) {
+        ("", "") => String::new(),
+        ("", stderr) => format!("stderr:\n{stderr}"),
+        (stdout, "") => stdout.to_string(),
+        (stdout, stderr) => format!("stdout:\n{stdout}\n\nstderr:\n{stderr}"),
     }
 }
 
@@ -1670,6 +1795,15 @@ fn strip_clixml(output: &str) -> String {
 /// Quote a string for PowerShell (single-quoted, no variable expansion).
 fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+fn cmd_quote(s: &str) -> String {
+    s.replace('"', "\"\"")
+}
+
+fn is_windows_cmd_script(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".cmd") || lower.ends_with(".bat")
 }
 
 #[derive(Debug, Deserialize)]
@@ -1835,6 +1969,41 @@ mod tests {
             command,
             "'/usr/local/bin/codex-app-server' --listen 'ws://[::]:8390'"
         );
+    }
+
+    #[test]
+    fn test_windows_start_process_spec_for_cmd_shim() {
+        let (file_path, argument_list) = windows_start_process_spec(
+            &RemoteCodexBinary::Codex(r#"C:\Users\me\AppData\Roaming\npm\codex.cmd"#.into()),
+            "ws://127.0.0.1:8390",
+        );
+        assert_eq!(file_path, "$env:ComSpec");
+        assert_eq!(
+            argument_list,
+            r#"@('/d', '/c', '""C:\Users\me\AppData\Roaming\npm\codex.cmd" app-server --listen ws://127.0.0.1:8390"')"#
+        );
+    }
+
+    #[test]
+    fn test_windows_start_process_spec_for_exe() {
+        let (file_path, argument_list) = windows_start_process_spec(
+            &RemoteCodexBinary::AppServer(r#"C:\Program Files\Codex\codex-app-server.exe"#.into()),
+            "ws://127.0.0.1:8390",
+        );
+        assert_eq!(file_path, r#"'C:\Program Files\Codex\codex-app-server.exe'"#);
+        assert_eq!(
+            argument_list,
+            "@('--listen', 'ws://127.0.0.1:8390')"
+        );
+    }
+
+    #[test]
+    fn test_format_process_logs_includes_stderr() {
+        assert_eq!(
+            format_process_logs("stdout line", "stderr line"),
+            "stdout:\nstdout line\n\nstderr:\nstderr line"
+        );
+        assert_eq!(format_process_logs("", "stderr line"), "stderr:\nstderr line");
     }
 
     #[test]

@@ -772,6 +772,7 @@ impl MobileClient {
         request_id: &str,
         answers: Vec<PendingUserInputAnswer>,
     ) -> Result<(), RpcError> {
+        let answered_inputs = answers.clone();
         let request = self.pending_user_input(request_id)?;
         let session = self.get_session(&request.server_id)?;
         if let Some(ipc_client) = session.ipc_client()
@@ -787,7 +788,8 @@ impl MobileClient {
                 "MobileClient: user input response sent over IPC for server={} request_id={}",
                 request.server_id, request_id
             );
-            self.app_store.resolve_pending_user_input(request_id);
+            self.app_store
+                .resolve_pending_user_input_with_response(request_id, answered_inputs);
             return Ok(());
         }
         let response = generated::ToolRequestUserInputResponse {
@@ -813,7 +815,8 @@ impl MobileClient {
             "MobileClient: user input response sent for server={} request_id={}",
             request.server_id, request_id
         );
-        self.app_store.resolve_pending_user_input(request_id);
+        self.app_store
+            .resolve_pending_user_input_with_response(request_id, answered_inputs);
         Ok(())
     }
 
@@ -1874,7 +1877,6 @@ pub fn copy_thread_runtime_fields(source: &ThreadSnapshot, target: &mut ThreadSn
     if target.reasoning_effort.is_none() {
         target.reasoning_effort = source.reasoning_effort.clone();
     }
-    target.active_turn_id = source.active_turn_id.clone();
     target.context_tokens_used = source.context_tokens_used;
     target.model_context_window = source.model_context_window;
     target.rate_limits = source.rate_limits.clone();
@@ -2377,6 +2379,7 @@ mod mobile_client_tests {
             model: Some("gpt-5".to_string()),
             reasoning_effort: Some("high".to_string()),
             items: Vec::new(),
+            local_overlay_items: Vec::new(),
             active_turn_id: Some("turn-1".to_string()),
             context_tokens_used: Some(12_345),
             model_context_window: Some(200_000),
@@ -2393,7 +2396,7 @@ mod mobile_client_tests {
 
         assert_eq!(target.model.as_deref(), Some("gpt-5"));
         assert_eq!(target.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(target.active_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(target.active_turn_id, None);
         assert_eq!(target.context_tokens_used, Some(12_345));
         assert_eq!(target.model_context_window, Some(200_000));
         assert_eq!(

@@ -1,7 +1,5 @@
 package com.litter.android.ui.settings
 
-import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -29,17 +27,22 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -68,6 +71,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.litter.android.auth.ChatGPTOAuthActivity
+import com.litter.android.state.ChatGPTOAuth
+import com.litter.android.state.ChatGPTOAuthTokenStore
+import com.litter.android.state.OpenAIApiKeyStore
 import com.litter.android.state.SavedServerStore
 import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.isConnected
@@ -77,6 +84,7 @@ import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterColorThemeType
 import com.litter.android.ui.BerkeleyMono
+import com.litter.android.ui.ConversationPrefs
 import com.litter.android.ui.WallpaperBackdrop
 import com.litter.android.ui.WallpaperManager
 import com.litter.android.ui.LitterTheme
@@ -84,10 +92,10 @@ import com.litter.android.ui.LitterThemeIndexEntry
 import com.litter.android.ui.LitterThemeManager
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.Account
+import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.ExperimentalFeature
 import uniffi.codex_mobile_client.ExperimentalFeatureListParams
 import uniffi.codex_mobile_client.LoginAccountParams
-import uniffi.codex_mobile_client.LoginAccountResponse
 
 /**
  * Settings — hierarchical navigation matching iOS:
@@ -118,6 +126,7 @@ fun SettingsSheet(
             onOpenAppearance = { subScreen = SettingsSubScreen.Appearance },
             onOpenExperimental = { subScreen = SettingsSubScreen.Experimental },
             onOpenTipJar = { subScreen = SettingsSubScreen.TipJar },
+            onOpenAccount = onOpenAccount,
         )
     }
 }
@@ -130,12 +139,15 @@ private fun SettingsTopLevel(
     onOpenAppearance: () -> Unit,
     onOpenExperimental: () -> Unit,
     onOpenTipJar: () -> Unit,
+    onOpenAccount: (serverId: String) -> Unit,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
-    var collapseTurns by remember { mutableStateOf(false) }
+    val collapseTurns = ConversationPrefs.areTurnsCollapsed
+    var renameTarget by remember { mutableStateOf<AppServerSnapshot?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     val currentServer = remember(snapshot) {
         val activeServerId = snapshot?.activeThread?.serverId
@@ -186,7 +198,13 @@ private fun SettingsTopLevel(
             SettingsRow(
                 icon = { Text("⊟", color = LitterTheme.accent, fontSize = 16.sp) },
                 label = "Collapse Turns", subtitle = "Collapse previous turns into cards",
-                trailing = { Switch(checked = collapseTurns, onCheckedChange = { collapseTurns = it }, colors = SwitchDefaults.colors(checkedTrackColor = LitterTheme.accent)) },
+                trailing = {
+                    Switch(
+                        checked = collapseTurns,
+                        onCheckedChange = { ConversationPrefs.setCollapseTurns(context, it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = LitterTheme.accent),
+                    )
+                },
             )
         }
 
@@ -205,8 +223,29 @@ private fun SettingsTopLevel(
         // ── Account ──
         item { SectionHeader("Account") }
         item {
-            if (currentServer != null) AccountSection(server = currentServer!!)
-            else SettingsRow(label = "Connect to a server first")
+            if (currentServer != null) {
+                val accountStatus = when (val account = currentServer!!.account) {
+                    is Account.Chatgpt -> account.email.ifEmpty { "ChatGPT account" }
+                    is Account.ApiKey -> "OpenAI API key"
+                    null -> "Not logged in"
+                }
+                SettingsRow(
+                    icon = { Text("@", color = LitterTheme.accent, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+                    label = currentServer!!.displayName,
+                    subtitle = accountStatus,
+                    trailing = {
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            null,
+                            tint = LitterTheme.textMuted,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    onClick = { onOpenAccount(currentServer!!.serverId) },
+                )
+            } else {
+                SettingsRow(label = "Connect to a server first")
+            }
         }
 
         // ── Servers ──
@@ -216,48 +255,136 @@ private fun SettingsTopLevel(
             item { SettingsRow(label = "No servers connected") }
         } else {
             items(servers, key = { it.serverId }) { server ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                        .background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                ) {
-                    Text(if (server.isLocal) "📱" else "🖥", fontSize = 16.sp)
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(server.displayName, color = LitterTheme.textPrimary, fontSize = 13.sp)
-                        Text(
-                            "${server.statusLabel} · ${server.connectionModeLabel}",
-                            color = server.statusColor,
-                            fontSize = 11.sp,
-                        )
-                    }
-                    if (server.isIpcConnected) {
-                        Text(
-                            "IPC",
-                            color = LitterTheme.accentStrong,
-                            fontSize = 10.sp,
-                            modifier = Modifier
-                                .background(
-                                    LitterTheme.accentStrong.copy(alpha = 0.14f),
-                                    RoundedCornerShape(4.dp),
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    TextButton(onClick = {
+                ServerSettingsRow(
+                    server = server,
+                    onRename = if (server.isLocal) null else {
+                        {
+                            renameText = server.displayName
+                            renameTarget = server
+                        }
+                    },
+                    onRemove = {
                         scope.launch {
                             SavedServerStore.remove(context, server.serverId)
+                            appModel.sshSessionStore.close(server.serverId)
                             appModel.serverBridge.disconnectServer(server.serverId)
                             appModel.refreshSnapshot()
                         }
-                    }) { Text("Remove", color = LitterTheme.danger, fontSize = 12.sp) }
-                }
+                    },
+                )
             }
         }
 
         item { Spacer(Modifier.height(32.dp)) }
+    }
+
+    renameTarget?.let { server ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Server") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val trimmed = renameText.trim()
+                    if (trimmed.isEmpty()) return@TextButton
+                    scope.launch {
+                        SavedServerStore.rename(context, server.serverId, trimmed)
+                        appModel.refreshSnapshot()
+                    }
+                    renameTarget = null
+                }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ServerSettingsRow(
+    server: AppServerSnapshot,
+    onRename: (() -> Unit)?,
+    onRemove: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+        ) {
+            Text(if (server.isLocal) "📱" else "🖥", fontSize = 16.sp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(server.displayName, color = LitterTheme.textPrimary, fontSize = 13.sp)
+                Text(
+                    "${server.statusLabel} · ${server.connectionModeLabel}",
+                    color = server.statusColor,
+                    fontSize = 11.sp,
+                )
+            }
+            if (server.isIpcConnected) {
+                Text(
+                    "IPC",
+                    color = LitterTheme.accentStrong,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .background(
+                            LitterTheme.accentStrong.copy(alpha = 0.14f),
+                            RoundedCornerShape(4.dp),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            IconButton(
+                onClick = { showMenu = true },
+                modifier = Modifier.size(28.dp),
+            ) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "Server actions",
+                    tint = LitterTheme.textSecondary,
+                )
+            }
+        }
+
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            if (onRename != null) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    onClick = {
+                        showMenu = false
+                        onRename()
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Remove") },
+                onClick = {
+                    showMenu = false
+                    onRemove()
+                },
+            )
+        }
     }
 }
 
@@ -725,9 +852,43 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
     val appModel = LocalAppModel.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val apiKeyStore = remember(context) { OpenAIApiKeyStore(context.applicationContext) }
     var apiKey by remember { mutableStateOf("") }
     var isAuthWorking by remember { mutableStateOf(false) }
     var authError by remember { mutableStateOf<String?>(null) }
+    var hasStoredApiKey by remember { mutableStateOf(apiKeyStore.hasStoredKey()) }
+    val authLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        isAuthWorking = false
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val tokens = ChatGPTOAuthActivity.parseResult(result.data)
+            if (tokens == null) {
+                authError = "ChatGPT login returned incomplete credentials."
+                return@rememberLauncherForActivityResult
+            }
+            scope.launch {
+                isAuthWorking = true
+                try {
+                    appModel.rpc.loginAccount(
+                        server.serverId,
+                        LoginAccountParams.ChatgptAuthTokens(
+                            accessToken = tokens.accessToken,
+                            chatgptAccountId = tokens.accountId,
+                            chatgptPlanType = tokens.planType,
+                        ),
+                    )
+                    appModel.refreshSnapshot()
+                    authError = null
+                } catch (e: Exception) {
+                    authError = e.localizedMessage ?: e.message
+                }
+                isAuthWorking = false
+            }
+        } else {
+            authError = result.data?.getStringExtra(ChatGPTOAuthActivity.EXTRA_ERROR)
+        }
+    }
 
     val authColor = when (server.account) {
         is Account.Chatgpt -> LitterTheme.accent
@@ -743,6 +904,12 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
         is Account.Chatgpt -> "ChatGPT account"
         is Account.ApiKey -> "OpenAI API key"
         else -> null
+    }
+    val allowsLocalEnvApiKey = server.isLocal
+    val isChatGPTAccount = server.account is Account.Chatgpt
+
+    androidx.compose.runtime.LaunchedEffect(server.serverId, server.account) {
+        hasStoredApiKey = apiKeyStore.hasStoredKey()
     }
 
     Column(
@@ -760,25 +927,41 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
             if (server.isLocal && server.account != null) {
                 TextButton(onClick = {
                     scope.launch {
-                        try { appModel.rpc.logoutAccount(server.serverId); appModel.refreshSnapshot() } catch (_: Exception) {}
+                        try {
+                            ChatGPTOAuthTokenStore(context).clear()
+                            apiKeyStore.clear()
+                            appModel.rpc.logoutAccount(server.serverId)
+                            appModel.restartLocalServer()
+                        } catch (_: Exception) {}
                     }
                 }) { Text("Logout", color = LitterTheme.danger, fontSize = 12.sp) }
             }
         }
 
+        if (server.isLocal && hasStoredApiKey) {
+            Text(
+                "Local OpenAI API key is saved.",
+                color = LitterTheme.accent,
+                fontSize = 11.sp,
+            )
+        }
+
         // Login button
-        if (server.isLocal && server.account == null) {
+        if (server.isLocal && !isChatGPTAccount) {
             Button(
                 onClick = {
-                    scope.launch {
+                    try {
+                        authError = null
                         isAuthWorking = true
-                        try {
-                            val resp = appModel.rpc.loginAccount(server.serverId, LoginAccountParams.Chatgpt)
-                            if (resp is LoginAccountResponse.Chatgpt) {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resp.authUrl)))
-                            }
-                        } catch (e: Exception) { authError = e.message }
+                        authLauncher.launch(
+                            ChatGPTOAuthActivity.createIntent(
+                                context,
+                                ChatGPTOAuth.createLoginAttempt(),
+                            ),
+                        )
+                    } catch (e: Exception) {
                         isAuthWorking = false
+                        authError = e.localizedMessage ?: e.message
                     }
                 },
                 enabled = !isAuthWorking,
@@ -789,7 +972,20 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
             }
         }
 
-        if (server.isLocal) {
+        if (allowsLocalEnvApiKey) {
+            if (hasStoredApiKey) {
+                Text(
+                    "OpenAI API key saved in the local environment.",
+                    color = LitterTheme.textSecondary,
+                    fontSize = 11.sp,
+                )
+            } else if (isChatGPTAccount) {
+                Text(
+                    "Save an API key in the local Codex environment.",
+                    color = LitterTheme.textSecondary,
+                    fontSize = 11.sp,
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BasicTextField(
                     value = apiKey, onValueChange = { apiKey = it },
@@ -805,12 +1001,34 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
                         val key = apiKey.trim(); if (key.isEmpty()) return@TextButton
                         scope.launch {
                             isAuthWorking = true
-                            try { appModel.rpc.loginAccount(server.serverId, LoginAccountParams.ApiKey(apiKey = key)); appModel.refreshSnapshot(); apiKey = ""; authError = null } catch (e: Exception) { authError = e.message }
+                            try {
+                                apiKeyStore.save(key)
+                                if (server.account is Account.ApiKey) {
+                                    appModel.rpc.logoutAccount(server.serverId)
+                                }
+                                appModel.restartLocalServer()
+                                hasStoredApiKey = apiKeyStore.hasStoredKey()
+                                if (hasStoredApiKey) {
+                                    apiKey = ""
+                                } else {
+                                    authError = "API key did not persist locally."
+                                    return@launch
+                                }
+                                authError = null
+                            } catch (e: Exception) {
+                                authError = e.message
+                            }
                             isAuthWorking = false
                         }
                     },
                     enabled = apiKey.trim().isNotEmpty() && !isAuthWorking,
-                ) { Text("Save", color = LitterTheme.accent, fontSize = 12.sp) }
+                ) {
+                    Text(
+                        if (hasStoredApiKey) "Update API Key" else "Save API Key",
+                        color = LitterTheme.accent,
+                        fontSize = 12.sp,
+                    )
+                }
             }
         } else {
             Text(

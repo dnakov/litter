@@ -491,7 +491,7 @@ extension HydratedConversationItem {
     var conversationItem: ConversationItem {
         ConversationItem(
             id: id,
-            content: content.conversationItemContent,
+            content: content.conversationItemContent(itemId: id),
             sourceTurnId: sourceTurnId,
             sourceTurnIndex: sourceTurnIndex.map(Int.init),
             timestamp: timestamp.map(Date.init(timeIntervalSince1970:)) ?? Date(),
@@ -501,7 +501,7 @@ extension HydratedConversationItem {
 }
 
 private extension HydratedConversationItemContent {
-    var conversationItemContent: ConversationItemContent {
+    func conversationItemContent(itemId: String) -> ConversationItemContent {
         switch self {
         case .user(let data):
             let images = data.imageDataUris.compactMap(decodeBase64DataURI(_:)).map { ChatImage(data: $0) }
@@ -613,6 +613,39 @@ private extension HydratedConversationItemContent {
                     query: data.query,
                     actionJSON: data.actionJson,
                     isInProgress: data.isInProgress
+                )
+            )
+        case .widget(let data):
+            return .widget(
+                ConversationWidgetData(
+                    widgetState: WidgetState(
+                        callId: itemId,
+                        title: data.title,
+                        widgetHTML: data.widgetHtml,
+                        width: CGFloat(data.width),
+                        height: CGFloat(data.height),
+                        isFinalized: data.isFinalized
+                    ),
+                    status: data.status
+                )
+            )
+        case .userInputResponse(let data):
+            return .userInputResponse(
+                ConversationUserInputResponseData(
+                    questions: data.questions.map {
+                        ConversationUserInputQuestionData(
+                            id: $0.id,
+                            header: $0.header,
+                            question: $0.question,
+                            answer: $0.answer,
+                            options: $0.options.map {
+                                ConversationUserInputOptionData(
+                                    label: $0.label,
+                                    description: $0.description
+                                )
+                            }
+                        )
+                    }
                 )
             )
         case .divider(let data):

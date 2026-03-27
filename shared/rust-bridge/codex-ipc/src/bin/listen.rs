@@ -64,9 +64,9 @@ fn format_broadcast(tb: &TypedBroadcast) -> String {
 
 /// Connect at the raw frame level and print every envelope as JSON.
 async fn run_raw(socket_path: PathBuf) {
+    use codex_ipc::protocol::method::Method;
     use codex_ipc::transport::{frame, socket};
     use codex_ipc::{Envelope, InitializeParams, Request};
-    use codex_ipc::protocol::method::Method;
 
     eprintln!("connecting to {} (raw mode)", socket_path.display());
 

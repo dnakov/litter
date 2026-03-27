@@ -38,7 +38,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,9 +55,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.state.accentColor
-import com.litter.android.state.AppThreadLaunchConfig
-import com.litter.android.state.hasActiveTurn
-import com.litter.android.state.isConnected
 import com.litter.android.state.isIpcConnected
 import com.litter.android.state.resolvedModel
 import com.litter.android.state.statusColor
@@ -75,17 +74,24 @@ fun HeaderBar(
     thread: AppThreadSnapshot?,
     onBack: () -> Unit,
     onInfo: (() -> Unit)? = null,
+    showModelSelector: Boolean,
+    onToggleModelSelector: () -> Unit,
     transparentBackground: Boolean = false,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
     val snapshot by appModel.snapshot.collectAsState()
+    val launchState by appModel.launchState.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
-    var showModelSelector by remember { mutableStateOf(false) }
-
     val server = remember(snapshot, thread) {
         thread?.let { t -> snapshot?.servers?.find { it.serverId == t.key.serverId } }
     }
+    val pendingModelId = launchState.selectedModel.trim()
+    val pendingModelLabel = server?.availableModels
+        ?.firstOrNull { it.id == pendingModelId }
+        ?.displayName
+        ?.ifBlank { pendingModelId }
+        ?: pendingModelId.ifBlank { null }
 
     Column(
         modifier = Modifier
@@ -137,11 +143,11 @@ fun HeaderBar(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .clickable { showModelSelector = !showModelSelector },
+                    .clickable { onToggleModelSelector() },
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = thread?.resolvedModel ?: "",
+                        text = pendingModelLabel ?: thread?.resolvedModel.orEmpty(),
                         color = LitterTheme.textPrimary,
                         fontSize = 13.sp,
                         maxLines = 1,
@@ -205,20 +211,25 @@ fun HeaderBar(
                                     .launchUrl(context, Uri.parse(authUrl))
                                 return@launch
                             }
-                            val config = AppThreadLaunchConfig(model = thread.model)
                             if (server?.isIpcConnected == true) {
                                 try {
                                     appModel.externalResumeThread(thread.key)
                                 } catch (_: Exception) {
                                     appModel.rpc.threadResume(
                                         thread.key.serverId,
-                                        config.toThreadResumeParams(thread.key.threadId),
+                                        appModel.launchState.threadResumeParams(
+                                            thread.key.threadId,
+                                            cwdOverride = thread.info.cwd,
+                                        ),
                                     )
                                 }
                             } else {
                                 appModel.rpc.threadResume(
                                     thread.key.serverId,
-                                    config.toThreadResumeParams(thread.key.threadId),
+                                    appModel.launchState.threadResumeParams(
+                                        thread.key.threadId,
+                                        cwdOverride = thread.info.cwd,
+                                    ),
                                 )
                             }
                         } finally {
@@ -276,12 +287,10 @@ fun HeaderBar(
 }
 
 /**
- * Holds pending model/effort/fast-mode overrides selected in the header.
- * Applied on the next [TurnStartParams] sent by the composer.
+ * Holds the fast-mode override selected in the header.
+ * Launch model/effort state lives in [AppLaunchState].
  */
 object HeaderOverrides {
-    var pendingModel: String? = null
-    var pendingEffort: String? = null
     var pendingFastMode: Boolean = false
 }
 
@@ -290,9 +299,42 @@ private fun ModelSelectorPanel(
     thread: AppThreadSnapshot?,
     availableModels: List<uniffi.codex_mobile_client.Model>,
 ) {
-    var selectedModel by remember { mutableStateOf(thread?.model) }
-    var selectedEffort by remember { mutableStateOf(thread?.reasoningEffort) }
+    val appModel = LocalAppModel.current
+    val launchState by appModel.launchState.snapshot.collectAsState()
+    val selectedModel = launchState.selectedModel
+        .takeIf { it.isNotBlank() }
+        ?: thread?.model
+        ?: availableModels.firstOrNull { it.isDefault }?.id
+        ?: availableModels.firstOrNull()?.id
     var fastMode by remember { mutableStateOf(HeaderOverrides.pendingFastMode) }
+    val selectedModelDefinition by remember(selectedModel, availableModels) {
+        derivedStateOf {
+            availableModels.firstOrNull { it.id == selectedModel }
+                ?: availableModels.firstOrNull { it.isDefault }
+                ?: availableModels.firstOrNull()
+        }
+    }
+    val supportedEfforts = remember(selectedModelDefinition) {
+        selectedModelDefinition?.supportedReasoningEfforts ?: emptyList()
+    }
+    val selectedEffort = launchState.reasoningEffort
+        .takeIf { pending -> pending.isNotBlank() && supportedEfforts.any { effortLabel(it.reasoningEffort) == pending } }
+        ?: thread?.reasoningEffort
+            ?.takeIf { current -> supportedEfforts.any { effortLabel(it.reasoningEffort) == current } }
+        ?: selectedModelDefinition?.defaultReasoningEffort?.let(::effortLabel)
+
+    LaunchedEffect(launchState.reasoningEffort, selectedModelDefinition, supportedEfforts) {
+        val pendingEffort = launchState.reasoningEffort.trim()
+        val defaultEffort = selectedModelDefinition?.defaultReasoningEffort
+        if (pendingEffort.isEmpty() || defaultEffort == null || supportedEfforts.isEmpty()) {
+            return@LaunchedEffect
+        }
+        if (supportedEfforts.none { effortLabel(it.reasoningEffort) == pendingEffort }) {
+            appModel.launchState.updateReasoningEffort(
+                effortLabel(defaultEffort),
+            )
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -315,12 +357,14 @@ private fun ModelSelectorPanel(
                 FilterChip(
                     selected = isSelected,
                     onClick = {
-                        selectedModel = model.id
-                        HeaderOverrides.pendingModel = model.id
+                        appModel.launchState.updateSelectedModel(model.id)
+                        appModel.launchState.updateReasoningEffort(
+                            model.defaultReasoningEffort.let(::effortLabel),
+                        )
                     },
                     label = {
                         Text(
-                            text = model.displayName ?: model.id,
+                            text = model.displayName.ifBlank { model.id },
                             fontSize = 11.sp,
                         )
                     },
@@ -332,28 +376,38 @@ private fun ModelSelectorPanel(
             }
         }
 
-        // Reasoning effort chips
-        val efforts = listOf("low", "medium", "high")
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Effort", color = LitterTheme.textSecondary, fontSize = 11.sp)
-            Spacer(Modifier.width(4.dp))
-            for (effort in efforts) {
-                val isSelected = selectedEffort == effort
-                FilterChip(
-                    selected = isSelected,
-                    onClick = {
-                        selectedEffort = effort
-                        HeaderOverrides.pendingEffort = effort
-                    },
-                    label = { Text(effort, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = LitterTheme.accent,
-                        selectedLabelColor = Color.Black,
-                    ),
-                )
+        if (availableModels.isEmpty()) {
+            Text(
+                text = "Loading models…",
+                color = LitterTheme.textMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Effort", color = LitterTheme.textSecondary, fontSize = 11.sp)
+                Spacer(Modifier.width(4.dp))
+            }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(supportedEfforts) { option ->
+                    val effort = effortLabel(option.reasoningEffort)
+                    FilterChip(
+                        selected = selectedEffort == effort,
+                        onClick = {
+                            appModel.launchState.updateReasoningEffort(effort)
+                        },
+                        label = { Text(effort, fontSize = 10.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = LitterTheme.accent,
+                            selectedLabelColor = Color.Black,
+                        ),
+                    )
+                }
             }
         }
 
@@ -377,3 +431,13 @@ private fun ModelSelectorPanel(
         }
     }
 }
+
+private fun effortLabel(value: uniffi.codex_mobile_client.ReasoningEffort): String =
+    when (value) {
+        uniffi.codex_mobile_client.ReasoningEffort.NONE -> "none"
+        uniffi.codex_mobile_client.ReasoningEffort.MINIMAL -> "minimal"
+        uniffi.codex_mobile_client.ReasoningEffort.LOW -> "low"
+        uniffi.codex_mobile_client.ReasoningEffort.MEDIUM -> "medium"
+        uniffi.codex_mobile_client.ReasoningEffort.HIGH -> "high"
+        uniffi.codex_mobile_client.ReasoningEffort.X_HIGH -> "xhigh"
+    }

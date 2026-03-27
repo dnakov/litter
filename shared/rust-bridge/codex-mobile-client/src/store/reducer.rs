@@ -4,14 +4,15 @@ use std::sync::RwLock;
 use tokio::sync::broadcast;
 
 use crate::conversation::{
-    AssistantMessageData, ConversationItem, ConversationItemContent, make_error_item,
+    AssistantMessageData, ConversationItem, ConversationItemContent, UserInputResponseData,
+    UserInputResponseOptionData, UserInputResponseQuestionData, make_error_item,
     make_model_rerouted_item, make_turn_diff_item,
 };
 use crate::session::connection::ServerConfig;
 use crate::session::events::UiEvent;
 use crate::types::{
-    PendingApproval, PendingUserInputOption, PendingUserInputQuestion, PendingUserInputRequest,
-    ThreadInfo, ThreadKey, ThreadSummaryStatus, generated,
+    PendingApproval, PendingUserInputAnswer, PendingUserInputOption, PendingUserInputQuestion,
+    PendingUserInputRequest, ThreadInfo, ThreadKey, ThreadSummaryStatus, generated,
 };
 use crate::uniffi_shared::{
     AppVoiceSessionPhase, AppVoiceTranscriptEntry, AppVoiceTranscriptUpdate,
@@ -227,10 +228,13 @@ impl AppStoreReducer {
         self.emit(AppUpdate::FullResync);
     }
 
-    pub fn upsert_thread_snapshot(&self, thread: ThreadSnapshot) {
+    pub fn upsert_thread_snapshot(&self, mut thread: ThreadSnapshot) {
         let key = thread.key.clone();
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            if let Some(existing) = snapshot.threads.get(&key) {
+                preserve_local_overlay_items(existing, &mut thread);
+            }
             snapshot.threads.insert(key.clone(), thread);
         }
         self.emit(AppUpdate::ThreadChanged { key });
@@ -280,6 +284,14 @@ impl AppStoreReducer {
         self.emit(AppUpdate::PendingApprovalsChanged { approvals });
     }
 
+    pub fn replace_pending_user_inputs(&self, requests: Vec<PendingUserInputRequest>) {
+        {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            snapshot.pending_user_inputs = requests.clone();
+        }
+        self.emit(AppUpdate::PendingUserInputsChanged { requests });
+    }
+
     pub fn resolve_approval(&self, request_id: &str) {
         let approvals = {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
@@ -300,6 +312,48 @@ impl AppStoreReducer {
             snapshot.pending_user_inputs.clone()
         };
         self.emit(AppUpdate::PendingUserInputsChanged { requests });
+    }
+
+    pub fn resolve_pending_user_input_with_response(
+        &self,
+        request_id: &str,
+        answers: Vec<PendingUserInputAnswer>,
+    ) {
+        let (requests, thread_key) = {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            let request = snapshot
+                .pending_user_inputs
+                .iter()
+                .find(|request| request.id == request_id)
+                .cloned();
+
+            let mut thread_key = None;
+            if let Some(request) = request {
+                thread_key = Some(ThreadKey {
+                    server_id: request.server_id.clone(),
+                    thread_id: request.thread_id.clone(),
+                });
+                if let Some(thread) = snapshot.threads.get_mut(&ThreadKey {
+                    server_id: request.server_id.clone(),
+                    thread_id: request.thread_id.clone(),
+                }) {
+                    let item = answered_user_input_item(&request, &answers);
+                    thread
+                        .local_overlay_items
+                        .retain(|existing| !is_duplicate_overlay_item(&item, existing));
+                    thread.local_overlay_items.push(item);
+                }
+            }
+
+            snapshot
+                .pending_user_inputs
+                .retain(|request| request.id != request_id);
+            (snapshot.pending_user_inputs.clone(), thread_key)
+        };
+        self.emit(AppUpdate::PendingUserInputsChanged { requests });
+        if let Some(key) = thread_key {
+            self.emit(AppUpdate::ThreadChanged { key });
+        }
     }
 
     pub fn update_server_account(
@@ -568,7 +622,7 @@ impl AppStoreReducer {
                 });
             }
             UiEvent::RealtimeStarted { key, notification } => {
-self.voice_state.reset_thread(key);
+                self.voice_state.reset_thread(key);
                 {
                     let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
                     snapshot.voice_session.active_thread = Some(key.clone());
@@ -594,7 +648,10 @@ self.voice_state.reset_thread(key);
                 self.emit(AppUpdate::ThreadChanged { key: key.clone() });
             }
             UiEvent::RealtimeTranscriptUpdated { key, role, text } => {
-                for update in self.voice_state.handle_typed_transcript_delta(key, role, text) {
+                for update in self
+                    .voice_state
+                    .handle_typed_transcript_delta(key, role, text)
+                {
                     match update {
                         VoiceDerivedUpdate::Transcript(update) => {
                             self.apply_voice_transcript_update(key, &update);
@@ -672,7 +729,7 @@ self.voice_state.reset_thread(key);
                 });
             }
             UiEvent::RealtimeError { key, notification } => {
-{
+                {
                     let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
                     snapshot.voice_session.phase = Some(AppVoiceSessionPhase::Error);
                     snapshot.voice_session.last_error = Some(notification.message.clone());
@@ -688,7 +745,7 @@ self.voice_state.reset_thread(key);
                 });
             }
             UiEvent::RealtimeClosed { key, notification } => {
-self.voice_state.clear_thread(key);
+                self.voice_state.clear_thread(key);
                 {
                     let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
                     if let Some(thread) = snapshot.threads.get_mut(key) {
@@ -845,21 +902,49 @@ self.voice_state.clear_thread(key);
     fn emit(&self, update: AppUpdate) {
         match &update {
             AppUpdate::FullResync => tracing::debug!(target: "store", "emit FullResync"),
-            AppUpdate::ServerChanged { server_id } => tracing::debug!(target: "store", server_id, "emit ServerChanged"),
-            AppUpdate::ServerRemoved { server_id } => tracing::debug!(target: "store", server_id, "emit ServerRemoved"),
-            AppUpdate::ThreadChanged { key } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit ThreadChanged"),
-            AppUpdate::ThreadRemoved { key } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit ThreadRemoved"),
-            AppUpdate::ActiveThreadChanged { key } => tracing::debug!(target: "store", thread_id = ?key.as_ref().map(|k| &k.thread_id), "emit ActiveThreadChanged"),
-            AppUpdate::PendingApprovalsChanged { approvals } => tracing::debug!(target: "store", count = approvals.len(), "emit PendingApprovalsChanged"),
-            AppUpdate::PendingUserInputsChanged { requests } => tracing::debug!(target: "store", count = requests.len(), "emit PendingUserInputsChanged"),
-            AppUpdate::VoiceSessionChanged => tracing::debug!(target: "store", "emit VoiceSessionChanged"),
-            AppUpdate::RealtimeTranscriptUpdated { key, .. } => tracing::trace!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeTranscriptUpdated"),
-            AppUpdate::RealtimeHandoffRequested { key, .. } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeHandoffRequested"),
-            AppUpdate::RealtimeSpeechStarted { key } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeSpeechStarted"),
-            AppUpdate::RealtimeStarted { key, .. } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeStarted"),
+            AppUpdate::ServerChanged { server_id } => {
+                tracing::debug!(target: "store", server_id, "emit ServerChanged")
+            }
+            AppUpdate::ServerRemoved { server_id } => {
+                tracing::debug!(target: "store", server_id, "emit ServerRemoved")
+            }
+            AppUpdate::ThreadChanged { key } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit ThreadChanged")
+            }
+            AppUpdate::ThreadRemoved { key } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit ThreadRemoved")
+            }
+            AppUpdate::ActiveThreadChanged { key } => {
+                tracing::debug!(target: "store", thread_id = ?key.as_ref().map(|k| &k.thread_id), "emit ActiveThreadChanged")
+            }
+            AppUpdate::PendingApprovalsChanged { approvals } => {
+                tracing::debug!(target: "store", count = approvals.len(), "emit PendingApprovalsChanged")
+            }
+            AppUpdate::PendingUserInputsChanged { requests } => {
+                tracing::debug!(target: "store", count = requests.len(), "emit PendingUserInputsChanged")
+            }
+            AppUpdate::VoiceSessionChanged => {
+                tracing::debug!(target: "store", "emit VoiceSessionChanged")
+            }
+            AppUpdate::RealtimeTranscriptUpdated { key, .. } => {
+                tracing::trace!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeTranscriptUpdated")
+            }
+            AppUpdate::RealtimeHandoffRequested { key, .. } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeHandoffRequested")
+            }
+            AppUpdate::RealtimeSpeechStarted { key } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeSpeechStarted")
+            }
+            AppUpdate::RealtimeStarted { key, .. } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeStarted")
+            }
             AppUpdate::RealtimeOutputAudioDelta { .. } => {} // too noisy even for trace
-            AppUpdate::RealtimeError { key, .. } => tracing::warn!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeError"),
-            AppUpdate::RealtimeClosed { key, .. } => tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeClosed"),
+            AppUpdate::RealtimeError { key, .. } => {
+                tracing::warn!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeError")
+            }
+            AppUpdate::RealtimeClosed { key, .. } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeClosed")
+            }
         }
         let _ = self.updates_tx.send(update);
     }
@@ -981,6 +1066,80 @@ fn append_assistant_delta(thread: &mut ThreadSnapshot, item_id: &str, delta: &st
     };
     if let ConversationItemContent::Assistant(message) = &mut item.content {
         message.text.push_str(delta);
+    }
+}
+
+const USER_INPUT_RESPONSE_ITEM_PREFIX: &str = "user-input-response:";
+
+fn preserve_local_overlay_items(source: &ThreadSnapshot, target: &mut ThreadSnapshot) {
+    for item in &source.local_overlay_items {
+        if target
+            .items
+            .iter()
+            .all(|existing| !is_duplicate_overlay_item(item, existing))
+            && target
+                .local_overlay_items
+                .iter()
+                .all(|existing| !is_duplicate_overlay_item(item, existing))
+        {
+            target.local_overlay_items.push(item.clone());
+        }
+    }
+}
+
+fn is_duplicate_overlay_item(local: &ConversationItem, existing: &ConversationItem) -> bool {
+    if local.id == existing.id && local.id.starts_with(USER_INPUT_RESPONSE_ITEM_PREFIX) {
+        return true;
+    }
+
+    match (&local.content, &existing.content) {
+        (
+            ConversationItemContent::UserInputResponse(local_data),
+            ConversationItemContent::UserInputResponse(existing_data),
+        ) => local.source_turn_id == existing.source_turn_id && local_data == existing_data,
+        _ => false,
+    }
+}
+
+fn answered_user_input_item(
+    request: &PendingUserInputRequest,
+    answers: &[PendingUserInputAnswer],
+) -> ConversationItem {
+    let content = ConversationItemContent::UserInputResponse(UserInputResponseData {
+        questions: request
+            .questions
+            .iter()
+            .map(|question| {
+                let answer = answers
+                    .iter()
+                    .find(|answer| answer.question_id == question.id)
+                    .map(|answer| answer.answers.join("\n"))
+                    .unwrap_or_default();
+                UserInputResponseQuestionData {
+                    id: question.id.clone(),
+                    header: question.header.clone(),
+                    question: question.question.clone(),
+                    answer,
+                    options: question
+                        .options
+                        .iter()
+                        .map(|option| UserInputResponseOptionData {
+                            label: option.label.clone(),
+                            description: option.description.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    });
+
+    ConversationItem {
+        id: format!("{USER_INPUT_RESPONSE_ITEM_PREFIX}{}", request.id),
+        content,
+        source_turn_id: Some(request.turn_id.clone()),
+        source_turn_index: None,
+        timestamp: None,
+        is_from_user_turn_boundary: false,
     }
 }
 
@@ -1168,6 +1327,112 @@ mod tests {
             }
             other => panic!("expected model reroute divider, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolved_user_input_appends_response_item() {
+        let reducer = AppStoreReducer::new();
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread".to_string(),
+        };
+        reducer
+            .upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread")));
+        reducer.replace_pending_user_inputs(vec![PendingUserInputRequest {
+            id: "req-1".to_string(),
+            server_id: key.server_id.clone(),
+            thread_id: key.thread_id.clone(),
+            turn_id: "turn-1".to_string(),
+            item_id: "tool-1".to_string(),
+            questions: vec![PendingUserInputQuestion {
+                id: "q-1".to_string(),
+                header: Some("Choice".to_string()),
+                question: "Pick one".to_string(),
+                is_other_allowed: false,
+                is_secret: false,
+                options: vec![PendingUserInputOption {
+                    label: "A".to_string(),
+                    description: Some("First".to_string()),
+                }],
+            }],
+            requester_agent_nickname: None,
+            requester_agent_role: None,
+        }]);
+
+        reducer.resolve_pending_user_input_with_response(
+            "req-1",
+            vec![PendingUserInputAnswer {
+                question_id: "q-1".to_string(),
+                answers: vec!["A".to_string()],
+            }],
+        );
+
+        let snapshot = reducer.snapshot();
+        let thread = snapshot.threads.get(&key).expect("thread exists");
+        let item = thread
+            .local_overlay_items
+            .iter()
+            .find(|item| item.id == "user-input-response:req-1")
+            .expect("response item exists");
+        match &item.content {
+            ConversationItemContent::UserInputResponse(data) => {
+                assert_eq!(data.questions.len(), 1);
+                assert_eq!(data.questions[0].answer, "A");
+            }
+            other => panic!("expected user input response item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_backed_user_input_response_supersedes_local_synthetic_copy() {
+        let reducer = AppStoreReducer::new();
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread".to_string(),
+        };
+        let mut local = ThreadSnapshot::from_info("srv", make_thread_info("thread"));
+        local.items.push(ConversationItem {
+            id: "user-input-response:req-1".to_string(),
+            content: ConversationItemContent::UserInputResponse(UserInputResponseData {
+                questions: vec![UserInputResponseQuestionData {
+                    id: "q-1".to_string(),
+                    header: Some("Choice".to_string()),
+                    question: "Pick one".to_string(),
+                    answer: "A".to_string(),
+                    options: vec![],
+                }],
+            }),
+            source_turn_id: Some("turn-1".to_string()),
+            source_turn_index: None,
+            timestamp: None,
+            is_from_user_turn_boundary: false,
+        });
+        reducer.upsert_thread_snapshot(local);
+
+        let mut server = ThreadSnapshot::from_info("srv", make_thread_info("thread"));
+        server.items.push(ConversationItem {
+            id: "server-item-1".to_string(),
+            content: ConversationItemContent::UserInputResponse(UserInputResponseData {
+                questions: vec![UserInputResponseQuestionData {
+                    id: "q-1".to_string(),
+                    header: Some("Choice".to_string()),
+                    question: "Pick one".to_string(),
+                    answer: "A".to_string(),
+                    options: vec![],
+                }],
+            }),
+            source_turn_id: Some("turn-1".to_string()),
+            source_turn_index: None,
+            timestamp: None,
+            is_from_user_turn_boundary: false,
+        });
+        reducer.upsert_thread_snapshot(server);
+
+        let snapshot = reducer.snapshot();
+        let thread = snapshot.threads.get(&key).expect("thread exists");
+        assert!(thread.local_overlay_items.is_empty());
+        assert_eq!(thread.items.len(), 1);
+        assert_eq!(thread.items[0].id, "server-item-1");
     }
 }
 

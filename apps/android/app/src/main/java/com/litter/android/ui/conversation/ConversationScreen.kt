@@ -33,13 +33,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -63,19 +66,21 @@ import com.litter.android.state.contextPercent
 import com.litter.android.state.hasActiveTurn
 import com.litter.android.state.isIpcConnected
 import com.litter.android.ui.ChatWallpaperBackground
+import com.litter.android.ui.ConversationPrefs
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.WallpaperManager
 import com.litter.android.ui.WallpaperType
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.HydratedConversationItemContent
+import uniffi.codex_mobile_client.ThreadSetNameParams
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.TurnInterruptParams
 
 /**
  * Main conversation screen with turn grouping, scroll-to-bottom FAB,
  * pinned context strip, gradient fade, and inline user input.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationScreen(
     threadKey: ThreadKey,
@@ -91,36 +96,74 @@ fun ConversationScreen(
     val thread = remember(snapshot, threadKey) {
         snapshot?.threads?.find { it.key == threadKey }
     }
+    val server = remember(snapshot, threadKey) {
+        snapshot?.servers?.find { it.serverId == threadKey.serverId }
+    }
     val items = thread?.hydratedConversationItems ?: emptyList()
     val isThinking = thread?.hasActiveTurn == true
-    val timelineEntries = remember(items, isThinking) { buildTimelineEntries(items, isThinking) }
+    val collapseTurns = ConversationPrefs.areTurnsCollapsed
+    val agentDirectoryVersion = snapshot?.agentDirectoryVersion ?: 0uL
+    val transcriptTurns = remember(items, thread?.activeTurnId, isThinking, collapseTurns) {
+        buildTranscriptTurns(
+            items = items,
+            activeTurnId = thread?.activeTurnId,
+            isStreaming = isThinking,
+            expandedRecentTurnCount = if (collapseTurns) 1 else Int.MAX_VALUE,
+        )
+    }
+    var expandedTurnIds by remember(threadKey, collapseTurns) { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(transcriptTurns.map { it.id to it.isCollapsedByDefault }) {
+        val validIds = transcriptTurns.mapTo(mutableSetOf()) { it.id }
+        expandedTurnIds = expandedTurnIds.intersect(validIds)
+    }
 
     // Load thread content on first open — resume it so Rust hydrates conversation items
     LaunchedEffect(threadKey) {
         try {
             appModel.store.setActiveThread(threadKey)
             val server = appModel.snapshot.value?.servers?.find { it.serverId == threadKey.serverId }
+            val cwdOverride = thread?.info?.cwd
             if (server?.isIpcConnected == true) {
                 try {
                     appModel.externalResumeThread(threadKey)
                 } catch (_: Exception) {
                     appModel.rpc.threadResume(
                         threadKey.serverId,
-                        com.litter.android.state.AppThreadLaunchConfig().toThreadResumeParams(threadKey.threadId),
+                        appModel.launchState.threadResumeParams(
+                            threadKey.threadId,
+                            cwdOverride = cwdOverride,
+                        ),
                     )
                 }
             } else {
                 appModel.rpc.threadResume(
                     threadKey.serverId,
-                    com.litter.android.state.AppThreadLaunchConfig().toThreadResumeParams(threadKey.threadId),
+                    appModel.launchState.threadResumeParams(
+                        threadKey.threadId,
+                        cwdOverride = cwdOverride,
+                    ),
                 )
             }
             appModel.refreshSnapshot()
         } catch (_: Exception) {}
     }
 
-    // Header model selector toggle
+    LaunchedEffect(thread?.info?.cwd) {
+        appModel.launchState.syncFromThread(thread)
+    }
+
     var showModelSelector by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameDraft by remember(threadKey) { mutableStateOf("") }
+    var showPermissionsSheet by remember { mutableStateOf(false) }
+    var showExperimentalSheet by remember { mutableStateOf(false) }
+    var showSkillsSheet by remember { mutableStateOf(false) }
+    var slashErrorMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showModelSelector, server?.health, server?.account, server?.availableModels, server?.rateLimits) {
+        if (showModelSelector || (server?.account != null && server.rateLimits == null)) {
+            appModel.loadConversationMetadataIfNeeded(threadKey.serverId)
+        }
+    }
 
     // Pending user input for this thread
     val pendingInput = remember(snapshot, threadKey) {
@@ -168,9 +211,9 @@ fun ConversationScreen(
         }
     }
 
-    LaunchedEffect(timelineEntries.size, isAtBottom) {
-        if (isAtBottom && timelineEntries.isNotEmpty()) {
-            listState.animateScrollToItem(timelineEntries.size)
+    LaunchedEffect(transcriptTurns.size, isAtBottom) {
+        if (isAtBottom && transcriptTurns.isNotEmpty()) {
+            listState.animateScrollToItem(transcriptTurns.size)
         }
     }
 
@@ -198,6 +241,8 @@ fun ConversationScreen(
                     thread = thread,
                     onBack = onBack,
                     onInfo = onInfo,
+                    showModelSelector = showModelSelector,
+                    onToggleModelSelector = { showModelSelector = !showModelSelector },
                     transparentBackground = hasWallpaper,
                 )
             }
@@ -235,53 +280,78 @@ fun ConversationScreen(
                         item { Spacer(Modifier.height(16.dp)) }
 
                         items(
-                            items = timelineEntries,
-                            key = { entry ->
-                                when (entry) {
-                                    is TimelineEntry.Single -> entry.item.id
-                                    is TimelineEntry.Exploration -> entry.group.id
+                            items = transcriptTurns,
+                            key = { it.id },
+                        ) { turn ->
+                            val isExpanded = !turn.isCollapsedByDefault || expandedTurnIds.contains(turn.id)
+                            if (isExpanded) {
+                                val timelineEntries = remember(turn.items, turn.isActiveTurn) {
+                                    buildTimelineEntries(turn.items, turn.isActiveTurn)
                                 }
-                            },
-                        ) { entry ->
-                            when (entry) {
-                                is TimelineEntry.Single -> {
-                                    ConversationTimelineItem(
-                                        item = entry.item,
-                                        isLiveTurn = isThinking,
-                                        onEditMessage = { turnIndex ->
-                                            scope.launch {
-                                                val prefill = appModel.store.editMessage(threadKey, turnIndex)
-                                                appModel.queueComposerPrefill(prefill)
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    timelineEntries.forEach { entry ->
+                                        when (entry) {
+                                            is TimelineEntry.Single -> {
+                                                ConversationTimelineItem(
+                                                    item = entry.item,
+                                                    serverId = threadKey.serverId,
+                                                    agentDirectoryVersion = agentDirectoryVersion,
+                                                    isLiveTurn = turn.isActiveTurn,
+                                                    onEditMessage = { turnIndex ->
+                                                        scope.launch {
+                                                            val prefill = appModel.store.editMessage(threadKey, turnIndex)
+                                                            appModel.queueComposerPrefill(threadKey, prefill)
+                                                        }
+                                                    },
+                                                    onForkFromMessage = { turnIndex ->
+                                                        scope.launch {
+                                                            try {
+                                                                val newKey = appModel.store.forkThreadFromMessage(
+                                                                    threadKey,
+                                                                    turnIndex,
+                                                                    appModel.launchState.threadForkParams(
+                                                                        threadKey.threadId,
+                                                                        cwdOverride = thread.info.cwd,
+                                                                    ),
+                                                                )
+                                                                appModel.store.setActiveThread(newKey)
+                                                                appModel.refreshSnapshot()
+                                                            } catch (_: Exception) {}
+                                                        }
+                                                    },
+                                                )
                                             }
-                                        },
-                                        onForkFromMessage = { turnIndex ->
-                                            scope.launch {
-                                                try {
-                                                    val config = com.litter.android.state.AppThreadLaunchConfig(model = thread.model)
-                                                    val cwd = thread.info.cwd ?: "~"
-                                                    val newKey = appModel.store.forkThreadFromMessage(
-                                                        threadKey, turnIndex, config.toThreadForkParams(threadKey.threadId, cwd),
-                                                    )
-                                                    appModel.store.setActiveThread(newKey)
-                                                    appModel.refreshSnapshot()
-                                                } catch (_: Exception) {}
-                                            }
-                                        },
-                                    )
-                                }
 
-                                is TimelineEntry.Exploration -> {
-                                    ExplorationGroupRow(group = entry.group)
+                                            is TimelineEntry.Exploration -> {
+                                                ExplorationGroupRow(group = entry.group)
+                                            }
+                                        }
+                                    }
+
+                                    if (turn.isActiveTurn) {
+                                        StreamingCursor()
+                                    }
+
+                                    if (turn.isCollapsedByDefault) {
+                                        Text(
+                                            text = "Show less",
+                                            color = LitterTheme.textMuted,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier
+                                                .clickable {
+                                                    expandedTurnIds = expandedTurnIds - turn.id
+                                                }
+                                                .padding(top = 2.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                CollapsedTurnCard(turn = turn) {
+                                    expandedTurnIds = expandedTurnIds + turn.id
                                 }
                             }
-                            Spacer(Modifier.height(4.dp))
-                        }
-
-                        // Streaming cursor
-                        if (isThinking) {
-                            item {
-                                StreamingCursor()
-                            }
+                            Spacer(Modifier.height(6.dp))
                         }
 
                         item { Spacer(Modifier.height(80.dp)) }
@@ -289,11 +359,11 @@ fun ConversationScreen(
                 }
 
                 // Scroll-to-bottom FAB
-                if (!isAtBottom && timelineEntries.isNotEmpty()) {
+                if (!isAtBottom && transcriptTurns.isNotEmpty()) {
                     SmallFloatingActionButton(
                         onClick = {
                             scope.launch {
-                                listState.animateScrollToItem(timelineEntries.size)
+                                listState.animateScrollToItem(transcriptTurns.size)
                             }
                         },
                         modifier = Modifier
@@ -303,29 +373,6 @@ fun ConversationScreen(
                         contentColor = LitterTheme.textPrimary,
                     ) {
                         Icon(Icons.Default.KeyboardArrowDown, "Scroll to bottom", modifier = Modifier.size(20.dp))
-                    }
-                }
-
-                // Interrupt FAB
-                if (isThinking) {
-                    FloatingActionButton(
-                        onClick = {
-                            scope.launch {
-                                val turnId = thread?.activeTurnId ?: return@launch
-                                appModel.rpc.turnInterrupt(
-                                    threadKey.serverId,
-                                    TurnInterruptParams(threadId = threadKey.threadId, turnId = turnId),
-                                )
-                            }
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(16.dp),
-                        containerColor = LitterTheme.danger,
-                        contentColor = Color.White,
-                        elevation = FloatingActionButtonDefaults.elevation(0.dp),
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = "Interrupt")
                     }
                 }
             }
@@ -374,20 +421,147 @@ fun ConversationScreen(
                     // Composer bar
                     ComposerBar(
                         threadKey = threadKey,
+                        activeTurnId = thread?.activeTurnId,
                         contextPercent = thread?.contextPercent ?: 0,
                         isThinking = isThinking,
-                        rateLimits = remember(snapshot, threadKey) {
-                            snapshot?.servers?.firstOrNull { it.serverId == threadKey.serverId }?.rateLimits
-                        },
+                        rateLimits = server?.rateLimits,
                         onToggleModelSelector = { showModelSelector = !showModelSelector },
                         onNavigateToSessions = onNavigateToSessions,
                         onShowDirectoryPicker = onShowDirectoryPicker,
+                        onShowRenameDialog = { initialName ->
+                            val trimmed = initialName?.trim().orEmpty()
+                            if (trimmed.isNotEmpty()) {
+                                scope.launch {
+                                    try {
+                                        appModel.rpc.threadSetName(
+                                            threadKey.serverId,
+                                            ThreadSetNameParams(
+                                                threadId = threadKey.threadId,
+                                                name = trimmed,
+                                            ),
+                                        )
+                                        appModel.refreshSnapshot()
+                                    } catch (e: Exception) {
+                                        slashErrorMessage = e.message ?: "Failed to rename conversation"
+                                    }
+                                }
+                            } else {
+                                renameDraft = thread?.info?.title?.takeIf { it.isNotBlank() }.orEmpty()
+                                showRenameDialog = true
+                            }
+                        },
+                        onShowPermissionsSheet = { showPermissionsSheet = true },
+                        onShowExperimentalSheet = { showExperimentalSheet = true },
+                        onShowSkillsSheet = { showSkillsSheet = true },
+                        onSlashError = { slashErrorMessage = it },
                         pendingUserInput = pendingInput,
                     )
 
                     Spacer(Modifier.navigationBarsPadding())
                 }
             }
+        }
+
+        if (showPermissionsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showPermissionsSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                ComposerPermissionsSheet(
+                    onDismiss = { showPermissionsSheet = false },
+                )
+            }
+        }
+
+        if (showExperimentalSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showExperimentalSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                ComposerExperimentalSheet(
+                    serverId = threadKey.serverId,
+                    onDismiss = { showExperimentalSheet = false },
+                    onError = { slashErrorMessage = it },
+                )
+            }
+        }
+
+        if (showSkillsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showSkillsSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                ComposerSkillsSheet(
+                    serverId = threadKey.serverId,
+                    cwd = thread?.info?.cwd ?: appModel.launchState.snapshot.value.currentCwd.ifBlank { "/" },
+                    onDismiss = { showSkillsSheet = false },
+                    onError = { slashErrorMessage = it },
+                )
+            }
+        }
+
+        if (showRenameDialog) {
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                title = { Text("Rename Thread") },
+                text = {
+                    OutlinedTextField(
+                        value = renameDraft,
+                        onValueChange = { renameDraft = it },
+                        label = { Text("New thread title") },
+                        singleLine = true,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val nextTitle = renameDraft.trim()
+                            if (nextTitle.isEmpty()) {
+                                showRenameDialog = false
+                                return@TextButton
+                            }
+                            showRenameDialog = false
+                            scope.launch {
+                                try {
+                                    appModel.rpc.threadSetName(
+                                        threadKey.serverId,
+                                        ThreadSetNameParams(
+                                            threadId = threadKey.threadId,
+                                            name = nextTitle,
+                                        ),
+                                    )
+                                    appModel.refreshSnapshot()
+                                } catch (e: Exception) {
+                                    slashErrorMessage = e.message ?: "Failed to rename conversation"
+                                }
+                            }
+                        },
+                    ) {
+                        Text("Rename")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) {
+                        Text("Cancel")
+                    }
+                },
+            )
+        }
+
+        slashErrorMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { slashErrorMessage = null },
+                title = { Text("Slash Command Error") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = { slashErrorMessage = null }) {
+                        Text("OK")
+                    }
+                },
+            )
         }
     }
 }

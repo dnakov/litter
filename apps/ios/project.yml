@@ -92,6 +92,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UIBackgroundModes: "audio fetch remote-notification"
+        LOG_COLLECTOR_URL: $(LOG_COLLECTOR_URL)
       configs:
         Debug:
           OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lcodex_mobile_client"

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{error, info, warn};
 
 use crate::client::handle::{IpcClient, IpcClientConfig};
@@ -45,8 +45,7 @@ impl ReconnectingIpcClient {
         let ipc_client = IpcClient::connect_with_config(&config).await?;
         let client: Arc<RwLock<Option<IpcClient>>> =
             Arc::new(RwLock::new(Some(ipc_client.clone())));
-        let handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>> =
-            Arc::new(RwLock::new(None));
+        let handler: Arc<RwLock<Option<Arc<dyn RequestHandler>>>> = Arc::new(RwLock::new(None));
         let (broadcast_tx, _) = broadcast::channel::<TypedBroadcast>(256);
 
         // Forward broadcasts from the initial client.
@@ -63,7 +62,11 @@ impl ReconnectingIpcClient {
             let handler = Arc::clone(&handler);
             let broadcast_tx = broadcast_tx.clone();
             tokio::spawn(Self::reconnect_loop(
-                config, policy, client, handler, broadcast_tx,
+                config,
+                policy,
+                client,
+                handler,
+                broadcast_tx,
             ))
         };
 

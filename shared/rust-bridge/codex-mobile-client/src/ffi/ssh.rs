@@ -2,7 +2,7 @@ use crate::ffi::ClientError;
 use crate::ffi::shared::{shared_mobile_client, shared_runtime};
 use crate::session::connection::ServerConfig;
 use crate::ssh::{
-    ExecResult, RemoteShell, SshAuth, SshClient, SshCredentials, SshError, SshBootstrapResult,
+    ExecResult, RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError,
 };
 use crate::store::{
     ServerConnectionProgressSnapshot, ServerConnectionStepKind, ServerConnectionStepState,
@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
+use tracing::warn;
 
 #[derive(Clone)]
 pub(crate) struct ManagedSshSession {
@@ -188,9 +189,9 @@ impl SshBridge {
                 if let Some(pid) = session.pid {
                     let kill_cmd = match session.shell {
                         RemoteShell::Posix => format!("kill {pid} 2>/dev/null"),
-                        RemoteShell::PowerShell => format!(
-                            "Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"
-                        ),
+                        RemoteShell::PowerShell => {
+                            format!("Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue")
+                        }
                     };
                     let _ = session.client.exec_shell(&kill_cmd, session.shell).await;
                 }
@@ -314,6 +315,7 @@ impl SshBridge {
 
         let flows = Arc::clone(&self.bootstrap_flows);
         let task_server_id = server_id.clone();
+        let task_host = credentials.host.clone();
         tokio::spawn(async move {
             let mut progress = initial_progress;
             let task_result = run_guided_ssh_connect(
@@ -329,6 +331,10 @@ impl SshBridge {
             .await;
 
             if let Err(error) = task_result {
+                warn!(
+                    "guided ssh connect failed server_id={} host={} error={}",
+                    task_server_id, task_host, error
+                );
                 mark_progress_failure(&mut progress, error.to_string());
                 mobile_client
                     .app_store
@@ -355,7 +361,9 @@ impl SshBridge {
                 .get_mut(&server_id)
                 .and_then(|flow| flow.install_decision.take())
         }
-        .ok_or_else(|| ClientError::InvalidParams(format!("no pending install prompt for {server_id}")))?;
+        .ok_or_else(|| {
+            ClientError::InvalidParams(format!("no pending install prompt for {server_id}"))
+        })?;
 
         sender
             .send(install)
@@ -437,7 +445,11 @@ async fn run_guided_ssh_connect(
         .update_server_connection_progress(&server_id, Some(progress.clone()));
 
     let remote_shell = ssh_client.detect_remote_shell().await;
-    let codex_binary = match ssh_client.resolve_codex_binary_optional_with_shell(Some(remote_shell)).await.map_err(map_ssh_error)? {
+    let codex_binary = match ssh_client
+        .resolve_codex_binary_optional_with_shell(Some(remote_shell))
+        .await
+        .map_err(map_ssh_error)?
+    {
         Some(binary) => {
             progress.update_step(
                 ServerConnectionStepKind::FindingCodex,
@@ -511,7 +523,10 @@ async fn run_guided_ssh_connect(
                 .app_store
                 .update_server_connection_progress(&server_id, Some(progress.clone()));
 
-            let platform = ssh_client.detect_remote_platform_with_shell(Some(remote_shell)).await.map_err(map_ssh_error)?;
+            let platform = ssh_client
+                .detect_remote_platform_with_shell(Some(remote_shell))
+                .await
+                .map_err(map_ssh_error)?;
             let installed_binary = ssh_client
                 .install_latest_stable_codex(platform)
                 .await

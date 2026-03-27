@@ -93,3 +93,28 @@ object TextSizePrefs {
             .edit().putInt(KEY, clamped).apply()
     }
 }
+
+/**
+ * Persistent conversation UI preferences that are shared across screens.
+ */
+object ConversationPrefs {
+    private const val PREFS = "litter_ui_prefs"
+    private const val KEY_COLLAPSE_TURNS = "collapseTurns"
+
+    var collapseTurns by mutableIntStateOf(0)
+        private set
+
+    fun initialize(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        collapseTurns = if (prefs.getBoolean(KEY_COLLAPSE_TURNS, false)) 1 else 0
+    }
+
+    fun setCollapseTurns(context: Context, enabled: Boolean) {
+        collapseTurns = if (enabled) 1 else 0
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_COLLAPSE_TURNS, enabled).apply()
+    }
+
+    val areTurnsCollapsed: Boolean
+        get() = collapseTurns != 0
+}

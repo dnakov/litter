@@ -38,7 +38,6 @@ pub struct LogEvent {
 pub struct LogConfig {
     pub enabled: bool,
     pub collector_url: Option<String>,
-    pub bearer_token: Option<String>,
     pub min_level: LogLevel,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
@@ -69,7 +68,6 @@ impl Logs {
         self.inner.configure(PersistedLogConfig {
             enabled: config.enabled,
             collector_url: config.collector_url,
-            bearer_token: config.bearer_token,
             min_level: config.min_level.into(),
             device_id: config.device_id.unwrap_or(current.device_id),
             device_name: config.device_name,

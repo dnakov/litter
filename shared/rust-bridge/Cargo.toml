@@ -35,8 +35,8 @@ lru = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 base64 = "0.22"
-russh = "0.48"
-russh-keys = "0.48"
+russh = "0.58.1"
+russh-keys = "0.49.2"
 futures = "0.3"
 url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }

@@ -85,10 +85,8 @@ fn navigate_to<'a>(
                     .as_array_mut()
                     .ok_or(PatchError::UnexpectedType { kind })?;
                 let len = arr.len();
-                arr.get_mut(*idx).ok_or(PatchError::IndexOutOfBounds {
-                    index: *idx,
-                    len,
-                })?
+                arr.get_mut(*idx)
+                    .ok_or(PatchError::IndexOutOfBounds { index: *idx, len })?
             }
         };
     }
@@ -99,12 +97,16 @@ fn set_at(parent: &mut Value, segment: &ImmerPathSegment, val: Value) -> Result<
     let kind = value_kind(parent);
     match segment {
         ImmerPathSegment::Key(key) => {
-            let obj = parent.as_object_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let obj = parent
+                .as_object_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             obj.insert(key.clone(), val);
             Ok(())
         }
         ImmerPathSegment::Index(idx) => {
-            let arr = parent.as_array_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let arr = parent
+                .as_array_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             let len = arr.len();
             if *idx >= len {
                 return Err(PatchError::IndexOutOfBounds { index: *idx, len });
@@ -119,12 +121,16 @@ fn add_at(parent: &mut Value, segment: &ImmerPathSegment, val: Value) -> Result<
     let kind = value_kind(parent);
     match segment {
         ImmerPathSegment::Key(key) => {
-            let obj = parent.as_object_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let obj = parent
+                .as_object_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             obj.insert(key.clone(), val);
             Ok(())
         }
         ImmerPathSegment::Index(idx) => {
-            let arr = parent.as_array_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let arr = parent
+                .as_array_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             let len = arr.len();
             if *idx > len {
                 return Err(PatchError::IndexOutOfBounds { index: *idx, len });
@@ -139,14 +145,18 @@ fn remove_at(parent: &mut Value, segment: &ImmerPathSegment) -> Result<(), Patch
     let kind = value_kind(parent);
     match segment {
         ImmerPathSegment::Key(key) => {
-            let obj = parent.as_object_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let obj = parent
+                .as_object_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             obj.remove(key).ok_or_else(|| PatchError::PathNotFound {
                 segment: key.clone(),
             })?;
             Ok(())
         }
         ImmerPathSegment::Index(idx) => {
-            let arr = parent.as_array_mut().ok_or(PatchError::UnexpectedType { kind })?;
+            let arr = parent
+                .as_array_mut()
+                .ok_or(PatchError::UnexpectedType { kind })?;
             let len = arr.len();
             if *idx >= len {
                 return Err(PatchError::IndexOutOfBounds { index: *idx, len });
@@ -188,28 +198,52 @@ mod tests {
     #[test]
     fn replace_at_key_path() {
         let mut v = json!({"a": {"b": 1}});
-        apply_patches(&mut v, &[patch(ImmerOp::Replace, vec![key("a"), key("b")], Some(json!(2)))]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(
+                ImmerOp::Replace,
+                vec![key("a"), key("b")],
+                Some(json!(2)),
+            )],
+        )
+        .unwrap();
         assert_eq!(v, json!({"a": {"b": 2}}));
     }
 
     #[test]
     fn add_to_array() {
         let mut v = json!({"items": [1, 2, 3]});
-        apply_patches(&mut v, &[patch(ImmerOp::Add, vec![key("items"), idx(1)], Some(json!(99)))]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(
+                ImmerOp::Add,
+                vec![key("items"), idx(1)],
+                Some(json!(99)),
+            )],
+        )
+        .unwrap();
         assert_eq!(v, json!({"items": [1, 99, 2, 3]}));
     }
 
     #[test]
     fn remove_from_array() {
         let mut v = json!({"items": [1, 2, 3]});
-        apply_patches(&mut v, &[patch(ImmerOp::Remove, vec![key("items"), idx(1)], None)]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(ImmerOp::Remove, vec![key("items"), idx(1)], None)],
+        )
+        .unwrap();
         assert_eq!(v, json!({"items": [1, 3]}));
     }
 
     #[test]
     fn add_object_key() {
         let mut v = json!({"a": 1});
-        apply_patches(&mut v, &[patch(ImmerOp::Add, vec![key("b")], Some(json!(2)))]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(ImmerOp::Add, vec![key("b")], Some(json!(2)))],
+        )
+        .unwrap();
         assert_eq!(v["b"], json!(2));
     }
 
@@ -223,49 +257,78 @@ mod tests {
     #[test]
     fn nested_path() {
         let mut v = json!({"turns": [{"items": [{"id": "a"}, {"id": "b"}, {"content": "old"}]}]});
-        apply_patches(&mut v, &[patch(
-            ImmerOp::Replace,
-            vec![key("turns"), idx(0), key("items"), idx(2), key("content")],
-            Some(json!("new")),
-        )]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(
+                ImmerOp::Replace,
+                vec![key("turns"), idx(0), key("items"), idx(2), key("content")],
+                Some(json!("new")),
+            )],
+        )
+        .unwrap();
         assert_eq!(v["turns"][0]["items"][2]["content"], json!("new"));
     }
 
     #[test]
     fn empty_path_replaces_root() {
         let mut v = json!({"old": true});
-        apply_patches(&mut v, &[patch(ImmerOp::Replace, vec![], Some(json!({"new": true})))]).unwrap();
+        apply_patches(
+            &mut v,
+            &[patch(ImmerOp::Replace, vec![], Some(json!({"new": true})))],
+        )
+        .unwrap();
         assert_eq!(v, json!({"new": true}));
     }
 
     #[test]
     fn multiple_patches() {
         let mut v = json!({"items": [1, 2, 3], "count": 3});
-        apply_patches(&mut v, &[
-            patch(ImmerOp::Add, vec![key("items"), idx(3)], Some(json!(4))),
-            patch(ImmerOp::Replace, vec![key("count")], Some(json!(4))),
-        ]).unwrap();
+        apply_patches(
+            &mut v,
+            &[
+                patch(ImmerOp::Add, vec![key("items"), idx(3)], Some(json!(4))),
+                patch(ImmerOp::Replace, vec![key("count")], Some(json!(4))),
+            ],
+        )
+        .unwrap();
         assert_eq!(v, json!({"items": [1, 2, 3, 4], "count": 4}));
     }
 
     #[test]
     fn error_index_out_of_bounds() {
         let mut v = json!({"items": [1, 2]});
-        let result = apply_patches(&mut v, &[patch(ImmerOp::Replace, vec![key("items"), idx(5)], Some(json!(99)))]);
+        let result = apply_patches(
+            &mut v,
+            &[patch(
+                ImmerOp::Replace,
+                vec![key("items"), idx(5)],
+                Some(json!(99)),
+            )],
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn error_missing_key() {
         let mut v = json!({"a": 1});
-        let result = apply_patches(&mut v, &[patch(ImmerOp::Replace, vec![key("nonexistent"), key("child")], Some(json!(1)))]);
+        let result = apply_patches(
+            &mut v,
+            &[patch(
+                ImmerOp::Replace,
+                vec![key("nonexistent"), key("child")],
+                Some(json!(1)),
+            )],
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn error_type_mismatch() {
         let mut v = json!("a string");
-        let result = apply_patches(&mut v, &[patch(ImmerOp::Replace, vec![key("key")], Some(json!(1)))]);
+        let result = apply_patches(
+            &mut v,
+            &[patch(ImmerOp::Replace, vec![key("key")], Some(json!(1)))],
+        );
         assert!(result.is_err());
     }
 
