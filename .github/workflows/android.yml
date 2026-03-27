@@ -104,6 +104,19 @@ jobs:
       - name: Sync codex patches
         run: make sync
 
+      - name: Generate Rust bridge sources
+        env:
+          RUSTC_WRAPPER: sccache
+          CARGO_INCREMENTAL: "0"
+        run: |
+          cd shared/rust-bridge
+          cargo run -p codex-mobile-codegen -- \
+            --upstream ../third_party/codex/codex-rs/app-server-protocol/src/protocol/v2.rs \
+            --common ../third_party/codex/codex-rs/app-server-protocol/src/protocol/common.rs \
+            --out codex-mobile-client/src/types/codegen_types.generated.rs \
+            --rpc-out codex-mobile-client/src/rpc/generated_client.generated.rs \
+            --ffi-rpc-out codex-mobile-client/src/ffi/rpc.generated.rs
+
       - name: Download Kotlin bindings
         uses: actions/download-artifact@v4
         with:
