@@ -60,8 +60,6 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios-sim
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -75,7 +73,6 @@ jobs:
           cd shared/rust-bridge
           ./generate-bindings.sh
           cd "$GITHUB_WORKSPACE"
-          env -u CARGO_INCREMENTAL ./apps/ios/scripts/build-rust.sh --preserve-current --fast-sim --skip-bindings
 
           cp shared/rust-bridge/generated/swift/codex_mobile_client.swift \
             apps/ios/Sources/Litter/Bridge/UniFFICodexClient.generated.swift
@@ -86,29 +83,21 @@ jobs:
           cp shared/rust-bridge/generated/swift/module.modulemap \
             apps/ios/GeneratedRust/Headers/module.modulemap
 
-          mkdir -p .ci-prep/shared .ci-prep/ios-sim
+          mkdir -p .ci-prep/shared
           git -C shared/third_party/codex diff --binary > .ci-prep/shared/codex-submodule.patch
           tar -czf .ci-prep/shared/generated-mobile-sources.tgz -C . \
             shared/rust-bridge/generated \
             shared/rust-bridge/codex-mobile-client/src/types/codegen_types.generated.rs \
             shared/rust-bridge/codex-mobile-client/src/rpc/generated_client.generated.rs \
-            shared/rust-bridge/codex-mobile-client/src/ffi/rpc.generated.rs
-          tar -czf .ci-prep/ios-sim/ios-sim-rust.tgz -C . \
-            apps/ios/GeneratedRust \
-            apps/ios/Sources/Litter/Bridge/UniFFICodexClient.generated.swift
+            shared/rust-bridge/codex-mobile-client/src/ffi/rpc.generated.rs \
+            apps/ios/Sources/Litter/Bridge/UniFFICodexClient.generated.swift \
+            apps/ios/GeneratedRust/Headers
 
       - name: Upload shared prep artifact
         uses: actions/upload-artifact@v4
         with:
           name: shared-prep
           path: .ci-prep/shared
-          if-no-files-found: error
-
-      - name: Upload iOS simulator Rust artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-sim-rust
-          path: .ci-prep/ios-sim
           if-no-files-found: error
 
   android:
@@ -190,6 +179,13 @@ jobs:
     timeout-minutes: 60
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
+      SCCACHE_BUCKET: rust-cache
+      SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
+      SCCACHE_REGION: auto
+      SCCACHE_S3_USE_SSL: "true"
+      SCCACHE_S3_KEY_PREFIX: ci/mobile-ios
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
     steps:
       - name: Checkout
@@ -204,7 +200,15 @@ jobs:
           xcode-version: '26.3'
 
       - name: Install build dependencies
-        run: brew install xcodegen
+        run: brew install xcodegen meson ninja
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Download shared prep artifact
         uses: actions/download-artifact@v4
@@ -212,17 +216,15 @@ jobs:
           name: shared-prep
           path: .ci-prep/shared
 
-      - name: Download iOS simulator Rust artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ios-sim-rust
-          path: .ci-prep/ios-sim
-
       - name: Restore shared prep
         run: |
           git -C shared/third_party/codex apply --binary .ci-prep/shared/codex-submodule.patch
           tar -xzf .ci-prep/shared/generated-mobile-sources.tgz -C .
-          tar -xzf .ci-prep/ios-sim/ios-sim-rust.tgz -C .
+
+      - name: Build Rust for iOS simulator
+        env:
+          RUSTC_WRAPPER: sccache
+        run: env -u CARGO_INCREMENTAL ./apps/ios/scripts/build-rust.sh --preserve-current --fast-sim --skip-bindings
 
       - name: Download ios_system frameworks
         run: ./apps/ios/scripts/download-ios-system.sh
