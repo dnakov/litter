@@ -100,7 +100,6 @@ jobs:
           cp shared/rust-bridge/generated/swift/module.modulemap \
             apps/ios/GeneratedRust/Headers/module.modulemap
 
-          git -C shared/third_party/codex diff --binary > .ci-prep/shared/codex-submodule.patch
           tar -czf .ci-prep/shared/generated-mobile-sources.tgz -C . \
             shared/rust-bridge/generated \
             shared/rust-bridge/codex-mobile-client/src/types/codegen_types.generated.rs \
@@ -169,13 +168,13 @@ jobs:
 
       - name: Restore shared prep
         run: |
+          ./apps/ios/scripts/sync-codex.sh --preserve-current
+
           SHARED_PREP_ROOT=.ci-prep/shared
           if [ -d "$SHARED_PREP_ROOT/shared" ]; then
             SHARED_PREP_ROOT="$SHARED_PREP_ROOT/shared"
           fi
-          SHARED_PREP_PATCH="$PWD/$SHARED_PREP_ROOT/codex-submodule.patch"
 
-          git -C shared/third_party/codex apply --binary "$SHARED_PREP_PATCH"
           tar -xzf "$SHARED_PREP_ROOT/generated-mobile-sources.tgz" -C .
           mkdir -p .build-stamps
           touch .build-stamps/sync .build-stamps/bindings-kotlin
@@ -240,13 +239,13 @@ jobs:
 
       - name: Restore shared prep
         run: |
+          ./apps/ios/scripts/sync-codex.sh --preserve-current
+
           SHARED_PREP_ROOT=.ci-prep/shared
           if [ -d "$SHARED_PREP_ROOT/shared" ]; then
             SHARED_PREP_ROOT="$SHARED_PREP_ROOT/shared"
           fi
-          SHARED_PREP_PATCH="$PWD/$SHARED_PREP_ROOT/codex-submodule.patch"
 
-          git -C shared/third_party/codex apply --binary "$SHARED_PREP_PATCH"
           tar -xzf "$SHARED_PREP_ROOT/generated-mobile-sources.tgz" -C .
 
       - name: Build Rust for iOS simulator
