@@ -37,7 +37,7 @@ jobs:
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
+          xcode-version: '26.3'
 
       - name: Install build dependencies
         run: brew install xcodegen meson ninja
