@@ -61,13 +61,35 @@ jobs:
       - name: Generate Xcode project
         run: ./apps/ios/scripts/regenerate-project.sh
 
+      - name: Select simulator destination
+        run: |
+          SIMULATOR_UDID="$(
+            xcrun simctl list devices available | awk -F '[()]' '
+              /^-- iOS / { ios=1; next }
+              /^--/ { ios=0 }
+              ios && /iPhone 17 Pro/ { print $2; exit }
+              ios && /iPhone/ && first == "" { first=$2 }
+              END {
+                if (first != "") {
+                  print first
+                }
+              }
+            '
+          )"
+          if [ -z "$SIMULATOR_UDID" ]; then
+            echo "No available iPhone simulator found"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "IOS_SIMULATOR_UDID=$SIMULATOR_UDID" >> "$GITHUB_ENV"
+
       - name: Build (Litter)
         run: |
           xcodebuild \
             -project apps/ios/Litter.xcodeproj \
             -scheme Litter \
             -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "id=$IOS_SIMULATOR_UDID" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
             build
