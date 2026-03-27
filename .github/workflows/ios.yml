@@ -63,4 +63,6 @@ jobs:
             -scheme Litter \
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             build
