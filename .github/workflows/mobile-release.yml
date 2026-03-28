@@ -198,7 +198,6 @@ jobs:
       SCCACHE_S3_USE_SSL: "true"
       SCCACHE_S3_KEY_PREFIX: ci/android
       SCCACHE_LOG: info
-      SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-android.log
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
@@ -259,6 +258,8 @@ jobs:
 
       - name: Prime sccache
         run: |
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
+          rm -f "$SCCACHE_ERROR_LOG"
           sccache --stop-server || true
           sccache --start-server
           sccache --show-stats || true
@@ -296,9 +297,13 @@ jobs:
           LITTER_PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.LITTER_PLAY_SERVICE_ACCOUNT_JSON_B64 }}
         run: |
           set -euo pipefail
-          echo "$ANDROID_UPLOAD_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/litter-upload.jks"
-          echo "$LITTER_PLAY_SERVICE_ACCOUNT_JSON_B64" | base64 --decode > "$RUNNER_TEMP/play-service-account.json"
-          ls -lh "$RUNNER_TEMP/litter-upload.jks" "$RUNNER_TEMP/play-service-account.json"
+          store_file="$RUNNER_TEMP/litter-upload.jks"
+          service_account_json="$RUNNER_TEMP/play-service-account.json"
+          echo "$ANDROID_UPLOAD_KEYSTORE_B64" | base64 --decode > "$store_file"
+          echo "$LITTER_PLAY_SERVICE_ACCOUNT_JSON_B64" | base64 --decode > "$service_account_json"
+          echo "LITTER_UPLOAD_STORE_FILE=$store_file" >> "$GITHUB_ENV"
+          echo "LITTER_PLAY_SERVICE_ACCOUNT_JSON=$service_account_json" >> "$GITHUB_ENV"
+          ls -lh "$store_file" "$service_account_json"
 
       - name: Resolve Android release inputs
         env:
@@ -314,15 +319,16 @@ jobs:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
           RUSTC_WRAPPER: sccache
-          LITTER_UPLOAD_STORE_FILE: ${{ runner.temp }}/litter-upload.jks
+          LITTER_UPLOAD_STORE_FILE: ${{ env.LITTER_UPLOAD_STORE_FILE }}
           LITTER_UPLOAD_STORE_PASSWORD: ${{ secrets.LITTER_UPLOAD_STORE_PASSWORD }}
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
-          LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/play-service-account.json
+          LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.LITTER_PLAY_SERVICE_ACCOUNT_JSON }}
           LITTER_PLAY_TRACK: internal
           LITTER_VERSION_CODE_OVERRIDE: ${{ env.LITTER_VERSION_CODE_OVERRIDE }}
         run: |
           set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
           make play-release
 
@@ -359,7 +365,6 @@ jobs:
       SCCACHE_S3_USE_SSL: "true"
       SCCACHE_S3_KEY_PREFIX: ci/ios
       SCCACHE_LOG: info
-      SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-ios.log
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
@@ -416,6 +421,8 @@ jobs:
 
       - name: Prime sccache
         run: |
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
+          rm -f "$SCCACHE_ERROR_LOG"
           sccache --stop-server || true
           sccache --start-server
           sccache --show-stats || true
@@ -509,5 +516,6 @@ jobs:
           WAIT_FOR_PROCESSING: ${{ env.WAIT_FOR_PROCESSING }}
         run: |
           set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
           make testflight
