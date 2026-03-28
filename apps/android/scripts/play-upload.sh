@@ -10,10 +10,20 @@ VARIANT="${VARIANT:-Release}"
 UPLOAD="${UPLOAD:-1}"
 TRACK="${LITTER_PLAY_TRACK:-internal}"
 GRADLE_MAX_WORKERS="${GRADLE_MAX_WORKERS:-}"
+EXTRA_GRADLE_TASKS="${EXTRA_GRADLE_TASKS:-}"
+GRADLE_EXCLUDED_TASKS="${GRADLE_EXCLUDED_TASKS:-}"
 
 declare -a GRADLE_ARGS=(--no-daemon)
 if [[ -n "$GRADLE_MAX_WORKERS" ]]; then
     GRADLE_ARGS+=("--max-workers=$GRADLE_MAX_WORKERS")
+fi
+if [[ -n "$GRADLE_EXCLUDED_TASKS" ]]; then
+    EXCLUDED_TASKS_NORMALIZED="${GRADLE_EXCLUDED_TASKS//,/ }"
+    read -r -a EXCLUDED_TASKS <<<"$EXCLUDED_TASKS_NORMALIZED"
+    for task in "${EXCLUDED_TASKS[@]}"; do
+        [[ -n "$task" ]] || continue
+        GRADLE_ARGS+=("-x" "$task")
+    done
 fi
 
 # Source credentials from env file if present and vars are not already set
@@ -50,7 +60,14 @@ if [[ "$UPLOAD" == "1" ]]; then
 
     TASK=":app:publish${VARIANT}Bundle"
     echo "==> Publishing $VARIANT bundle to Google Play track '$TRACK'"
-    "$GRADLEW" -p "$ANDROID_DIR" "${GRADLE_ARGS[@]}" "$TASK" \
+    GRADLE_TASKS=()
+    if [[ -n "$EXTRA_GRADLE_TASKS" ]]; then
+        EXTRA_TASKS_NORMALIZED="${EXTRA_GRADLE_TASKS//,/ }"
+        read -r -a EXTRA_TASKS <<<"$EXTRA_TASKS_NORMALIZED"
+        GRADLE_TASKS+=("${EXTRA_TASKS[@]}")
+    fi
+    GRADLE_TASKS+=("$TASK")
+    "$GRADLEW" -p "$ANDROID_DIR" "${GRADLE_ARGS[@]}" "${GRADLE_TASKS[@]}" \
         -PLITTER_PLAY_SERVICE_ACCOUNT_JSON="$LITTER_PLAY_SERVICE_ACCOUNT_JSON" \
         -PLITTER_PLAY_TRACK="$TRACK" \
         -PLITTER_UPLOAD_STORE_FILE="$LITTER_UPLOAD_STORE_FILE" \
@@ -60,7 +77,14 @@ if [[ "$UPLOAD" == "1" ]]; then
 else
     TASK=":app:bundle${VARIANT}"
     echo "==> Building local AAB for $VARIANT (no upload)"
-    "$GRADLEW" -p "$ANDROID_DIR" "${GRADLE_ARGS[@]}" "$TASK"
+    GRADLE_TASKS=()
+    if [[ -n "$EXTRA_GRADLE_TASKS" ]]; then
+        EXTRA_TASKS_NORMALIZED="${EXTRA_GRADLE_TASKS//,/ }"
+        read -r -a EXTRA_TASKS <<<"$EXTRA_TASKS_NORMALIZED"
+        GRADLE_TASKS+=("${EXTRA_TASKS[@]}")
+    fi
+    GRADLE_TASKS+=("$TASK")
+    "$GRADLEW" -p "$ANDROID_DIR" "${GRADLE_ARGS[@]}" "${GRADLE_TASKS[@]}"
 fi
 
 echo "==> Done"

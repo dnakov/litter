@@ -16,7 +16,7 @@ jobs:
       SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
       SCCACHE_REGION: auto
       SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: ci/android-release-prep
+      SCCACHE_S3_KEY_PREFIX: ci/android-release
       SCCACHE_LOG: info
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
@@ -91,7 +91,7 @@ jobs:
       SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
       SCCACHE_REGION: auto
       SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: ci/android
+      SCCACHE_S3_KEY_PREFIX: ci/android-release
       SCCACHE_LOG: info
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
@@ -146,7 +146,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -208,26 +208,61 @@ jobs:
           VERSION_CODE="$((200000000 + GITHUB_RUN_NUMBER))"
           echo "LITTER_VERSION_CODE_OVERRIDE=$VERSION_CODE" >> "$GITHUB_ENV"
 
-      - name: Publish to Google Play
+      - name: Build Android release APK
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
           CARGO_BUILD_JOBS: "2"
           GRADLE_MAX_WORKERS: "2"
+          ANDROID_RELEASE_ABIS: arm64-v8a
           RUSTC_WRAPPER: sccache
+          LITTER_VERSION_CODE_OVERRIDE: ${{ env.LITTER_VERSION_CODE_OVERRIDE }}
+        run: |
+          set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
+          trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
+          sccache --zero-stats || true
+          make android-release
+          echo "==> sccache stats after Android release APK build"
+          sccache --show-stats || true
+
+      - name: Build Android release bundle
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
+          CARGO_BUILD_JOBS: "2"
+          GRADLE_MAX_WORKERS: "2"
+          ANDROID_RELEASE_ABIS: arm64-v8a
+          RUSTC_WRAPPER: sccache
+          LITTER_VERSION_CODE_OVERRIDE: ${{ env.LITTER_VERSION_CODE_OVERRIDE }}
+          UPLOAD: "0"
+        run: |
+          set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
+          trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
+          sccache --zero-stats || true
+          ./apps/android/scripts/play-upload.sh
+          echo "==> sccache stats after Android release bundle build"
+          sccache --show-stats || true
+
+      - name: Publish Android bundle to Google Play
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.14904198
+          GRADLE_MAX_WORKERS: "2"
           LITTER_UPLOAD_STORE_FILE: ${{ env.LITTER_UPLOAD_STORE_FILE }}
           LITTER_UPLOAD_STORE_PASSWORD: ${{ secrets.LITTER_UPLOAD_STORE_PASSWORD }}
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
           LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.LITTER_PLAY_SERVICE_ACCOUNT_JSON }}
           LITTER_PLAY_TRACK: internal
-          LITTER_VERSION_CODE_OVERRIDE: ${{ env.LITTER_VERSION_CODE_OVERRIDE }}
+          GRADLE_EXCLUDED_TASKS: ":app:bundleRelease"
         run: |
           set -euo pipefail
-          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
-          trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
-          make play-release
+          ./apps/android/scripts/play-upload.sh
 
       - name: Generate checksums
         run: |

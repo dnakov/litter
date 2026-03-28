@@ -368,7 +368,9 @@ test-android:
 	@echo "==> Running Android tests..."
 	@cd $(ANDROID_DIR) && ./gradlew :app:testDebugUnitTest
 
-testflight: ios
+ios-release-prep: rust-ios-package ios-frameworks xcgen
+
+testflight: ios-release-prep
 	@echo "==> Uploading to TestFlight..."
 	@MARKETING_VERSION=1.0.1 $(IOS_SCRIPTS)/testflight-upload.sh
 

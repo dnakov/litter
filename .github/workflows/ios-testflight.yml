@@ -20,7 +20,7 @@ permissions:
 jobs:
   upload-testflight:
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 150
     environment: release
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -28,7 +28,7 @@ jobs:
       SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_R2_ENDPOINT }}
       SCCACHE_REGION: auto
       SCCACHE_S3_USE_SSL: "true"
-      SCCACHE_S3_KEY_PREFIX: ci/ios
+      SCCACHE_S3_KEY_PREFIX: ci/ios-release
       SCCACHE_LOG: info
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
@@ -179,4 +179,5 @@ jobs:
           set -euo pipefail
           export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
+          sccache --zero-stats || true
           make testflight
