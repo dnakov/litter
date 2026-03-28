@@ -995,20 +995,22 @@ private struct ConversationTurnRow: View {
 
     private var previewTextBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(turn.preview.primaryText)
+            Text(verbatim: turn.preview.primaryText)
                 .litterFont(.body, weight: .semibold)
                 .foregroundColor(LitterTheme.textPrimary)
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .minimumScaleFactor(0.82)
                 .allowsTightening(true)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             ZStack(alignment: .bottomLeading) {
-                Text(responsePreviewText)
+                Text(verbatim: responsePreviewText)
                     .litterFont(.body)
                     .foregroundColor(LitterTheme.textSecondary.opacity(0.82))
                     .lineLimit(2)
+                    .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(
                         maxWidth: .infinity,
@@ -1153,7 +1155,7 @@ private struct CollapsedTurnMetaItem: View {
             Image(systemName: systemImage)
                 .litterFont(size: 9, weight: .medium)
                 .foregroundColor(LitterTheme.textMuted)
-            Text(text)
+            Text(verbatim: text)
                 .litterMonoFont(size: 10)
                 .foregroundColor(LitterTheme.textSecondary)
                 .lineLimit(1)

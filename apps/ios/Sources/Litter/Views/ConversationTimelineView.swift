@@ -525,7 +525,7 @@ private struct ConversationExplorationGroupRow: View {
 
     var body: some View {
         let entries = explorationEntries
-        let visibleEntries = expanded ? entries : Array(entries.prefix(3))
+        let visibleEntries = expanded ? entries : Array(entries.prefix(2))
 
         VStack(alignment: .leading, spacing: 8) {
             Button(action: toggleExpanded) {
@@ -533,9 +533,11 @@ private struct ConversationExplorationGroupRow: View {
                     Image(systemName: "magnifyingglass")
                         .litterFont(size: 12, weight: .semibold)
                         .foregroundColor(isActive ? LitterTheme.warning : LitterTheme.textSecondary)
-                    Text(summaryText)
+                    Text(verbatim: summaryText)
                         .litterFont(.caption)
                         .foregroundColor(LitterTheme.textSystem)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .litterFont(size: 11, weight: .medium)
@@ -551,9 +553,11 @@ private struct ConversationExplorationGroupRow: View {
                             .fill(entry.isInProgress ? LitterTheme.warning : LitterTheme.textMuted)
                             .frame(width: explorationBulletSize, height: explorationBulletSize)
                             .padding(.top, explorationBulletTopPadding)
-                        Text(entry.label)
+                        Text(verbatim: displayedLabel(for: entry))
                             .litterFont(.caption)
                             .foregroundColor(LitterTheme.textSecondary)
+                            .lineLimit(expanded ? nil : 1)
+                            .truncationMode(.tail)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -589,6 +593,19 @@ private struct ConversationExplorationGroupRow: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             expanded.toggle()
         }
+    }
+
+    private func displayedLabel(for entry: ExplorationDisplayEntry) -> String {
+        guard !expanded else { return entry.label }
+        let collapsed = entry.label
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if collapsed.count <= 140 {
+            return collapsed
+        }
+        let cutoff = collapsed.index(collapsed.startIndex, offsetBy: 140)
+        return "\(collapsed[..<cutoff])..."
     }
 
     private var explorationEntries: [ExplorationDisplayEntry] {
