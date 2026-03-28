@@ -37,6 +37,8 @@ WHAT_TO_TEST_FILE="${WHAT_TO_TEST_FILE:-$ROOT_DIR/docs/releases/testflight-whats
 AUTO_GENERATE_WHAT_TO_TEST="${AUTO_GENERATE_WHAT_TO_TEST:-1}"
 WHAT_TO_TEST_MAX_COMMITS="${WHAT_TO_TEST_MAX_COMMITS:-8}"
 AUTO_ASSIGN_ENCRYPTION_DECLARATION="${AUTO_ASSIGN_ENCRYPTION_DECLARATION:-1}"
+TESTFLIGHT_SKIP_BUILD="${TESTFLIGHT_SKIP_BUILD:-0}"
+TESTFLIGHT_SKIP_UPLOAD="${TESTFLIGHT_SKIP_UPLOAD:-0}"
 
 AUTH_KEY_PATH="${AUTH_KEY_PATH:-${ASC_PRIVATE_KEY_PATH:-}}"
 AUTH_KEY_ID="${AUTH_KEY_ID:-${ASC_KEY_ID:-}}"
@@ -46,6 +48,7 @@ BUILD_DIR="${BUILD_DIR:-$REPO_DIR/build/testflight}"
 ARCHIVE_PATH="$BUILD_DIR/$SCHEME.xcarchive"
 EXPORT_OPTIONS_PLIST="$BUILD_DIR/ExportOptions.plist"
 IPA_PATH="$BUILD_DIR/$SCHEME.ipa"
+BUILD_METADATA_PATH="${BUILD_METADATA_PATH:-$BUILD_DIR/testflight-build.env}"
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -64,6 +67,11 @@ if [[ -x "$SCRIPT_DIR/sanitize-ios-frameworks.sh" ]]; then
 fi
 
 mkdir -p "$BUILD_DIR"
+
+if [[ -f "$BUILD_METADATA_PATH" ]]; then
+    # shellcheck disable=SC1090
+    source "$BUILD_METADATA_PATH"
+fi
 
 if [[ "$MARKETING_VERSION" != "1.0.1" ]]; then
     echo "TestFlight uploads must use MARKETING_VERSION=1.0.1 (got $MARKETING_VERSION)" >&2
@@ -171,8 +179,14 @@ if [[ -z "$WHAT_TO_TEST" ]]; then
     exit 1
 fi
 
-echo "==> Regenerating Xcode project"
-"$PROJECT_DIR/scripts/regenerate-project.sh"
+cat >"$BUILD_METADATA_PATH" <<EOF
+BUILD_NUMBER=$(printf '%q' "$BUILD_NUMBER")
+APP_STORE_APP_ID=$(printf '%q' "$APP_STORE_APP_ID")
+TEAM_ID=$(printf '%q' "$TEAM_ID")
+PROVISIONING_PROFILE_SPECIFIER=$(printf '%q' "$PROVISIONING_PROFILE_SPECIFIER")
+MARKETING_VERSION=$(printf '%q' "$MARKETING_VERSION")
+WHAT_TO_TEST_LOCALE=$(printf '%q' "$WHAT_TO_TEST_LOCALE")
+EOF
 
 auth_args=()
 if [[ -n "$AUTH_KEY_PATH" && -n "$AUTH_KEY_ID" && -n "$AUTH_ISSUER_ID" ]]; then
@@ -183,31 +197,35 @@ if [[ -n "$AUTH_KEY_PATH" && -n "$AUTH_KEY_ID" && -n "$AUTH_ISSUER_ID" ]]; then
     )
 fi
 
-echo "==> Archiving $SCHEME ($MARKETING_VERSION/$BUILD_NUMBER)"
-archive_cmd=(
-    xcodebuild
-    -project "$PROJECT_PATH"
-    -scheme "$SCHEME"
-    -configuration "$CONFIGURATION"
-    -destination "generic/platform=iOS"
-    -archivePath "$ARCHIVE_PATH"
-    -allowProvisioningUpdates
-    clean archive
-    MARKETING_VERSION="$MARKETING_VERSION"
-    CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
-)
+if [[ "$TESTFLIGHT_SKIP_BUILD" != "1" ]]; then
+    echo "==> Regenerating Xcode project"
+    "$PROJECT_DIR/scripts/regenerate-project.sh"
 
-if [[ -n "$TEAM_ID" ]]; then
-    archive_cmd+=(DEVELOPMENT_TEAM="$TEAM_ID")
-fi
+    echo "==> Archiving $SCHEME ($MARKETING_VERSION/$BUILD_NUMBER)"
+    archive_cmd=(
+        xcodebuild
+        -project "$PROJECT_PATH"
+        -scheme "$SCHEME"
+        -configuration "$CONFIGURATION"
+        -destination "generic/platform=iOS"
+        -archivePath "$ARCHIVE_PATH"
+        -allowProvisioningUpdates
+        clean archive
+        MARKETING_VERSION="$MARKETING_VERSION"
+        CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+    )
 
-if [[ "${#auth_args[@]}" -gt 0 ]]; then
-    archive_cmd+=("${auth_args[@]}")
-fi
+    if [[ -n "$TEAM_ID" ]]; then
+        archive_cmd+=(DEVELOPMENT_TEAM="$TEAM_ID")
+    fi
 
-"${archive_cmd[@]}"
+    if [[ "${#auth_args[@]}" -gt 0 ]]; then
+        archive_cmd+=("${auth_args[@]}")
+    fi
 
-cat >"$EXPORT_OPTIONS_PLIST" <<EOF
+    "${archive_cmd[@]}"
+
+    cat >"$EXPORT_OPTIONS_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -226,37 +244,50 @@ cat >"$EXPORT_OPTIONS_PLIST" <<EOF
 </plist>
 EOF
 
-if [[ -n "$TEAM_ID" ]]; then
-    /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS_PLIST"
+    if [[ -n "$TEAM_ID" ]]; then
+        /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS_PLIST"
+    fi
+    if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
+        /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
+        /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+    fi
+
+    echo "==> Exporting IPA (signing: $EXPORT_SIGNING_STYLE)"
+    export_cmd=(
+        xcodebuild
+        -exportArchive
+        -archivePath "$ARCHIVE_PATH"
+        -exportPath "$BUILD_DIR"
+        -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
+        -allowProvisioningUpdates
+    )
+
+    if [[ "${#auth_args[@]}" -gt 0 ]]; then
+        export_cmd+=("${auth_args[@]}")
+    fi
+
+    "${export_cmd[@]}"
+
+    exported_ipa="$(find "$BUILD_DIR" -maxdepth 1 -name "*.ipa" | head -n 1)"
+    if [[ -z "$exported_ipa" ]]; then
+        echo "No IPA produced in $BUILD_DIR" >&2
+        exit 1
+    fi
+    if [[ "$exported_ipa" != "$IPA_PATH" ]]; then
+        cp "$exported_ipa" "$IPA_PATH"
+    fi
 fi
-if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
-    /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
-fi
 
-echo "==> Exporting IPA (signing: $EXPORT_SIGNING_STYLE)"
-export_cmd=(
-    xcodebuild
-    -exportArchive
-    -archivePath "$ARCHIVE_PATH"
-    -exportPath "$BUILD_DIR"
-    -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
-    -allowProvisioningUpdates
-)
-
-if [[ "${#auth_args[@]}" -gt 0 ]]; then
-    export_cmd+=("${auth_args[@]}")
-fi
-
-"${export_cmd[@]}"
-
-exported_ipa="$(find "$BUILD_DIR" -maxdepth 1 -name "*.ipa" | head -n 1)"
-if [[ -z "$exported_ipa" ]]; then
-    echo "No IPA produced in $BUILD_DIR" >&2
+if [[ ! -f "$IPA_PATH" ]]; then
+    echo "Expected IPA at $IPA_PATH" >&2
     exit 1
 fi
-if [[ "$exported_ipa" != "$IPA_PATH" ]]; then
-    cp "$exported_ipa" "$IPA_PATH"
+
+if [[ "$TESTFLIGHT_SKIP_UPLOAD" == "1" ]]; then
+    echo "==> TestFlight build prepared"
+    echo "    IPA:         $IPA_PATH"
+    echo "    Build:       $BUILD_NUMBER"
+    exit 0
 fi
 
 echo "==> Uploading IPA to App Store Connect (app: $APP_STORE_APP_ID)"

@@ -540,7 +540,7 @@ jobs:
           echo "BETA_GROUP_NAMES=$BETA_GROUP_NAMES" >> "$GITHUB_ENV"
           echo "WAIT_FOR_PROCESSING=$WAIT_FOR_PROCESSING" >> "$GITHUB_ENV"
 
-      - name: Upload to TestFlight
+      - name: Build TestFlight IPA
         env:
           CARGO_BUILD_JOBS: "2"
           RUSTC_WRAPPER: sccache
@@ -555,9 +555,28 @@ jobs:
           MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
           BETA_GROUP_NAMES: ${{ env.BETA_GROUP_NAMES }}
           WAIT_FOR_PROCESSING: ${{ env.WAIT_FOR_PROCESSING }}
+          TESTFLIGHT_SKIP_UPLOAD: "1"
         run: |
           set -euo pipefail
           export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
           sccache --zero-stats || true
-          make testflight
+          ./apps/ios/scripts/testflight-upload.sh
+
+      - name: Upload to TestFlight
+        env:
+          SCHEME: ${{ env.SCHEME }}
+          APP_BUNDLE_ID: ${{ env.APP_BUNDLE_ID }}
+          APP_STORE_APP_ID: ${{ secrets.IOS_APP_STORE_APP_ID }}
+          TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          PROVISIONING_PROFILE_SPECIFIER: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ env.ASC_PRIVATE_KEY_PATH }}
+          MARKETING_VERSION: ${{ env.MARKETING_VERSION }}
+          BETA_GROUP_NAMES: ${{ env.BETA_GROUP_NAMES }}
+          WAIT_FOR_PROCESSING: ${{ env.WAIT_FOR_PROCESSING }}
+          TESTFLIGHT_SKIP_BUILD: "1"
+        run: |
+          set -euo pipefail
+          ./apps/ios/scripts/testflight-upload.sh
