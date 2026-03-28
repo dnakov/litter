@@ -24,11 +24,13 @@ use crate::types::{
 };
 use codex_app_server_protocol as upstream;
 use codex_ipc::{
-    ClientStatus, CommandExecutionApprovalDecision, ExternalResumeThreadParams,
-    FileChangeApprovalDecision, IpcClient, IpcClientConfig, StreamChange,
+    ClientStatus, CommandExecutionApprovalDecision, ConversationStreamApplyError,
+    ExternalResumeThreadParams, FileChangeApprovalDecision, IpcClient, IpcClientConfig,
+    ProjectedApprovalKind, ProjectedApprovalRequest, ProjectedUserInputRequest, StreamChange,
     ThreadFollowerCommandApprovalDecisionParams, ThreadFollowerFileApprovalDecisionParams,
     ThreadFollowerStartTurnParams, ThreadFollowerSubmitUserInputParams,
-    ThreadStreamStateChangedParams, TypedBroadcast,
+    ThreadStreamStateChangedParams, TypedBroadcast, apply_stream_change_to_conversation_state,
+    project_conversation_state, seed_conversation_state_from_thread,
 };
 
 /// Top-level entry point for platform code (iOS / Android).
@@ -249,7 +251,9 @@ impl MobileClient {
         );
         info!(
             "MobileClient: SSH transport established server_id={} host={} ssh_port={}",
-            config.server_id, ssh_credentials.host.as_str(), ssh_credentials.port
+            config.server_id,
+            ssh_credentials.host.as_str(),
+            ssh_credentials.port
         );
 
         let use_ipv6 = config.host.contains(':');
@@ -265,7 +269,9 @@ impl MobileClient {
                 );
                 warn!(
                     "MobileClient: remote ssh bootstrap failed server_id={} host={} error={}",
-                    config.server_id, ssh_credentials.host.as_str(), error
+                    config.server_id,
+                    ssh_credentials.host.as_str(),
+                    error
                 );
                 ssh_client.disconnect().await;
                 return Err(map_ssh_transport_error(error));
@@ -379,7 +385,9 @@ impl MobileClient {
                 );
                 warn!(
                     "MobileClient: remote ssh session connect failed server_id={} host={} error={}",
-                    server_id, ssh_credentials.host.as_str(), error
+                    server_id,
+                    ssh_credentials.host.as_str(),
+                    error
                 );
                 ssh_client.disconnect().await;
                 return Err(error);
@@ -391,7 +399,11 @@ impl MobileClient {
         trace!(
             "MobileClient: finish_connect_remote_over_ssh session connected server_id={} websocket_url={}",
             server_id,
-            session.config().websocket_url.as_deref().unwrap_or("<none>")
+            session
+                .config()
+                .websocket_url
+                .as_deref()
+                .unwrap_or("<none>")
         );
         if session.has_ipc() {
             self.app_store
@@ -1076,39 +1088,43 @@ impl MobileClient {
                             Ok(()) => {}
                             Err(StreamHandleError::VersionGap) => {
                                 debug!(
-                                    "IPC: version gap for thread={}, falling back to RPC",
+                                    "IPC: version gap for thread={}, reseeding stream cache from RPC",
                                     params.conversation_id
                                 );
                                 stream_cache.remove(&params.conversation_id);
-                                if let Err(e) = refresh_thread_snapshot_from_app_server(
+                                if let Err(e) = recover_ipc_stream_cache_from_app_server(
                                     Arc::clone(&session),
                                     Arc::clone(&app_store),
+                                    &mut stream_cache,
                                     &loop_server_id,
                                     &params.conversation_id,
+                                    params.version,
                                 )
                                 .await
                                 {
                                     warn!(
-                                        "IPC: RPC fallback failed for thread {}: {}",
+                                        "IPC: RPC cache recovery failed for thread {}: {}",
                                         params.conversation_id, e
                                     );
                                 }
                             }
                             Err(StreamHandleError::NoCachedState) => {
                                 debug!(
-                                    "IPC: no cached state for thread={}, falling back to RPC",
+                                    "IPC: no cached state for thread={}, seeding stream cache from RPC",
                                     params.conversation_id
                                 );
-                                if let Err(e) = refresh_thread_snapshot_from_app_server(
+                                if let Err(e) = recover_ipc_stream_cache_from_app_server(
                                     Arc::clone(&session),
                                     Arc::clone(&app_store),
+                                    &mut stream_cache,
                                     &loop_server_id,
                                     &params.conversation_id,
+                                    params.version,
                                 )
                                 .await
                                 {
                                     warn!(
-                                        "IPC: RPC fallback failed for thread {}: {}",
+                                        "IPC: RPC cache recovery failed for thread {}: {}",
                                         params.conversation_id, e
                                     );
                                 }
@@ -1119,16 +1135,18 @@ impl MobileClient {
                                     params.conversation_id, msg
                                 );
                                 stream_cache.remove(&params.conversation_id);
-                                if let Err(e) = refresh_thread_snapshot_from_app_server(
+                                if let Err(e) = recover_ipc_stream_cache_from_app_server(
                                     Arc::clone(&session),
                                     Arc::clone(&app_store),
+                                    &mut stream_cache,
                                     &loop_server_id,
                                     &params.conversation_id,
+                                    params.version,
                                 )
                                 .await
                                 {
                                     warn!(
-                                        "IPC: RPC fallback failed for thread {}: {}",
+                                        "IPC: RPC cache recovery failed for thread {}: {}",
                                         params.conversation_id, e
                                     );
                                 }
@@ -1139,16 +1157,18 @@ impl MobileClient {
                                     params.conversation_id, msg
                                 );
                                 stream_cache.remove(&params.conversation_id);
-                                if let Err(e) = refresh_thread_snapshot_from_app_server(
+                                if let Err(e) = recover_ipc_stream_cache_from_app_server(
                                     Arc::clone(&session),
                                     Arc::clone(&app_store),
+                                    &mut stream_cache,
                                     &loop_server_id,
                                     &params.conversation_id,
+                                    params.version,
                                 )
                                 .await
                                 {
                                     warn!(
-                                        "IPC: RPC fallback failed for thread {}: {}",
+                                        "IPC: RPC cache recovery failed for thread {}: {}",
                                         params.conversation_id, e
                                     );
                                 }
@@ -1898,13 +1918,13 @@ pub fn thread_snapshot_from_generated_thread(
 ) -> Result<ThreadSnapshot, String> {
     let upstream_thread: upstream::Thread =
         crate::rpc::convert_generated_field(thread).map_err(|e| e.to_string())?;
-    let info = ThreadInfo::from(upstream_thread.clone());
-    let items = crate::conversation::hydrate_turns(&upstream_thread.turns, &Default::default());
-    let mut snapshot = ThreadSnapshot::from_info(server_id, info);
-    snapshot.items = items;
-    snapshot.model = model;
-    snapshot.reasoning_effort = reasoning_effort;
-    Ok(snapshot)
+    Ok(thread_snapshot_from_upstream_thread_state(
+        server_id,
+        upstream_thread,
+        model,
+        reasoning_effort,
+        None,
+    ))
 }
 
 pub fn copy_thread_runtime_fields(source: &ThreadSnapshot, target: &mut ThreadSnapshot) {
@@ -2070,6 +2090,38 @@ async fn refresh_thread_snapshot_from_app_server(
     server_id: &str,
     thread_id: &str,
 ) -> Result<(), RpcError> {
+    let thread = read_thread_from_app_server(session, thread_id).await?;
+    upsert_thread_snapshot_from_app_server_thread(&app_store, server_id, thread);
+    Ok(())
+}
+
+async fn read_thread_from_app_server(
+    session: Arc<ServerSession>,
+    thread_id: &str,
+) -> Result<upstream::Thread, RpcError> {
+    let response = session
+        .request(
+            "thread/read",
+            serde_json::json!({ "threadId": thread_id, "includeTurns": true }),
+        )
+        .await?;
+    response
+        .get("thread")
+        .cloned()
+        .ok_or_else(|| RpcError::Deserialization("thread/read response missing thread".to_string()))
+        .and_then(|value| {
+            serde_json::from_value::<upstream::Thread>(value).map_err(|error| {
+                RpcError::Deserialization(format!("deserialize thread/read response: {error}"))
+            })
+        })
+}
+
+fn upsert_thread_snapshot_from_app_server_thread(
+    app_store: &AppStoreReducer,
+    server_id: &str,
+    thread: upstream::Thread,
+) {
+    let thread_id = thread.id.clone();
     let existing = app_store
         .snapshot()
         .threads
@@ -2078,26 +2130,54 @@ async fn refresh_thread_snapshot_from_app_server(
             thread_id: thread_id.to_string(),
         })
         .cloned();
-    let response = session
-        .request(
-            "thread/read",
-            serde_json::json!({ "threadId": thread_id, "includeTurns": true }),
-        )
-        .await?;
-    let thread = response
-        .get("thread")
-        .cloned()
-        .ok_or_else(|| RpcError::Deserialization("thread/read response missing thread".to_string()))
-        .and_then(|value| {
-            serde_json::from_value::<upstream::Thread>(value).map_err(|error| {
-                RpcError::Deserialization(format!("deserialize thread/read response: {error}"))
-            })
-        })?;
     let mut snapshot = thread_snapshot_from_upstream_thread(server_id, thread);
     if let Some(existing) = existing.as_ref() {
         copy_thread_runtime_fields(existing, &mut snapshot);
     }
     app_store.upsert_thread_snapshot(snapshot);
+}
+
+async fn recover_ipc_stream_cache_from_app_server(
+    session: Arc<ServerSession>,
+    app_store: Arc<AppStoreReducer>,
+    cache: &mut HashMap<String, (u32, serde_json::Value)>,
+    server_id: &str,
+    thread_id: &str,
+    version: u32,
+) -> Result<(), RpcError> {
+    let key = ThreadKey {
+        server_id: server_id.to_string(),
+        thread_id: thread_id.to_string(),
+    };
+    let app_snapshot = app_store.snapshot();
+    let existing_thread = app_snapshot.threads.get(&key).cloned();
+    let pending_approvals = app_snapshot
+        .pending_approvals
+        .iter()
+        .filter(|approval| {
+            approval.server_id == server_id && approval.thread_id.as_deref() == Some(thread_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let pending_user_inputs = app_snapshot
+        .pending_user_inputs
+        .iter()
+        .filter(|request| request.server_id == server_id && request.thread_id == thread_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    drop(app_snapshot);
+
+    let thread = read_thread_from_app_server(session, thread_id).await?;
+    upsert_thread_snapshot_from_app_server_thread(&app_store, server_id, thread.clone());
+
+    let mut conversation_state = seed_conversation_state_from_thread(&thread);
+    hydrate_seeded_ipc_conversation_state(
+        &mut conversation_state,
+        existing_thread.as_ref(),
+        &pending_approvals,
+        &pending_user_inputs,
+    );
+    cache.insert(thread_id.to_string(), (version, conversation_state));
     Ok(())
 }
 
@@ -2105,24 +2185,311 @@ fn thread_snapshot_from_upstream_thread(
     server_id: &str,
     thread: upstream::Thread,
 ) -> ThreadSnapshot {
+    thread_snapshot_from_upstream_thread_state(server_id, thread, None, None, None)
+}
+
+fn thread_snapshot_from_upstream_thread_state(
+    server_id: &str,
+    thread: upstream::Thread,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    active_turn_id: Option<String>,
+) -> ThreadSnapshot {
     let info = ThreadInfo::from(thread.clone());
     let items = crate::conversation::hydrate_turns(&thread.turns, &Default::default());
     let mut snapshot = ThreadSnapshot::from_info(server_id, info);
     snapshot.items = items;
+    snapshot.model = model;
+    snapshot.reasoning_effort = reasoning_effort;
+    snapshot.active_turn_id = active_turn_id.or_else(|| active_turn_id_from_turns(&thread.turns));
     snapshot
 }
 
-fn thread_snapshot_from_conversation_json(
+fn active_turn_id_from_turns(turns: &[upstream::Turn]) -> Option<String> {
+    turns
+        .iter()
+        .rev()
+        .find(|turn| matches!(turn.status, upstream::TurnStatus::InProgress))
+        .map(|turn| turn.id.clone())
+}
+
+struct ThreadProjection {
+    snapshot: ThreadSnapshot,
+    pending_approvals: Vec<PendingApproval>,
+    pending_user_inputs: Vec<PendingUserInputRequest>,
+}
+
+fn thread_projection_from_conversation_json(
     server_id: &str,
+    conversation_id: &str,
     conversation_state: &serde_json::Value,
-) -> Result<ThreadSnapshot, String> {
-    let thread: upstream::Thread = serde_json::from_value(conversation_state.clone())
-        .map_err(|e| format!("deserialize conversation_state: {e}"))?;
-    Ok(thread_snapshot_from_upstream_thread(server_id, thread))
+) -> Result<ThreadProjection, String> {
+    project_conversation_state(conversation_id, conversation_state)
+        .map(|projection| ThreadProjection {
+            snapshot: thread_snapshot_from_upstream_thread_state(
+                server_id,
+                projection.thread,
+                projection.latest_model,
+                projection.latest_reasoning_effort,
+                projection.active_turn_id,
+            ),
+            pending_approvals: projection
+                .pending_approvals
+                .into_iter()
+                .map(|approval| pending_approval_from_ipc_projection(server_id, approval))
+                .collect(),
+            pending_user_inputs: projection
+                .pending_user_inputs
+                .into_iter()
+                .map(|request| pending_user_input_from_ipc_projection(server_id, request))
+                .collect(),
+        })
+        .or_else(|ipc_error| {
+            let thread: upstream::Thread = serde_json::from_value(conversation_state.clone())
+                .map_err(|error| {
+                    format!(
+                        "deserialize desktop conversation_state: {ipc_error}; deserialize upstream thread: {error}"
+                    )
+                })?;
+            Ok(ThreadProjection {
+                snapshot: thread_snapshot_from_upstream_thread(server_id, thread),
+                pending_approvals: Vec::new(),
+                pending_user_inputs: Vec::new(),
+            })
+        })
+}
+
+fn pending_approval_from_ipc_projection(
+    server_id: &str,
+    approval: ProjectedApprovalRequest,
+) -> PendingApproval {
+    PendingApproval {
+        id: approval.id,
+        server_id: server_id.to_string(),
+        kind: match approval.kind {
+            ProjectedApprovalKind::Command => crate::types::ApprovalKind::Command,
+            ProjectedApprovalKind::FileChange => crate::types::ApprovalKind::FileChange,
+            ProjectedApprovalKind::Permissions => crate::types::ApprovalKind::Permissions,
+        },
+        thread_id: approval.thread_id,
+        turn_id: approval.turn_id,
+        item_id: approval.item_id,
+        command: approval.command,
+        path: approval.path,
+        grant_root: approval.grant_root,
+        cwd: approval.cwd,
+        reason: approval.reason,
+        method: approval.method,
+        raw_params_json: approval.raw_params_json,
+    }
+}
+
+fn pending_user_input_from_ipc_projection(
+    server_id: &str,
+    request: ProjectedUserInputRequest,
+) -> PendingUserInputRequest {
+    PendingUserInputRequest {
+        id: request.id,
+        server_id: server_id.to_string(),
+        thread_id: request.thread_id,
+        turn_id: request.turn_id,
+        item_id: request.item_id,
+        questions: request
+            .questions
+            .into_iter()
+            .map(|question| crate::types::PendingUserInputQuestion {
+                id: question.id,
+                header: question.header,
+                question: question.question,
+                is_other_allowed: question.is_other_allowed,
+                is_secret: question.is_secret,
+                options: question
+                    .options
+                    .into_iter()
+                    .map(|option| crate::types::PendingUserInputOption {
+                        label: option.label,
+                        description: option.description,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        requester_agent_nickname: request.requester_agent_nickname,
+        requester_agent_role: request.requester_agent_role,
+    }
+}
+
+fn sync_ipc_thread_requests(
+    app_store: &AppStoreReducer,
+    server_id: &str,
+    thread_id: &str,
+    pending_approvals: Vec<PendingApproval>,
+    pending_user_inputs: Vec<PendingUserInputRequest>,
+) {
+    let snapshot = app_store.snapshot();
+
+    let mut merged_approvals = snapshot
+        .pending_approvals
+        .into_iter()
+        .filter(|approval| {
+            !(approval.server_id == server_id && approval.thread_id.as_deref() == Some(thread_id))
+        })
+        .collect::<Vec<_>>();
+    merged_approvals.extend(pending_approvals);
+    app_store.replace_pending_approvals(merged_approvals);
+
+    let mut merged_user_inputs = snapshot
+        .pending_user_inputs
+        .into_iter()
+        .filter(|request| !(request.server_id == server_id && request.thread_id == thread_id))
+        .collect::<Vec<_>>();
+    merged_user_inputs.extend(pending_user_inputs);
+    app_store.replace_pending_user_inputs(merged_user_inputs);
+}
+
+fn hydrate_seeded_ipc_conversation_state(
+    conversation_state: &mut serde_json::Value,
+    existing_thread: Option<&ThreadSnapshot>,
+    pending_approvals: &[PendingApproval],
+    pending_user_inputs: &[PendingUserInputRequest],
+) {
+    let Some(object) = conversation_state.as_object_mut() else {
+        return;
+    };
+
+    if let Some(thread) = existing_thread {
+        if let Some(model) = thread.model.as_ref() {
+            object.insert(
+                "latestModel".to_string(),
+                serde_json::Value::String(model.clone()),
+            );
+        }
+        if let Some(reasoning_effort) = thread.reasoning_effort.as_ref() {
+            object.insert(
+                "latestReasoningEffort".to_string(),
+                serde_json::Value::String(reasoning_effort.clone()),
+            );
+        }
+    }
+
+    if !object.contains_key("agentNickname")
+        && let Some(agent_nickname) = pending_user_inputs
+            .iter()
+            .find_map(|request| request.requester_agent_nickname.clone())
+    {
+        object.insert(
+            "agentNickname".to_string(),
+            serde_json::Value::String(agent_nickname),
+        );
+    }
+
+    if !object.contains_key("agentRole")
+        && let Some(agent_role) = pending_user_inputs
+            .iter()
+            .find_map(|request| request.requester_agent_role.clone())
+    {
+        object.insert(
+            "agentRole".to_string(),
+            serde_json::Value::String(agent_role),
+        );
+    }
+
+    let requests = pending_approvals
+        .iter()
+        .filter_map(seed_ipc_approval_request)
+        .chain(pending_user_inputs.iter().map(seed_ipc_user_input_request))
+        .collect::<Vec<_>>();
+    if !requests.is_empty() {
+        object.insert("requests".to_string(), serde_json::Value::Array(requests));
+    }
+}
+
+fn seed_ipc_approval_request(approval: &PendingApproval) -> Option<serde_json::Value> {
+    if matches!(approval.kind, crate::types::ApprovalKind::McpElicitation) {
+        return None;
+    }
+
+    let params = if approval.raw_params_json.trim().is_empty() {
+        seed_ipc_approval_request_params(approval)?
+    } else {
+        serde_json::from_str(&approval.raw_params_json)
+            .ok()
+            .or_else(|| seed_ipc_approval_request_params(approval))?
+    };
+
+    Some(serde_json::json!({
+        "id": approval.id,
+        "method": approval.method,
+        "params": params,
+    }))
+}
+
+fn seed_ipc_approval_request_params(approval: &PendingApproval) -> Option<serde_json::Value> {
+    let thread_id = approval.thread_id.clone()?;
+    let turn_id = approval.turn_id.clone()?;
+    let item_id = approval.item_id.clone()?;
+
+    match approval.kind {
+        crate::types::ApprovalKind::Command => Some(serde_json::json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": item_id,
+            "command": approval.command,
+            "cwd": approval.cwd,
+            "reason": approval.reason,
+        })),
+        crate::types::ApprovalKind::FileChange => Some(serde_json::json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": item_id,
+            "grantRoot": approval.grant_root,
+            "reason": approval.reason,
+        })),
+        crate::types::ApprovalKind::Permissions => Some(serde_json::json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": item_id,
+            "reason": approval.reason,
+        })),
+        crate::types::ApprovalKind::McpElicitation => None,
+    }
+}
+
+fn seed_ipc_user_input_request(request: &PendingUserInputRequest) -> serde_json::Value {
+    serde_json::json!({
+        "id": request.id,
+        "method": "item/tool/requestUserInput",
+        "params": {
+            "threadId": request.thread_id,
+            "turnId": request.turn_id,
+            "itemId": request.item_id,
+            "questions": request.questions.iter().map(|question| {
+                serde_json::json!({
+                    "id": question.id,
+                    "header": question.header.clone().unwrap_or_default(),
+                    "question": question.question,
+                    "isOther": question.is_other_allowed,
+                    "isSecret": question.is_secret,
+                    "options": if question.options.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::Array(
+                            question.options.iter().map(|option| {
+                                serde_json::json!({
+                                    "label": option.label,
+                                    "description": option.description.clone().unwrap_or_default(),
+                                })
+                            }).collect()
+                        )
+                    },
+                })
+            }).collect::<Vec<_>>(),
+        },
+    })
 }
 
 // -- IPC stream state change handler --
 
+#[derive(Debug)]
 enum StreamHandleError {
     VersionGap,
     NoCachedState,
@@ -2136,60 +2503,55 @@ fn handle_stream_state_change(
     server_id: &str,
     params: &ThreadStreamStateChangedParams,
 ) -> Result<(), StreamHandleError> {
-    match &params.change {
-        StreamChange::Snapshot { conversation_state } => {
-            let mut snapshot = thread_snapshot_from_conversation_json(
-                server_id,
-                conversation_state,
-            )
-            .map_err(|e| {
-                let preview: String = conversation_state.to_string().chars().take(500).collect();
-                StreamHandleError::DeserializeFailed(format!("{e}; json preview: {preview}"))
-            })?;
-
-            let key = ThreadKey {
-                server_id: server_id.to_string(),
-                thread_id: params.conversation_id.clone(),
-            };
-            if let Some(existing) = app_store.snapshot().threads.get(&key) {
-                copy_thread_runtime_fields(existing, &mut snapshot);
+    let mut cached_state = cache.remove(&params.conversation_id);
+    apply_stream_change_to_conversation_state(&mut cached_state, params).map_err(|error| {
+        match error {
+            ConversationStreamApplyError::NoCachedState => StreamHandleError::NoCachedState,
+            ConversationStreamApplyError::VersionGap { .. } => StreamHandleError::VersionGap,
+            ConversationStreamApplyError::PatchFailed(error) => {
+                StreamHandleError::PatchFailed(error.to_string())
             }
-
-            app_store.upsert_thread_snapshot(snapshot);
-            cache.insert(
-                params.conversation_id.clone(),
-                (params.version, conversation_state.clone()),
-            );
-            Ok(())
         }
-        StreamChange::Patches { patches } => {
-            let (cached_version, cached_json) = cache
-                .get_mut(&params.conversation_id)
-                .ok_or(StreamHandleError::NoCachedState)?;
+    })?;
 
-            if params.version != *cached_version + 1 {
-                return Err(StreamHandleError::VersionGap);
-            }
+    let (_, conversation_state) = cached_state
+        .as_ref()
+        .expect("cached state should exist after successful stream apply");
+    let ThreadProjection {
+        mut snapshot,
+        pending_approvals,
+        pending_user_inputs,
+    } = thread_projection_from_conversation_json(
+        server_id,
+        &params.conversation_id,
+        conversation_state,
+    )
+    .map_err(|e| {
+        let preview: String = conversation_state.to_string().chars().take(500).collect();
+        StreamHandleError::DeserializeFailed(format!("{e}; json preview: {preview}"))
+    })?;
 
-            crate::immer_patch::apply_patches(cached_json, patches)
-                .map_err(|e| StreamHandleError::PatchFailed(e.to_string()))?;
-
-            let mut snapshot = thread_snapshot_from_conversation_json(server_id, cached_json)
-                .map_err(StreamHandleError::DeserializeFailed)?;
-
-            let key = ThreadKey {
-                server_id: server_id.to_string(),
-                thread_id: params.conversation_id.clone(),
-            };
-            if let Some(existing) = app_store.snapshot().threads.get(&key) {
-                copy_thread_runtime_fields(existing, &mut snapshot);
-            }
-
-            app_store.upsert_thread_snapshot(snapshot);
-            *cached_version = params.version;
-            Ok(())
-        }
+    let key = ThreadKey {
+        server_id: server_id.to_string(),
+        thread_id: params.conversation_id.clone(),
+    };
+    if let Some(existing) = app_store.snapshot().threads.get(&key) {
+        copy_thread_runtime_fields(existing, &mut snapshot);
     }
+
+    app_store.upsert_thread_snapshot(snapshot);
+    sync_ipc_thread_requests(
+        app_store,
+        server_id,
+        &params.conversation_id,
+        pending_approvals,
+        pending_user_inputs,
+    );
+    cache.insert(
+        params.conversation_id.clone(),
+        cached_state.expect("cached state should exist after successful stream apply"),
+    );
+    Ok(())
 }
 
 async fn send_ipc_approval_response(
@@ -2367,7 +2729,10 @@ fn approval_response_json(
 #[cfg(test)]
 mod mobile_client_tests {
     use super::*;
+    use crate::conversation::ConversationItemContent;
     use crate::types::ThreadSummaryStatus;
+    use serde_json::json;
+    use std::path::PathBuf;
 
     fn make_thread_info(id: &str) -> ThreadInfo {
         ThreadInfo {
@@ -2450,5 +2815,217 @@ mod mobile_client_tests {
     fn remote_oauth_callback_port_reads_localhost_redirect() {
         let auth_url = "https://auth.openai.com/oauth/authorize?response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=abc";
         assert_eq!(remote_oauth_callback_port(auth_url).unwrap(), 1455);
+    }
+
+    #[test]
+    fn handle_stream_state_change_streams_patches_and_updates_ipc_request_state() {
+        let app_store = AppStoreReducer::new();
+        let mut cache = HashMap::new();
+        let thread_id = "thread-1";
+        let server_id = "srv";
+        let key = ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id: thread_id.to_string(),
+        };
+
+        let snapshot_params = ThreadStreamStateChangedParams {
+            conversation_id: thread_id.to_string(),
+            version: 1,
+            change: StreamChange::Snapshot {
+                conversation_state: json!({
+                    "latestModel": "gpt-5.4",
+                    "latestReasoningEffort": "medium",
+                    "turns": [
+                        {
+                            "turnId": "turn-1",
+                            "status": "inProgress",
+                            "params": {
+                                "input": [
+                                    { "type": "text", "text": "hello", "textElements": [] }
+                                ]
+                            },
+                            "items": [
+                                { "id": "assistant-1", "type": "agentMessage", "text": "hel" }
+                            ]
+                        }
+                    ],
+                    "requests": [
+                        {
+                            "id": "approval-1",
+                            "method": "item/commandExecution/requestApproval",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turnId": "turn-1",
+                                "itemId": "exec-1",
+                                "command": "ls",
+                                "cwd": "/repo"
+                            }
+                        }
+                    ]
+                }),
+            },
+        };
+
+        handle_stream_state_change(&mut cache, &app_store, server_id, &snapshot_params).unwrap();
+
+        let snapshot = app_store.snapshot();
+        let thread = snapshot.threads.get(&key).unwrap();
+        assert_eq!(thread.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(thread.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(thread.active_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(snapshot.pending_approvals.len(), 1);
+        assert_eq!(
+            thread.items.iter().find_map(|item| match &item.content {
+                ConversationItemContent::Assistant(data) => Some(data.text.as_str()),
+                _ => None,
+            }),
+            Some("hel")
+        );
+
+        let text_patch = ThreadStreamStateChangedParams {
+            conversation_id: thread_id.to_string(),
+            version: 2,
+            change: StreamChange::Patches {
+                patches: vec![
+                    codex_ipc::ImmerPatch {
+                        op: codex_ipc::ImmerOp::Replace,
+                        path: vec![
+                            codex_ipc::ImmerPathSegment::Key("turns".to_string()),
+                            codex_ipc::ImmerPathSegment::Index(0),
+                            codex_ipc::ImmerPathSegment::Key("items".to_string()),
+                            codex_ipc::ImmerPathSegment::Index(0),
+                            codex_ipc::ImmerPathSegment::Key("text".to_string()),
+                        ],
+                        value: Some(json!("hello")),
+                    },
+                    codex_ipc::ImmerPatch {
+                        op: codex_ipc::ImmerOp::Replace,
+                        path: vec![codex_ipc::ImmerPathSegment::Key("requests".to_string())],
+                        value: Some(json!([])),
+                    },
+                ],
+            },
+        };
+
+        handle_stream_state_change(&mut cache, &app_store, server_id, &text_patch).unwrap();
+
+        let snapshot = app_store.snapshot();
+        let thread = snapshot.threads.get(&key).unwrap();
+        assert_eq!(thread.active_turn_id.as_deref(), Some("turn-1"));
+        assert!(snapshot.pending_approvals.is_empty());
+        assert_eq!(
+            thread.items.iter().find_map(|item| match &item.content {
+                ConversationItemContent::Assistant(data) => Some(data.text.as_str()),
+                _ => None,
+            }),
+            Some("hello")
+        );
+
+        let completion_patch = ThreadStreamStateChangedParams {
+            conversation_id: thread_id.to_string(),
+            version: 3,
+            change: StreamChange::Patches {
+                patches: vec![codex_ipc::ImmerPatch {
+                    op: codex_ipc::ImmerOp::Replace,
+                    path: vec![
+                        codex_ipc::ImmerPathSegment::Key("turns".to_string()),
+                        codex_ipc::ImmerPathSegment::Index(0),
+                        codex_ipc::ImmerPathSegment::Key("status".to_string()),
+                    ],
+                    value: Some(json!("completed")),
+                }],
+            },
+        };
+
+        handle_stream_state_change(&mut cache, &app_store, server_id, &completion_patch).unwrap();
+
+        let snapshot = app_store.snapshot();
+        let thread = snapshot.threads.get(&key).unwrap();
+        assert_eq!(thread.active_turn_id, None);
+    }
+
+    #[test]
+    fn handle_stream_state_change_accepts_patch_on_thread_read_seeded_cache() {
+        let app_store = AppStoreReducer::new();
+        let thread_id = "thread-1";
+        let server_id = "srv";
+        let key = ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id: thread_id.to_string(),
+        };
+        let thread = upstream::Thread {
+            id: thread_id.to_string(),
+            preview: "hello".to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: upstream::ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            path: Some(PathBuf::from("/tmp/thread.jsonl")),
+            cwd: PathBuf::from("/tmp"),
+            cli_version: "1.0.0".to_string(),
+            source: upstream::SessionSource::default(),
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: Some("Thread".to_string()),
+            turns: vec![upstream::Turn {
+                id: "turn-1".to_string(),
+                status: upstream::TurnStatus::InProgress,
+                error: None,
+                items: vec![
+                    upstream::ThreadItem::UserMessage {
+                        id: "user-1".to_string(),
+                        content: vec![upstream::UserInput::Text {
+                            text: "hello".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                    },
+                    upstream::ThreadItem::AgentMessage {
+                        id: "assistant-1".to_string(),
+                        text: "hel".to_string(),
+                        phase: None,
+                        memory_citation: None,
+                    },
+                ],
+            }],
+        };
+        let mut cache = HashMap::from([(
+            thread_id.to_string(),
+            (1, seed_conversation_state_from_thread(&thread)),
+        )]);
+
+        let text_patch = ThreadStreamStateChangedParams {
+            conversation_id: thread_id.to_string(),
+            version: 2,
+            change: StreamChange::Patches {
+                patches: vec![codex_ipc::ImmerPatch {
+                    op: codex_ipc::ImmerOp::Replace,
+                    path: vec![
+                        codex_ipc::ImmerPathSegment::Key("turns".to_string()),
+                        codex_ipc::ImmerPathSegment::Index(0),
+                        codex_ipc::ImmerPathSegment::Key("items".to_string()),
+                        codex_ipc::ImmerPathSegment::Index(0),
+                        codex_ipc::ImmerPathSegment::Key("text".to_string()),
+                    ],
+                    value: Some(json!("hello")),
+                }],
+            },
+        };
+
+        handle_stream_state_change(&mut cache, &app_store, server_id, &text_patch).unwrap();
+
+        let snapshot = app_store.snapshot();
+        let thread = snapshot.threads.get(&key).unwrap();
+        assert_eq!(thread.active_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            thread.items.iter().find_map(|item| match &item.content {
+                ConversationItemContent::Assistant(data) => Some(data.text.as_str()),
+                _ => None,
+            }),
+            Some("hello")
+        );
     }
 }

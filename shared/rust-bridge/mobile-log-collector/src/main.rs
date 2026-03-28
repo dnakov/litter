@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{TimeZone, Utc};
@@ -212,6 +212,9 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app = Router::new()
+        .route("/", get(root_redirect))
+        .route("/tail", get(tail_ui))
+        .route("/static/renderjson.js", get(renderjson_asset))
         .route("/healthz", get(healthz))
         .route("/v1/logs", axum::routing::post(post_logs))
         .route("/v1/query", get(query_logs))
@@ -220,7 +223,12 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let addr: SocketAddr = args.bind.parse()?;
     let listener = TcpListener::bind(&addr).await?;
+    let local_addr = listener.local_addr()?;
     eprintln!("\x1b[32m[collector]\x1b[0m listening on {addr}");
+    eprintln!(
+        "\x1b[32m[collector]\x1b[0m web ui: {}",
+        local_tail_ui_url(local_addr)
+    );
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -231,6 +239,24 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse { ok: true })
+}
+
+async fn root_redirect() -> Redirect {
+    Redirect::temporary("/tail")
+}
+
+async fn tail_ui() -> Html<&'static str> {
+    Html(include_str!("tail_ui.html"))
+}
+
+async fn renderjson_asset() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/javascript; charset=utf-8"),
+        )],
+        include_str!("renderjson.js"),
+    )
 }
 
 async fn post_logs(
@@ -644,6 +670,16 @@ fn default_data_dir() -> PathBuf {
     std::env::temp_dir().join(format!("mobile-log-collector-{}", Uuid::new_v4()))
 }
 
+fn local_tail_ui_url(addr: SocketAddr) -> String {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
+        IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    format!("http://{host}:{}/tail", addr.port())
+}
+
 async fn run_query(args: ClientArgs) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let response = client
@@ -811,6 +847,15 @@ mod tests {
         assert!(is_private(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(is_private(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 8))));
         assert!(!is_private(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn local_tail_ui_url_prefers_loopback_for_unspecified_bindings() {
+        let ipv4 = local_tail_ui_url(SocketAddr::from(([0, 0, 0, 0], 8585)));
+        let ipv6 = local_tail_ui_url(SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 8585)));
+
+        assert_eq!(ipv4, "http://127.0.0.1:8585/tail");
+        assert_eq!(ipv6, "http://[::1]:8585/tail");
     }
 
     #[test]

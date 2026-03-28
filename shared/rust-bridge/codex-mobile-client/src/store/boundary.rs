@@ -90,10 +90,8 @@ impl TryFrom<super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
     type Error = String;
 
     fn try_from(thread: super::snapshot::ThreadSnapshot) -> Result<Self, Self::Error> {
-        let hydrated_conversation_items = merged_hydrated_items(
-            thread.items,
-            thread.local_overlay_items,
-        );
+        let hydrated_conversation_items =
+            merged_hydrated_items(thread.items, thread.local_overlay_items);
         Ok(Self {
             key: thread.key,
             info: thread.info,
@@ -119,7 +117,10 @@ fn merged_hydrated_items(
 ) -> Vec<HydratedConversationItem> {
     let mut merged = items;
     for overlay in local_overlay_items {
-        if merged.iter().all(|existing| !same_overlay_semantics(&overlay, existing)) {
+        if merged
+            .iter()
+            .all(|existing| !same_overlay_semantics(&overlay, existing))
+        {
             merged.push(overlay);
         }
     }

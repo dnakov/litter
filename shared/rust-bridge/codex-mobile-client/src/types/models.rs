@@ -93,7 +93,10 @@ impl From<upstream::Thread> for ThreadInfo {
                 Some(thread.preview)
             },
             cwd: Some(thread.cwd.to_string_lossy().to_string()),
-            path: Some(thread.cwd.to_string_lossy().to_string()),
+            path: match thread.path {
+                Some(path) => Some(path.to_string_lossy().to_string()),
+                None => Some(thread.cwd.to_string_lossy().to_string()),
+            },
             model_provider: Some(thread.model_provider),
             agent_nickname,
             agent_role,

@@ -1,6 +1,7 @@
 package com.litter.android.state
 
 import android.content.Context
+import com.litter.android.ui.ExperimentalFeatures
 import com.litter.android.util.LLog
 import kotlinx.coroutines.sync.Mutex
 import uniffi.codex_mobile_client.ThreadKey
@@ -33,6 +34,7 @@ class AppLifecycleController {
             return
         }
         try {
+            ExperimentalFeatures.initialize(context.applicationContext)
             val saved = SavedServerStore.load(context)
             val sshCredentials = SshCredentialStore(context)
             val activeServerIds = appModel.store.snapshot()
@@ -121,6 +123,7 @@ class AppLifecycleController {
                 "os" to server.os,
             ),
         )
+        val ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride()
         when (credential.method) {
             SshAuthMethod.PASSWORD -> {
                 appModel.ssh.sshConnectRemoteServer(
@@ -134,7 +137,7 @@ class AppLifecycleController {
                     passphrase = null,
                     acceptUnknownHost = true,
                     workingDir = null,
-                    ipcSocketPathOverride = null,
+                    ipcSocketPathOverride = ipcSocketPathOverride,
                 )
             }
             SshAuthMethod.KEY -> {
@@ -149,7 +152,7 @@ class AppLifecycleController {
                     passphrase = credential.passphrase,
                     acceptUnknownHost = true,
                     workingDir = null,
-                    ipcSocketPathOverride = null,
+                    ipcSocketPathOverride = ipcSocketPathOverride,
                 )
             }
         }

@@ -207,6 +207,7 @@ rust-host-dev: rust-check rust-test
 
 log-collector:
 	@echo "==> Starting local mobile log collector on $(LOG_COLLECTOR_BIND)..."
+	@echo "==> Web tail UI will be available at /tail on that server."
 	@cd $(ROOT) && cargo run --manifest-path $(RUST_DIR)/Cargo.toml -p mobile-log-collector -- serve --bind $(LOG_COLLECTOR_BIND) --data-dir $(LOG_COLLECTOR_DATA_DIR)
 
 rust-android: $(STAMP_RUST_ANDROID)
@@ -230,7 +231,7 @@ help:
 		'make android-emulator-run  fast emulator build + install + launch on emulator' \
 		'make android-device-run    fast Android dev build + install + launch on connected device (override ANDROID_DEVICE_SERIAL; set ANDROID_REINSTALL_ON_SIGNATURE_MISMATCH=0 to keep installed app)' \
 		'make android-release    Android build using release Rust profile and multi-ABI output' \
-		'make log-collector     start local log collector (override LOG_COLLECTOR_BIND / LOG_COLLECTOR_DATA_DIR)' \
+		'make log-collector     start local log collector + web tail UI (override LOG_COLLECTOR_BIND / LOG_COLLECTOR_DATA_DIR)' \
 		'make rust-check         host cargo check for shared crates' \
 		'make rust-test          host cargo test for shared crates'
 

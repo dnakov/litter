@@ -18,6 +18,7 @@
 //! - **ClientDiscovery** — router probes to find a handler for a request
 
 pub mod client;
+pub mod conversation_state;
 pub mod error;
 pub mod handler;
 pub mod protocol;
@@ -25,6 +26,7 @@ pub mod transport;
 
 pub use client::handle::{IpcClient, IpcClientConfig};
 pub use client::reconnect::{ReconnectPolicy, ReconnectingIpcClient};
+pub use conversation_state::*;
 pub use error::{IpcError, RequestError, TransportError};
 pub use handler::RequestHandler;
 pub use protocol::envelope::*;

@@ -1,4 +1,5 @@
 package com.litter.android.ui.discovery
+
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -65,6 +66,7 @@ import com.litter.android.state.isIpcConnected
 import com.litter.android.state.isConnected
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
+import com.litter.android.ui.ExperimentalFeatures
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.util.LLog
@@ -505,7 +507,7 @@ fun DiscoveryScreen(
                                 passphrase = null,
                                 acceptUnknownHost = true,
                                 workingDir = null,
-                                ipcSocketPathOverride = null,
+                                ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
                             )
                         }
 
@@ -521,7 +523,7 @@ fun DiscoveryScreen(
                                 passphrase = credential.passphrase,
                                 acceptUnknownHost = true,
                                 workingDir = null,
-                                ipcSocketPathOverride = null,
+                                ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
                             )
                         }
                     }

@@ -117,6 +117,7 @@ final class AppLifecycleController {
                 "authMethod": authMethod
             ]
         )
+        let ipcSocketPathOverride = ExperimentalFeatures.shared.ipcSocketPathOverride()
         switch credentials {
         case .password(let username, let password):
             _ = try await appModel.ssh.sshConnectRemoteServer(
@@ -130,7 +131,7 @@ final class AppLifecycleController {
                 passphrase: nil,
                 acceptUnknownHost: true,
                 workingDir: nil,
-                ipcSocketPathOverride: nil
+                ipcSocketPathOverride: ipcSocketPathOverride
             )
         case .key(let username, let privateKey, let passphrase):
             _ = try await appModel.ssh.sshConnectRemoteServer(
@@ -144,7 +145,7 @@ final class AppLifecycleController {
                 passphrase: passphrase,
                 acceptUnknownHost: true,
                 workingDir: nil,
-                ipcSocketPathOverride: nil
+                ipcSocketPathOverride: ipcSocketPathOverride
             )
         }
     }

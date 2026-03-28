@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mobile Log Collector Tail</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --panel-border: #e7e2d9;
+      --text: #171411;
+      --muted: #6c6257;
+      --accent: #1f5f4a;
+      --warn: #9a6a00;
+      --error: #b42318;
+      --trace: #8e857b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+
+    header {
+      display: grid;
+      gap: 14px;
+      padding: 28px 28px 18px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    .meta,
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      align-items: center;
+    }
+
+    .badge,
+    button,
+    .endpoint,
+    .filters {
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .badge strong {
+      color: var(--accent);
+    }
+
+    button {
+      color: var(--text);
+      cursor: pointer;
+      font: 13px/1.3 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    button:hover {
+      border-color: #cfc7bc;
+      background: #faf8f4;
+    }
+
+    .endpoint,
+    .filters {
+      border-radius: 8px;
+      max-width: 100%;
+      overflow: auto;
+      white-space: normal;
+      color: var(--muted);
+      font: 12px/1.5 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    main {
+      display: grid;
+      gap: 0;
+      padding: 0 28px 72px;
+    }
+
+    .empty {
+      padding: 32px 0;
+      color: var(--muted);
+      text-align: left;
+    }
+
+    details.event {
+      border-bottom: 1px solid var(--panel-border);
+    }
+
+    details.event[open] {
+      background: #fcfbf8;
+    }
+
+    details.event > summary {
+      cursor: pointer;
+      list-style: none;
+    }
+
+    details.event > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .event-summary {
+      display: grid;
+      grid-template-columns: auto auto auto auto minmax(0, 1fr);
+      gap: 10px 14px;
+      align-items: start;
+      padding: 16px 0;
+    }
+
+    .event-summary:hover {
+      background: transparent;
+    }
+
+    .timestamp,
+    .device,
+    .subsystem {
+      color: var(--muted);
+      font: 12px/1.4 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    .level {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font: 12px/1.4 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    .level-error { color: var(--error); }
+    .level-warn { color: var(--warn); }
+    .level-info { color: var(--accent); }
+    .level-debug { color: #67c7ff; }
+    .level-trace { color: var(--trace); }
+
+    .message {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      overflow-wrap: anywhere;
+    }
+
+    .event-json {
+      display: grid;
+      gap: 12px;
+      padding: 0 0 18px;
+    }
+
+    .json-inline-composite {
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+    }
+
+    .json-inline-text {
+      color: var(--muted);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 13px/1.55 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    .embedded-json-label {
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-family: "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+    }
+
+    .renderjson {
+      margin: 0;
+      padding-top: 4px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 13px/1.55 "SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace;
+      color: var(--text);
+    }
+
+    .renderjson a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .renderjson .disclosure {
+      margin-right: 6px;
+      font-weight: 600;
+    }
+
+    .renderjson .syntax {
+      color: var(--muted);
+    }
+
+    .renderjson .string {
+      color: #f9a66c;
+    }
+
+    .renderjson .number {
+      color: #7ad7ff;
+    }
+
+    .renderjson .boolean {
+      color: #ffd166;
+    }
+
+    .renderjson .keyword {
+      color: var(--trace);
+    }
+
+    .renderjson .key {
+      color: #9dd7bc;
+    }
+
+    @media (max-width: 880px) {
+      .event-summary {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Mobile Log Collector Tail</h1>
+    <div class="meta">
+      <div class="badge">Status: <strong id="status">Booting</strong></div>
+      <div class="badge">Visible events: <strong id="count">0</strong></div>
+      <div class="badge">History preload: <strong id="history-limit">200</strong></div>
+    </div>
+    <div class="controls">
+      <button id="clear" type="button">Clear</button>
+      <button id="jump" type="button">Jump To Latest</button>
+    </div>
+    <div class="endpoint" id="endpoint"></div>
+    <div class="filters" id="filters"></div>
+  </header>
+
+  <main>
+    <div class="empty" id="empty">Waiting for log events...</div>
+    <div id="events"></div>
+  </main>
+
+  <script src="/static/renderjson.js"></script>
+  <script>
+    const MAX_EVENTS = 1000;
+    const DEFAULT_HISTORY_LIMIT = 200;
+    const url = new URL(window.location.href);
+    const liveParams = new URLSearchParams(url.search);
+    const historyParams = new URLSearchParams(url.search);
+    if (!historyParams.has("limit")) {
+      historyParams.set("limit", String(DEFAULT_HISTORY_LIMIT));
+    }
+
+    const endpoint = document.getElementById("endpoint");
+    const filters = document.getElementById("filters");
+    const statusEl = document.getElementById("status");
+    const countEl = document.getElementById("count");
+    const historyLimitEl = document.getElementById("history-limit");
+    const emptyEl = document.getElementById("empty");
+    const eventsEl = document.getElementById("events");
+    const clearButton = document.getElementById("clear");
+    const jumpButton = document.getElementById("jump");
+
+    endpoint.textContent = "Streaming " + buildApiUrl("/v1/tail", liveParams);
+    filters.textContent = url.search ? "Filters " + url.search : "Filters none";
+    historyLimitEl.textContent = historyParams.get("limit");
+
+    clearButton.addEventListener("click", () => {
+      eventsEl.replaceChildren();
+      updateCount();
+    });
+
+    jumpButton.addEventListener("click", () => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    });
+
+    function buildApiUrl(path, params) {
+      const next = new URL(path, window.location.origin);
+      next.search = params.toString();
+      return next.toString();
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function updateCount() {
+      const count = eventsEl.childElementCount;
+      countEl.textContent = String(count);
+      emptyEl.hidden = count > 0;
+    }
+
+    function isNearBottom() {
+      return window.innerHeight + window.scrollY >= document.body.scrollHeight - 180;
+    }
+
+    function scrollToLatest() {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    }
+
+    function tryParseJson(value) {
+      if (typeof value !== "string" || value.trim() === "" || value === "null") {
+        return value;
+      }
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    }
+
+    function normalizeEvent(event) {
+      const copy = JSON.parse(JSON.stringify(event));
+      copy.fields_json = tryParseJson(copy.fields_json);
+      copy.payload_json = tryParseJson(copy.payload_json);
+      return copy;
+    }
+
+    function parseBalancedJson(text, startIndex) {
+      const opening = text[startIndex];
+      if (opening !== "{" && opening !== "[") {
+        return null;
+      }
+
+      const stack = [opening === "{" ? "}" : "]"];
+      let inString = false;
+      let escaping = false;
+
+      for (let index = startIndex + 1; index < text.length; index += 1) {
+        const char = text[index];
+        if (inString) {
+          if (escaping) {
+            escaping = false;
+            continue;
+          }
+          if (char === "\\") {
+            escaping = true;
+            continue;
+          }
+          if (char === "\"") {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (char === "\"") {
+          inString = true;
+          continue;
+        }
+
+        if (char === "{") {
+          stack.push("}");
+          continue;
+        }
+        if (char === "[") {
+          stack.push("]");
+          continue;
+        }
+        if (char === "}" || char === "]") {
+          if (stack[stack.length - 1] !== char) {
+            return null;
+          }
+          stack.pop();
+          if (stack.length === 0) {
+            return text.slice(startIndex, index + 1);
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function splitEmbeddedJson(text) {
+      if (typeof text !== "string" || text.trim() === "") {
+        return null;
+      }
+
+      const segments = [];
+      let cursor = 0;
+      let foundJson = false;
+
+      while (cursor < text.length) {
+        let candidateIndex = -1;
+        for (let index = cursor; index < text.length; index += 1) {
+          const char = text[index];
+          if (char === "{" || char === "[") {
+            candidateIndex = index;
+            break;
+          }
+        }
+
+        if (candidateIndex < 0) {
+          break;
+        }
+
+        const jsonSlice = parseBalancedJson(text, candidateIndex);
+        if (!jsonSlice) {
+          cursor = candidateIndex + 1;
+          continue;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonSlice);
+        } catch {
+          cursor = candidateIndex + 1;
+          continue;
+        }
+
+        if (candidateIndex > cursor) {
+          segments.push({ type: "text", value: text.slice(cursor, candidateIndex) });
+        }
+        segments.push({ type: "json", value: parsed });
+        cursor = candidateIndex + jsonSlice.length;
+        foundJson = true;
+      }
+
+      if (!foundJson) {
+        return null;
+      }
+      if (cursor < text.length) {
+        segments.push({ type: "text", value: text.slice(cursor) });
+      }
+
+      return segments.filter((segment) => segment.value !== "");
+    }
+
+    function summarizeText(text) {
+      if (typeof text !== "string") {
+        return "";
+      }
+      const segments = splitEmbeddedJson(text);
+      if (!segments) {
+        return text;
+      }
+      return segments
+        .map((segment) => (segment.type === "text" ? segment.value : "[json]"))
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function renderLibraryJson(value) {
+      return renderjson(value);
+    }
+
+    function renderEmbeddedJsonString(text) {
+      const segments = splitEmbeddedJson(text);
+      if (!segments) {
+        return null;
+      }
+
+      const container = document.createElement("div");
+      container.className = "json-inline-composite";
+
+      for (const segment of segments) {
+        if (segment.type === "text") {
+          const span = document.createElement("span");
+          span.className = "json-inline-text";
+          span.textContent = segment.value;
+          container.appendChild(span);
+          continue;
+        }
+
+        const label = document.createElement("div");
+        label.className = "embedded-json-label";
+        if (Array.isArray(segment.value)) {
+          label.textContent = "Embedded JSON Array(" + segment.value.length + ")";
+        } else {
+          label.textContent = "Embedded JSON Object(" + Object.keys(segment.value).length + ")";
+        }
+        container.appendChild(label);
+        container.appendChild(renderLibraryJson(segment.value));
+      }
+
+      return container;
+    }
+
+    function levelClass(level) {
+      const normalized = String(level || "").toLowerCase();
+      return "level level-" + (normalized || "info");
+    }
+
+    function formatTimestamp(timestampMs) {
+      const date = new Date(timestampMs);
+      if (Number.isNaN(date.getTime())) {
+        return String(timestampMs);
+      }
+      return date.toLocaleTimeString([], {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        fractionalSecondDigits: 3,
+      });
+    }
+
+    function renderEvent(event) {
+      const nearBottom = isNearBottom();
+      const view = normalizeEvent(event);
+      const details = document.createElement("details");
+      details.className = "event";
+
+      const summary = document.createElement("summary");
+      summary.className = "event-summary";
+      summary.innerHTML =
+        "<span class=\"timestamp\"></span>" +
+        "<span class=\"device\"></span>" +
+        "<span class=\"" + levelClass(view.level) + "\"></span>" +
+        "<span class=\"subsystem\"></span>" +
+        "<span class=\"message\"></span>";
+      summary.children[0].textContent = formatTimestamp(view.timestamp_ms);
+      summary.children[1].textContent = view.device_name || view.device_id || "unknown-device";
+      summary.children[2].textContent = view.level || "INFO";
+      summary.children[3].textContent = view.subsystem || "unknown";
+      summary.children[4].textContent = summarizeText(view.message || "");
+      details.appendChild(summary);
+
+      const body = document.createElement("div");
+      body.className = "event-json";
+      const embeddedMessage = renderEmbeddedJsonString(view.message || "");
+      if (embeddedMessage) {
+        body.appendChild(embeddedMessage);
+      }
+      body.appendChild(renderLibraryJson(view));
+      details.appendChild(body);
+      eventsEl.appendChild(details);
+
+      while (eventsEl.childElementCount > MAX_EVENTS) {
+        eventsEl.firstElementChild.remove();
+      }
+
+      updateCount();
+      if (nearBottom) {
+        scrollToLatest();
+      }
+    }
+
+    async function readNdjsonStream(body, onEvent) {
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line) {
+            continue;
+          }
+          onEvent(JSON.parse(line));
+        }
+      }
+
+      buffer += decoder.decode();
+      const tail = buffer.trim();
+      if (tail) {
+        onEvent(JSON.parse(tail));
+      }
+    }
+
+    async function preloadHistory() {
+      const response = await fetch(buildApiUrl("/v1/query", historyParams));
+      if (!response.ok) {
+        throw new Error("history request failed with " + response.status);
+      }
+      const text = await response.text();
+      for (const line of text.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        renderEvent(JSON.parse(trimmed));
+      }
+    }
+
+    async function connectTailLoop() {
+      while (true) {
+        try {
+          setStatus("Connecting");
+          const response = await fetch(buildApiUrl("/v1/tail", liveParams));
+          if (!response.ok || !response.body) {
+            throw new Error("tail request failed with " + response.status);
+          }
+          setStatus("Live");
+          await readNdjsonStream(response.body, renderEvent);
+          setStatus("Reconnecting");
+        } catch (error) {
+          setStatus("Retrying: " + error.message);
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      }
+    }
+
+    async function boot() {
+      renderjson
+        .set_icons("▶", "▼")
+        .set_show_to_level(0)
+        .set_sort_objects(false)
+        .set_max_string_length("none");
+      try {
+        setStatus("Loading history");
+        await preloadHistory();
+      } catch (error) {
+        setStatus("History failed: " + error.message);
+      }
+      updateCount();
+      connectTailLoop();
+    }
+
+    boot();
+  </script>
+</body>
+</html>

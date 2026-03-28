@@ -20,6 +20,7 @@ import com.litter.android.state.AppModel
 import com.litter.android.state.OpenAIApiKeyStore
 import com.litter.android.state.TurnForegroundService
 import com.litter.android.ui.AnimatedSplashScreen
+import com.litter.android.ui.ExperimentalFeatures
 import com.litter.android.ui.LitterApp
 import com.litter.android.ui.LitterAppTheme
 import com.litter.android.ui.WallpaperManager
@@ -36,6 +37,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         OpenAIApiKeyStore(applicationContext).applyToEnvironment()
+        ExperimentalFeatures.initialize(applicationContext)
 
         try {
             appModel = AppModel.init(this)

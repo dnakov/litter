@@ -501,9 +501,12 @@ fn convert_thread_item(
             duration_ms,
             ..
         } => {
-            if let Some(widget) =
-                widget_data_from_dynamic_tool_call(tool, arguments, status, content_items.as_deref())
-            {
+            if let Some(widget) = widget_data_from_dynamic_tool_call(
+                tool,
+                arguments,
+                status,
+                content_items.as_deref(),
+            ) {
                 return Some(ConversationItem {
                     id: item_id.to_string(),
                     content: ConversationItemContent::Widget(widget),

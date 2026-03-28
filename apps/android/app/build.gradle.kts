@@ -24,7 +24,7 @@ android {
         applicationId = "com.sigkitten.litter.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
+        versionCode = 11
         versionName = "0.1.0"
         buildConfigField("boolean", "ENABLE_ON_DEVICE_BRIDGE", "true")
         buildConfigField("String", "RUNTIME_STARTUP_MODE", "\"hybrid\"")

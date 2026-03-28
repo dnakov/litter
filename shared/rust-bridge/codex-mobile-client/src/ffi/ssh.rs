@@ -302,8 +302,7 @@ impl SshBridge {
                 ),
                 Err(error) => warn!(
                     "SshBridge: ssh_connect_remote_server failed server_id={} error={}",
-                    task_server_id,
-                    error
+                    task_server_id, error
                 ),
             }
             let _ = tx.send(result);
@@ -389,8 +388,7 @@ impl SshBridge {
             let mut progress = initial_progress;
             trace!(
                 "SshBridge: guided ssh connect task spawned server_id={} host={}",
-                task_server_id,
-                task_host
+                task_server_id, task_host
             );
             let task_result = run_guided_ssh_connect(
                 Arc::clone(&mobile_client),
@@ -421,8 +419,7 @@ impl SshBridge {
             if task_result.is_ok() {
                 info!(
                     "SshBridge: guided ssh connect completed server_id={} host={}",
-                    task_server_id,
-                    task_host
+                    task_server_id, task_host
                 );
             }
 
@@ -439,8 +436,7 @@ impl SshBridge {
     ) -> Result<(), ClientError> {
         info!(
             "SshBridge: ssh_respond_to_install_prompt server_id={} install={}",
-            server_id,
-            install
+            server_id, install
         );
         let sender = {
             let mut flows = self.bootstrap_flows.lock().await;
@@ -555,8 +551,7 @@ async fn run_guided_ssh_connect(
     let remote_shell = ssh_client.detect_remote_shell().await;
     info!(
         "guided ssh connect detected shell server_id={} shell={:?}",
-        server_id,
-        remote_shell
+        server_id, remote_shell
     );
     let codex_binary = match ssh_client
         .resolve_codex_binary_optional_with_shell(Some(remote_shell))
@@ -611,8 +606,7 @@ async fn run_guided_ssh_connect(
             let should_install = rx.await.unwrap_or(false);
             info!(
                 "guided ssh connect install decision server_id={} install={}",
-                server_id,
-                should_install
+                server_id, should_install
             );
             progress.pending_install = false;
             if !should_install {
@@ -657,8 +651,7 @@ async fn run_guided_ssh_connect(
                 .map_err(map_ssh_error)?;
             info!(
                 "guided ssh connect install platform server_id={} platform={:?}",
-                server_id,
-                platform
+                server_id, platform
             );
             let installed_binary = ssh_client
                 .install_latest_stable_codex(platform)
@@ -705,10 +698,7 @@ async fn run_guided_ssh_connect(
         .map_err(map_ssh_error)?;
     info!(
         "guided ssh connect bootstrap completed server_id={} remote_port={} local_tunnel_port={} pid={:?}",
-        server_id,
-        bootstrap.server_port,
-        bootstrap.tunnel_local_port,
-        bootstrap.pid
+        server_id, bootstrap.server_port, bootstrap.tunnel_local_port, bootstrap.pid
     );
 
     progress.update_step(

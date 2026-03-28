@@ -3,6 +3,7 @@ import Observation
 
 enum LitterFeature: String, CaseIterable, Identifiable {
     case realtimeVoice = "realtime_voice"
+    case ipc = "ipc"
     case generativeUI = "generative_ui"
 
     var id: String { rawValue }
@@ -10,6 +11,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .realtimeVoice: return "Realtime"
+        case .ipc: return "IPC"
         case .generativeUI: return "Generative UI"
         }
     }
@@ -17,6 +19,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .realtimeVoice: return "Show the realtime voice launcher on the home screen."
+        case .ipc: return "Attach to desktop IPC over SSH for faster sync, approvals, and resume. Requires reconnecting the server."
         case .generativeUI: return "Show interactive widgets, diagrams, and charts inline in conversations. Requires starting a new thread."
         }
     }
@@ -24,6 +27,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
     var defaultEnabled: Bool {
         switch self {
         case .realtimeVoice: return true
+        case .ipc: return false
         case .generativeUI: return false
         }
     }
@@ -57,5 +61,9 @@ final class ExperimentalFeatures {
         }
         overrides = map
         persistOverrides()
+    }
+
+    func ipcSocketPathOverride() -> String? {
+        isEnabled(.ipc) ? nil : ""
     }
 }

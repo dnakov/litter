@@ -12,10 +12,10 @@ use futures::future::BoxFuture;
 use russh::ChannelMsg;
 use russh::ChannelStream;
 use russh::client::{self, Handle, Msg};
-use russh::keys::decode_secret_key;
 use russh::keys::HashAlg;
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::keys::PublicKey;
+use russh::keys::decode_secret_key;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -668,6 +668,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
         override_path: Option<&str>,
     ) -> Result<Option<String>, SshError> {
         let socket_path = match override_path {
+            Some(path) if path.trim().is_empty() => return Ok(None),
             Some(path) => path.to_string(),
             None => self.resolve_remote_ipc_socket_path().await?,
         };
@@ -780,13 +781,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                     RemoteShell::PowerShell => "NUL",
                 };
                 let websocket_ready = self
-                    .wait_for_forwarded_websocket_ready(
-                        probe_port,
-                        None,
-                        shell,
-                        null_path,
-                        None,
-                    )
+                    .wait_for_forwarded_websocket_ready(probe_port, None, shell, null_path, None)
                     .await;
                 probe_task.abort();
 
@@ -855,9 +850,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                         r#"{cd_prefix}$logFile = {log}; $errFile = {log_err}; $proc = Start-Process -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError $errFile -FilePath {file_path} -ArgumentList {argument_list}; Write-Host $proc.Id"#,
                         cd_prefix = cd_prefix,
                         log = log_path,
-                        log_err = stderr_log_path
-                            .as_deref()
-                            .expect("windows stderr log path"),
+                        log_err = stderr_log_path.as_deref().expect("windows stderr log path"),
                         file_path = file_path,
                         argument_list = argument_list,
                     )
@@ -1589,7 +1582,11 @@ printf '%s' "$stable_bin""#,
         info!(
             "ssh install codex completed platform={} path={}",
             remote_platform_name(platform),
-            if installed_path.is_empty() { "$HOME/.litter/bin/codex" } else { installed_path }
+            if installed_path.is_empty() {
+                "$HOME/.litter/bin/codex"
+            } else {
+                installed_path
+            }
         );
         Ok(RemoteCodexBinary::Codex(if installed_path.is_empty() {
             "$HOME/.litter/bin/codex".to_string()
@@ -1868,7 +1865,11 @@ fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (
     if is_windows_cmd_script(binary.path()) {
         let command = match binary {
             RemoteCodexBinary::Codex(path) => {
-                format!(r#""{}" app-server --listen {}"#, cmd_quote(path), listen_url)
+                format!(
+                    r#""{}" app-server --listen {}"#,
+                    cmd_quote(path),
+                    listen_url
+                )
             }
             RemoteCodexBinary::AppServer(path) => {
                 format!(r#""{}" --listen {}"#, cmd_quote(path), listen_url)
@@ -2148,11 +2149,11 @@ mod tests {
             &RemoteCodexBinary::AppServer(r#"C:\Program Files\Codex\codex-app-server.exe"#.into()),
             "ws://127.0.0.1:8390",
         );
-        assert_eq!(file_path, r#"'C:\Program Files\Codex\codex-app-server.exe'"#);
         assert_eq!(
-            argument_list,
-            "@('--listen', 'ws://127.0.0.1:8390')"
+            file_path,
+            r#"'C:\Program Files\Codex\codex-app-server.exe'"#
         );
+        assert_eq!(argument_list, "@('--listen', 'ws://127.0.0.1:8390')");
     }
 
     #[test]
@@ -2161,7 +2162,10 @@ mod tests {
             format_process_logs("stdout line", "stderr line"),
             "stdout:\nstdout line\n\nstderr:\nstderr line"
         );
-        assert_eq!(format_process_logs("", "stderr line"), "stderr:\nstderr line");
+        assert_eq!(
+            format_process_logs("", "stderr line"),
+            "stderr:\nstderr line"
+        );
     }
 
     #[test]
