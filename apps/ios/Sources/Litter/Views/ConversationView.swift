@@ -471,7 +471,6 @@ private struct ConversationMessageList: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                 }
-                .defaultScrollAnchor(.bottom)
                 .onAppear {
                     syncTranscriptTurns()
                     syncRichRenderedTurns(reset: true)
@@ -533,12 +532,18 @@ private struct ConversationMessageList: View {
                             syncRichRenderedTurns()
                         }
                     }
-                    .onChange(of: items.count) {
-                        scheduleScrollToBottom(proxy)
-                    }
                     .onChange(of: collapseTurns) {
                         syncTranscriptTurns(resetExpansion: true)
                         syncRichRenderedTurns(reset: true)
+                    }
+                    .onChange(of: followScrollToken) {
+                        guard isStreaming else { return }
+                        scheduleScrollToBottom(
+                            proxy,
+                            delay: 0.01,
+                            replacePending: true,
+                            animation: nil
+                        )
                     }
                     .onChange(of: threadStatus) {
                         syncTranscriptTurns()
@@ -551,8 +556,14 @@ private struct ConversationMessageList: View {
                                 animation: .linear(duration: 0.12)
                             )
                         } else {
+                            let shouldFinalizeAtBottom = autoFollowStreaming || isNearBottom
                             userIsDraggingScroll = false
-                            scheduleScrollToBottom(proxy, delay: 0.1, force: true)
+                            scheduleScrollToBottom(
+                                proxy,
+                                delay: 0.08,
+                                force: shouldFinalizeAtBottom,
+                                animation: nil
+                            )
                         }
                     }
                     .onChange(of: streamingRenderTick) {
@@ -561,15 +572,6 @@ private struct ConversationMessageList: View {
                             proxy,
                             delay: 0.02,
                             replacePending: false,
-                            animation: nil
-                        )
-                    }
-                    .onChange(of: transcriptLayoutTick) {
-                        guard !isStreaming else { return }
-                        scheduleScrollToBottom(
-                            proxy,
-                            delay: 0.01,
-                            replacePending: true,
                             animation: nil
                         )
                     }
