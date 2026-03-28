@@ -135,6 +135,8 @@ jobs:
       SCCACHE_REGION: auto
       SCCACHE_S3_USE_SSL: "true"
       SCCACHE_S3_KEY_PREFIX: ci/android
+      SCCACHE_LOG: info
+      SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-android.log
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
@@ -170,6 +172,12 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Prime sccache
+        run: |
+          sccache --stop-server || true
+          sccache --start-server
+          sccache --show-stats || true
+
       - name: Download shared prep artifact
         uses: actions/download-artifact@v4
         with:
@@ -190,7 +198,9 @@ jobs:
           touch .build-stamps/sync .build-stamps/bindings-kotlin
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        env:
+          RUSTC_WRAPPER: sccache
+        run: cargo install cargo-ndk --locked
 
       - name: Build Rust JNI libs
         env:
