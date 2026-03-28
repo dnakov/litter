@@ -260,10 +260,10 @@ jobs:
       - name: Prime sccache
         run: |
           export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
-          rm -f "$SCCACHE_ERROR_LOG"
+          rm -f "$SCCCACHE_ERROR_LOG"
           sccache --stop-server || true
           sccache --start-server
-          scccache --show-stats || true
+          sccache --show-stats || true
 
       - name: Download shared prep artifact
         uses: actions/download-artifact@v4
@@ -282,8 +282,8 @@ jobs:
 
           tar -xzf "$SHARED_PREP_ROOT/generated-mobile-sources.tgz" -C .
           mkdir -p .build-stamps
-          touch .build-stamps/sync .build-stamps/bindings-kotlij
-
+          touch .build-stamps/sync .build-stamps/bindings-kotlin
+          
       - name: Install cargo-ndk
         env:
           RUSTC_WRAPPER: sccache
@@ -340,11 +340,11 @@ jobs:
         run: |
           set -euo pipefail
           export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
-          trap 'status=$?; echo "==> scccache stats"; scccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> scccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
-          scccache --zero-stats || true
+          trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
+          sccache --zero-stats || true
           make rust-android
           ./apps/android/scripts/play-upload.sh
-          echo "==> scccache stats after Android publish"
+          echo "==> sccache stats after Android publish"
           scccache --show-stats || true
 
       - name: Generate checksums
@@ -402,8 +402,8 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
-      - name: Setup scccache
-        uses: mozilla-actions/scccache-action@v0.0.9
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Download shared prep artifact
         uses: actions/download-artifact@v4
@@ -427,15 +427,15 @@ jobs:
       - name: Prepare iOS release assets
         env:
           CARGO_BUILD_JOBS: "2"
-          RUSTC_WRAPPER: scccache
+          RUSTC_WRAPPER: sccache
         run: |
           set -euo pipefail
           export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
-          trap 'status=$?; echo "==> sccache stats"; scccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> scccache error log"; tail -200 "$SCCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
-          scccache --zero-stats || true
+          trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
+          sccache --zero-stats || true
           make ios-release-prep
-          echo "==> scccache stats after iOS release prep"
-          scccache --show-stats || true
+          echo "==> sccache stats after iOS release prep"
+          sccache --show-stats || true
 
       - name: Package iOS release prep artifact
         run: |
@@ -533,7 +533,7 @@ jobs:
           ASC_PRIVATE_KEY_P8_B64: ${{ secrets.ASC_PRIVATE_KEY_P8_B64 }}
         run: |
           set -euo pipefail
-          ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          ASC_KEY_PATH="$RUNNER_TEMp/AuthKey_${ASC_KEY_ID}.p8"
           echo "$ASC_PRIVATE_KEY_P8_B64" | base64 --decode > "$ASC_KEY_PATH"
           chmod 600 "$ASC_KEY_PATH"
           echo "ASC_PRIVATE_KEY_PATH=$ASC_KEY_PATH" >> "$GITHUB_ENV"
@@ -547,7 +547,7 @@ jobs:
           set -euo pipefail
 
           CERT_PATH="$RUNNER_TEMP/dist-cert.p12"
-          PROFILE_PATH="$RUNNER_TEMP/app-store.mobileprovision"
+          PROFILE_PATH="$RUNNER_TEMp/app-store.mobileprovision"
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
 
