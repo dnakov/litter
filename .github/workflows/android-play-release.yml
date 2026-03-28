@@ -51,12 +51,26 @@ jobs:
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Sync codex submodule
+        run: ./apps/ios/scripts/sync-codex.sh --preserve-current
+
+      - name: Restore generated mobile bindings cache
+        id: mobile-bindings-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            shared/rust-bridge/generated
+            shared/rust-bridge/codex-mobile-client/src/types/codegen_types.generated.rs
+            shared/rust-bridge/codex-mobile-client/src/rpc/generated_client.generated.rs
+            shared/rust-bridge/codex-mobile-client/src/ffi/rpc.generated.rs
+          key: mobile-bindings-${{ runner.os }}-${{ hashFiles('apps/ios/scripts/sync-codex.sh', 'shared/rust-bridge/generate-bindings.sh', 'shared/rust-bridge/Cargo.toml', 'shared/rust-bridge/Cargo.lock', 'shared/rust-bridge/codegen/**', 'shared/rust-bridge/codex-mobile-client/src/**', 'shared/rust-bridge/uniffi-bindgen/**', 'patches/codex/**', 'shared/third_party/codex/codex-rs/app-server-protocol/src/protocol/**', 'shared/third_party/codex/codex-rs/protocol/src/**') }}
+
       - name: Generate shared mobile bindings
+        if: steps.mobile-bindings-cache.outputs.cache-hit != 'true'
         env:
           RUSTC_WRAPPER: sccache
           CARGO_INCREMENTAL: "0"
         run: |
-          ./apps/ios/scripts/sync-codex.sh --preserve-current
           cd shared/rust-bridge
           ./generate-bindings.sh --kotlin-only
 
