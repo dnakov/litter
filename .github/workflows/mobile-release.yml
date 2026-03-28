@@ -199,7 +199,6 @@ jobs:
       SCCACHE_S3_USE_SSL: "true"
       SCCACHE_S3_KEY_PREFIX: ci/android
       SCCACHE_LOG: info
-      SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-android.log
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
@@ -260,6 +259,7 @@ jobs:
 
       - name: Prime sccache
         run: |
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
           rm -f "$SCCACHE_ERROR_LOG"
           sccache --stop-server || true
           sccache --start-server
@@ -331,6 +331,7 @@ jobs:
           LITTER_VERSION_CODE_OVERRIDE: ${{ env.LITTER_VERSION_CODE_OVERRIDE }}
         run: |
           set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-android.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
           make play-release
 
@@ -367,7 +368,6 @@ jobs:
       SCCACHE_S3_USE_SSL: "true"
       SCCACHE_S3_KEY_PREFIX: ci/ios
       SCCACHE_LOG: info
-      SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache-ios.log
       AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
 
@@ -424,6 +424,7 @@ jobs:
 
       - name: Prime sccache
         run: |
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
           rm -f "$SCCACHE_ERROR_LOG"
           sccache --stop-server || true
           sccache --start-server
@@ -521,5 +522,6 @@ jobs:
           WAIT_FOR_PROCESSING: ${{ env.WAIT_FOR_PROCESSING }}
         run: |
           set -euo pipefail
+          export SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-ios.log"
           trap 'status=$?; echo "==> sccache stats"; sccache --show-stats || true; if [ -f "$SCCACHE_ERROR_LOG" ]; then echo "==> sccache error log"; tail -200 "$SCCACHE_ERROR_LOG" || true; fi; exit $status' EXIT
           make testflight
