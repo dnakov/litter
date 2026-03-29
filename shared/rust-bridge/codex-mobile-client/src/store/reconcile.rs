@@ -43,7 +43,7 @@ impl MobileClient {
                     wire_method,
                     response,
                 )?;
-                self.sync_generated_thread_list(server_id, response.data.clone())
+                self.sync_generated_thread_list(server_id, &response.data)
                     .map(|_| ())
                     .map_err(RpcError::Deserialization)
             }
@@ -153,10 +153,11 @@ impl MobileClient {
     pub(crate) fn sync_generated_thread_list(
         &self,
         server_id: &str,
-        threads: Vec<generated::Thread>,
+        threads: &[generated::Thread],
     ) -> Result<Vec<ThreadInfo>, String> {
         let threads = threads
-            .into_iter()
+            .iter()
+            .cloned()
             .filter_map(crate::thread_info_from_generated_thread)
             .collect::<Vec<_>>();
         self.app_store.sync_thread_list(server_id, &threads);
@@ -263,7 +264,7 @@ impl MobileClient {
             server_id: server_id.to_string(),
             thread_id: thread_id.to_string(),
         };
-        let current = self.app_store.snapshot().threads.get(&key).cloned();
+        let current = self.app_store.thread_snapshot(&key);
         let mut snapshot = crate::thread_snapshot_from_generated_thread(
             server_id,
             response.thread.clone(),

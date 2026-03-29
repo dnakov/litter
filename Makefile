@@ -3,10 +3,14 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := all
 
-# Prefer rustup-managed toolchain over Homebrew Rust for cross-compilation targets
+# Prefer rustup-managed toolchain over Homebrew Rust for cross-compilation targets.
+# Also include ~/.cargo/bin for cargo-installed tools like cargo-ndk.
 RUSTUP_TOOLCHAIN_BIN := $(shell rustup which cargo 2>/dev/null | xargs dirname 2>/dev/null)
+CARGO_BIN := $(HOME)/.cargo/bin
 ifneq ($(RUSTUP_TOOLCHAIN_BIN),)
-  export PATH := $(RUSTUP_TOOLCHAIN_BIN):$(PATH)
+  export PATH := $(RUSTUP_TOOLCHAIN_BIN):$(CARGO_BIN):$(PATH)
+else ifneq ($(wildcard $(CARGO_BIN)),)
+  export PATH := $(CARGO_BIN):$(PATH)
 endif
 
 ROOT := $(shell pwd)

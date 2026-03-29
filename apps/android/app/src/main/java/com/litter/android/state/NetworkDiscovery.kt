@@ -19,7 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.codex_mobile_client.DiscoveryBridge
 import uniffi.codex_mobile_client.FfiDiscoveredServer
 import uniffi.codex_mobile_client.FfiMdnsSeed
-import uniffi.codex_mobile_client.FfiProgressiveDiscoveryUpdateKind
+import uniffi.codex_mobile_client.ProgressiveDiscoveryUpdateKind
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlin.coroutines.resume
@@ -68,7 +68,7 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
                     _servers.value = update.servers
                     _scanProgress.value = update.progress
                     update.progressLabel?.let { _scanProgressLabel.value = it }
-                    if (update.kind == FfiProgressiveDiscoveryUpdateKind.SCAN_COMPLETE) {
+                    if (update.kind == ProgressiveDiscoveryUpdateKind.SCAN_COMPLETE) {
                         break
                     }
                 }

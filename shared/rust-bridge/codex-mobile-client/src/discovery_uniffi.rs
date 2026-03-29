@@ -121,24 +121,9 @@ impl From<FfiDiscoveredServer> for DiscoveredServer {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
-pub enum FfiProgressiveDiscoveryUpdateKind {
-    PartialResults,
-    ScanComplete,
-}
-
-impl From<ProgressiveDiscoveryUpdateKind> for FfiProgressiveDiscoveryUpdateKind {
-    fn from(value: ProgressiveDiscoveryUpdateKind) -> Self {
-        match value {
-            ProgressiveDiscoveryUpdateKind::PartialResults => Self::PartialResults,
-            ProgressiveDiscoveryUpdateKind::ScanComplete => Self::ScanComplete,
-        }
-    }
-}
-
 #[derive(uniffi::Record)]
 pub struct FfiProgressiveDiscoveryUpdate {
-    pub kind: FfiProgressiveDiscoveryUpdateKind,
+    pub kind: ProgressiveDiscoveryUpdateKind,
     pub source: Option<FfiDiscoverySource>,
     pub servers: Vec<FfiDiscoveredServer>,
     /// Overall scan progress from 0.0 to 1.0.
@@ -150,7 +135,7 @@ pub struct FfiProgressiveDiscoveryUpdate {
 impl From<ProgressiveDiscoveryUpdate> for FfiProgressiveDiscoveryUpdate {
     fn from(value: ProgressiveDiscoveryUpdate) -> Self {
         Self {
-            kind: value.kind.into(),
+            kind: value.kind,
             source: value.source.map(Into::into),
             servers: value.servers.into_iter().map(Into::into).collect(),
             progress: value.progress,

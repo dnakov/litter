@@ -1150,6 +1150,12 @@ fn generate_wrapper_struct(def: &StructDef, known: &BTreeSet<String>) -> String 
     for field in &def.fields {
         let mapped = map_type_for_field(&def.name, &field.name, &field.ty, known);
         push_field_serde_attrs(&mut out, "    ", &def.name, field, known);
+        // Emit UniFFI defaults so Swift/Kotlin callers can omit optional/defaulted fields.
+        if mapped.starts_with("Option<") {
+            out.push_str("    #[uniffi(default = None)]\n");
+        } else if mapped == "bool" && field.serde_default {
+            out.push_str("    #[uniffi(default = false)]\n");
+        }
         out.push_str(&format!("    pub {}: {},\n", field.name, mapped));
     }
 

@@ -34,58 +34,32 @@ data class AppThreadLaunchConfig(
 ) {
     fun toThreadStartParams(cwd: String): ThreadStartParams = ThreadStartParams(
         model = model,
-        modelProvider = null,
-        serviceTier = null,
         cwd = cwd,
         approvalPolicy = approvalPolicy,
-        approvalsReviewer = null,
         sandbox = sandboxMode,
-        config = null,
-        serviceName = null,
-        baseInstructions = null,
         developerInstructions = developerInstructions,
-        personality = null,
-        ephemeral = null,
-        dynamicTools = null,
-        mockExperimentalField = null,
-        experimentalRawEvents = false,
         persistExtendedHistory = persistHistory,
     )
 
     fun toThreadResumeParams(threadId: String, cwd: String? = null): ThreadResumeParams =
         ThreadResumeParams(
             threadId = threadId,
-            history = null,
-            path = null,
             model = model,
-            modelProvider = null,
-            serviceTier = null,
             cwd = cwd,
             approvalPolicy = approvalPolicy,
-            approvalsReviewer = null,
             sandbox = sandboxMode,
-            config = null,
-            baseInstructions = null,
             developerInstructions = developerInstructions,
-            personality = null,
             persistExtendedHistory = persistHistory,
         )
 
     fun toThreadForkParams(sourceThreadId: String, cwd: String? = null): ThreadForkParams =
         ThreadForkParams(
             threadId = sourceThreadId,
-            path = null,
             model = model,
-            modelProvider = null,
-            serviceTier = null,
             cwd = cwd,
             approvalPolicy = approvalPolicy,
-            approvalsReviewer = null,
             sandbox = sandboxMode,
-            config = null,
-            baseInstructions = null,
             developerInstructions = developerInstructions,
-            ephemeral = false,
             persistExtendedHistory = persistHistory,
         )
 }
@@ -112,17 +86,11 @@ data class AppComposerPayload(
         return TurnStartParams(
             threadId = threadId,
             input = input,
-            cwd = null,
             approvalPolicy = approvalPolicy,
-            approvalsReviewer = null,
             sandboxPolicy = sandboxPolicy,
             model = model,
-            serviceTier = serviceTier?.let { it },
+            serviceTier = serviceTier,
             effort = reasoningEffort,
-            summary = null,
-            personality = null,
-            outputSchema = null,
-            collaborationMode = null,
         )
     }
 }

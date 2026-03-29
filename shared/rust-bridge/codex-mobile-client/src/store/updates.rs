@@ -4,7 +4,7 @@ use crate::uniffi_shared::{AppOperationStatus, AppVoiceHandoffRequest, AppVoiceT
 
 use super::boundary::{AppSessionSummary, AppThreadSnapshot, AppThreadStateRecord};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ThreadStreamingDeltaKind {
     AssistantText,
     ReasoningText,

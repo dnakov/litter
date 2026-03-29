@@ -2,7 +2,7 @@ use crate::ffi::ClientError;
 use crate::ffi::shared::{shared_mobile_client, shared_runtime};
 use crate::session::connection::ServerConfig;
 use crate::ssh::{
-    ExecResult, RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError,
+    RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError,
 };
 use crate::store::{
     ServerConnectionProgressSnapshot, ServerConnectionStepKind, ServerConnectionStepState,
@@ -44,23 +44,6 @@ pub struct FfiSshConnectionResult {
     pub server_version: Option<String>,
     pub pid: Option<u32>,
     pub wake_mac: Option<String>,
-}
-
-#[derive(uniffi::Record)]
-pub struct FfiSshExecResult {
-    pub exit_code: u32,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-impl From<ExecResult> for FfiSshExecResult {
-    fn from(value: ExecResult) -> Self {
-        Self {
-            exit_code: value.exit_code,
-            stdout: value.stdout,
-            stderr: value.stderr,
-        }
-    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]

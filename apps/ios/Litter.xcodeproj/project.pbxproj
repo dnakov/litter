@@ -711,9 +711,9 @@
 				E518CD2A67CEB8B41545D0D2 /* Info.plist */,
 				C06841C29AA3E42E7DB137C0 /* Litter.entitlements */,
 				359F3DCDC22C81682DAA7B0D /* LitterApp.swift */,
-				ABFE016B445D1A4398CFE2A5 /* Localizable.strings */,
 				46E6B2764DBCE8C3C6ABF786 /* Bridge */,
 				8281D55E244D63BFA69DA67F /* CarPlay */,
+				ABFE016B445D1A4398CFE2A5 /* Localizable.strings */,
 				F95E1C01613709EE37B7714E /* Models */,
 				8D774DCB32F73498E21FBB1A /* Resources */,
 				F96F3C940576D4FD4F15B97D /* Views */,
@@ -1065,11 +1065,7 @@
 					};
 					A3D84F588EDBC1EA550D6691 = {
 						DevelopmentTeam = UH66Q8ZAYG;
-						SystemCapabilities = {
-							com.apple.BackgroundModes = {
-								enabled = YES;
-							};
-						};
+						SystemCapabilities = "[\"com.apple.BackgroundModes\": [\"enabled\": true]]";
 					};
 					DA07A1EAC6173D09F6FB99D9 = {
 						DevelopmentTeam = UH66Q8ZAYG;
@@ -1077,7 +1073,6 @@
 				};
 			};
 			buildConfigurationList = 611DECD8E59F99E2ED675472 /* Build configuration list for PBXProject "Litter" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -1090,6 +1085,7 @@
 				CD7C004A2E0D402FE608E656 /* XCRemoteSwiftPackageReference "textual" */,
 			);
 			preferredProjectObjectVersion = 77;
+			productRefGroup = 35D407E8418ED7F3C5C8B705 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (

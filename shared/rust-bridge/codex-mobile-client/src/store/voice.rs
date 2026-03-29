@@ -230,11 +230,14 @@ impl VoiceRealtimeThreadState {
     }
 
     fn flush_live_transcript(&mut self, speaker: AppVoiceSpeaker) -> Option<VoiceDerivedUpdate> {
-        let text = self.live_text(speaker).trim().to_string();
-        if text.is_empty() {
-            self.set_live_text(speaker, String::new());
-            return None;
-        }
+        let text = {
+            let trimmed = self.live_text(speaker).trim();
+            if trimmed.is_empty() {
+                self.set_live_text(speaker, String::new());
+                return None;
+            }
+            trimmed.to_string()
+        };
 
         let item_id = self.pending_item_id(speaker).unwrap_or_else(|| {
             self.next_virtual_item_id(match speaker {

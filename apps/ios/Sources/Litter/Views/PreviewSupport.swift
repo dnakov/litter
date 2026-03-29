@@ -386,7 +386,7 @@ enum LitterPreviewData {
             activeThread: activeThread,
             pendingApprovals: [],
             pendingUserInputs: [],
-            voiceSession: AppVoiceSessionSnapshot(
+            voiceSession: VoiceSessionSnapshot(
                 activeThread: nil,
                 sessionId: nil,
                 phase: nil,

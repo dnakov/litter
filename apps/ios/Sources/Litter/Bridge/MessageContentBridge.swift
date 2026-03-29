@@ -56,7 +56,7 @@ private extension FfiToolCallKind {
     }
 }
 
-private extension FfiToolCallStatus {
+private extension ToolCallStatus {
     func toToolCallStatus() -> ToolCallStatus {
         switch self {
         case .inProgress: return .inProgress

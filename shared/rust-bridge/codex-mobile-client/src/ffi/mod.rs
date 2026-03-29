@@ -19,4 +19,4 @@ pub use discovery::{DiscoveryBridge, DiscoveryScanSubscription, ServerBridge};
 pub use errors::ClientError;
 pub use parser::MessageParser;
 pub use rpc::AppServerRpc;
-pub use ssh::{FfiSshConnectionResult, FfiSshExecResult, SshBridge};
+pub use ssh::{FfiSshConnectionResult, SshBridge};

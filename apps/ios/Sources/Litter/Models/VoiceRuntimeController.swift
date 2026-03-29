@@ -817,7 +817,7 @@ final class VoiceRuntimeController: VoiceActions {
 }
 
 private extension VoiceRuntimeController {
-    func applySharedVoiceSession(_ shared: AppVoiceSessionSnapshot?, to session: inout VoiceSessionState) {
+    func applySharedVoiceSession(_ shared: VoiceSessionSnapshot?, to session: inout VoiceSessionState) {
         session.phase = shared?.phase.map(voiceSessionPhase) ?? .connecting
         session.lastError = shared?.lastError
         session.handoffRemoteThreadKey = shared?.handoffThreadKey

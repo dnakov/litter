@@ -14,7 +14,7 @@ extension AppServerSnapshot {
         return isIpcConnected ? "remote · ipc" : "remote"
     }
 
-    var currentConnectionStep: AppServerConnectionStep? {
+    var currentConnectionStep: ServerConnectionStepSnapshot? {
         guard let progress = connectionProgress else { return nil }
         return progress.steps.first(where: {
             $0.state == .awaitingUserInput || $0.state == .inProgress

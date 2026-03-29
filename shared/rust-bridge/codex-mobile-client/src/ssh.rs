@@ -120,7 +120,7 @@ impl RemotePlatform {
 }
 
 /// Outcome of running a remote command.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct ExecResult {
     pub exit_code: u32,
     pub stdout: String,

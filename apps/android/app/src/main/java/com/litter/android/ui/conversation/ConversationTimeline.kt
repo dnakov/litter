@@ -771,7 +771,7 @@ private fun UserInputResponseRow(
 
 @Composable
 private fun TurnDiffRow(
-    data: uniffi.codex_mobile_client.HydratedTurnDiffData,
+    data: uniffi.codex_mobile_client.TurnDiffData,
 ) {
     ToolCardShell(
         summary = "Turn Diff",

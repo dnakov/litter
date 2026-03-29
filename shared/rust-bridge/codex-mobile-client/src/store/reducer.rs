@@ -70,6 +70,15 @@ impl AppStoreReducer {
             .clone()
     }
 
+    pub(crate) fn thread_snapshot(&self, key: &ThreadKey) -> Option<ThreadSnapshot> {
+        self.snapshot
+            .read()
+            .expect("app store lock poisoned")
+            .threads
+            .get(key)
+            .cloned()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<AppUpdate> {
         self.updates_tx.subscribe()
     }
@@ -77,30 +86,25 @@ impl AppStoreReducer {
     pub fn upsert_server(&self, config: &ServerConfig, health: ServerHealthSnapshot) {
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
-            let existing_account = snapshot
-                .servers
-                .get(&config.server_id)
-                .and_then(|existing| existing.account.clone());
-            let requires_openai_auth = snapshot
-                .servers
-                .get(&config.server_id)
-                .is_some_and(|existing| existing.requires_openai_auth);
-            let existing_rate_limits = snapshot
-                .servers
-                .get(&config.server_id)
-                .and_then(|existing| existing.rate_limits.clone());
-            let existing_available_models = snapshot
-                .servers
-                .get(&config.server_id)
-                .and_then(|existing| existing.available_models.clone());
-            let existing_has_ipc = snapshot
-                .servers
-                .get(&config.server_id)
-                .is_some_and(|existing| existing.has_ipc);
-            let existing_connection_progress = snapshot
-                .servers
-                .get(&config.server_id)
-                .and_then(|existing| existing.connection_progress.clone());
+            let (
+                existing_account,
+                requires_openai_auth,
+                existing_rate_limits,
+                existing_available_models,
+                existing_has_ipc,
+                existing_connection_progress,
+            ) = if let Some(existing) = snapshot.servers.get(&config.server_id) {
+                (
+                    existing.account.clone(),
+                    existing.requires_openai_auth,
+                    existing.rate_limits.clone(),
+                    existing.available_models.clone(),
+                    existing.has_ipc,
+                    existing.connection_progress.clone(),
+                )
+            } else {
+                (None, false, None, None, false, None)
+            };
             snapshot.servers.insert(
                 config.server_id.clone(),
                 ServerSnapshot {
@@ -598,7 +602,7 @@ impl AppStoreReducer {
                     .is_some()
                 {
                     self.emit_thread_state_update(key);
-                    self.emit_thread_item_upsert(key, &item);
+                    self.emit_thread_item_upsert_owned(key, item);
                 }
             }
             UiEvent::TurnStarted { key, turn_id } => {
@@ -736,7 +740,7 @@ impl AppStoreReducer {
                     .mutate_thread_with_result(key, |thread| upsert_item(thread, item.clone()))
                     .is_some()
                 {
-                    self.emit_thread_item_upsert(key, &item);
+                    self.emit_thread_item_upsert_owned(key, item);
                 }
             }
             UiEvent::McpToolCallProgress { key, notification } => {
@@ -978,7 +982,7 @@ impl AppStoreReducer {
                         item
                     };
                     if let Some(item) = item {
-                        self.emit_thread_item_upsert(key, &item);
+                        self.emit_thread_item_upsert_owned(key, item);
                     }
                 }
             }
@@ -1132,9 +1136,13 @@ impl AppStoreReducer {
     }
 
     pub(crate) fn emit_thread_item_upsert(&self, key: &ThreadKey, item: &ConversationItem) {
+        self.emit_thread_item_upsert_owned(key, item.clone());
+    }
+
+    pub(crate) fn emit_thread_item_upsert_owned(&self, key: &ThreadKey, item: ConversationItem) {
         self.emit(AppUpdate::ThreadItemUpserted {
             key: key.clone(),
-            item: HydratedConversationItem::from(item.clone()),
+            item: HydratedConversationItem::from(item),
         });
     }
 
@@ -1147,7 +1155,7 @@ impl AppStoreReducer {
                 .and_then(|thread| thread.items.iter().find(|item| item.id == item_id).cloned())
         };
         if let Some(item) = item {
-            self.emit_thread_item_upsert(key, &item);
+            self.emit_thread_item_upsert_owned(key, item);
         }
     }
 
@@ -1193,15 +1201,17 @@ impl AppStoreReducer {
                 .find(|existing| existing.id == item.id)
                 .cloned();
             let queued_count_before = thread.queued_follow_ups.len();
-            upsert_item(thread, item.clone());
-            if item.is_from_user_turn_boundary && matches!(item.content, ConversationItemContent::User(_))
-            {
+            let mutation = classify_item_mutation(existing.as_ref(), &item);
+            let clears_queued_follow_up = item.is_from_user_turn_boundary
+                && matches!(&item.content, ConversationItemContent::User(_));
+            upsert_item(thread, item);
+            if clears_queued_follow_up {
                 if !thread.queued_follow_ups.is_empty() {
                     thread.queued_follow_ups.remove(0);
                 }
             }
             (
-                classify_item_mutation(existing.as_ref(), &item),
+                mutation,
                 queued_count_before != thread.queued_follow_ups.len(),
             )
         });

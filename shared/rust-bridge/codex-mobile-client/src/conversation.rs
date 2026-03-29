@@ -136,7 +136,7 @@ pub struct CommandActionData {
     pub query: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChangeEntryData {
     pub path: String,
@@ -151,7 +151,7 @@ pub struct FileChangeData {
     pub changes: Vec<FileChangeEntryData>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnDiffData {
     pub diff: String,
@@ -235,7 +235,7 @@ pub struct WidgetData {
     pub is_finalized: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInputResponseOptionData {
     pub label: String,

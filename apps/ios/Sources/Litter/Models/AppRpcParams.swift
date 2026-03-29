@@ -10,61 +10,35 @@ struct AppThreadLaunchConfig: Equatable, Sendable {
     func threadStartParams(cwd: String) -> ThreadStartParams {
         ThreadStartParams(
             model: model,
-            modelProvider: nil,
-            serviceTier: nil,
             cwd: cwd,
             approvalPolicy: approvalPolicy,
-            approvalsReviewer: nil,
             sandbox: sandbox,
-            config: nil,
-            serviceName: nil,
-            baseInstructions: nil,
             developerInstructions: developerInstructions,
-            personality: nil,
-            ephemeral: nil,
-            dynamicTools: nil,
-            mockExperimentalField: nil,
-            experimentalRawEvents: false,
-            persistExtendedHistory: true
+            persistExtendedHistory: persistExtendedHistory
         )
     }
 
     func threadResumeParams(threadId: String, cwdOverride: String?) -> ThreadResumeParams {
         ThreadResumeParams(
             threadId: threadId,
-            history: nil,
-            path: nil,
             model: model,
-            modelProvider: nil,
-            serviceTier: nil,
             cwd: cwdOverride,
             approvalPolicy: approvalPolicy,
-            approvalsReviewer: nil,
             sandbox: sandbox,
-            config: nil,
-            baseInstructions: nil,
             developerInstructions: developerInstructions,
-            personality: nil,
-            persistExtendedHistory: true
+            persistExtendedHistory: persistExtendedHistory
         )
     }
 
     func threadForkParams(threadId: String, cwdOverride: String?) -> ThreadForkParams {
         ThreadForkParams(
             threadId: threadId,
-            path: nil,
             model: model,
-            modelProvider: nil,
-            serviceTier: nil,
             cwd: cwdOverride,
             approvalPolicy: approvalPolicy,
-            approvalsReviewer: nil,
             sandbox: sandbox,
-            config: nil,
-            baseInstructions: nil,
             developerInstructions: developerInstructions,
-            ephemeral: false,
-            persistExtendedHistory: true
+            persistExtendedHistory: persistExtendedHistory
         )
     }
 }
@@ -86,17 +60,11 @@ struct AppComposerPayload: Equatable, Sendable {
         return TurnStartParams(
             threadId: threadId,
             input: inputs,
-            cwd: nil,
             approvalPolicy: approvalPolicy,
-            approvalsReviewer: nil,
             sandboxPolicy: sandboxPolicy,
             model: model,
             serviceTier: serviceTier.map(Optional.some),
-            effort: effort,
-            summary: nil,
-            personality: nil,
-            outputSchema: nil,
-            collaborationMode: nil
+            effort: effort
         )
     }
 }

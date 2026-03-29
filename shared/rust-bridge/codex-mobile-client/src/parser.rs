@@ -50,7 +50,7 @@ pub enum ToolCallKind {
     Unknown(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolCallStatus {
     InProgress,
@@ -108,14 +108,6 @@ pub enum FfiToolCallKind {
     Unknown { raw: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum FfiToolCallStatus {
-    InProgress,
-    Completed,
-    Failed,
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct FfiToolCallKeyValue {
     pub key: String,
@@ -144,7 +136,7 @@ pub struct FfiToolCallCard {
     pub kind: FfiToolCallKind,
     pub title: String,
     pub summary: String,
-    pub status: FfiToolCallStatus,
+    pub status: ToolCallStatus,
     pub duration_ms: Option<u64>,
     pub target_label: Option<String>,
     pub sections: Vec<FfiToolCallSection>,
@@ -164,17 +156,6 @@ impl From<&ToolCallKind> for FfiToolCallKind {
             ToolCallKind::ImageView => Self::ImageView,
             ToolCallKind::Widget => Self::Widget,
             ToolCallKind::Unknown(raw) => Self::Unknown { raw: raw.clone() },
-        }
-    }
-}
-
-impl From<&ToolCallStatus> for FfiToolCallStatus {
-    fn from(value: &ToolCallStatus) -> Self {
-        match value {
-            ToolCallStatus::InProgress => Self::InProgress,
-            ToolCallStatus::Completed => Self::Completed,
-            ToolCallStatus::Failed => Self::Failed,
-            ToolCallStatus::Unknown => Self::Unknown,
         }
     }
 }
@@ -239,7 +220,7 @@ impl From<&ToolCallCard> for FfiToolCallCard {
             kind: (&value.kind).into(),
             title: value.title.clone(),
             summary: value.summary.clone().unwrap_or_else(|| value.title.clone()),
-            status: (&value.status).into(),
+            status: value.status.clone(),
             duration_ms: value.duration.map(|duration| duration.as_millis() as u64),
             target_label: value
                 .target

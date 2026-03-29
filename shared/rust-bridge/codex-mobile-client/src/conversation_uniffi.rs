@@ -21,7 +21,7 @@ pub enum HydratedConversationItemContent {
     ProposedPlan(HydratedProposedPlanData),
     CommandExecution(HydratedCommandExecutionData),
     FileChange(HydratedFileChangeData),
-    TurnDiff(HydratedTurnDiffData),
+    TurnDiff(conversation::TurnDiffData),
     McpToolCall(HydratedMcpToolCallData),
     DynamicToolCall(HydratedDynamicToolCallData),
     MultiAgentAction(HydratedMultiAgentActionData),
@@ -108,19 +108,7 @@ pub struct HydratedCommandActionData {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HydratedFileChangeData {
     pub status: AppOperationStatus,
-    pub changes: Vec<HydratedFileChangeEntryData>,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct HydratedFileChangeEntryData {
-    pub path: String,
-    pub kind: String,
-    pub diff: String,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct HydratedTurnDiffData {
-    pub diff: String,
+    pub changes: Vec<conversation::FileChangeEntryData>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -182,18 +170,12 @@ pub struct HydratedWidgetData {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct HydratedUserInputResponseOptionData {
-    pub label: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
 pub struct HydratedUserInputResponseQuestionData {
     pub id: String,
     pub header: Option<String>,
     pub question: String,
     pub answer: String,
-    pub options: Vec<HydratedUserInputResponseOptionData>,
+    pub options: Vec<conversation::UserInputResponseOptionData>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -286,7 +268,7 @@ impl From<conversation::ConversationItemContent> for HydratedConversationItemCon
                 status: AppOperationStatus::from_raw(&data.status),
                 changes: data.changes.into_iter().map(Into::into).collect(),
             }),
-            ItemContent::TurnDiff(data) => Self::TurnDiff(HydratedTurnDiffData { diff: data.diff }),
+            ItemContent::TurnDiff(data) => Self::TurnDiff(data),
             ItemContent::McpToolCall(data) => Self::McpToolCall(HydratedMcpToolCallData {
                 server: data.server,
                 tool: data.tool,
@@ -381,31 +363,12 @@ impl From<conversation::CommandActionData> for HydratedCommandActionData {
     }
 }
 
-impl From<conversation::FileChangeEntryData> for HydratedFileChangeEntryData {
-    fn from(value: conversation::FileChangeEntryData) -> Self {
-        Self {
-            path: value.path,
-            kind: value.kind,
-            diff: value.diff,
-        }
-    }
-}
-
 impl From<conversation::MultiAgentStateData> for HydratedMultiAgentStateData {
     fn from(value: conversation::MultiAgentStateData) -> Self {
         Self {
             target_id: value.target_id,
             status: AppSubagentStatus::from_raw(&value.status),
             message: value.message,
-        }
-    }
-}
-
-impl From<conversation::UserInputResponseOptionData> for HydratedUserInputResponseOptionData {
-    fn from(value: conversation::UserInputResponseOptionData) -> Self {
-        Self {
-            label: value.label,
-            description: value.description,
         }
     }
 }

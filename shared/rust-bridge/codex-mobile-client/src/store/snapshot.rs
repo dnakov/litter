@@ -6,7 +6,7 @@ use crate::types::{
 };
 use crate::uniffi_shared::{AppVoiceSessionPhase, AppVoiceTranscriptEntry};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ServerConnectionStepKind {
     ConnectingToSsh,
     FindingCodex,
@@ -16,7 +16,7 @@ pub enum ServerConnectionStepKind {
     Connected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ServerConnectionStepState {
     Pending,
     InProgress,
@@ -26,14 +26,14 @@ pub enum ServerConnectionStepState {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ServerConnectionStepSnapshot {
     pub kind: ServerConnectionStepKind,
     pub state: ServerConnectionStepState,
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ServerConnectionProgressSnapshot {
     pub steps: Vec<ServerConnectionStepSnapshot>,
     pub pending_install: bool,
@@ -130,7 +130,7 @@ pub struct ServerSnapshot {
     pub connection_progress: Option<ServerConnectionProgressSnapshot>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct VoiceSessionSnapshot {
     pub active_thread: Option<ThreadKey>,
     pub session_id: Option<String>,
@@ -156,7 +156,7 @@ pub struct ThreadSnapshot {
     pub realtime_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct QueuedFollowUpPreview {
     pub id: String,
     pub text: String,

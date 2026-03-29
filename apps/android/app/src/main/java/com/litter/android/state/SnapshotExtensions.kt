@@ -2,12 +2,12 @@ package com.litter.android.state
 
 import androidx.compose.ui.graphics.Color
 import uniffi.codex_mobile_client.AppServerHealth
-import uniffi.codex_mobile_client.AppServerConnectionStep
-import uniffi.codex_mobile_client.AppServerConnectionStepKind
-import uniffi.codex_mobile_client.AppServerConnectionStepState
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppThreadSnapshot
 import uniffi.codex_mobile_client.HydratedConversationItemContent
+import uniffi.codex_mobile_client.ServerConnectionStepKind
+import uniffi.codex_mobile_client.ServerConnectionStepSnapshot
+import uniffi.codex_mobile_client.ServerConnectionStepState
 import uniffi.codex_mobile_client.ThreadSummaryStatus
 
 /** Accent green matching iOS theme. */
@@ -47,23 +47,23 @@ val AppServerSnapshot.connectionModeLabel: String
         else -> "remote"
     }
 
-val AppServerSnapshot.currentConnectionStep: AppServerConnectionStep?
+val AppServerSnapshot.currentConnectionStep: ServerConnectionStepSnapshot?
     get() = connectionProgress?.steps?.firstOrNull {
-        it.state == AppServerConnectionStepState.AWAITING_USER_INPUT ||
-            it.state == AppServerConnectionStepState.IN_PROGRESS
+        it.state == ServerConnectionStepState.AWAITING_USER_INPUT ||
+            it.state == ServerConnectionStepState.IN_PROGRESS
     } ?: connectionProgress?.steps?.lastOrNull {
-        it.state == AppServerConnectionStepState.FAILED ||
-            it.state == AppServerConnectionStepState.COMPLETED
+        it.state == ServerConnectionStepState.FAILED ||
+            it.state == ServerConnectionStepState.COMPLETED
     }
 
 val AppServerSnapshot.connectionProgressLabel: String?
     get() = when (currentConnectionStep?.kind) {
-        AppServerConnectionStepKind.CONNECTING_TO_SSH -> "connecting"
-        AppServerConnectionStepKind.FINDING_CODEX -> "finding codex"
-        AppServerConnectionStepKind.INSTALLING_CODEX -> "installing"
-        AppServerConnectionStepKind.STARTING_APP_SERVER -> "starting"
-        AppServerConnectionStepKind.OPENING_TUNNEL -> "tunneling"
-        AppServerConnectionStepKind.CONNECTED -> "connected"
+        ServerConnectionStepKind.CONNECTING_TO_SSH -> "connecting"
+        ServerConnectionStepKind.FINDING_CODEX -> "finding codex"
+        ServerConnectionStepKind.INSTALLING_CODEX -> "installing"
+        ServerConnectionStepKind.STARTING_APP_SERVER -> "starting"
+        ServerConnectionStepKind.OPENING_TUNNEL -> "tunneling"
+        ServerConnectionStepKind.CONNECTED -> "connected"
         null -> null
     }
 
@@ -79,8 +79,8 @@ val AppServerSnapshot.statusLabel: String
 
 val AppServerSnapshot.statusColor: Color
     get() = when {
-        currentConnectionStep?.state == AppServerConnectionStepState.FAILED -> Color(0xFFFF6B6B)
-        currentConnectionStep?.state == AppServerConnectionStepState.AWAITING_USER_INPUT -> WarningOrange
+        currentConnectionStep?.state == ServerConnectionStepState.FAILED -> Color(0xFFFF6B6B)
+        currentConnectionStep?.state == ServerConnectionStepState.AWAITING_USER_INPUT -> WarningOrange
         connectionProgressLabel != null -> AccentGreen
         health == AppServerHealth.CONNECTED && !isLocal && account == null -> WarningOrange
         else -> health.accentColor

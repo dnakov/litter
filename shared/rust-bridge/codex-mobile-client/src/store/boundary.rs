@@ -3,50 +3,14 @@ use std::hash::{Hash, Hasher};
 use crate::conversation_uniffi::HydratedConversationItem;
 use crate::types::{PendingApproval, PendingUserInputRequest, ThreadInfo, ThreadKey};
 use crate::uniffi_shared::{
-    AppOperationStatus, AppSubagentStatus, AppVoiceHandoffRequest, AppVoiceSessionPhase,
-    AppVoiceTranscriptEntry, AppVoiceTranscriptUpdate,
+    AppOperationStatus, AppSubagentStatus, AppVoiceHandoffRequest, AppVoiceTranscriptUpdate,
 };
 
 use super::snapshot::{
-    AppSnapshot, ServerConnectionProgressSnapshot, ServerConnectionStepKind,
-    ServerConnectionStepSnapshot, ServerConnectionStepState, ServerHealthSnapshot, ServerSnapshot,
-    ThreadSnapshot,
+    AppSnapshot, QueuedFollowUpPreview, ServerConnectionProgressSnapshot, ServerHealthSnapshot,
+    ServerSnapshot, ThreadSnapshot, VoiceSessionSnapshot,
 };
 use super::updates::{AppUpdate, ThreadStreamingDeltaKind};
-
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum AppServerConnectionStepKind {
-    ConnectingToSsh,
-    FindingCodex,
-    InstallingCodex,
-    StartingAppServer,
-    OpeningTunnel,
-    Connected,
-}
-
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum AppServerConnectionStepState {
-    Pending,
-    InProgress,
-    Completed,
-    Failed,
-    AwaitingUserInput,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct AppServerConnectionStep {
-    pub kind: AppServerConnectionStepKind,
-    pub state: AppServerConnectionStepState,
-    pub detail: Option<String>,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct AppServerConnectionProgress {
-    pub steps: Vec<AppServerConnectionStep>,
-    pub pending_install: bool,
-    pub terminal_message: Option<String>,
-}
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct AppServerSnapshot {
@@ -61,7 +25,7 @@ pub struct AppServerSnapshot {
     pub requires_openai_auth: bool,
     pub rate_limits: Option<crate::types::generated::RateLimitSnapshot>,
     pub available_models: Option<Vec<crate::types::generated::Model>>,
-    pub connection_progress: Option<AppServerConnectionProgress>,
+    pub connection_progress: Option<ServerConnectionProgressSnapshot>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -74,19 +38,13 @@ pub enum AppServerHealth {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct AppQueuedFollowUpPreview {
-    pub id: String,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
 pub struct AppThreadSnapshot {
     pub key: ThreadKey,
     pub info: ThreadInfo,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub hydrated_conversation_items: Vec<HydratedConversationItem>,
-    pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
+    pub queued_follow_ups: Vec<QueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
     pub model_context_window: Option<u64>,
@@ -100,7 +58,7 @@ pub struct AppThreadStateRecord {
     pub info: ThreadInfo,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
+    pub queued_follow_ups: Vec<QueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
     pub model_context_window: Option<u64>,
@@ -121,7 +79,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
 
     fn try_from(thread: &super::snapshot::ThreadSnapshot) -> Result<Self, Self::Error> {
         let hydrated_conversation_items =
-            merged_hydrated_items(thread.items.clone(), thread.local_overlay_items.clone());
+            merged_hydrated_items(&thread.items, &thread.local_overlay_items);
         Ok(Self {
             key: thread.key.clone(),
             info: thread.info.clone(),
@@ -131,7 +89,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
             queued_follow_ups: thread
                 .queued_follow_ups
                 .iter()
-                .map(|preview| AppQueuedFollowUpPreview {
+                .map(|preview| QueuedFollowUpPreview {
                     id: preview.id.clone(),
                     text: preview.text.clone(),
                 })
@@ -162,7 +120,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadStateRecord {
             queued_follow_ups: thread
                 .queued_follow_ups
                 .iter()
-                .map(|preview| AppQueuedFollowUpPreview {
+                .map(|preview| QueuedFollowUpPreview {
                     id: preview.id.clone(),
                     text: preview.text.clone(),
                 })
@@ -182,19 +140,26 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadStateRecord {
 }
 
 fn merged_hydrated_items(
-    items: Vec<crate::conversation::ConversationItem>,
-    local_overlay_items: Vec<crate::conversation::ConversationItem>,
+    items: &[crate::conversation::ConversationItem],
+    local_overlay_items: &[crate::conversation::ConversationItem],
 ) -> Vec<HydratedConversationItem> {
-    let mut merged = items;
+    let mut merged = Vec::with_capacity(items.len() + local_overlay_items.len());
+    merged.extend(items.iter().cloned().map(Into::into));
+
+    let mut selected_overlays: Vec<&crate::conversation::ConversationItem> = Vec::new();
     for overlay in local_overlay_items {
-        if merged
+        if items
             .iter()
-            .all(|existing| !same_overlay_semantics(&overlay, existing))
+            .all(|existing| !same_overlay_semantics(overlay, existing))
+            && selected_overlays
+                .iter()
+                .all(|existing| !same_overlay_semantics(overlay, existing))
         {
-            merged.push(overlay);
+            selected_overlays.push(overlay);
         }
     }
-    merged.into_iter().map(Into::into).collect()
+    merged.extend(selected_overlays.into_iter().cloned().map(Into::into));
+    merged
 }
 
 fn same_overlay_semantics(
@@ -236,16 +201,6 @@ pub struct AppSessionSummary {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct AppVoiceSessionSnapshot {
-    pub active_thread: Option<ThreadKey>,
-    pub session_id: Option<String>,
-    pub phase: Option<AppVoiceSessionPhase>,
-    pub last_error: Option<String>,
-    pub transcript_entries: Vec<AppVoiceTranscriptEntry>,
-    pub handoff_thread_key: Option<ThreadKey>,
-}
-
-#[derive(Debug, Clone, uniffi::Record)]
 pub struct AppSnapshotRecord {
     pub servers: Vec<AppServerSnapshot>,
     pub threads: Vec<AppThreadSnapshot>,
@@ -254,7 +209,7 @@ pub struct AppSnapshotRecord {
     pub active_thread: Option<ThreadKey>,
     pub pending_approvals: Vec<PendingApproval>,
     pub pending_user_inputs: Vec<PendingUserInputRequest>,
-    pub voice_session: AppVoiceSessionSnapshot,
+    pub voice_session: VoiceSessionSnapshot,
 }
 
 impl TryFrom<AppSnapshot> for AppSnapshotRecord {
@@ -279,7 +234,7 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                 requires_openai_auth: server.requires_openai_auth,
                 rate_limits: server.rate_limits,
                 available_models: server.available_models,
-                connection_progress: server.connection_progress.map(Into::into),
+                connection_progress: server.connection_progress,
             })
             .collect::<Vec<_>>();
         servers.sort_by(|lhs, rhs| lhs.server_id.cmp(&rhs.server_id));
@@ -299,14 +254,7 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
             active_thread: snapshot.active_thread,
             pending_approvals: snapshot.pending_approvals,
             pending_user_inputs: snapshot.pending_user_inputs,
-            voice_session: AppVoiceSessionSnapshot {
-                active_thread: snapshot.voice_session.active_thread,
-                session_id: snapshot.voice_session.session_id,
-                phase: snapshot.voice_session.phase,
-                last_error: snapshot.voice_session.last_error,
-                transcript_entries: snapshot.voice_session.transcript_entries,
-                handoff_thread_key: snapshot.voice_session.handoff_thread_key,
-            },
+            voice_session: snapshot.voice_session,
         })
     }
 }
@@ -325,25 +273,28 @@ pub(crate) fn app_session_summary(
     thread: &ThreadSnapshot,
     server: Option<&ServerSnapshot>,
 ) -> AppSessionSummary {
-    let preview = thread.info.preview.clone().unwrap_or_default();
+    let preview = thread.info.preview.as_deref().unwrap_or_default();
     let title = {
-        let explicit_title = thread.info.title.clone().unwrap_or_default();
-        let trimmed_title = explicit_title.trim();
-        if !trimmed_title.is_empty() {
-            trimmed_title.to_string()
-        } else {
-            let trimmed_preview = preview.trim();
-            if !trimmed_preview.is_empty() {
-                trimmed_preview.to_string()
-            } else {
-                "Untitled session".to_string()
-            }
-        }
+        thread
+            .info
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                let trimmed_preview = preview.trim();
+                (!trimmed_preview.is_empty()).then(|| trimmed_preview.to_string())
+            })
+            .unwrap_or_else(|| "Untitled session".to_string())
     };
-    let parent_thread_id = thread.info.parent_thread_id.clone().and_then(|value| {
-        let trimmed = value.trim().to_string();
-        (!trimmed.is_empty()).then_some(trimmed)
-    });
+    let parent_thread_id = thread
+        .info
+        .parent_thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let has_agent_label = thread
         .info
         .agent_nickname
@@ -365,7 +316,7 @@ pub(crate) fn app_session_summary(
             .map(|server| server.host.clone())
             .unwrap_or_else(|| thread.key.server_id.clone()),
         title,
-        preview,
+        preview: preview.to_string(),
         cwd: thread.info.cwd.clone().unwrap_or_default(),
         model: thread
             .info
@@ -413,8 +364,7 @@ pub(crate) fn project_thread_update(
     };
     let thread_snapshot = AppThreadSnapshot::try_from(thread)?;
     let session_summary = app_session_summary(thread, snapshot.servers.get(&key.server_id));
-    let agent_directory_version =
-        agent_directory_version(&session_summaries_from_snapshot(snapshot));
+    let agent_directory_version = current_agent_directory_version(snapshot);
     Ok(Some((
         thread_snapshot,
         session_summary,
@@ -431,8 +381,7 @@ pub(crate) fn project_thread_state_update(
     };
     let thread_state = AppThreadStateRecord::try_from(thread)?;
     let session_summary = app_session_summary(thread, snapshot.servers.get(&key.server_id));
-    let agent_directory_version =
-        agent_directory_version(&session_summaries_from_snapshot(snapshot));
+    let agent_directory_version = current_agent_directory_version(snapshot);
     Ok(Some((
         thread_state,
         session_summary,
@@ -441,7 +390,45 @@ pub(crate) fn project_thread_state_update(
 }
 
 pub(crate) fn current_agent_directory_version(snapshot: &AppSnapshot) -> u64 {
-    agent_directory_version(&session_summaries_from_snapshot(snapshot))
+    let mut threads = snapshot.threads.values().collect::<Vec<_>>();
+    threads.sort_by(|lhs, rhs| {
+        rhs.info
+            .updated_at
+            .cmp(&lhs.info.updated_at)
+            .then_with(|| lhs.key.server_id.cmp(&rhs.key.server_id))
+            .then_with(|| lhs.key.thread_id.cmp(&rhs.key.thread_id))
+    });
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for thread in threads {
+        thread.key.server_id.hash(&mut hasher);
+        thread.key.thread_id.hash(&mut hasher);
+        thread
+            .info
+            .parent_thread_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .hash(&mut hasher);
+        thread.info.agent_nickname.hash(&mut hasher);
+        thread.info.agent_role.hash(&mut hasher);
+        agent_display_label(
+            thread.info.agent_nickname.as_deref(),
+            thread.info.agent_role.as_deref(),
+            None,
+        )
+        .hash(&mut hasher);
+        thread
+            .info
+            .agent_status
+            .as_deref()
+            .map(AppSubagentStatus::from_raw)
+            .unwrap_or(AppSubagentStatus::Unknown)
+            .hash(&mut hasher);
+        thread.info.updated_at.hash(&mut hasher);
+        thread.active_turn_id.is_some().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 impl From<ServerHealthSnapshot> for AppServerHealth {
@@ -452,52 +439,6 @@ impl From<ServerHealthSnapshot> for AppServerHealth {
             ServerHealthSnapshot::Connected => Self::Connected,
             ServerHealthSnapshot::Unresponsive => Self::Unresponsive,
             ServerHealthSnapshot::Unknown(_) => Self::Unknown,
-        }
-    }
-}
-
-impl From<ServerConnectionStepKind> for AppServerConnectionStepKind {
-    fn from(value: ServerConnectionStepKind) -> Self {
-        match value {
-            ServerConnectionStepKind::ConnectingToSsh => Self::ConnectingToSsh,
-            ServerConnectionStepKind::FindingCodex => Self::FindingCodex,
-            ServerConnectionStepKind::InstallingCodex => Self::InstallingCodex,
-            ServerConnectionStepKind::StartingAppServer => Self::StartingAppServer,
-            ServerConnectionStepKind::OpeningTunnel => Self::OpeningTunnel,
-            ServerConnectionStepKind::Connected => Self::Connected,
-        }
-    }
-}
-
-impl From<ServerConnectionStepState> for AppServerConnectionStepState {
-    fn from(value: ServerConnectionStepState) -> Self {
-        match value {
-            ServerConnectionStepState::Pending => Self::Pending,
-            ServerConnectionStepState::InProgress => Self::InProgress,
-            ServerConnectionStepState::Completed => Self::Completed,
-            ServerConnectionStepState::Failed => Self::Failed,
-            ServerConnectionStepState::AwaitingUserInput => Self::AwaitingUserInput,
-            ServerConnectionStepState::Cancelled => Self::Cancelled,
-        }
-    }
-}
-
-impl From<ServerConnectionStepSnapshot> for AppServerConnectionStep {
-    fn from(value: ServerConnectionStepSnapshot) -> Self {
-        Self {
-            kind: value.kind.into(),
-            state: value.state.into(),
-            detail: value.detail,
-        }
-    }
-}
-
-impl From<ServerConnectionProgressSnapshot> for AppServerConnectionProgress {
-    fn from(value: ServerConnectionProgressSnapshot) -> Self {
-        Self {
-            steps: value.steps.into_iter().map(Into::into).collect(),
-            pending_install: value.pending_install,
-            terminal_message: value.terminal_message,
         }
     }
 }
@@ -538,6 +479,82 @@ fn sanitized_label_field(raw: Option<&str>) -> Option<&str> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then_some(trimmed)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        agent_directory_version, current_agent_directory_version, session_summaries_from_snapshot,
+    };
+    use crate::store::{AppSnapshot, ThreadSnapshot};
+    use crate::types::{ThreadInfo, ThreadKey, ThreadSummaryStatus};
+
+    #[test]
+    fn current_agent_directory_version_matches_summary_hash() {
+        let mut snapshot = AppSnapshot::default();
+
+        let mut parent = ThreadSnapshot::from_info(
+            "srv",
+            ThreadInfo {
+                id: "thread-a".to_string(),
+                title: Some("Parent".to_string()),
+                model: None,
+                preview: Some("Preview".to_string()),
+                cwd: None,
+                path: None,
+                model_provider: None,
+                agent_nickname: None,
+                agent_role: None,
+                parent_thread_id: None,
+                agent_status: None,
+                created_at: None,
+                status: ThreadSummaryStatus::Idle,
+                updated_at: Some(20),
+            },
+        );
+        parent.active_turn_id = Some("turn-a".to_string());
+        snapshot.threads.insert(parent.key.clone(), parent);
+
+        let child_key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread-b".to_string(),
+        };
+        snapshot.threads.insert(
+            child_key.clone(),
+            ThreadSnapshot {
+                key: child_key,
+                info: ThreadInfo {
+                    id: "thread-b".to_string(),
+                    title: None,
+                    model: None,
+                    preview: None,
+                    cwd: None,
+                    path: None,
+                    model_provider: None,
+                    parent_thread_id: Some(" thread-a ".to_string()),
+                    agent_nickname: Some("assistant".to_string()),
+                    agent_role: Some("coder".to_string()),
+                    agent_status: Some("running".to_string()),
+                    created_at: None,
+                    status: ThreadSummaryStatus::Active,
+                    updated_at: Some(10),
+                },
+                model: None,
+                reasoning_effort: None,
+                items: Vec::new(),
+                local_overlay_items: Vec::new(),
+                queued_follow_ups: Vec::new(),
+                active_turn_id: None,
+                context_tokens_used: None,
+                model_context_window: None,
+                rate_limits: None,
+                realtime_session_id: None,
+            },
+        );
+
+        let expected = agent_directory_version(&session_summaries_from_snapshot(&snapshot));
+        assert_eq!(current_agent_directory_version(&snapshot), expected);
+    }
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]

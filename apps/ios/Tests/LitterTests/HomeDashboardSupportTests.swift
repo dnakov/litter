@@ -319,8 +319,8 @@ final class HomeDashboardSupportTests: XCTestCase {
         )
     }
 
-    private func inactiveVoiceSession() -> AppVoiceSessionSnapshot {
-        AppVoiceSessionSnapshot(
+    private func inactiveVoiceSession() -> VoiceSessionSnapshot {
+        VoiceSessionSnapshot(
             activeThread: nil,
             sessionId: nil,
             phase: nil,
