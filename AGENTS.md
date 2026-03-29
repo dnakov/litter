@@ -98,6 +98,13 @@
 - **uniffi** — generates Swift/Kotlin bindings from Rust.
 - **lru**, **base64**, **regex** — utility crates.
 
+## Fresh Checkout Prerequisites
+Before building on a new machine, verify:
+1. `xcode-select -p` must print `/Applications/Xcode.app/Contents/Developer`, not `/Library/Developer/CommandLineTools`. Fix with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. The Command Line Tools do not include iOS simulator SDKs.
+2. `cargo` and `rustc` must come from **rustup**, not Homebrew's `rust` formula. If `which cargo` points to `/opt/homebrew/bin/cargo` (a Homebrew standalone binary, not a rustup proxy), cross-compilation targets like `aarch64-apple-ios-sim` will fail even if `rustup target list` shows them installed. The Makefile prepends the rustup toolchain bin to PATH automatically, but standalone script runs and CI environments must also ensure the correct resolution. Either `brew uninstall rust` or put `~/.cargo/bin` (or the rustup toolchain bin from `rustup which cargo`) before `/opt/homebrew/bin` in PATH.
+3. `meson` and `ninja` must be installed (`brew install meson`). Required by `webrtc-audio-processing-sys`.
+4. `xcodegen` must be installed (`brew install xcodegen`). Required for Xcode project generation.
+
 ## Build System
 The root `Makefile` is the primary build interface. It orchestrates submodule sync, patching, UniFFI binding generation, Rust cross-compilation, raw staticlib generation, optional xcframework packaging, Xcode project generation, and platform builds — with stamp-file caching in `.build-stamps/` so repeated runs skip completed steps. If `sccache` is installed it is used automatically via `RUSTC_WRAPPER=sccache`.
 

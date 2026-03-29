@@ -42,14 +42,36 @@ make ios-sim          # full package lane + simulator build
 
 ## Prerequisites
 
-- Xcode.app (full install, not only CLT)
-- Rust + iOS targets:
+- **Xcode.app** (full install, not only Command Line Tools). After installing, make sure
+  `xcode-select` points to the full Xcode — the Command Line Tools do not include iOS
+  simulator SDKs:
 
   ```bash
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  ```
+
+- **Rust via rustup** with iOS targets. If you also have Homebrew's `rust` formula
+  installed (`brew install rust`), its `cargo`/`rustc` will shadow rustup and break
+  cross-compilation. Either `brew uninstall rust` or ensure `~/.cargo/bin` appears
+  before `/opt/homebrew/bin` in your `PATH`. The Makefile handles this automatically,
+  but standalone script invocations still depend on your shell PATH.
+
+  ```bash
+  # Install rustup (skip if already installed)
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+  # Add iOS targets
   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
   ```
 
-- `xcodegen` (for regenerating `Litter.xcodeproj`):
+- **meson** + **ninja** (required by `webrtc-audio-processing-sys` for the audio/AEC
+  build):
+
+  ```bash
+  brew install meson
+  ```
+
+- **xcodegen** (for regenerating `Litter.xcodeproj`):
 
   ```bash
   brew install xcodegen

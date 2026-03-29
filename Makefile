@@ -3,6 +3,12 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := all
 
+# Prefer rustup-managed toolchain over Homebrew Rust for cross-compilation targets
+RUSTUP_TOOLCHAIN_BIN := $(shell rustup which cargo 2>/dev/null | xargs dirname 2>/dev/null)
+ifneq ($(RUSTUP_TOOLCHAIN_BIN),)
+  export PATH := $(RUSTUP_TOOLCHAIN_BIN):$(PATH)
+endif
+
 ROOT := $(shell pwd)
 STAMPS := $(ROOT)/.build-stamps
 RUST_DIR := $(ROOT)/shared/rust-bridge
