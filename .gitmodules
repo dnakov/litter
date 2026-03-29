@@ -1,3 +1,4 @@
 [submodule "shared/third_party/codex"]
 	path = shared/third_party/codex
 	url = https://github.com/openai/codex
+	shallow = true
