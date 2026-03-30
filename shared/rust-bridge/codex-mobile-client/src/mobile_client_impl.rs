@@ -47,7 +47,7 @@ use codex_ipc::{
 pub struct MobileClient {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<ServerSession>>>>,
     pub(crate) event_processor: Arc<EventProcessor>,
-    pub(crate) app_store: Arc<AppStoreReducer>,
+    pub app_store: Arc<AppStoreReducer>,
     pub(crate) discovery: RwLock<DiscoveryService>,
     oauth_callback_tunnels: Arc<Mutex<HashMap<String, OAuthCallbackTunnel>>>,
 }
@@ -1361,7 +1361,7 @@ impl MobileClient {
             .ok_or_else(|| RpcError::Deserialization(format!("unknown thread {}", key.thread_id)))
     }
 
-    pub(crate) async fn request_typed_for_server<R>(
+    pub async fn request_typed_for_server<R>(
         &self,
         server_id: &str,
         request: upstream::ClientRequest,
@@ -1374,7 +1374,10 @@ impl MobileClient {
             .request_client(request)
             .await
             .map_err(|e| e.to_string())?;
-        serde_json::from_value(value).map_err(|e| format!("deserialize typed RPC response: {e}"))
+        serde_json::from_value(value.clone()).map_err(|e| {
+            warn!("deserialize typed RPC response: {e}\nraw payload: {value}");
+            format!("deserialize typed RPC response: {e}")
+        })
     }
 
     fn pending_approval(&self, request_id: &str) -> Result<PendingApproval, RpcError> {

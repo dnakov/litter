@@ -120,7 +120,7 @@ impl MobileClient {
         self.app_store.update_server_account(server_id, None, false);
     }
 
-    pub(crate) fn apply_account_response(
+    pub fn apply_account_response(
         &self,
         server_id: &str,
         response: &upstream::GetAccountResponse,
@@ -132,7 +132,7 @@ impl MobileClient {
         );
     }
 
-    pub(crate) fn apply_account_rate_limits_response(
+    pub fn apply_account_rate_limits_response(
         &self,
         server_id: &str,
         response: &upstream::GetAccountRateLimitsResponse,
@@ -141,7 +141,7 @@ impl MobileClient {
             .update_server_rate_limits(server_id, Some(response.rate_limits.clone().into()));
     }
 
-    pub(crate) fn apply_model_list_response(
+    pub fn apply_model_list_response(
         &self,
         server_id: &str,
         response: &upstream::ModelListResponse,
@@ -152,7 +152,7 @@ impl MobileClient {
         );
     }
 
-    pub(crate) fn sync_thread_list(
+    pub fn sync_thread_list(
         &self,
         server_id: &str,
         threads: &[upstream::Thread],
@@ -179,7 +179,7 @@ impl MobileClient {
         }
     }
 
-    pub(crate) fn apply_thread_start_response(
+    pub fn apply_thread_start_response(
         &self,
         server_id: &str,
         response: &upstream::ThreadStartResponse,
@@ -199,7 +199,7 @@ impl MobileClient {
         Ok(key)
     }
 
-    pub(crate) fn apply_thread_read_response(
+    pub fn apply_thread_read_response(
         &self,
         server_id: &str,
         response: &upstream::ThreadReadResponse,
@@ -216,7 +216,7 @@ impl MobileClient {
         Ok(key)
     }
 
-    pub(crate) fn apply_thread_resume_response(
+    pub fn apply_thread_resume_response(
         &self,
         server_id: &str,
         response: &upstream::ThreadResumeResponse,
@@ -236,7 +236,7 @@ impl MobileClient {
         Ok(key)
     }
 
-    pub(crate) fn apply_thread_fork_response(
+    pub fn apply_thread_fork_response(
         &self,
         server_id: &str,
         response: &upstream::ThreadForkResponse,
@@ -256,7 +256,7 @@ impl MobileClient {
         Ok(key)
     }
 
-    pub(crate) fn apply_thread_rollback_response(
+    pub fn apply_thread_rollback_response(
         &self,
         server_id: &str,
         thread_id: &str,

@@ -39,7 +39,10 @@ ANDROID_RELEASE_ABIS ?= arm64-v8a,x86_64
 HOST_ARCH := $(shell uname -m)
 ANDROID_EMULATOR_ABIS ?= $(if $(filter arm64 aarch64,$(HOST_ARCH)),arm64-v8a,x86_64)
 
-# Auto-detect Android SDK/NDK/JDK paths (macOS defaults, overridable via env)
+# Source local env (credentials, SDK paths) if present — must precede ?= auto-detect
+-include .env
+
+# Auto-detect Android SDK/NDK/JDK paths (macOS defaults, overridable via env or .env)
 ANDROID_SDK_ROOT ?= $(or $(ANDROID_HOME),$(wildcard $(HOME)/Library/Android/sdk))
 ANDROID_NDK_HOME ?= $(shell ls -d $(ANDROID_SDK_ROOT)/ndk/*/ 2>/dev/null | sort -V | tail -1 | sed 's:/*$$::')
 JAVA_HOME ?= $(or $(shell /usr/libexec/java_home 2>/dev/null),$(shell test -d '/Applications/Android Studio.app/Contents/jbr/Contents/Home' && echo '/Applications/Android Studio.app/Contents/jbr/Contents/Home'))
@@ -52,8 +55,6 @@ ANDROID_ACTIVITY := com.litter.android.MainActivity
 ANDROID_DEVICE_SERIAL ?=
 ANDROID_REINSTALL_ON_SIGNATURE_MISMATCH ?= 1
 
-# Source local env (credentials, SDK paths) if present
--include .env
 export ANDROID_SDK_ROOT
 export ANDROID_NDK_HOME
 export JAVA_HOME

@@ -161,7 +161,7 @@ final class AppLifecycleController {
 
         backgroundedTurnKeys = Set(activeThreads.map(\.key))
         bgWakeCount = 0
-        liveActivities.startIfNeeded(for: activeThreads)
+        liveActivities.sync(snapshot)
         registerPushProxy()
 
         let bgID = UIApplication.shared.beginBackgroundTask { [weak self] in
@@ -214,7 +214,7 @@ final class AppLifecycleController {
                 liveActivities.updateBackgroundWake(for: thread, pushCount: bgWakeCount)
             } else {
                 backgroundedTurnKeys.remove(key)
-                liveActivities.end(key: key, phase: .completed, snapshot: snapshot)
+                liveActivities.endCurrent(phase: .completed, snapshot: snapshot)
                 postLocalNotificationIfNeeded(
                     model: thread.resolvedModel,
                     threadPreview: thread.resolvedPreview

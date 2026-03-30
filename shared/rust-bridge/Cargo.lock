@@ -1837,6 +1837,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-debug-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "codex-app-server-protocol",
+ "codex-mobile-client",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "codex-exec-server"
 version = "0.117.0"
 dependencies = [

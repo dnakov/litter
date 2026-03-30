@@ -3,137 +3,157 @@ import Foundation
 
 @MainActor
 final class TurnLiveActivityController {
-    private var liveActivities: [ThreadKey: Activity<CodexTurnAttributes>] = [:]
-    private var liveActivityStartDates: [ThreadKey: Date] = [:]
-    private var liveActivityOutputSnippets: [ThreadKey: String] = [:]
-    private var liveActivityLastUpdateTimes: [ThreadKey: CFAbsoluteTime] = [:]
+    private var activity: Activity<CodexTurnAttributes>?
+    private var activeKey: ThreadKey?
+    private var startDate: Date?
+    private var outputSnippet: String?
+    private var lastUpdateTime: CFAbsoluteTime = 0
+    private var didCleanupStaleActivities = false
+
+    private func cleanupStaleActivities() {
+        guard !didCleanupStaleActivities else { return }
+        didCleanupStaleActivities = true
+        for stale in Activity<CodexTurnAttributes>.activities {
+            let state = CodexTurnAttributes.ContentState(
+                phase: .completed, elapsedSeconds: 0, toolCallCount: 0,
+                activeThreadCount: 0, fileChangeCount: 0, contextPercent: 0
+            )
+            Task {
+                await stale.end(.init(state: state, staleDate: nil), dismissalPolicy: .immediate)
+            }
+        }
+    }
 
     func sync(_ snapshot: AppSnapshotRecord?) {
+        cleanupStaleActivities()
+
         guard let snapshot else {
-            endAll(phase: .completed, snapshot: nil)
+            endCurrent(phase: .completed, snapshot: nil)
             return
         }
 
         let activeThreads = snapshot.threads.filter(\.hasActiveTurn)
-        let activeKeys = Set(activeThreads.map(\.key))
 
-        startIfNeeded(for: activeThreads)
-        for thread in activeThreads {
-            update(for: thread)
+        if activeThreads.isEmpty {
+            endCurrent(phase: .completed, snapshot: snapshot)
+            return
         }
 
-        for key in Array(liveActivities.keys) where !activeKeys.contains(key) {
-            end(key: key, phase: .completed, snapshot: snapshot)
+        // Pick the best thread to show: prefer the active thread, else most recent.
+        let best = activeThreads.first(where: { $0.key == snapshot.activeThread })
+            ?? activeThreads.first!
+
+        if let currentKey = activeKey, currentKey != best.key {
+            // Active thread changed — end old, start new.
+            endCurrent(phase: .completed, snapshot: snapshot)
         }
-    }
 
-    func startIfNeeded(for threads: [AppThreadSnapshot]) {
-        for thread in threads {
-            let key = thread.key
-            guard liveActivities[key] == nil, ActivityAuthorizationInfo().areActivitiesEnabled else {
-                continue
-            }
-
-            let now = Date()
-            let attributes = CodexTurnAttributes(
-                threadId: key.threadId,
-                model: thread.resolvedModel,
-                cwd: thread.info.cwd ?? "",
-                startDate: now,
-                prompt: String(thread.resolvedPreview.prefix(120))
-            )
-            let state = CodexTurnAttributes.ContentState(
-                phase: .thinking,
-                elapsedSeconds: 0,
-                toolCallCount: 0,
-                activeThreadCount: max(1, threads.count),
-                fileChangeCount: 0,
-                contextPercent: thread.contextPercent
-            )
-            liveActivityStartDates[key] = now
-            do {
-                liveActivities[key] = try Activity.request(
-                    attributes: attributes,
-                    content: .init(state: state, staleDate: nil)
-                )
-            } catch {}
+        if activity == nil {
+            start(for: best, activeCount: activeThreads.count)
+        } else {
+            update(for: best, activeCount: activeThreads.count)
         }
     }
 
-    func update(for thread: AppThreadSnapshot) {
-        let key = thread.key
-        guard let activity = liveActivities[key] else { return }
+    private func start(for thread: AppThreadSnapshot, activeCount: Int) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+
+        let now = Date()
+        let attributes = CodexTurnAttributes(
+            threadId: thread.key.threadId,
+            model: thread.resolvedModel,
+            cwd: thread.info.cwd ?? "",
+            startDate: now,
+            prompt: String(thread.resolvedPreview.prefix(120))
+        )
+        let state = CodexTurnAttributes.ContentState(
+            phase: .thinking,
+            elapsedSeconds: 0,
+            toolCallCount: 0,
+            activeThreadCount: max(1, activeCount),
+            fileChangeCount: 0,
+            contextPercent: thread.contextPercent
+        )
+        activeKey = thread.key
+        startDate = now
+        outputSnippet = nil
+        lastUpdateTime = 0
+        do {
+            activity = try Activity.request(
+                attributes: attributes,
+                content: .init(state: state, staleDate: nil)
+            )
+        } catch {}
+    }
+
+    private func update(for thread: AppThreadSnapshot, activeCount: Int) {
+        guard let activity else { return }
         let now = CFAbsoluteTimeGetCurrent()
-        let sinceLastUpdate = now - (liveActivityLastUpdateTimes[key] ?? 0)
-        guard sinceLastUpdate > 2.0 else { return }
+        guard now - lastUpdateTime > 2.0 else { return }
 
         if let snippet = thread.latestAssistantSnippet, !snippet.isEmpty {
-            liveActivityOutputSnippets[key] = snippet
+            outputSnippet = snippet
         }
 
         let state = CodexTurnAttributes.ContentState(
             phase: .thinking,
-            elapsedSeconds: Int(Date().timeIntervalSince(liveActivityStartDates[key] ?? Date())),
+            elapsedSeconds: Int(Date().timeIntervalSince(startDate ?? Date())),
             toolCallCount: 0,
-            activeThreadCount: liveActivities.count,
-            outputSnippet: liveActivityOutputSnippets[key],
+            activeThreadCount: max(1, activeCount),
+            outputSnippet: outputSnippet,
             fileChangeCount: 0,
             contextPercent: thread.contextPercent
         )
-        liveActivityLastUpdateTimes[key] = now
+        lastUpdateTime = now
         Task {
             await activity.update(.init(state: state, staleDate: Date(timeIntervalSinceNow: 60)))
         }
     }
 
     func updateBackgroundWake(for thread: AppThreadSnapshot, pushCount: Int) {
-        let key = thread.key
-        guard let activity = liveActivities[key] else { return }
+        guard let activity else { return }
         if let snippet = thread.latestAssistantSnippet, !snippet.isEmpty {
-            liveActivityOutputSnippets[key] = snippet
+            outputSnippet = snippet
         }
 
         let state = CodexTurnAttributes.ContentState(
             phase: .thinking,
-            elapsedSeconds: Int(Date().timeIntervalSince(liveActivityStartDates[key] ?? Date())),
+            elapsedSeconds: Int(Date().timeIntervalSince(startDate ?? Date())),
             toolCallCount: 0,
-            activeThreadCount: liveActivities.count,
-            outputSnippet: liveActivityOutputSnippets[key],
+            activeThreadCount: 1,
+            outputSnippet: outputSnippet,
             pushCount: pushCount,
             fileChangeCount: 0,
             contextPercent: thread.contextPercent
         )
-        liveActivityLastUpdateTimes[key] = CFAbsoluteTimeGetCurrent()
+        lastUpdateTime = CFAbsoluteTimeGetCurrent()
         Task {
             await activity.update(.init(state: state, staleDate: Date(timeIntervalSinceNow: 60)))
         }
     }
 
-    func end(key: ThreadKey, phase: CodexTurnAttributes.ContentState.Phase, snapshot: AppSnapshotRecord?) {
-        guard let activity = liveActivities[key] else { return }
-        let thread = snapshot?.threadSnapshot(for: key)
+    func endCurrent(phase: CodexTurnAttributes.ContentState.Phase, snapshot: AppSnapshotRecord?) {
+        guard let activity else { return }
+        let thread = activeKey.flatMap { snapshot?.threadSnapshot(for: $0) }
         let state = CodexTurnAttributes.ContentState(
             phase: phase,
-            elapsedSeconds: Int(Date().timeIntervalSince(liveActivityStartDates[key] ?? Date())),
+            elapsedSeconds: Int(Date().timeIntervalSince(startDate ?? Date())),
             toolCallCount: 0,
-            activeThreadCount: max(0, liveActivities.count - 1),
-            outputSnippet: liveActivityOutputSnippets[key],
+            activeThreadCount: 0,
+            outputSnippet: outputSnippet,
             fileChangeCount: 0,
             contextPercent: thread?.contextPercent ?? 0
         )
-        let content = ActivityContent(state: state, staleDate: Date(timeIntervalSinceNow: 60))
         Task {
-            await activity.end(content, dismissalPolicy: .after(.now + 4))
+            await activity.end(
+                .init(state: state, staleDate: Date(timeIntervalSinceNow: 60)),
+                dismissalPolicy: .after(.now + 4)
+            )
         }
-        liveActivities.removeValue(forKey: key)
-        liveActivityStartDates.removeValue(forKey: key)
-        liveActivityOutputSnippets.removeValue(forKey: key)
-        liveActivityLastUpdateTimes.removeValue(forKey: key)
-    }
-
-    private func endAll(phase: CodexTurnAttributes.ContentState.Phase, snapshot: AppSnapshotRecord?) {
-        for key in Array(liveActivities.keys) {
-            end(key: key, phase: phase, snapshot: snapshot)
-        }
+        self.activity = nil
+        activeKey = nil
+        startDate = nil
+        outputSnippet = nil
+        lastUpdateTime = 0
     }
 }

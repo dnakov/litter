@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "codex-bridge",
+    "codex-debug-cli",
     "codex-ios-audio",
     "codex-ipc",
     "codex-mobile-client",

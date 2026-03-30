@@ -1,0 +1,140 @@
+--- a/codex-rs/app-server-protocol/src/protocol/v2.rs	2026-03-30 10:20:20
++++ b/codex-rs/app-server-protocol/src/protocol/v2.rs	2026-03-30 10:20:07
+@@ -229,11 +229,12 @@
+ }
+ 
+ #[derive(
+-    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, ExperimentalApi,
++    Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS, ExperimentalApi,
+ )]
+ #[serde(rename_all = "kebab-case")]
+ #[ts(rename_all = "kebab-case", export_to = "v2/")]
+ pub enum AskForApproval {
++    #[default]
+     #[serde(rename = "untrusted")]
+     #[ts(rename = "untrusted")]
+     UnlessTrusted,
+@@ -294,7 +295,7 @@
+     }
+ }
+ 
+-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
++#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+ #[serde(rename_all = "snake_case")]
+ #[ts(rename_all = "snake_case", export_to = "v2/")]
+ /// Configures who approval requests are routed to for review. Examples
+@@ -303,6 +304,7 @@
+ /// prompted subagent to gather relevant context and apply a risk-based
+ /// decision framework before approving or denying the request.
+ pub enum ApprovalsReviewer {
++    #[default]
+     User,
+     GuardianSubagent,
+ }
+@@ -1298,11 +1300,12 @@
+     }
+ }
+ 
+-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
++#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
+ #[serde(tag = "type", rename_all = "camelCase")]
+ #[ts(tag = "type")]
+ #[ts(export_to = "v2/")]
+ pub enum SandboxPolicy {
++    #[default]
+     DangerFullAccess,
+     #[serde(rename_all = "camelCase")]
+     #[ts(rename_all = "camelCase")]
+@@ -2629,14 +2632,20 @@
+ #[ts(export_to = "v2/")]
+ pub struct ThreadStartResponse {
+     pub thread: Thread,
++    #[serde(default)]
+     pub model: String,
++    #[serde(default)]
+     pub model_provider: String,
+     pub service_tier: Option<ServiceTier>,
++    #[serde(default)]
+     pub cwd: PathBuf,
+     #[experimental(nested)]
++    #[serde(default)]
+     pub approval_policy: AskForApproval,
+     /// Reviewer currently used for approval requests on this thread.
++    #[serde(default)]
+     pub approvals_reviewer: ApprovalsReviewer,
++    #[serde(default)]
+     pub sandbox: SandboxPolicy,
+     pub reasoning_effort: Option<ReasoningEffort>,
+ }
+@@ -2715,14 +2724,20 @@
+ #[ts(export_to = "v2/")]
+ pub struct ThreadResumeResponse {
+     pub thread: Thread,
++    #[serde(default)]
+     pub model: String,
++    #[serde(default)]
+     pub model_provider: String,
+     pub service_tier: Option<ServiceTier>,
++    #[serde(default)]
+     pub cwd: PathBuf,
+     #[experimental(nested)]
++    #[serde(default)]
+     pub approval_policy: AskForApproval,
+     /// Reviewer currently used for approval requests on this thread.
++    #[serde(default)]
+     pub approvals_reviewer: ApprovalsReviewer,
++    #[serde(default)]
+     pub sandbox: SandboxPolicy,
+     pub reasoning_effort: Option<ReasoningEffort>,
+ }
+@@ -2792,14 +2807,20 @@
+ #[ts(export_to = "v2/")]
+ pub struct ThreadForkResponse {
+     pub thread: Thread,
++    #[serde(default)]
+     pub model: String,
++    #[serde(default)]
+     pub model_provider: String,
+     pub service_tier: Option<ServiceTier>,
++    #[serde(default)]
+     pub cwd: PathBuf,
+     #[experimental(nested)]
++    #[serde(default)]
+     pub approval_policy: AskForApproval,
+     /// Reviewer currently used for approval requests on this thread.
++    #[serde(default)]
+     pub approvals_reviewer: ApprovalsReviewer,
++    #[serde(default)]
+     pub sandbox: SandboxPolicy,
+     pub reasoning_effort: Option<ReasoningEffort>,
+ }
+@@ -3119,11 +3140,12 @@
+     pub next_cursor: Option<String>,
+ }
+ 
+-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+ #[serde(tag = "type", rename_all = "camelCase")]
+ #[ts(tag = "type")]
+ #[ts(export_to = "v2/")]
+ pub enum ThreadStatus {
++    #[default]
+     NotLoaded,
+     Idle,
+     SystemError,
+@@ -3593,6 +3615,7 @@
+     /// Usually the first user message in the thread, if available.
+     pub preview: String,
+     /// Whether the thread is ephemeral and should not be materialized on disk.
++    #[serde(default)]
+     pub ephemeral: bool,
+     /// Model provider used for this thread (for example, 'openai').
+     pub model_provider: String,
+@@ -3603,6 +3626,7 @@
+     #[ts(type = "number")]
+     pub updated_at: i64,
+     /// Current runtime status for the thread.
++    #[serde(default)]
+     pub status: ThreadStatus,
+     /// [UNSTABLE] Path to the thread on disk.
+     pub path: Option<PathBuf>,

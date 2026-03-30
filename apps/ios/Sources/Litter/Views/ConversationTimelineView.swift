@@ -891,19 +891,19 @@ private struct ConversationProposedPlanRow: View {
 
 private struct ConversationTurnDiffRow: View {
     let data: ConversationTurnDiffData
-    @State private var showingDetails = false
+    @State private var presented: PresentedDiff?
 
     var body: some View {
         Button {
-            showingDetails = true
+            presented = PresentedDiff(id: "turn-diff", title: "Turn Diff", diff: data.diff)
         } label: {
             DiffIndicatorLabel(additions: data.additions, deletions: data.deletions)
         }
         .buttonStyle(.plain)
-        .sheet(isPresented: $showingDetails) {
+        .sheet(item: $presented) { sheet in
             ConversationDiffDetailSheet(
-                title: "Turn Diff",
-                diff: data.diff
+                title: sheet.title,
+                diff: sheet.diff
             )
         }
     }
