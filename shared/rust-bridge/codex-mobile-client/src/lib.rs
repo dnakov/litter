@@ -1,7 +1,7 @@
 //! Shared mobile client library for iOS / Android.
 //!
 //! This crate owns the single public UniFFI surface for mobile. Keep shared
-//! business logic here so Swift/Kotlin only compile one generated binding set.
+//! business logic here so Swift/Kotlin only compile one binding set.
 
 #[cfg(target_os = "ios")]
 mod aec;
@@ -21,8 +21,6 @@ pub mod ssh;
 pub mod store;
 pub mod transport;
 pub mod types;
-pub mod uniffi_shared;
-
 mod mobile_client_impl;
 
 pub use mobile_client_impl::*;

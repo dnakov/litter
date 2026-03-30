@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::types::generated::MessagePhase;
+use crate::types::AppMessagePhase;
 use codex_app_server_protocol::{
     CollabAgentStatus, CollabAgentTool, CollabAgentToolCallStatus, CommandAction,
     CommandExecutionStatus, DynamicToolCallOutputContentItem, DynamicToolCallStatus,
@@ -77,7 +77,7 @@ pub struct AssistantMessageData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase: Option<MessagePhase>,
+    pub phase: Option<AppMessagePhase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -344,10 +344,10 @@ pub fn hydrate_thread_item(
 
 fn hydrate_message_phase(
     phase: Option<codex_protocol::models::MessagePhase>,
-) -> Option<MessagePhase> {
+) -> Option<AppMessagePhase> {
     phase.map(|phase| match phase {
-        codex_protocol::models::MessagePhase::Commentary => MessagePhase::Commentary,
-        codex_protocol::models::MessagePhase::FinalAnswer => MessagePhase::FinalAnswer,
+        codex_protocol::models::MessagePhase::Commentary => AppMessagePhase::Commentary,
+        codex_protocol::models::MessagePhase::FinalAnswer => AppMessagePhase::FinalAnswer,
     })
 }
 
@@ -1221,7 +1221,7 @@ mod tests {
                 text: "Hello".into(),
                 agent_nickname: None,
                 agent_role: None,
-                phase: Some(MessagePhase::Commentary),
+                phase: Some(AppMessagePhase::Commentary),
             }),
             source_turn_id: Some("t1".into()),
             source_turn_index: Some(0),

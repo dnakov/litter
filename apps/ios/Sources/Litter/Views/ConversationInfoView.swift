@@ -676,26 +676,18 @@ struct ConversationInfoView: View {
     private func forkConversation() async {
         guard let threadKey else { return }
         do {
-            let response = try await appModel.rpc.threadFork(
+            let newKey = try await appModel.client.forkThread(
                 serverId: threadKey.serverId,
-                params: ThreadForkParams(
+                params: AppForkThreadRequest(
                     threadId: threadKey.threadId,
-                    path: nil,
                     model: thread?.model,
-                    modelProvider: nil,
-                    serviceTier: nil,
                     cwd: thread?.info.cwd,
                     approvalPolicy: nil,
-                    approvalsReviewer: nil,
                     sandbox: nil,
-                    config: nil,
-                    baseInstructions: nil,
                     developerInstructions: nil,
-                    ephemeral: false,
                     persistExtendedHistory: true
                 )
             )
-            let newKey = ThreadKey(serverId: threadKey.serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: newKey)
             await appModel.refreshSnapshot()
             onOpenConversation?(newKey)
@@ -711,9 +703,9 @@ struct ConversationInfoView: View {
         isRenaming = false
         Task {
             do {
-                _ = try await appModel.rpc.threadSetName(
+                _ = try await appModel.client.renameThread(
                     serverId: threadKey.serverId,
-                    params: ThreadSetNameParams(threadId: threadKey.threadId, name: title)
+                    params: AppRenameThreadRequest(threadId: threadKey.threadId, name: title)
                 )
                 await appModel.refreshSnapshot()
             } catch {

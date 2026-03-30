@@ -31,7 +31,7 @@
 - `codex-mobile-client` is the single public Rust mobile crate. Keep one generated Swift/Kotlin binding surface; do not split UniFFI across multiple mobile crates again.
 - `codex-ios-audio` is the separate iOS-only audio/AEC crate. Keep heavy audio processing there, not in Swift and not in a second UniFFI crate.
 - `AppStore` is the Rust-owned state surface. It owns snapshots, typed updates, and the small set of truly composite/store-local actions.
-- `AppServerRpc` is the generated public UniFFI RPC surface for direct upstream app-server methods and types.
+- `AppClient` is the public UniFFI client surface for direct server operations and typed results.
 - `DiscoveryBridge` and `SshBridge` are separate Rust utility surfaces. Do not move discovery/SSH policy back into Swift/Kotlin.
 - iOS uses UniFFI-generated Swift plus thin bridge helpers; Android uses UniFFI-generated Kotlin plus thin bridge helpers.
 - iOS Debug/device links the raw static library in `apps/ios/GeneratedRust/ios-device/libcodex_mobile_client.a`. Package/release lanes may still create `apps/ios/Frameworks/codex_mobile_client.xcframework`, but that is not the default debug/device artifact.
@@ -41,18 +41,18 @@
 - Keep Swift/Kotlin thin. Platform code should only own UI, platform persistence, platform permissions, audio/session APIs, notifications, ActivityKit/CarPlay/Android services, and render-only projections.
 - Do not parse upstream wire-format strings in Swift/Kotlin. If a status, event kind, or payload shape matters to both platforms, expose it as a typed UniFFI enum/record from Rust.
 - Do not duplicate merge/reducer/state-machine logic in iOS or Android. Shared reconciliation belongs in Rust reducer/store code.
-- If upstream app-server already has a good method/type, use it through generated `AppServerRpc` instead of adding a handwritten wrapper on `AppStore`.
-- Keep the generator generic. Do not encode per-method reconciliation policy in codegen. Put convergence logic in handwritten Rust reducer/reconcile code.
-- `AppStore` should stay minimal: snapshots, subscriptions, and truly composite/store-local actions only. Plain upstream RPC passthroughs belong on generated `AppServerRpc`.
+- If shared Rust needs a direct server operation, expose it on `AppClient` with a mobile-owned request/result shape instead of adding a handwritten wrapper on `AppStore`.
+- Keep the public UniFFI surface handwritten and narrow. Put reconciliation policy in handwritten Rust reducer/reconcile code.
+- `AppStore` should stay minimal: snapshots, subscriptions, and truly composite/store-local actions only. Direct server operations belong on `AppClient`.
 - Prefer authoritative updates. Store state should be populated from upstream events first, then targeted refresh/reconcile when upstream events are insufficient. Do not hand-patch platform state after RPC success.
 - New boundary types that cross into Swift/Kotlin should be UniFFI-safe Rust records/enums. Internal Rust-only state can stay richer and non-UniFFI.
 - Generated Rust sources must stay local-only. Use `*.generated.rs` filenames and do not commit generated Rust files; regenerate them via `./shared/rust-bridge/generate-bindings.sh`.
 
 ## Where To Implement New Work
-- Add or change upstream protocol coverage:
-  - update `shared/rust-bridge/codegen/src/main.rs`
+- Add or change direct server coverage:
+  - update `shared/rust-bridge/codex-mobile-client/src/ffi/client.rs`
+  - update `shared/rust-bridge/codex-mobile-client/src/rpc/client_impl.rs` and/or reconciliation code as needed
   - regenerate bindings
-  - do not hand-maintain parallel RPC wrappers unless the logic is genuinely composite
 - Add canonical runtime state, reducer logic, or reconciliation:
   - `shared/rust-bridge/codex-mobile-client/src/store/`
 - Add conversation hydration, typed item shaping, or shared status normalization:
@@ -76,16 +76,14 @@
 ## Drift Guardrails
 - Before adding new Swift/Kotlin logic, ask: would Android/iOS both need this behavior? If yes, put it in Rust.
 - Before adding a new `String` status field to Swift/Kotlin models, ask: should this be a Rust enum instead? Usually yes.
-- Before adding a new `AppStore` method, ask: is this a real composite/store action, or just an upstream RPC that should be generated on `AppServerRpc`?
+- Before adding a new `AppStore` method, ask: is this a real composite/store action, or should it live on `AppClient` instead?
 - Before adding a new platform cache, ask: is this canonical runtime data that should live in the Rust store instead?
 - When in doubt, prefer one shared Rust implementation plus a thin platform projection over two parallel native implementations.
 - Do not push `shared/third_party/codex` as part of normal repo work. Keep submodule edits local-only unless the user explicitly asks for a separate submodule commit/push, and do not assume a top-level `git push` captures dirty submodule contents.
 
 ## Dependencies
 ### iOS (SPM via `apps/ios/project.yml`)
-- **Citadel** — SSH client for remote server connections.
 - **Textual** — Renders Markdown in assistant/system messages with custom theming (successor to MarkdownUI).
-- **Inject** — Hot reload support for simulator development (Debug builds only).
 ### Android (Gradle)
 - **Compose Material3** — primary Android UI toolkit.
 - **Markwon** — Markdown rendering for assistant/system text.
@@ -94,7 +92,7 @@
 ### Rust Shared Layer (Cargo)
 - **codex-app-server-protocol**, **codex-app-server-client**, **codex-protocol**, **codex-core** — upstream Codex crates.
 - **tokio-tungstenite** — async WebSocket transport.
-- **russh** — SSH client (replacing Citadel on iOS and JSch on Android).
+- **russh** — SSH client (shared Rust SSH, replacing platform-native SSH libs).
 - **uniffi** — generates Swift/Kotlin bindings from Rust.
 - **lru**, **base64**, **regex** — utility crates.
 
@@ -128,7 +126,6 @@ Incremental policy:
 | `make ios-run` | Full iOS build then opens Xcode |
 | `make android` | Full Android pipeline: sync → kotlin bindings → rust JNI → gradle assemble |
 | `make android-emulator-fast` | Fast Android dev build using the host-appropriate emulator ABI (`arm64-v8a` on Apple Silicon, `x86_64` on Intel) |
-| `make android-remote` | Android remote-only debug APK |
 | `make android-install` | Build + install remote-only APK to emulator |
 | `make all` | Both platforms |
 | `make rust-ios` | Alias for the full Rust iOS package lane |
@@ -146,7 +143,7 @@ Incremental policy:
 | `make clean` | Remove all build artifacts + stamp cache |
 
 ### Cache invalidation
-- `make rebuild-rust-ios` / `make rebuild-rust-android` / `make rebuild-bindings` — force-rebuild a specific stage.
+- `make rebuild-bindings` — force-rebuild UniFFI bindings.
 - `make clean-rust` / `make clean-ios` / `make clean-android` — remove platform-specific artifacts.
 
 ### Configuration overrides (env vars)
@@ -188,10 +185,10 @@ Incremental policy:
 - No repository-local SwiftLint/SwiftFormat config is currently committed; keep formatting consistent with existing files.
 
 ## Testing Guidelines
-- iOS tests: prefer XCTest and create `Tests/CodexIOSTests/` with files named `*Tests.swift`.
+- iOS tests: prefer XCTest under `apps/ios/Tests/LitterTests/` with files named `*Tests.swift`.
 - Android tests: place unit tests under `apps/android/app/src/test/java/`.
 - iOS test command: `xcodebuild test` using the same project/scheme/destination pattern as build commands.
-- Android test command: `gradle -p apps/android :app:testOnDeviceDebugUnitTest :app:testRemoteOnlyDebugUnitTest`.
+- Android test command: `cd apps/android && ./gradlew :app:testDebugUnitTest`.
 - Keep `apps/android/docs/qa-matrix.md` updated when parity scope changes.
 
 ## Commit & Pull Request Guidelines

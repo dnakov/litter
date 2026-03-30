@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
-pub enum FfiDiscoverySource {
+pub enum AppDiscoverySource {
     Bonjour,
     Tailscale,
     LanProbe,
@@ -15,7 +15,7 @@ pub enum FfiDiscoverySource {
     Local,
 }
 
-impl From<DiscoverySource> for FfiDiscoverySource {
+impl From<DiscoverySource> for AppDiscoverySource {
     fn from(value: DiscoverySource) -> Self {
         match value {
             DiscoverySource::Bonjour => Self::Bonjour,
@@ -28,29 +28,29 @@ impl From<DiscoverySource> for FfiDiscoverySource {
     }
 }
 
-impl From<FfiDiscoverySource> for DiscoverySource {
-    fn from(value: FfiDiscoverySource) -> Self {
+impl From<AppDiscoverySource> for DiscoverySource {
+    fn from(value: AppDiscoverySource) -> Self {
         match value {
-            FfiDiscoverySource::Bonjour => Self::Bonjour,
-            FfiDiscoverySource::Tailscale => Self::Tailscale,
-            FfiDiscoverySource::LanProbe => Self::LanProbe,
-            FfiDiscoverySource::ArpScan => Self::ArpScan,
-            FfiDiscoverySource::Manual => Self::Manual,
-            FfiDiscoverySource::Local => Self::Bundled,
+            AppDiscoverySource::Bonjour => Self::Bonjour,
+            AppDiscoverySource::Tailscale => Self::Tailscale,
+            AppDiscoverySource::LanProbe => Self::LanProbe,
+            AppDiscoverySource::ArpScan => Self::ArpScan,
+            AppDiscoverySource::Manual => Self::Manual,
+            AppDiscoverySource::Local => Self::Bundled,
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiMdnsSeed {
+pub struct AppMdnsSeed {
     pub name: String,
     pub host: String,
     pub port: Option<u16>,
     pub service_type: String,
 }
 
-impl From<FfiMdnsSeed> for MdnsSeed {
-    fn from(value: FfiMdnsSeed) -> Self {
+impl From<AppMdnsSeed> for MdnsSeed {
+    fn from(value: AppMdnsSeed) -> Self {
         Self {
             name: value.name,
             host: value.host,
@@ -62,7 +62,7 @@ impl From<FfiMdnsSeed> for MdnsSeed {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiDiscoveredServer {
+pub struct AppDiscoveredServer {
     pub id: String,
     pub display_name: String,
     pub host: String,
@@ -70,13 +70,13 @@ pub struct FfiDiscoveredServer {
     pub codex_port: Option<u16>,
     pub codex_ports: Vec<u16>,
     pub ssh_port: Option<u16>,
-    pub source: FfiDiscoverySource,
+    pub source: AppDiscoverySource,
     pub reachable: bool,
     pub os: Option<String>,
     pub ssh_banner: Option<String>,
 }
 
-impl From<DiscoveredServer> for FfiDiscoveredServer {
+impl From<DiscoveredServer> for AppDiscoveredServer {
     fn from(value: DiscoveredServer) -> Self {
         let os = value.metadata.get("os").cloned();
         let ssh_banner = value.metadata.get("ssh_banner").cloned();
@@ -96,8 +96,8 @@ impl From<DiscoveredServer> for FfiDiscoveredServer {
     }
 }
 
-impl From<FfiDiscoveredServer> for DiscoveredServer {
-    fn from(value: FfiDiscoveredServer) -> Self {
+impl From<AppDiscoveredServer> for DiscoveredServer {
+    fn from(value: AppDiscoveredServer) -> Self {
         let mut metadata = HashMap::new();
         if let Some(os) = value.os {
             metadata.insert("os".to_string(), os);
@@ -122,17 +122,17 @@ impl From<FfiDiscoveredServer> for DiscoveredServer {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiProgressiveDiscoveryUpdate {
+pub struct AppProgressiveDiscoveryUpdate {
     pub kind: ProgressiveDiscoveryUpdateKind,
-    pub source: Option<FfiDiscoverySource>,
-    pub servers: Vec<FfiDiscoveredServer>,
+    pub source: Option<AppDiscoverySource>,
+    pub servers: Vec<AppDiscoveredServer>,
     /// Overall scan progress from 0.0 to 1.0.
     pub progress: f32,
     /// Human-readable label for the phase that just completed.
     pub progress_label: Option<String>,
 }
 
-impl From<ProgressiveDiscoveryUpdate> for FfiProgressiveDiscoveryUpdate {
+impl From<ProgressiveDiscoveryUpdate> for AppProgressiveDiscoveryUpdate {
     fn from(value: ProgressiveDiscoveryUpdate) -> Self {
         Self {
             kind: value.kind,

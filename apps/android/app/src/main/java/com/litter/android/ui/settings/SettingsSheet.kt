@@ -95,7 +95,7 @@ import com.litter.android.ui.LitterThemeManager
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.Account
 import uniffi.codex_mobile_client.AppServerSnapshot
-import uniffi.codex_mobile_client.LoginAccountParams
+import uniffi.codex_mobile_client.AppLoginAccountRequest
 
 /**
  * Settings — hierarchical navigation matching iOS:
@@ -885,9 +885,9 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
             scope.launch {
                 isAuthWorking = true
                 try {
-                    appModel.rpc.loginAccount(
+                    appModel.client.loginAccount(
                         server.serverId,
-                        LoginAccountParams.ChatgptAuthTokens(
+                        AppLoginAccountRequest.ChatgptAuthTokens(
                             accessToken = tokens.accessToken,
                             chatgptAccountId = tokens.accountId,
                             chatgptPlanType = tokens.planType,
@@ -945,7 +945,7 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
                         try {
                             ChatGPTOAuthTokenStore(context).clear()
                             apiKeyStore.clear()
-                            appModel.rpc.logoutAccount(server.serverId)
+                            appModel.client.logoutAccount(server.serverId)
                             appModel.restartLocalServer()
                         } catch (_: Exception) {}
                     }
@@ -1019,7 +1019,7 @@ private fun AccountSection(server: uniffi.codex_mobile_client.AppServerSnapshot)
                             try {
                                 apiKeyStore.save(key)
                                 if (server.account is Account.ApiKey) {
-                                    appModel.rpc.logoutAccount(server.serverId)
+                                    appModel.client.logoutAccount(server.serverId)
                                 }
                                 appModel.restartLocalServer()
                                 hasStoredApiKey = apiKeyStore.hasStoredKey()

@@ -12,15 +12,15 @@ final class VoiceSessionCoordinator {
     }
 
     private actor AudioUploadPump {
-        private let send: @Sendable (ThreadRealtimeAudioChunk) async -> Void
-        private var queue: [ThreadRealtimeAudioChunk] = []
+        private let send: @Sendable (AppRealtimeAudioChunk) async -> Void
+        private var queue: [AppRealtimeAudioChunk] = []
         private var draining = false
 
-        init(send: @escaping @Sendable (ThreadRealtimeAudioChunk) async -> Void) {
+        init(send: @escaping @Sendable (AppRealtimeAudioChunk) async -> Void) {
             self.send = send
         }
 
-        func enqueue(_ chunk: ThreadRealtimeAudioChunk) async {
+        func enqueue(_ chunk: AppRealtimeAudioChunk) async {
             queue.append(chunk)
             guard !draining else { return }
             draining = true
@@ -85,7 +85,7 @@ final class VoiceSessionCoordinator {
         audioEngine != nil
     }
 
-    func start(sendAudio: @escaping @Sendable (ThreadRealtimeAudioChunk) async -> Void) throws {
+    func start(sendAudio: @escaping @Sendable (AppRealtimeAudioChunk) async -> Void) throws {
         stop()
 
         try applyAudioSessionCategory()
@@ -190,7 +190,7 @@ final class VoiceSessionCoordinator {
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    func enqueueOutputAudio(_ chunk: ThreadRealtimeAudioChunk) {
+    func enqueueOutputAudio(_ chunk: AppRealtimeAudioChunk) {
         guard let playerNode,
               let engine = audioEngine,
               let playbackFormat,

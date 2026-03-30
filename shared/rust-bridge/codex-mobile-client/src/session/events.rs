@@ -10,15 +10,19 @@ use codex_app_server_protocol::{ServerNotification, ServerRequest};
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::types::{ApprovalKind, PendingApproval, ThreadKey};
+use crate::types::{
+    ApprovalKind, PendingApproval, PendingApprovalSeed, PendingApprovalWithSeed,
+    PendingUserInputOption, PendingUserInputQuestion, PendingUserInputRequest, ThreadKey,
+};
 
 /// High-level events for platform UI consumption.
 ///
 /// Each variant represents a meaningful state change that the Swift/Kotlin
 /// UI layer should react to. These are emitted by the [`EventProcessor`]
 /// after processing typed upstream notifications from the server.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub enum UiEvent {
+pub(crate) enum UiEvent {
     // ── Thread/Turn lifecycle ──────────────────────────────────────────
     ThreadStarted {
         key: ThreadKey,
@@ -97,7 +101,10 @@ pub enum UiEvent {
     // ── Approvals ──────────────────────────────────────────────────────
     ApprovalRequested {
         key: ThreadKey,
-        approval: PendingApproval,
+        approval: PendingApprovalWithSeed,
+    },
+    UserInputRequested {
+        request: PendingUserInputRequest,
     },
 
     // ── Account / limits ───────────────────────────────────────────────
@@ -155,19 +162,18 @@ pub enum UiEvent {
 
     // ── Raw notification passthrough ─────────────────────────────────
     /// Notifications not yet handled by the EventProcessor are forwarded
-    /// as raw JSON so the platform layer can still process them.
-    /// `params_json` is the JSON-serialized params object.
+    /// as structured JSON so the platform layer can still process them.
     RawNotification {
         server_id: String,
         method: String,
-        params_json: String,
+        params: serde_json::Value,
     },
 }
 
 /// Processes upstream typed server notifications/requests and emits high-level [`UiEvent`]s.
 ///
 /// The processor is `Send + Sync` — all mutable state is behind `Arc<Mutex<_>>`.
-pub struct EventProcessor {
+pub(crate) struct EventProcessor {
     ui_event_tx: broadcast::Sender<UiEvent>,
     pending_approvals: Arc<Mutex<Vec<PendingApproval>>>,
 }
@@ -188,6 +194,7 @@ impl EventProcessor {
     }
 
     /// Return a snapshot of all pending approvals.
+    #[cfg(test)]
     pub fn pending_approvals(&self) -> Vec<PendingApproval> {
         self.pending_approvals.lock().unwrap().clone()
     }
@@ -195,6 +202,7 @@ impl EventProcessor {
     /// Remove and return a pending approval by its JSON-RPC request ID.
     ///
     /// Returns `None` if no approval with that ID exists.
+    #[cfg(test)]
     pub fn resolve_approval(&self, request_id: &str) -> Option<PendingApproval> {
         let mut approvals = self.pending_approvals.lock().unwrap();
         if let Some(pos) = approvals.iter().position(|a| a.id == request_id) {
@@ -437,12 +445,11 @@ impl EventProcessor {
             // ── Everything else: forward as raw JSON ──────────────────
             other => {
                 let method = format!("{other}");
-                let params_json =
-                    serde_json::to_string(&other).unwrap_or_else(|_| "{}".to_string());
+                let params = serde_json::to_value(&other).unwrap_or_default();
                 self.emit(UiEvent::RawNotification {
                     server_id: server_id.to_string(),
                     method,
-                    params_json,
+                    params,
                 });
             }
         }
@@ -455,11 +462,16 @@ impl EventProcessor {
         method: &str,
         params: &serde_json::Value,
     ) {
-        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+        if method == "item/tool/requestUserInput" {
+            if let Some(request) = pending_user_input_request_from_raw(server_id, params) {
+                self.emit(UiEvent::UserInputRequested { request });
+                return;
+            }
+        }
         self.emit(UiEvent::RawNotification {
             server_id: server_id.to_string(),
             method: method.to_string(),
-            params_json,
+            params: params.clone(),
         });
     }
 
@@ -470,13 +482,9 @@ impl EventProcessor {
     /// Creates a [`PendingApproval`], stores it, and emits
     /// [`UiEvent::ApprovalRequested`] so the platform UI can present it.
     ///
-    /// `ToolRequestUserInput` is forwarded as a raw event because it is not an
-    /// approval and the mobile UI already knows how to present the full
-    /// upstream question/options payload.
     pub fn process_server_request(&self, server_id: &str, request: &ServerRequest) {
         let (
             kind,
-            method,
             thread_id,
             turn_id,
             item_id,
@@ -492,7 +500,6 @@ impl EventProcessor {
                 let raw = serde_json::to_value(params).unwrap_or_default();
                 (
                     ApprovalKind::Command,
-                    "item/commandExecution/requestApproval",
                     Some(params.thread_id.clone()),
                     Some(params.turn_id.clone()),
                     Some(params.item_id.clone()),
@@ -509,7 +516,6 @@ impl EventProcessor {
                 let raw = serde_json::to_value(params).unwrap_or_default();
                 (
                     ApprovalKind::FileChange,
-                    "item/fileChange/requestApproval",
                     Some(params.thread_id.clone()),
                     Some(params.turn_id.clone()),
                     Some(params.item_id.clone()),
@@ -526,7 +532,6 @@ impl EventProcessor {
                 let raw = serde_json::to_value(params).unwrap_or_default();
                 (
                     ApprovalKind::Permissions,
-                    "item/permissions/requestApproval",
                     Some(params.thread_id.clone()),
                     Some(params.turn_id.clone()),
                     Some(params.item_id.clone()),
@@ -543,7 +548,6 @@ impl EventProcessor {
                 let raw = serde_json::to_value(params).unwrap_or_default();
                 (
                     ApprovalKind::McpElicitation,
-                    "mcpServer/elicitation/request",
                     Some(params.thread_id.clone()),
                     params.turn_id.clone(),
                     None,
@@ -557,12 +561,11 @@ impl EventProcessor {
                 )
             }
             ServerRequest::ToolRequestUserInput { request_id, params } => {
-                self.emit_raw_server_request(
-                    server_id,
-                    "item/tool/requestUserInput",
-                    request_id,
-                    params,
-                );
+                if let Some(request) =
+                    pending_user_input_request_from_upstream(server_id, request_id, params)
+                {
+                    self.emit(UiEvent::UserInputRequested { request });
+                }
                 return;
             }
             ServerRequest::DynamicToolCall { request_id, params } => {
@@ -587,15 +590,7 @@ impl EventProcessor {
             }
         };
 
-        let id = serde_json::to_value(request_id)
-            .map(|v| match v {
-                serde_json::Value::String(s) => s,
-                other => other.to_string(),
-            })
-            .unwrap_or_default();
-        let raw_params_json =
-            serde_json::to_string(&raw_params).unwrap_or_else(|_| "{}".to_string());
-
+        let id = request_id_to_string(request_id);
         let approval = PendingApproval {
             id,
             server_id: server_id.to_string(),
@@ -608,8 +603,6 @@ impl EventProcessor {
             grant_root,
             cwd,
             reason,
-            method: method.to_string(),
-            raw_params_json,
         };
 
         // Store the approval.
@@ -624,7 +617,13 @@ impl EventProcessor {
             thread_id: thread_id.unwrap_or_default(),
         };
 
-        self.emit(UiEvent::ApprovalRequested { key, approval });
+        self.emit(UiEvent::ApprovalRequested {
+            key,
+            approval: PendingApprovalWithSeed {
+                approval,
+                seed: PendingApprovalSeed { raw_params },
+            },
+        });
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
@@ -638,24 +637,17 @@ impl EventProcessor {
         &self,
         server_id: &str,
         method: &str,
-        request_id: &impl serde::Serialize,
+        request_id: &codex_app_server_protocol::RequestId,
         params: &T,
     ) {
-        let request_id = serde_json::to_value(request_id)
-            .map(|value| match value {
-                serde_json::Value::String(s) => s,
-                other => other.to_string(),
-            })
-            .unwrap_or_default();
-        let params_json = serde_json::to_string(&serde_json::json!({
-            "requestId": request_id,
+        let params = serde_json::json!({
+            "requestId": request_id_to_string(request_id),
             "params": params,
-        }))
-        .unwrap_or_else(|_| "{}".to_string());
+        });
         self.emit(UiEvent::RawNotification {
             server_id: server_id.to_string(),
             method: method.to_string(),
-            params_json,
+            params,
         });
     }
 
@@ -671,6 +663,106 @@ impl Default for EventProcessor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn request_id_to_string(request_id: &codex_app_server_protocol::RequestId) -> String {
+    match request_id {
+        codex_app_server_protocol::RequestId::String(value) => value.clone(),
+        codex_app_server_protocol::RequestId::Integer(value) => value.to_string(),
+    }
+}
+
+fn pending_user_input_request_from_upstream(
+    server_id: &str,
+    request_id: &codex_app_server_protocol::RequestId,
+    params: &codex_app_server_protocol::ToolRequestUserInputParams,
+) -> Option<PendingUserInputRequest> {
+    let questions = params
+        .questions
+        .iter()
+        .map(|question| PendingUserInputQuestion {
+            id: question.id.clone(),
+            header: Some(question.header.clone()).filter(|header| !header.is_empty()),
+            question: question.question.clone(),
+            is_other_allowed: question.is_other,
+            is_secret: question.is_secret,
+            options: question
+                .options
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|option| PendingUserInputOption {
+                    label: option.label,
+                    description: Some(option.description).filter(|value| !value.is_empty()),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+
+    if questions.is_empty() {
+        return None;
+    }
+
+    Some(PendingUserInputRequest {
+        id: request_id_to_string(request_id),
+        server_id: server_id.to_string(),
+        thread_id: params.thread_id.clone(),
+        turn_id: params.turn_id.clone(),
+        item_id: params.item_id.clone(),
+        questions,
+        requester_agent_nickname: None,
+        requester_agent_role: None,
+    })
+}
+
+fn pending_user_input_request_from_raw(
+    server_id: &str,
+    payload: &serde_json::Value,
+) -> Option<PendingUserInputRequest> {
+    let request_id = match payload.get("requestId")? {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    let params = payload.get("params")?;
+    let params: codex_app_server_protocol::ToolRequestUserInputParams =
+        serde_json::from_value(params.clone()).ok()?;
+    let questions = params
+        .questions
+        .iter()
+        .map(|question| PendingUserInputQuestion {
+            id: question.id.clone(),
+            header: Some(question.header.clone()).filter(|header| !header.is_empty()),
+            question: question.question.clone(),
+            is_other_allowed: question.is_other,
+            is_secret: question.is_secret,
+            options: question
+                .options
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|option| PendingUserInputOption {
+                    label: option.label,
+                    description: Some(option.description).filter(|value| !value.is_empty()),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+
+    if questions.is_empty() {
+        return None;
+    }
+
+    Some(PendingUserInputRequest {
+        id: request_id,
+        server_id: server_id.to_string(),
+        thread_id: params.thread_id,
+        turn_id: params.turn_id,
+        item_id: params.item_id,
+        questions,
+        requester_agent_nickname: None,
+        requester_agent_role: None,
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -1383,13 +1475,54 @@ mod tests {
             UiEvent::RawNotification {
                 server_id,
                 method,
-                params_json,
+                params,
             } => {
                 assert_eq!(server_id, "srv1");
                 assert_eq!(method, "codex/event/collab_wait_end");
-                assert!(params_json.contains("receiver_agents"));
+                assert_eq!(params["receiver_agents"][0]["thread_id"], json!("thr_2"));
             }
             other => panic!("expected RawNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_user_input_notification_emits_typed_request() {
+        let proc = EventProcessor::new();
+        let mut rx = proc.subscribe();
+        proc.process_legacy_notification(
+            "srv1",
+            "item/tool/requestUserInput",
+            &serde_json::json!({
+                "requestId": "req-1",
+                "params": {
+                    "threadId": "thr_1",
+                    "turnId": "turn_1",
+                    "itemId": "item_1",
+                    "questions": [{
+                        "id": "q1",
+                        "header": "Mode",
+                        "question": "Pick one",
+                        "isOther": false,
+                        "isSecret": false,
+                        "options": [{
+                            "label": "Yes",
+                            "description": "Allow it"
+                        }]
+                    }]
+                }
+            }),
+        );
+        let evt = rx.try_recv().expect("should emit UiEvent");
+        match evt {
+            UiEvent::UserInputRequested { request } => {
+                assert_eq!(request.server_id, "srv1");
+                assert_eq!(request.id, "req-1");
+                assert_eq!(request.thread_id, "thr_1");
+                assert_eq!(request.turn_id, "turn_1");
+                assert_eq!(request.item_id, "item_1");
+                assert_eq!(request.questions.len(), 1);
+            }
+            other => panic!("expected UserInputRequested, got {other:?}"),
         }
     }
 
@@ -1420,9 +1553,9 @@ mod tests {
         match evt {
             UiEvent::ApprovalRequested { key, approval } => {
                 assert_eq!(key.thread_id, "thr_1");
-                assert_eq!(approval.kind, ApprovalKind::Command);
-                assert_eq!(approval.id, "42");
-                assert_eq!(approval.command.as_deref(), Some("rm -rf /tmp"));
+                assert_eq!(approval.approval.kind, ApprovalKind::Command);
+                assert_eq!(approval.approval.id, "42");
+                assert_eq!(approval.approval.command.as_deref(), Some("rm -rf /tmp"));
             }
             other => panic!("expected ApprovalRequested, got {other:?}"),
         }
@@ -1443,8 +1576,8 @@ mod tests {
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
             UiEvent::ApprovalRequested { approval, .. } => {
-                assert_eq!(approval.kind, ApprovalKind::FileChange);
-                assert_eq!(approval.reason.as_deref(), Some("modify file"));
+                assert_eq!(approval.approval.kind, ApprovalKind::FileChange);
+                assert_eq!(approval.approval.reason.as_deref(), Some("modify file"));
             }
             other => panic!("expected ApprovalRequested, got {other:?}"),
         }
@@ -1468,8 +1601,11 @@ mod tests {
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
             UiEvent::ApprovalRequested { approval, .. } => {
-                assert_eq!(approval.kind, ApprovalKind::Permissions);
-                assert_eq!(approval.reason.as_deref(), Some("need network access"));
+                assert_eq!(approval.approval.kind, ApprovalKind::Permissions);
+                assert_eq!(
+                    approval.approval.reason.as_deref(),
+                    Some("need network access")
+                );
             }
             other => panic!("expected ApprovalRequested, got {other:?}"),
         }
@@ -1497,14 +1633,14 @@ mod tests {
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
             UiEvent::ApprovalRequested { approval, .. } => {
-                assert_eq!(approval.kind, ApprovalKind::McpElicitation);
+                assert_eq!(approval.approval.kind, ApprovalKind::McpElicitation);
             }
             other => panic!("expected ApprovalRequested, got {other:?}"),
         }
     }
 
     #[test]
-    fn tool_request_user_input_is_forwarded_with_request_id() {
+    fn tool_request_user_input_is_emitted_as_typed_request() {
         let request = ServerRequest::ToolRequestUserInput {
             request_id: proto::RequestId::Integer(13),
             params: proto::ToolRequestUserInputParams {
@@ -1526,19 +1662,20 @@ mod tests {
         };
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
-            UiEvent::RawNotification {
-                server_id,
-                method,
-                params_json,
-            } => {
-                assert_eq!(server_id, "srv1");
-                assert_eq!(method, "item/tool/requestUserInput");
-                let payload: serde_json::Value =
-                    serde_json::from_str(&params_json).expect("decode raw request payload");
-                assert_eq!(payload["requestId"], json!("13"));
-                assert_eq!(payload["params"]["threadId"], json!("thr_1"));
+            UiEvent::UserInputRequested { request } => {
+                assert_eq!(request.server_id, "srv1");
+                assert_eq!(request.id, "13");
+                assert_eq!(request.thread_id, "thr_1");
+                assert_eq!(request.turn_id, "turn_1");
+                assert_eq!(request.item_id, "item_1");
+                assert_eq!(request.questions.len(), 1);
+                assert_eq!(request.questions[0].id, "q1");
+                assert_eq!(request.questions[0].header.as_deref(), Some("Mode"));
+                assert_eq!(request.questions[0].question, "Pick one");
+                assert_eq!(request.questions[0].options.len(), 1);
+                assert_eq!(request.questions[0].options[0].label, "Yes");
             }
-            other => panic!("expected RawNotification, got {other:?}"),
+            other => panic!("expected UserInputRequested, got {other:?}"),
         }
     }
 
@@ -1556,16 +1693,10 @@ mod tests {
         };
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
-            UiEvent::RawNotification {
-                method,
-                params_json,
-                ..
-            } => {
+            UiEvent::RawNotification { method, params, .. } => {
                 assert_eq!(method, "item/tool/call");
-                let payload: serde_json::Value =
-                    serde_json::from_str(&params_json).expect("decode raw request payload");
-                assert_eq!(payload["requestId"], json!("14"));
-                assert_eq!(payload["params"]["tool"], json!("show_widget"));
+                assert_eq!(params["requestId"], json!("14"));
+                assert_eq!(params["params"]["tool"], json!("show_widget"));
             }
             other => panic!("expected RawNotification, got {other:?}"),
         }
@@ -1582,16 +1713,10 @@ mod tests {
         };
         let evt = request_and_recv("srv1", &request).expect("should emit");
         match evt {
-            UiEvent::RawNotification {
-                method,
-                params_json,
-                ..
-            } => {
+            UiEvent::RawNotification { method, params, .. } => {
                 assert_eq!(method, "account/chatgptAuthTokens/refresh");
-                let payload: serde_json::Value =
-                    serde_json::from_str(&params_json).expect("decode raw request payload");
-                assert_eq!(payload["requestId"], json!("15"));
-                assert_eq!(payload["params"]["previousAccountId"], json!("acct-123"));
+                assert_eq!(params["requestId"], json!("15"));
+                assert_eq!(params["params"]["previousAccountId"], json!("acct-123"));
             }
             other => panic!("expected RawNotification, got {other:?}"),
         }

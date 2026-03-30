@@ -100,7 +100,7 @@ pub enum MessageSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
-pub enum FfiMessageSegment {
+pub enum AppMessageSegment {
     Text {
         text: String,
     },
@@ -114,7 +114,7 @@ pub enum FfiMessageSegment {
     },
 }
 
-impl From<MessageSegment> for FfiMessageSegment {
+impl From<MessageSegment> for AppMessageSegment {
     fn from(value: MessageSegment) -> Self {
         match value {
             MessageSegment::Text(text) => Self::Text { text },

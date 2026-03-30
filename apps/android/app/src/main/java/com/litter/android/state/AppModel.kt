@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicLong
-import uniffi.codex_mobile_client.AppServerRpc
+import uniffi.codex_mobile_client.AppClient
 import uniffi.codex_mobile_client.AppSessionSummary
 import uniffi.codex_mobile_client.AppSnapshotRecord
 import uniffi.codex_mobile_client.AppStore
@@ -32,12 +32,12 @@ import uniffi.codex_mobile_client.HydratedProposedPlanData
 import uniffi.codex_mobile_client.HydratedReasoningData
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.MessageParser
-import uniffi.codex_mobile_client.ModelListParams
 import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.ThreadListParams
-import uniffi.codex_mobile_client.ThreadReadParams
+import uniffi.codex_mobile_client.AppListThreadsRequest
+import uniffi.codex_mobile_client.AppRefreshModelsRequest
+import uniffi.codex_mobile_client.AppReadThreadRequest
 
 /**
  * Central app state singleton. Thin wrapper over Rust [AppStore] — all business
@@ -71,7 +71,7 @@ class AppModel private constructor(context: android.content.Context) {
     // --- Rust bridges (singletons behind the scenes) -------------------------
 
     val store: AppStore
-    val rpc: AppServerRpc
+    val client: AppClient
     val discovery: DiscoveryBridge
     val serverBridge: ServerBridge
     val ssh: SshBridge
@@ -79,12 +79,11 @@ class AppModel private constructor(context: android.content.Context) {
     val parser: MessageParser
     val launchState: AppLaunchState
     val appContext: android.content.Context = context
-
     init {
         UniffiInit.ensure(context)
         LLog.bootstrap(context)
         store = AppStore()
-        rpc = AppServerRpc()
+        client = AppClient()
         discovery = DiscoveryBridge()
         serverBridge = ServerBridge()
         ssh = SshBridge()
@@ -256,14 +255,11 @@ class AppModel private constructor(context: android.content.Context) {
         sessionListMutex.withLock {
             try {
                 for (serverId in targetServerIds) {
-                    rpc.threadList(
+                    client.listThreads(
                         serverId,
-                        ThreadListParams(
+                        AppListThreadsRequest(
                             cursor = null,
                             limit = null,
-                            sortKey = null,
-                            modelProviders = null,
-                            sourceKinds = null,
                             archived = null,
                             cwd = null,
                             searchTerm = null,
@@ -289,9 +285,9 @@ class AppModel private constructor(context: android.content.Context) {
         if (server.availableModels != null) return
         if (!loadingModelServerIds.add(serverId)) return
         try {
-            rpc.modelList(
+            client.refreshModels(
                 serverId,
-                ModelListParams(cursor = null, limit = null, includeHidden = false),
+                AppRefreshModelsRequest(cursor = null, limit = null, includeHidden = false),
             )
             refreshSnapshot()
         } catch (e: Exception) {
@@ -308,7 +304,7 @@ class AppModel private constructor(context: android.content.Context) {
         if (server.rateLimits != null) return
         if (!loadingRateLimitServerIds.add(serverId)) return
         try {
-            rpc.getAccountRateLimits(serverId)
+            client.refreshRateLimits(serverId)
             refreshSnapshot()
         } catch (e: Exception) {
             _lastError.value = e.message
@@ -320,9 +316,9 @@ class AppModel private constructor(context: android.content.Context) {
     suspend fun restoreStoredLocalChatGptAuth(serverId: String) {
         val tokens = ChatGPTOAuthTokenStore(appContext).load() ?: return
         runCatching {
-            rpc.loginAccount(
+            client.loginAccount(
                 serverId,
-                uniffi.codex_mobile_client.LoginAccountParams.ChatgptAuthTokens(
+                uniffi.codex_mobile_client.AppLoginAccountRequest.ChatgptAuthTokens(
                     accessToken = tokens.accessToken,
                     chatgptAccountId = tokens.accountId,
                     chatgptPlanType = tokens.planType,
@@ -338,7 +334,7 @@ class AppModel private constructor(context: android.content.Context) {
         payload: AppComposerPayload,
     ) {
         try {
-            store.startTurn(key, payload.toTurnStartParams(key.threadId))
+            store.startTurn(key, payload.toAppStartTurnRequest(key.threadId))
             _lastError.value = null
         } catch (e: Exception) {
             _lastError.value = e.message
@@ -371,17 +367,14 @@ class AppModel private constructor(context: android.content.Context) {
         repeat(maxAttempts) { attempt ->
             var readSucceeded = false
             try {
-                val response = rpc.threadRead(
+                val nextKey = client.readThread(
                     currentKey.serverId,
-                    ThreadReadParams(
+                    AppReadThreadRequest(
                         threadId = currentKey.threadId,
                         includeTurns = true,
                     ),
                 )
-                currentKey = ThreadKey(
-                    serverId = currentKey.serverId,
-                    threadId = response.thread.id,
-                )
+                currentKey = nextKey
                 store.setActiveThread(currentKey)
                 readSucceeded = true
             } catch (e: Exception) {
@@ -395,14 +388,11 @@ class AppModel private constructor(context: android.content.Context) {
 
             if (!readSucceeded) {
                 try {
-                    rpc.threadList(
+                    client.listThreads(
                         currentKey.serverId,
-                        ThreadListParams(
+                        AppListThreadsRequest(
                             cursor = null,
                             limit = null,
-                            sortKey = null,
-                            modelProviders = null,
-                            sourceKinds = null,
                             archived = null,
                             cwd = null,
                             searchTerm = null,
@@ -586,7 +576,7 @@ class AppModel private constructor(context: android.content.Context) {
             activeTurnId = state.activeTurnId,
             contextTokensUsed = state.contextTokensUsed,
             modelContextWindow = state.modelContextWindow,
-            rateLimitsJson = state.rateLimitsJson,
+            rateLimits = state.rateLimits,
             realtimeSessionId = state.realtimeSessionId,
         )
         val updatedThreads = current.threads.toMutableList().apply {

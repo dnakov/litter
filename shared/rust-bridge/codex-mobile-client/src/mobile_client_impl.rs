@@ -18,15 +18,15 @@ use crate::session::events::{EventProcessor, UiEvent};
 use crate::ssh::{SshBootstrapResult, SshClient, SshCredentials};
 use crate::store::updates::ThreadStreamingDeltaKind;
 use crate::store::{
-    AppSnapshot, AppStoreReducer, AppUpdate, QueuedFollowUpPreview, ServerHealthSnapshot,
+    AppSnapshot, AppStoreReducer, AppUpdate, AppQueuedFollowUpPreview, ServerHealthSnapshot,
     ThreadSnapshot,
 };
 use crate::transport::{RpcError, TransportError};
 use crate::types::{
-    ApprovalDecisionValue, PendingApproval, PendingUserInputAnswer, PendingUserInputRequest,
-    ThreadInfo, ThreadKey, ThreadSummaryStatus, generated,
+    ApprovalDecisionValue, PendingApproval, PendingApprovalSeed, PendingApprovalWithSeed,
+    PendingUserInputAnswer, PendingUserInputRequest, ThreadInfo, ThreadKey, ThreadSummaryStatus,
 };
-use crate::uniffi_shared::AppOperationStatus;
+use crate::types::AppOperationStatus;
 use codex_app_server_protocol as upstream;
 use codex_ipc::{
     ClientStatus, CommandExecutionApprovalDecision, ConversationStreamApplyError,
@@ -470,6 +470,7 @@ impl MobileClient {
 
     /// Return the configs of all currently connected servers.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn connected_servers(&self) -> Vec<ServerConfig> {
         self.sessions_read()
             .values()
@@ -481,12 +482,13 @@ impl MobileClient {
 
     /// List threads from a specific server.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) async fn list_threads(&self, server_id: &str) -> Result<Vec<ThreadInfo>, RpcError> {
         self.get_session(server_id)?;
         let response = self
-            .generated_thread_list(
+            .server_thread_list(
                 server_id,
-                generated::ThreadListParams {
+                upstream::ThreadListParams {
                     limit: None,
                     cursor: None,
                     sort_key: None,
@@ -502,7 +504,7 @@ impl MobileClient {
         let threads = response
             .data
             .into_iter()
-            .filter_map(thread_info_from_generated_thread)
+            .filter_map(thread_info_from_upstream_thread)
             .collect::<Vec<_>>();
         self.app_store.sync_thread_list(server_id, &threads);
         Ok(threads)
@@ -511,9 +513,9 @@ impl MobileClient {
     pub async fn sync_server_account(&self, server_id: &str) -> Result<(), RpcError> {
         self.get_session(server_id)?;
         let response = self
-            .generated_get_account(
+            .server_get_account(
                 server_id,
-                generated::GetAccountParams {
+                upstream::GetAccountParams {
                     refresh_token: false,
                 },
             )
@@ -536,15 +538,26 @@ impl MobileClient {
             ))
         })?;
 
-        let params = generated::LoginAccountParams::Chatgpt;
+        let params = upstream::LoginAccountParams::Chatgpt;
         let response = self
-            .generated_login_account(server_id, params.clone())
+            .request_typed_for_server::<upstream::LoginAccountResponse>(
+                server_id,
+                upstream::ClientRequest::LoginAccount {
+                    request_id: upstream::RequestId::Integer(crate::rpc::next_request_id()),
+                    params,
+                },
+            )
             .await
-            .map_err(map_rpc_client_error)?;
-        self.reconcile_public_rpc("account/login/start", server_id, Some(&params), &response)
-            .await?;
+            .map_err(RpcError::Deserialization)?;
+        self.reconcile_public_rpc(
+            "account/login/start",
+            server_id,
+            Option::<&()>::None,
+            &response,
+        )
+        .await?;
 
-        let generated::LoginAccountResponse::Chatgpt { login_id, auth_url } = response else {
+        let upstream::LoginAccountResponse::Chatgpt { login_id, auth_url } = response else {
             return Err(RpcError::Deserialization(
                 "expected ChatGPT login response for remote SSH OAuth".to_string(),
             ));
@@ -557,7 +570,7 @@ impl MobileClient {
             .await
         {
             let _ = self
-                .request_typed_for_server::<generated::CancelLoginAccountResponse>(
+                .request_typed_for_server::<upstream::CancelLoginAccountResponse>(
                     server_id,
                     upstream::ClientRequest::CancelLoginAccount {
                         request_id: upstream::RequestId::Integer(crate::rpc::next_request_id()),
@@ -620,7 +633,7 @@ impl MobileClient {
     pub async fn start_turn(
         &self,
         server_id: &str,
-        params: generated::TurnStartParams,
+        params: upstream::TurnStartParams,
     ) -> Result<(), RpcError> {
         let session = self.get_session(server_id)?;
         let thread_key = ThreadKey {
@@ -642,9 +655,6 @@ impl MobileClient {
 
         if let Some(ipc_client) = session.ipc_client() {
             let thread_id = params.thread_id.clone();
-            let turn_start_params: upstream::TurnStartParams =
-                crate::rpc::convert_generated_field(params)
-                    .map_err(|error| RpcError::Deserialization(error.to_string()))?;
             info!(
                 "IPC out: start_turn server={} thread={}",
                 server_id, thread_id
@@ -652,7 +662,7 @@ impl MobileClient {
             let ipc_result = ipc_client
                 .start_turn(ThreadFollowerStartTurnParams {
                     conversation_id: thread_id.clone(),
-                    turn_start_params,
+                    turn_start_params: params.clone(),
                 })
                 .await;
             match ipc_result {
@@ -684,19 +694,24 @@ impl MobileClient {
             }
         }
 
-        let reconcile_params = direct_params.clone();
         let response = self
-            .generated_turn_start(server_id, direct_params)
+            .request_typed_for_server::<upstream::TurnStartResponse>(
+                server_id,
+                upstream::ClientRequest::TurnStart {
+                    request_id: upstream::RequestId::Integer(crate::rpc::next_request_id()),
+                    params: direct_params,
+                },
+            )
             .await
             .map_err(|error| {
                 if let Some(preview) = queued_preview.as_ref() {
                     self.app_store
                         .remove_thread_follow_up_preview(&thread_key, &preview.id);
                 }
-                RpcError::Deserialization(error.to_string())
+                RpcError::Deserialization(error)
             })?;
-        self.reconcile_public_rpc("turn/start", server_id, Some(&reconcile_params), &response)
-            .await
+        let _ = response;
+        Ok(())
     }
 
     /// Roll back the current thread to a selected user turn and return the
@@ -714,16 +729,16 @@ impl MobileClient {
 
         if rollback_depth > 0 {
             let response = self
-                .generated_thread_rollback(
+                .server_thread_rollback(
                     &key.server_id,
-                    generated::ThreadRollbackParams {
+                    upstream::ThreadRollbackParams {
                         thread_id: key.thread_id.clone(),
                         num_turns: rollback_depth,
                     },
                 )
                 .await
                 .map_err(|e| RpcError::Deserialization(e.to_string()))?;
-            let mut snapshot = thread_snapshot_from_generated_thread(
+            let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
                 &key.server_id,
                 response.thread,
                 current.model.clone(),
@@ -745,8 +760,8 @@ impl MobileClient {
         selected_turn_index: u32,
         cwd: Option<String>,
         model: Option<String>,
-        approval_policy: Option<generated::AskForApproval>,
-        sandbox: Option<generated::SandboxMode>,
+        approval_policy: Option<crate::types::AppAskForApproval>,
+        sandbox: Option<crate::types::AppSandboxMode>,
         developer_instructions: Option<String>,
         persist_extended_history: bool,
     ) -> Result<ThreadKey, RpcError> {
@@ -756,31 +771,30 @@ impl MobileClient {
         let rollback_depth = rollback_depth_for_turn(&source, selected_turn_index as usize)?;
 
         let response = self
-            .generated_thread_fork(
+            .server_thread_fork(
                 &key.server_id,
-                generated::ThreadForkParams {
+                crate::types::AppForkThreadRequest {
                     thread_id: key.thread_id.clone(),
-                    path: None,
                     model,
-                    model_provider: None,
-                    service_tier: None,
                     cwd,
                     approval_policy,
-                    approvals_reviewer: None,
                     sandbox,
-                    config: None,
-                    base_instructions: None,
                     developer_instructions,
-                    ephemeral: false,
                     persist_extended_history,
-                },
+                }
+                .try_into()
+                .map_err(|e: crate::rpc::RpcClientError| {
+                    RpcError::Deserialization(e.to_string())
+                })?,
             )
             .await
             .map_err(|e| RpcError::Deserialization(e.to_string()))?;
 
         let fork_model = Some(response.model);
-        let fork_reasoning = response.reasoning_effort.map(reasoning_effort_string);
-        let mut snapshot = thread_snapshot_from_generated_thread(
+        let fork_reasoning = response
+            .reasoning_effort
+            .map(|value| reasoning_effort_string(value.into()));
+        let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
             &key.server_id,
             response.thread,
             fork_model.clone(),
@@ -791,16 +805,16 @@ impl MobileClient {
 
         if rollback_depth > 0 {
             let rollback_response = self
-                .generated_thread_rollback(
+                .server_thread_rollback(
                     &key.server_id,
-                    generated::ThreadRollbackParams {
+                    upstream::ThreadRollbackParams {
                         thread_id: next_key.thread_id.clone(),
                         num_turns: rollback_depth,
                     },
                 )
                 .await
                 .map_err(|e| RpcError::Deserialization(e.to_string()))?;
-            snapshot = thread_snapshot_from_generated_thread(
+            snapshot = thread_snapshot_from_upstream_thread_with_overrides(
                 &key.server_id,
                 rollback_response.thread,
                 fork_model,
@@ -820,6 +834,9 @@ impl MobileClient {
         decision: ApprovalDecisionValue,
     ) -> Result<(), RpcError> {
         let approval = self.pending_approval(request_id)?;
+        let approval_seed = self
+            .app_store
+            .pending_approval_seed(&approval.server_id, &approval.id);
         let session = self.get_session(&approval.server_id)?;
         if let Some(ipc_client) = session.ipc_client()
             && let Some(thread_id) = approval.thread_id.clone()
@@ -833,7 +850,7 @@ impl MobileClient {
             self.app_store.resolve_approval(request_id);
             return Ok(());
         }
-        let response_json = approval_response_json(&approval, decision)?;
+        let response_json = approval_response_json(&approval, approval_seed.as_ref(), decision)?;
         session
             .respond(
                 serde_json::Value::String(approval.id.clone()),
@@ -873,18 +890,18 @@ impl MobileClient {
                 .resolve_pending_user_input_with_response(request_id, answered_inputs);
             return Ok(());
         }
-        let response = generated::ToolRequestUserInputResponse {
+        let response = upstream::ToolRequestUserInputResponse {
             answers: answers
                 .into_iter()
-                .map(
-                    |answer| generated::ToolRequestUserInputResponseAnswersEntry {
-                        key: answer.question_id,
-                        value: generated::ToolRequestUserInputAnswer {
+                .map(|answer| {
+                    (
+                        answer.question_id,
+                        upstream::ToolRequestUserInputAnswer {
                             answers: answer.answers,
                         },
-                    },
-                )
-                .collect(),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
         };
         let response_json = serde_json::to_value(response).map_err(|e| {
             RpcError::Deserialization(format!("serialize user input response: {e}"))
@@ -899,27 +916,6 @@ impl MobileClient {
         self.app_store
             .resolve_pending_user_input_with_response(request_id, answered_inputs);
         Ok(())
-    }
-
-    pub(crate) fn validate_login_account_target(
-        &self,
-        server_id: &str,
-        params: &generated::LoginAccountParams,
-    ) -> Result<(), String> {
-        let session = self.get_session(server_id).map_err(|e| e.to_string())?;
-        if session.config().is_local {
-            return Ok(());
-        }
-
-        match params {
-            generated::LoginAccountParams::ApiKey { .. } => {
-                Err("API keys can only be saved on the local server.".to_string())
-            }
-            generated::LoginAccountParams::ChatgptAuthTokens { .. } => {
-                Err("Local ChatGPT tokens can only be sent to the local server.".to_string())
-            }
-            generated::LoginAccountParams::Chatgpt => Ok(()),
-        }
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
@@ -1359,20 +1355,12 @@ fn make_accept_unknown_host_callback(
     Box::new(move |_fingerprint| Box::pin(async move { accept_unknown_host }))
 }
 
+#[cfg(target_os = "android")]
 fn shell_quote_remote(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn websocket_url_for_host(host: &str, port: u16) -> String {
-    let host = host.trim();
-    if host.contains(':') && !host.starts_with('[') && !host.ends_with(']') {
-        format!("ws://[{host}]:{port}")
-    } else {
-        format!("ws://{host}:{port}")
-    }
 }
 
 async fn attach_ipc_client_via_ssh(
@@ -1628,21 +1616,22 @@ async fn handle_dynamic_tool_call_request(
 ) -> Result<(), RpcError> {
     let response = match execute_dynamic_tool_call(sessions, Arc::clone(&app_store), &params).await
     {
-        Ok(text) => generated::DynamicToolCallResponse {
-            content_items: vec![generated::DynamicToolCallOutputContentItem::InputText { text }],
+        Ok(text) => upstream::DynamicToolCallResponse {
+            content_items: vec![upstream::DynamicToolCallOutputContentItem::InputText { text }],
             success: true,
         },
-        Err(message) => generated::DynamicToolCallResponse {
-            content_items: vec![generated::DynamicToolCallOutputContentItem::InputText {
+        Err(message) => upstream::DynamicToolCallResponse {
+            content_items: vec![upstream::DynamicToolCallOutputContentItem::InputText {
                 text: message,
             }],
             success: false,
         },
     };
 
-    let request_id = serde_json::to_value(request_id).map_err(|error| {
-        RpcError::Deserialization(format!("serialize dynamic tool request id: {error}"))
-    })?;
+    let request_id = match request_id {
+        upstream::RequestId::Integer(value) => serde_json::Value::Number(value.into()),
+        upstream::RequestId::String(value) => serde_json::Value::String(value),
+    };
     let result = serde_json::to_value(response).map_err(|error| {
         RpcError::Deserialization(format!("serialize dynamic tool response: {error}"))
     })?;
@@ -1810,10 +1799,10 @@ async fn list_sessions_tool_output(
     let mut errors = Vec::new();
 
     for target in targets {
-        let response = dynamic_tool_request_typed::<generated::ThreadListResponse, _>(
+        let response = dynamic_tool_request_typed::<upstream::ThreadListResponse, _>(
             &target.session,
             "thread/list",
-            &generated::ThreadListParams {
+            &upstream::ThreadListParams {
                 cursor: None,
                 limit: Some(limit),
                 sort_key: None,
@@ -1831,7 +1820,7 @@ async fn list_sessions_tool_output(
                 let threads = response
                     .data
                     .into_iter()
-                    .filter_map(thread_info_from_generated_thread)
+                    .filter_map(thread_info_from_upstream_thread)
                     .collect::<Vec<_>>();
                 app_store.sync_thread_list(&target.server_id, &threads);
                 items.extend(threads.into_iter().map(|thread| {
@@ -1902,32 +1891,29 @@ where
         .map_err(|error| format!("deserialize {method} response: {error}"))
 }
 
-pub fn thread_info_from_generated_thread(thread: generated::Thread) -> Option<ThreadInfo> {
-    thread_info_from_generated_thread_list_item(thread, None, None)
+pub fn thread_info_from_upstream_thread(thread: upstream::Thread) -> Option<ThreadInfo> {
+    thread_info_from_upstream_thread_list_item(thread, None, None)
 }
 
-fn thread_info_from_generated_thread_list_item(
-    thread: generated::Thread,
+fn thread_info_from_upstream_thread_list_item(
+    thread: upstream::Thread,
     model: Option<String>,
     _reasoning_effort: Option<String>,
 ) -> Option<ThreadInfo> {
-    let upstream_thread: upstream::Thread = crate::rpc::convert_generated_field(thread).ok()?;
-    let mut info = ThreadInfo::from(upstream_thread);
+    let mut info = ThreadInfo::from(thread);
     info.model = model;
     Some(info)
 }
 
-pub fn thread_snapshot_from_generated_thread(
+pub fn thread_snapshot_from_upstream_thread_with_overrides(
     server_id: &str,
-    thread: generated::Thread,
+    thread: upstream::Thread,
     model: Option<String>,
     reasoning_effort: Option<String>,
 ) -> Result<ThreadSnapshot, String> {
-    let upstream_thread: upstream::Thread =
-        crate::rpc::convert_generated_field(thread).map_err(|e| e.to_string())?;
     Ok(thread_snapshot_from_upstream_thread_state(
         server_id,
-        upstream_thread,
+        thread,
         model,
         reasoning_effort,
         None,
@@ -1951,23 +1937,23 @@ pub fn copy_thread_runtime_fields(source: &ThreadSnapshot, target: &mut ThreadSn
 }
 
 fn queued_follow_up_preview_from_inputs(
-    inputs: &[generated::UserInput],
-) -> Option<QueuedFollowUpPreview> {
+    inputs: &[upstream::UserInput],
+) -> Option<AppQueuedFollowUpPreview> {
     let mut text_parts: Vec<String> = Vec::new();
     let mut attachment_count = 0usize;
 
     for input in inputs {
         match input {
-            generated::UserInput::Text { text, .. } => {
+            upstream::UserInput::Text { text, .. } => {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
                     text_parts.push(trimmed.to_string());
                 }
             }
-            generated::UserInput::Image { .. } | generated::UserInput::LocalImage { .. } => {
+            upstream::UserInput::Image { .. } | upstream::UserInput::LocalImage { .. } => {
                 attachment_count += 1;
             }
-            generated::UserInput::Skill { .. } | generated::UserInput::Mention { .. } => {}
+            upstream::UserInput::Skill { .. } | upstream::UserInput::Mention { .. } => {}
         }
     }
 
@@ -1983,7 +1969,7 @@ fn queued_follow_up_preview_from_inputs(
         return None;
     };
 
-    Some(QueuedFollowUpPreview {
+    Some(AppQueuedFollowUpPreview {
         id: uuid::Uuid::new_v4().to_string(),
         text,
     })
@@ -2074,31 +2060,27 @@ fn user_boundary_text_for_turn(
     }
 }
 
-pub fn reasoning_effort_string(value: generated::ReasoningEffort) -> String {
+pub fn reasoning_effort_string(value: crate::types::ReasoningEffort) -> String {
     match value {
-        generated::ReasoningEffort::None => "none".to_string(),
-        generated::ReasoningEffort::Minimal => "minimal".to_string(),
-        generated::ReasoningEffort::Low => "low".to_string(),
-        generated::ReasoningEffort::Medium => "medium".to_string(),
-        generated::ReasoningEffort::High => "high".to_string(),
-        generated::ReasoningEffort::XHigh => "xhigh".to_string(),
+        crate::types::ReasoningEffort::None => "none".to_string(),
+        crate::types::ReasoningEffort::Minimal => "minimal".to_string(),
+        crate::types::ReasoningEffort::Low => "low".to_string(),
+        crate::types::ReasoningEffort::Medium => "medium".to_string(),
+        crate::types::ReasoningEffort::High => "high".to_string(),
+        crate::types::ReasoningEffort::XHigh => "xhigh".to_string(),
     }
 }
 
-pub fn reasoning_effort_from_string(value: &str) -> Option<generated::ReasoningEffort> {
+pub fn reasoning_effort_from_string(value: &str) -> Option<crate::types::ReasoningEffort> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "none" => Some(generated::ReasoningEffort::None),
-        "minimal" => Some(generated::ReasoningEffort::Minimal),
-        "low" => Some(generated::ReasoningEffort::Low),
-        "medium" => Some(generated::ReasoningEffort::Medium),
-        "high" => Some(generated::ReasoningEffort::High),
-        "xhigh" => Some(generated::ReasoningEffort::XHigh),
+        "none" => Some(crate::types::ReasoningEffort::None),
+        "minimal" => Some(crate::types::ReasoningEffort::Minimal),
+        "low" => Some(crate::types::ReasoningEffort::Low),
+        "medium" => Some(crate::types::ReasoningEffort::Medium),
+        "high" => Some(crate::types::ReasoningEffort::High),
+        "xhigh" => Some(crate::types::ReasoningEffort::XHigh),
         _ => None,
     }
-}
-
-fn map_transport_error(error: TransportError) -> RpcError {
-    RpcError::Transport(error)
 }
 
 fn map_rpc_client_error(error: crate::rpc::RpcClientError) -> RpcError {
@@ -2220,6 +2202,7 @@ async fn recover_ipc_stream_cache_from_app_server(
 
     let mut conversation_state = seed_conversation_state_from_thread(&thread);
     hydrate_seeded_ipc_conversation_state(
+        &app_store,
         &mut conversation_state,
         existing_thread.as_ref(),
         &pending_approvals,
@@ -2263,7 +2246,7 @@ fn active_turn_id_from_turns(turns: &[upstream::Turn]) -> Option<String> {
 
 struct ThreadProjection {
     snapshot: ThreadSnapshot,
-    pending_approvals: Vec<PendingApproval>,
+    pending_approvals: Vec<PendingApprovalWithSeed>,
     pending_user_inputs: Vec<PendingUserInputRequest>,
 }
 
@@ -2310,8 +2293,8 @@ fn thread_projection_from_conversation_json(
 fn pending_approval_from_ipc_projection(
     server_id: &str,
     approval: ProjectedApprovalRequest,
-) -> PendingApproval {
-    PendingApproval {
+) -> PendingApprovalWithSeed {
+    let public_approval = PendingApproval {
         id: approval.id,
         server_id: server_id.to_string(),
         kind: match approval.kind {
@@ -2327,8 +2310,12 @@ fn pending_approval_from_ipc_projection(
         grant_root: approval.grant_root,
         cwd: approval.cwd,
         reason: approval.reason,
-        method: approval.method,
-        raw_params_json: approval.raw_params_json,
+    };
+    PendingApprovalWithSeed {
+        approval: public_approval,
+        seed: PendingApprovalSeed {
+            raw_params: approval.raw_params,
+        },
     }
 }
 
@@ -2370,7 +2357,7 @@ fn sync_ipc_thread_requests(
     app_store: &AppStoreReducer,
     server_id: &str,
     thread_id: &str,
-    pending_approvals: Vec<PendingApproval>,
+    pending_approvals: Vec<PendingApprovalWithSeed>,
     pending_user_inputs: Vec<PendingUserInputRequest>,
 ) {
     let snapshot = app_store.snapshot();
@@ -2381,9 +2368,18 @@ fn sync_ipc_thread_requests(
         .filter(|approval| {
             !(approval.server_id == server_id && approval.thread_id.as_deref() == Some(thread_id))
         })
+        .map(|approval| PendingApprovalWithSeed {
+            seed: app_store
+                .pending_approval_seed(&approval.server_id, &approval.id)
+                .unwrap_or(PendingApprovalSeed {
+                    raw_params: seed_ipc_approval_request_params(&approval)
+                        .unwrap_or(serde_json::Value::Null),
+                }),
+            approval,
+        })
         .collect::<Vec<_>>();
     merged_approvals.extend(pending_approvals);
-    app_store.replace_pending_approvals(merged_approvals);
+    app_store.replace_pending_approvals_with_seeds(merged_approvals);
 
     let mut merged_user_inputs = snapshot
         .pending_user_inputs
@@ -2395,6 +2391,7 @@ fn sync_ipc_thread_requests(
 }
 
 fn hydrate_seeded_ipc_conversation_state(
+    app_store: &AppStoreReducer,
     conversation_state: &mut serde_json::Value,
     existing_thread: Option<&ThreadSnapshot>,
     pending_approvals: &[PendingApproval],
@@ -2443,7 +2440,14 @@ fn hydrate_seeded_ipc_conversation_state(
 
     let requests = pending_approvals
         .iter()
-        .filter_map(seed_ipc_approval_request)
+        .filter_map(|approval| {
+            seed_ipc_approval_request(
+                approval,
+                app_store
+                    .pending_approval_seed(&approval.server_id, &approval.id)
+                    .as_ref(),
+            )
+        })
         .chain(pending_user_inputs.iter().map(seed_ipc_user_input_request))
         .collect::<Vec<_>>();
     if !requests.is_empty() {
@@ -2451,24 +2455,32 @@ fn hydrate_seeded_ipc_conversation_state(
     }
 }
 
-fn seed_ipc_approval_request(approval: &PendingApproval) -> Option<serde_json::Value> {
+fn seed_ipc_approval_request(
+    approval: &PendingApproval,
+    seed: Option<&PendingApprovalSeed>,
+) -> Option<serde_json::Value> {
     if matches!(approval.kind, crate::types::ApprovalKind::McpElicitation) {
         return None;
     }
 
-    let params = if approval.raw_params_json.trim().is_empty() {
-        seed_ipc_approval_request_params(approval)?
-    } else {
-        serde_json::from_str(&approval.raw_params_json)
-            .ok()
-            .or_else(|| seed_ipc_approval_request_params(approval))?
-    };
+    let params = seed
+        .map(|seed| seed.raw_params.clone())
+        .or_else(|| seed_ipc_approval_request_params(approval))?;
 
     Some(serde_json::json!({
         "id": approval.id,
-        "method": approval.method,
+        "method": approval_method(&approval.kind),
         "params": params,
     }))
+}
+
+fn approval_method(kind: &crate::types::ApprovalKind) -> &'static str {
+    match kind {
+        crate::types::ApprovalKind::Command => "item/commandExecution/requestApproval",
+        crate::types::ApprovalKind::FileChange => "item/fileChange/requestApproval",
+        crate::types::ApprovalKind::Permissions => "item/permissions/requestApproval",
+        crate::types::ApprovalKind::McpElicitation => "mcpServer/elicitation/request",
+    }
 }
 
 fn seed_ipc_approval_request_params(approval: &PendingApproval) -> Option<serde_json::Value> {
@@ -2649,11 +2661,10 @@ fn summarize_incremental_ipc_patches(patches: &[ImmerPatch]) -> Option<Increment
 fn incremental_ipc_thread_status(
     existing: ThreadSummaryStatus,
     active_turn_id: &Option<String>,
-    pending_approvals: &[PendingApproval],
+    pending_approval_count: usize,
     pending_user_inputs: &[PendingUserInputRequest],
 ) -> ThreadSummaryStatus {
-    if active_turn_id.is_some() || !pending_approvals.is_empty() || !pending_user_inputs.is_empty()
-    {
+    if active_turn_id.is_some() || pending_approval_count > 0 || !pending_user_inputs.is_empty() {
         ThreadSummaryStatus::Active
     } else {
         match existing {
@@ -3121,6 +3132,15 @@ fn try_apply_incremental_ipc_patch_burst(
             approval.server_id == server_id && approval.thread_id.as_deref() == Some(thread_id)
         })
         .cloned()
+        .map(|approval| PendingApprovalWithSeed {
+            seed: app_store
+                .pending_approval_seed(&approval.server_id, &approval.id)
+                .unwrap_or(PendingApprovalSeed {
+                    raw_params: seed_ipc_approval_request_params(&approval)
+                        .unwrap_or(serde_json::Value::Null),
+                }),
+            approval,
+        })
         .collect::<Vec<_>>();
     let mut pending_user_inputs = snapshot
         .pending_user_inputs
@@ -3185,7 +3205,7 @@ fn try_apply_incremental_ipc_patch_burst(
     let thread_status = incremental_ipc_thread_status(
         existing_thread.info.status.clone(),
         &active_turn_id,
-        &pending_approvals,
+        pending_approvals.len(),
         &pending_user_inputs,
     );
     let meta_changed = existing_thread.active_turn_id != active_turn_id
@@ -3473,25 +3493,19 @@ async fn send_ipc_user_input_response(
     request_id: &str,
     answers: Vec<PendingUserInputAnswer>,
 ) -> Result<bool, RpcError> {
-    let response_json = serde_json::to_value(generated::ToolRequestUserInputResponse {
+    let response = upstream::ToolRequestUserInputResponse {
         answers: answers
             .into_iter()
-            .map(
-                |answer| generated::ToolRequestUserInputResponseAnswersEntry {
-                    key: answer.question_id,
-                    value: generated::ToolRequestUserInputAnswer {
+            .map(|answer| {
+                (
+                    answer.question_id,
+                    upstream::ToolRequestUserInputAnswer {
                         answers: answer.answers,
                     },
-                },
-            )
-            .collect(),
-    })
-    .map_err(|error| {
-        RpcError::Deserialization(format!("serialize user input response: {error}"))
-    })?;
-    let response = serde_json::from_value(response_json).map_err(|error| {
-        RpcError::Deserialization(format!("deserialize IPC user input response: {error}"))
-    })?;
+                )
+            })
+            .collect::<HashMap<_, _>>(),
+    };
     tracing::info!(
         "IPC out: submit_user_input thread={} request_id={}",
         thread_id,
@@ -3510,68 +3524,68 @@ async fn send_ipc_user_input_response(
 
 fn approval_response_json(
     approval: &PendingApproval,
+    seed: Option<&PendingApprovalSeed>,
     decision: ApprovalDecisionValue,
 ) -> Result<serde_json::Value, RpcError> {
     match approval.kind {
         crate::types::ApprovalKind::Command => {
-            serde_json::to_value(generated::CommandExecutionRequestApprovalResponse {
+            serde_json::to_value(upstream::CommandExecutionRequestApprovalResponse {
                 decision: match decision {
                     ApprovalDecisionValue::Accept => {
-                        generated::CommandExecutionApprovalDecision::Accept
+                        upstream::CommandExecutionApprovalDecision::Accept
                     }
                     ApprovalDecisionValue::AcceptForSession => {
-                        generated::CommandExecutionApprovalDecision::AcceptForSession
+                        upstream::CommandExecutionApprovalDecision::AcceptForSession
                     }
                     ApprovalDecisionValue::Decline => {
-                        generated::CommandExecutionApprovalDecision::Decline
+                        upstream::CommandExecutionApprovalDecision::Decline
                     }
                     ApprovalDecisionValue::Cancel => {
-                        generated::CommandExecutionApprovalDecision::Cancel
+                        upstream::CommandExecutionApprovalDecision::Cancel
                     }
                 },
             })
         }
         crate::types::ApprovalKind::FileChange => {
-            serde_json::to_value(generated::FileChangeRequestApprovalResponse {
+            serde_json::to_value(upstream::FileChangeRequestApprovalResponse {
                 decision: match decision {
-                    ApprovalDecisionValue::Accept => generated::FileChangeApprovalDecision::Accept,
+                    ApprovalDecisionValue::Accept => upstream::FileChangeApprovalDecision::Accept,
                     ApprovalDecisionValue::AcceptForSession => {
-                        generated::FileChangeApprovalDecision::AcceptForSession
+                        upstream::FileChangeApprovalDecision::AcceptForSession
                     }
-                    ApprovalDecisionValue::Decline => {
-                        generated::FileChangeApprovalDecision::Decline
-                    }
-                    ApprovalDecisionValue::Cancel => generated::FileChangeApprovalDecision::Cancel,
+                    ApprovalDecisionValue::Decline => upstream::FileChangeApprovalDecision::Decline,
+                    ApprovalDecisionValue::Cancel => upstream::FileChangeApprovalDecision::Cancel,
                 },
             })
         }
         crate::types::ApprovalKind::Permissions | crate::types::ApprovalKind::McpElicitation => {
-            let requested_permissions =
-                serde_json::from_str::<serde_json::Value>(&approval.raw_params_json)
-                    .ok()
-                    .and_then(|value| value.get("permissions").cloned())
-                    .and_then(|value| {
-                        serde_json::from_value::<generated::GrantedPermissionProfile>(value).ok()
-                    })
-                    .unwrap_or(generated::GrantedPermissionProfile {
-                        network: None,
-                        file_system: None,
-                    });
-            serde_json::to_value(generated::PermissionsRequestApprovalResponse {
+            let requested_permissions = seed
+                .map(|seed| seed.raw_params.clone())
+                .and_then(|value: serde_json::Value| value.get("permissions").cloned())
+                .and_then(|value| {
+                    serde_json::from_value::<upstream::GrantedPermissionProfile>(value).ok()
+                })
+                .unwrap_or(upstream::GrantedPermissionProfile {
+                    network: None,
+                    file_system: None,
+                });
+            serde_json::to_value(upstream::PermissionsRequestApprovalResponse {
                 permissions: match decision {
                     ApprovalDecisionValue::Accept | ApprovalDecisionValue::AcceptForSession => {
                         requested_permissions
                     }
                     ApprovalDecisionValue::Decline | ApprovalDecisionValue::Cancel => {
-                        generated::GrantedPermissionProfile {
+                        upstream::GrantedPermissionProfile {
                             network: None,
                             file_system: None,
                         }
                     }
                 },
                 scope: match decision {
-                    ApprovalDecisionValue::AcceptForSession => "session".to_string(),
-                    _ => "once".to_string(),
+                    ApprovalDecisionValue::AcceptForSession => {
+                        upstream::PermissionGrantScope::Session
+                    }
+                    _ => upstream::PermissionGrantScope::Turn,
                 },
             })
         }
@@ -3625,15 +3639,15 @@ mod mobile_client_tests {
     fn reasoning_effort_parsing_accepts_known_values() {
         assert_eq!(
             reasoning_effort_from_string("low"),
-            Some(generated::ReasoningEffort::Low)
+            Some(crate::types::ReasoningEffort::Low)
         );
         assert_eq!(
             reasoning_effort_from_string("MEDIUM"),
-            Some(generated::ReasoningEffort::Medium)
+            Some(crate::types::ReasoningEffort::Medium)
         );
         assert_eq!(
             reasoning_effort_from_string(" high "),
-            Some(generated::ReasoningEffort::High)
+            Some(crate::types::ReasoningEffort::High)
         );
         assert_eq!(reasoning_effort_from_string(""), None);
     }
@@ -3650,7 +3664,7 @@ mod mobile_client_tests {
             reasoning_effort: Some("high".to_string()),
             items: Vec::new(),
             local_overlay_items: Vec::new(),
-            queued_follow_ups: vec![QueuedFollowUpPreview {
+            queued_follow_ups: vec![AppQueuedFollowUpPreview {
                 id: "queued-1".to_string(),
                 text: "follow-up".to_string(),
             }],

@@ -94,7 +94,7 @@ pub enum SectionContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum FfiToolCallKind {
+pub enum AppToolCallKind {
     CommandExecution,
     CommandOutput,
     FileChange,
@@ -109,14 +109,14 @@ pub enum FfiToolCallKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct FfiToolCallKeyValue {
+pub struct AppToolCallKeyValue {
     pub key: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
-pub enum FfiToolCallSectionContent {
-    KeyValue { entries: Vec<FfiToolCallKeyValue> },
+pub enum AppToolCallSectionContent {
+    KeyValue { entries: Vec<AppToolCallKeyValue> },
     Code { language: String, content: String },
     Json { content: String },
     Diff { content: String },
@@ -126,23 +126,23 @@ pub enum FfiToolCallSectionContent {
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
-pub struct FfiToolCallSection {
+pub struct AppToolCallSection {
     pub label: String,
-    pub content: FfiToolCallSectionContent,
+    pub content: AppToolCallSectionContent,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
-pub struct FfiToolCallCard {
-    pub kind: FfiToolCallKind,
+pub struct AppToolCallCard {
+    pub kind: AppToolCallKind,
     pub title: String,
     pub summary: String,
     pub status: ToolCallStatus,
     pub duration_ms: Option<u64>,
     pub target_label: Option<String>,
-    pub sections: Vec<FfiToolCallSection>,
+    pub sections: Vec<AppToolCallSection>,
 }
 
-impl From<&ToolCallKind> for FfiToolCallKind {
+impl From<&ToolCallKind> for AppToolCallKind {
     fn from(value: &ToolCallKind) -> Self {
         match value {
             ToolCallKind::CommandExecution => Self::CommandExecution,
@@ -160,7 +160,7 @@ impl From<&ToolCallKind> for FfiToolCallKind {
     }
 }
 
-impl From<&ToolCallSection> for FfiToolCallSection {
+impl From<&ToolCallSection> for AppToolCallSection {
     fn from(value: &ToolCallSection) -> Self {
         Self {
             label: value.name.clone(),
@@ -169,13 +169,13 @@ impl From<&ToolCallSection> for FfiToolCallSection {
     }
 }
 
-impl From<&SectionContent> for FfiToolCallSectionContent {
+impl From<&SectionContent> for AppToolCallSectionContent {
     fn from(value: &SectionContent) -> Self {
         match value {
             SectionContent::KeyValue(entries) => Self::KeyValue {
                 entries: entries
                     .iter()
-                    .map(|(key, value)| FfiToolCallKeyValue {
+                    .map(|(key, value)| AppToolCallKeyValue {
                         key: key.clone(),
                         value: value.clone(),
                     })
@@ -214,7 +214,7 @@ impl From<&SectionContent> for FfiToolCallSectionContent {
     }
 }
 
-impl From<&ToolCallCard> for FfiToolCallCard {
+impl From<&ToolCallCard> for AppToolCallCard {
     fn from(value: &ToolCallCard) -> Self {
         Self {
             kind: (&value.kind).into(),
@@ -229,7 +229,7 @@ impl From<&ToolCallCard> for FfiToolCallCard {
             sections: value
                 .sections
                 .iter()
-                .map(FfiToolCallSection::from)
+                .map(AppToolCallSection::from)
                 .collect(),
         }
     }

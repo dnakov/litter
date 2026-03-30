@@ -40,8 +40,8 @@ import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.Account
-import uniffi.codex_mobile_client.GetAccountParams
-import uniffi.codex_mobile_client.LoginAccountParams
+import uniffi.codex_mobile_client.AppRefreshAccountRequest
+import uniffi.codex_mobile_client.AppLoginAccountRequest
 
 /**
  * Account login/logout management for a specific server.
@@ -77,9 +77,9 @@ fun AccountSheet(
             }
             scope.launch {
                 try {
-                    appModel.rpc.loginAccount(
+                    appModel.client.loginAccount(
                         serverId,
-                        LoginAccountParams.ChatgptAuthTokens(
+                        AppLoginAccountRequest.ChatgptAuthTokens(
                             accessToken = tokens.accessToken,
                             chatgptAccountId = tokens.accountId,
                             chatgptPlanType = tokens.planType,
@@ -105,9 +105,9 @@ fun AccountSheet(
 
     androidx.compose.runtime.LaunchedEffect(serverId) {
         runCatching {
-            appModel.rpc.getAccount(
+            appModel.client.refreshAccount(
                 serverId,
-                GetAccountParams(refreshToken = false),
+                AppRefreshAccountRequest(refreshToken = false),
             )
             appModel.refreshSnapshot()
             error = null
@@ -178,7 +178,7 @@ fun AccountSheet(
                     scope.launch {
                             ChatGPTOAuthTokenStore(context).clear()
                             apiKeyStore.clear()
-                            appModel.rpc.logoutAccount(serverId)
+                            appModel.client.logoutAccount(serverId)
                             appModel.restartLocalServer()
                     }
                 },
@@ -247,7 +247,7 @@ fun AccountSheet(
                             try {
                                 apiKeyStore.save(apiKey.trim())
                                 if (account is Account.ApiKey) {
-                                    appModel.rpc.logoutAccount(serverId)
+                                    appModel.client.logoutAccount(serverId)
                                 }
                                 appModel.restartLocalServer()
                                 hasStoredApiKey = apiKeyStore.hasStoredKey()

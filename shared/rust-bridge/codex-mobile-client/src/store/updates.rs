@@ -1,6 +1,6 @@
 use crate::conversation_uniffi::HydratedConversationItem;
-use crate::types::{PendingApproval, PendingUserInputRequest, ThreadKey, generated};
-use crate::uniffi_shared::{AppOperationStatus, AppVoiceHandoffRequest, AppVoiceTranscriptUpdate};
+use crate::types::{PendingApproval, PendingUserInputRequest, ThreadKey};
+use crate::types::{AppOperationStatus, AppVoiceHandoffRequest, AppVoiceTranscriptUpdate};
 
 use super::boundary::{AppSessionSummary, AppThreadSnapshot, AppThreadStateRecord};
 
@@ -77,18 +77,18 @@ pub enum AppUpdate {
     },
     RealtimeStarted {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeStartedNotification,
+        notification: crate::types::AppRealtimeStartedNotification,
     },
     RealtimeOutputAudioDelta {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeOutputAudioDeltaNotification,
+        notification: crate::types::AppRealtimeOutputAudioDeltaNotification,
     },
     RealtimeError {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeErrorNotification,
+        notification: crate::types::AppRealtimeErrorNotification,
     },
     RealtimeClosed {
         key: ThreadKey,
-        notification: generated::ThreadRealtimeClosedNotification,
+        notification: crate::types::AppRealtimeClosedNotification,
     },
 }

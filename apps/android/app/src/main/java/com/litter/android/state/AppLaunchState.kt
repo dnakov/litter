@@ -6,10 +6,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import uniffi.codex_mobile_client.AppThreadSnapshot
-import uniffi.codex_mobile_client.AskForApproval
-import uniffi.codex_mobile_client.ReadOnlyAccess
-import uniffi.codex_mobile_client.SandboxMode
-import uniffi.codex_mobile_client.SandboxPolicy
+import uniffi.codex_mobile_client.AppAskForApproval
+import uniffi.codex_mobile_client.AppReadOnlyAccess
+import uniffi.codex_mobile_client.AppSandboxMode
+import uniffi.codex_mobile_client.AppSandboxPolicy
 
 data class AppLaunchStateSnapshot(
     val currentCwd: String = "",
@@ -95,64 +95,70 @@ class AppLaunchState(context: Context) {
         )
     }
 
-    fun approvalPolicyValue(): AskForApproval? = askForApprovalFromWireValue(snapshot.value.approvalPolicy)
+    fun approvalPolicyValue(): AppAskForApproval? = askForApprovalFromWireValue(snapshot.value.approvalPolicy)
 
-    fun sandboxModeValue(): SandboxMode? = sandboxModeFromWireValue(snapshot.value.sandboxMode)
+    fun sandboxModeValue(): AppSandboxMode? = sandboxModeFromWireValue(snapshot.value.sandboxMode)
 
-    fun turnSandboxPolicy(): SandboxPolicy? = sandboxModeValue()?.toTurnSandboxPolicy()
+    fun turnSandboxPolicy(): AppSandboxPolicy? = sandboxModeValue()?.toTurnSandboxPolicy()
 
-    fun threadStartParams(cwd: String, modelOverride: String? = null) =
-        launchConfig(modelOverride).toThreadStartParams(cwd.normalizedOrFallback("/"))
+    fun threadStartRequest(cwd: String, modelOverride: String? = null) =
+        launchConfig(modelOverride).toAppStartThreadRequest(cwd.normalizedOrFallback("/"))
             .also { updateCurrentCwd(it.cwd) }
 
-    fun threadResumeParams(
+    fun threadResumeRequest(
         threadId: String,
         cwdOverride: String? = null,
         modelOverride: String? = null,
-    ) = launchConfig(modelOverride).toThreadResumeParams(threadId, resolvedCwdOverride(cwdOverride))
+    ) = launchConfig(modelOverride).toAppResumeThreadRequest(threadId, resolvedCwdOverride(cwdOverride))
 
-    fun threadForkParams(
+    fun threadForkRequest(
         sourceThreadId: String,
         cwdOverride: String? = null,
         modelOverride: String? = null,
-    ) = launchConfig(modelOverride).toThreadForkParams(sourceThreadId, resolvedCwdOverride(cwdOverride))
+    ) = launchConfig(modelOverride).toAppForkThreadRequest(sourceThreadId, resolvedCwdOverride(cwdOverride))
+        .also { updateCurrentCwd(it.cwd) }
+
+    fun forkThreadFromMessageRequest(
+        cwdOverride: String? = null,
+        modelOverride: String? = null,
+    ) = launchConfig(modelOverride).toAppForkThreadFromMessageRequest(resolvedCwdOverride(cwdOverride))
         .also { updateCurrentCwd(it.cwd) }
 
     private fun resolvedCwdOverride(cwdOverride: String?): String? =
         cwdOverride.normalizedOrNull() ?: snapshot.value.currentCwd.normalizedOrNull()
 }
 
-private fun askForApprovalFromWireValue(value: String?): AskForApproval? =
+private fun askForApprovalFromWireValue(value: String?): AppAskForApproval? =
     when (value.normalizedLowercaseOr(default = "")) {
-        "untrusted", "unless-trusted" -> AskForApproval.UnlessTrusted
-        "on-failure" -> AskForApproval.OnFailure
-        "on-request" -> AskForApproval.OnRequest
-        "never" -> AskForApproval.Never
+        "untrusted", "unless-trusted" -> AppAskForApproval.UnlessTrusted
+        "on-failure" -> AppAskForApproval.OnFailure
+        "on-request" -> AppAskForApproval.OnRequest
+        "never" -> AppAskForApproval.Never
         else -> null
     }
 
-private fun sandboxModeFromWireValue(value: String?): SandboxMode? =
+private fun sandboxModeFromWireValue(value: String?): AppSandboxMode? =
     when (value.normalizedLowercaseOr(default = "")) {
-        "read-only" -> SandboxMode.READ_ONLY
-        "workspace-write" -> SandboxMode.WORKSPACE_WRITE
-        "danger-full-access" -> SandboxMode.DANGER_FULL_ACCESS
+        "read-only" -> AppSandboxMode.READ_ONLY
+        "workspace-write" -> AppSandboxMode.WORKSPACE_WRITE
+        "danger-full-access" -> AppSandboxMode.DANGER_FULL_ACCESS
         else -> null
     }
 
-fun SandboxMode.toTurnSandboxPolicy(): SandboxPolicy =
+fun AppSandboxMode.toTurnSandboxPolicy(): AppSandboxPolicy =
     when (this) {
-        SandboxMode.READ_ONLY -> SandboxPolicy.ReadOnly(
-            access = ReadOnlyAccess.FullAccess,
+        AppSandboxMode.READ_ONLY -> AppSandboxPolicy.ReadOnly(
+            access = AppReadOnlyAccess.FullAccess,
             networkAccess = false,
         )
-        SandboxMode.WORKSPACE_WRITE -> SandboxPolicy.WorkspaceWrite(
+        AppSandboxMode.WORKSPACE_WRITE -> AppSandboxPolicy.WorkspaceWrite(
             writableRoots = emptyList(),
-            readOnlyAccess = ReadOnlyAccess.FullAccess,
+            readOnlyAccess = AppReadOnlyAccess.FullAccess,
             networkAccess = false,
             excludeTmpdirEnvVar = false,
             excludeSlashTmp = false,
         )
-        SandboxMode.DANGER_FULL_ACCESS -> SandboxPolicy.DangerFullAccess
+        AppSandboxMode.DANGER_FULL_ACCESS -> AppSandboxPolicy.DangerFullAccess
     }
 
 private fun String?.normalizedOrEmpty(): String = this?.trim().orEmpty()

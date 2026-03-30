@@ -201,8 +201,7 @@ struct ConversationView: View {
                 let nextKey = try await appModel.store.forkThreadFromMessage(
                     key: activeThreadKey,
                     selectedTurnIndex: UInt32(selectedTurnIndex),
-                    params: launchConfig().threadForkParams(
-                        threadId: activeThreadKey.threadId,
+                    params: launchConfig().forkThreadFromMessageRequest(
                         cwdOverride: thread.info.cwd
                     )
                 )
@@ -219,16 +218,16 @@ struct ConversationView: View {
         }
     }
 
-    private func searchComposerFiles(_ query: String) async throws -> [FuzzyFileSearchResult] {
+    private func searchComposerFiles(_ query: String) async throws -> [FileSearchResult] {
         let searchRoot = workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/" : workDir
-        return try await appModel.rpc.fuzzyFileSearch(
+        return try await appModel.client.searchFiles(
             serverId: activeThreadKey.serverId,
-            params: FuzzyFileSearchParams(
+            params: AppSearchFilesRequest(
                 query: query,
                 roots: [searchRoot],
                 cancellationToken: "ios-composer-file-search"
             )
-        ).files
+        )
     }
 
     private func makeComposerPayload(
@@ -238,7 +237,7 @@ struct ConversationView: View {
     ) throws -> AppComposerPayload {
         let preparedAttachment = attachmentImage.flatMap(ConversationAttachmentSupport.prepareImage)
         var additionalInputs = skillMentions.map { mention in
-            UserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
+            AppUserInput.skill(name: mention.name, path: AbsolutePath(value: mention.path))
         }
         if let preparedAttachment {
             additionalInputs.append(preparedAttachment.userInput)
@@ -246,7 +245,7 @@ struct ConversationView: View {
         return AppComposerPayload(
             text: text,
             additionalInputs: additionalInputs,
-            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
+            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
             sandboxPolicy: TurnSandboxPolicy(mode: appState.sandboxMode)?.ffiValue,
             model: pendingModelOverride,
             effort: ReasoningEffort(wireValue: pendingReasoningOverride),
@@ -257,8 +256,8 @@ struct ConversationView: View {
     private func launchConfig() -> AppThreadLaunchConfig {
         AppThreadLaunchConfig(
             model: pendingModelOverride,
-            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
             developerInstructions: nil,
             persistExtendedHistory: true
         )
@@ -286,7 +285,7 @@ private struct ConversationBottomChrome: View {
     let pinnedContextItems: [ConversationItem]
     let composer: ConversationComposerSnapshot
     let onSend: (String, UIImage?, [SkillMentionSelection]) -> Void
-    let onFileSearch: (String) async throws -> [FuzzyFileSearchResult]
+    let onFileSearch: (String) async throws -> [FileSearchResult]
     var bottomInset: CGFloat = 0
     let onOpenConversation: ((ThreadKey) -> Void)?
     let onResumeSessions: ((String) -> Void)?
@@ -1198,7 +1197,7 @@ private struct ConversationInputBar: View {
     @AppStorage("fastMode") private var fastMode = false
 
     let onSend: (String, UIImage?, [SkillMentionSelection]) -> Void
-    let onFileSearch: (String) async throws -> [FuzzyFileSearchResult]
+    let onFileSearch: (String) async throws -> [FileSearchResult]
     var bottomInset: CGFloat = 0
     let onOpenConversation: ((ThreadKey) -> Void)?
     let onResumeSessions: ((String) -> Void)?
@@ -1218,7 +1217,7 @@ private struct ConversationInputBar: View {
     @State private var activeDollarToken: ComposerTokenContext?
     @State private var fileSearchLoading = false
     @State private var fileSearchError: String?
-    @State private var fileSuggestions: [FuzzyFileSearchResult] = []
+    @State private var fileSuggestions: [FileSearchResult] = []
     @State private var fileSearchGeneration = 0
     @State private var fileSearchTask: Task<Void, Never>?
     @State private var popupRefreshTask: Task<Void, Never>?
@@ -1448,9 +1447,9 @@ private struct ConversationInputBar: View {
 
     private func stopVoiceRecording() {
         Task {
-            let auth = try? await appModel.rpc.getAuthStatus(
+            let auth = try? await appModel.client.authStatus(
                 serverId: snapshot.threadKey.serverId,
-                params: GetAuthStatusParams(includeToken: true, refreshToken: false)
+                params: AuthStatusRequest(includeToken: true, refreshToken: false)
             )
             if let text = await voiceManager.stopAndTranscribe(
                 authMethod: auth?.authMethod,
@@ -1468,9 +1467,9 @@ private struct ConversationInputBar: View {
         guard let activeTurnId else { return }
         Task {
             do {
-                _ = try await appModel.rpc.turnInterrupt(
+                _ = try await appModel.client.interruptTurn(
                     serverId: snapshot.threadKey.serverId,
-                    params: TurnInterruptParams(
+                    params: AppInterruptTurnRequest(
                         threadId: snapshot.threadKey.threadId,
                         turnId: activeTurnId
                     )
@@ -1760,9 +1759,9 @@ private struct ConversationInputBar: View {
 
     private func startReview() async {
         do {
-            _ = try await appModel.rpc.reviewStart(
+            _ = try await appModel.client.startReview(
                 serverId: snapshot.threadKey.serverId,
-                params: ReviewStartParams(
+                params: AppStartReviewRequest(
                     threadId: snapshot.threadKey.threadId,
                     target: .uncommittedChanges,
                     delivery: "inline"
@@ -1775,9 +1774,9 @@ private struct ConversationInputBar: View {
 
     private func renameThread(_ newName: String) async {
         do {
-            _ = try await appModel.rpc.threadSetName(
+            _ = try await appModel.client.renameThread(
                 serverId: snapshot.threadKey.serverId,
-                params: ThreadSetNameParams(threadId: snapshot.threadKey.threadId, name: newName)
+                params: AppRenameThreadRequest(threadId: snapshot.threadKey.threadId, name: newName)
             )
             await appModel.refreshSnapshot()
             showRenamePrompt = false
@@ -1790,17 +1789,16 @@ private struct ConversationInputBar: View {
 
     private func forkConversation() async {
         do {
-            let response = try await appModel.rpc.threadFork(
+            let nextKey = try await appModel.client.forkThread(
                 serverId: snapshot.threadKey.serverId,
                 params: AppThreadLaunchConfig(
                     model: pendingModelOverride,
-                    approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
-                    sandbox: SandboxMode(wireValue: appState.sandboxMode),
+                    approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
+                    sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                ).threadForkParams(threadId: snapshot.threadKey.threadId, cwdOverride: workDir)
+                ).threadForkRequest(threadId: snapshot.threadKey.threadId, cwdOverride: workDir)
             )
-            let nextKey = ThreadKey(serverId: snapshot.threadKey.serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: nextKey)
             await appModel.refreshSnapshot()
             let nextCwd = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1823,11 +1821,11 @@ private struct ConversationInputBar: View {
         experimentalFeaturesLoading = true
         defer { experimentalFeaturesLoading = false }
         do {
-            let response = try await appModel.rpc.experimentalFeatureList(
+            let features = try await appModel.client.listExperimentalFeatures(
                 serverId: snapshot.threadKey.serverId,
-                params: ExperimentalFeatureListParams(cursor: nil, limit: 200)
+                params: AppListExperimentalFeaturesRequest(cursor: nil, limit: 200)
             )
-            experimentalFeatures = response.data.sorted { lhs, rhs in
+            experimentalFeatures = features.sorted { lhs, rhs in
                 let left = (lhs.displayName?.isEmpty == false ? lhs.displayName! : lhs.name).lowercased()
                 let right = (rhs.displayName?.isEmpty == false ? rhs.displayName! : rhs.name).lowercased()
                 return left < right
@@ -1862,9 +1860,9 @@ private struct ConversationInputBar: View {
             )
         }
         do {
-            _ = try await appModel.rpc.configValueWrite(
+            _ = try await appModel.client.writeConfigValue(
                 serverId: snapshot.threadKey.serverId,
-                params: ConfigValueWriteParams(
+                params: AppWriteConfigValueRequest(
                     keyPath: "features.\(featureName)",
                     value: JsonValue(
                         kind: .bool,
@@ -1913,17 +1911,14 @@ private struct ConversationInputBar: View {
         skillsLoading = true
         defer { skillsLoading = false }
         do {
-            let response = try await appModel.rpc.skillsList(
+            let fetchedSkills = try await appModel.client.listSkills(
                 serverId: snapshot.threadKey.serverId,
-                params: SkillsListParams(
-                    cwds: [AbsolutePath(value: workDir)],
-                    forceReload: forceReload,
-                    perCwdExtraUserRoots: nil
+                params: AppListSkillsRequest(
+                    cwds: [workDir],
+                    forceReload: forceReload
                 )
             )
-            let loadedSkills = response.data
-                .flatMap { $0.skills }
-                .sorted { $0.name.lowercased() < $1.name.lowercased() }
+            let loadedSkills = fetchedSkills.sorted { $0.name.lowercased() < $1.name.lowercased() }
             skills = loadedSkills
             let validPaths = Set(loadedSkills.map { $0.path.value })
             mentionSkillPathsByName = mentionSkillPathsByName.filter { _, path in validPaths.contains(path) }
@@ -1934,7 +1929,7 @@ private struct ConversationInputBar: View {
         }
     }
 
-    private func applyFileSuggestion(_ match: FuzzyFileSearchResult) {
+    private func applyFileSuggestion(_ match: FileSearchResult) {
         guard let token = activeAtToken else { return }
         let quotedPath = (match.path.contains(" ") && !match.path.contains("\"")) ? "\"\(match.path)\"" : match.path
         let replacement = "\(quotedPath) "

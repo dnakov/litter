@@ -1013,14 +1013,11 @@ struct SessionsScreen: View {
         }
         isLoading = true
         for serverId in connectedServerIds {
-            _ = try? await appModel.rpc.threadList(
+            _ = try? await appModel.client.listThreads(
                 serverId: serverId,
-                params: ThreadListParams(
+                params: AppListThreadsRequest(
                     cursor: nil,
                     limit: nil,
-                    sortKey: nil,
-                    modelProviders: nil,
-                    sourceKinds: nil,
                     archived: nil,
                     cwd: nil,
                     searchTerm: nil
@@ -1041,14 +1038,13 @@ struct SessionsScreen: View {
         appState.currentCwd = thread.cwd
         let openedKey: ThreadKey?
         do {
-            let response = try await appModel.rpc.threadResume(
+            let nextKey = try await appModel.client.resumeThread(
                 serverId: thread.key.serverId,
-                params: launchConfig().threadResumeParams(
+                params: launchConfig().threadResumeRequest(
                     threadId: thread.key.threadId,
                     cwdOverride: thread.cwd
                 )
             )
-            let nextKey = ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: nextKey)
             await appModel.refreshSnapshot()
             openedKey = nextKey
@@ -1073,11 +1069,10 @@ struct SessionsScreen: View {
         workDir = cwd
         appState.currentCwd = cwd
         do {
-            let response = try await appModel.rpc.threadStart(
+            let startedKey = try await appModel.client.startThread(
                 serverId: serverId,
-                params: launchConfig().threadStartParams(cwd: cwd)
+                params: launchConfig().threadStartRequest(cwd: cwd)
             )
-            let startedKey = ThreadKey(serverId: serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: startedKey)
             await appModel.refreshSnapshot()
             guard let resolvedKey = await appModel.ensureThreadLoaded(key: startedKey)
@@ -1097,14 +1092,13 @@ struct SessionsScreen: View {
         isForkingActiveThread = true
         defer { isForkingActiveThread = false }
         do {
-            let response = try await appModel.rpc.threadFork(
+            let nextKey = try await appModel.client.forkThread(
                 serverId: thread.key.serverId,
-                params: launchConfig().threadForkParams(
+                params: launchConfig().threadForkRequest(
                     threadId: thread.key.threadId,
                     cwdOverride: thread.cwd
                 )
             )
-            let nextKey = ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: nextKey)
             await appModel.refreshSnapshot()
             workDir = thread.cwd
@@ -1119,8 +1113,8 @@ struct SessionsScreen: View {
         let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
-            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
             developerInstructions: nil,
             persistExtendedHistory: true
         )
@@ -1131,9 +1125,9 @@ struct SessionsScreen: View {
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextTitle.isEmpty else { return }
         do {
-            _ = try await appModel.rpc.threadSetName(
+            _ = try await appModel.client.renameThread(
                 serverId: key.serverId,
-                params: ThreadSetNameParams(threadId: key.threadId, name: nextTitle)
+                params: AppRenameThreadRequest(threadId: key.threadId, name: nextTitle)
             )
         } catch {
             sessionActionErrorMessage = error.localizedDescription
@@ -1146,9 +1140,9 @@ struct SessionsScreen: View {
     private func confirmArchiveSession() async {
         guard let key = archiveTargetKey else { return }
         do {
-            _ = try await appModel.rpc.threadArchive(
+            _ = try await appModel.client.archiveThread(
                 serverId: key.serverId,
-                params: ThreadArchiveParams(threadId: key.threadId)
+                params: AppArchiveThreadRequest(threadId: key.threadId)
             )
             if appModel.snapshot?.activeThread == nil {
                 workDir = ""

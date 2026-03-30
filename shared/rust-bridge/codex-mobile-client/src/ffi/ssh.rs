@@ -1,11 +1,9 @@
 use crate::ffi::ClientError;
 use crate::ffi::shared::{shared_mobile_client, shared_runtime};
 use crate::session::connection::ServerConfig;
-use crate::ssh::{
-    RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError,
-};
+use crate::ssh::{RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError};
 use crate::store::{
-    ServerConnectionProgressSnapshot, ServerConnectionStepKind, ServerConnectionStepState,
+    AppConnectionProgressSnapshot, AppConnectionStepKind, AppConnectionStepState,
     ServerHealthSnapshot,
 };
 use std::sync::Arc;
@@ -36,7 +34,7 @@ pub struct SshBridge {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiSshConnectionResult {
+pub struct AppSshConnectionResult {
     pub session_id: String,
     pub normalized_host: String,
     pub server_port: u16,
@@ -68,7 +66,7 @@ impl SshBridge {
         passphrase: Option<String>,
         accept_unknown_host: bool,
         working_dir: Option<String>,
-    ) -> Result<FfiSshConnectionResult, ClientError> {
+    ) -> Result<AppSshConnectionResult, ClientError> {
         let normalized_host = normalize_ssh_host(&host);
         let auth = ssh_auth(password, private_key_pem, passphrase)?;
         info!(
@@ -177,7 +175,7 @@ impl SshBridge {
             bootstrap.pid
         );
 
-        Ok(FfiSshConnectionResult {
+        Ok(AppSshConnectionResult {
             session_id,
             normalized_host,
             server_port: bootstrap.server_port,
@@ -359,7 +357,7 @@ impl SshBridge {
         mobile_client
             .app_store
             .upsert_server(&config, ServerHealthSnapshot::Connecting);
-        let initial_progress = ServerConnectionProgressSnapshot::ssh_bootstrap();
+        let initial_progress = AppConnectionProgressSnapshot::ssh_bootstrap();
         mobile_client
             .app_store
             .update_server_connection_progress(&server_id, Some(initial_progress.clone()));
@@ -492,7 +490,7 @@ async fn run_guided_ssh_connect(
     accept_unknown_host: bool,
     working_dir: Option<String>,
     ipc_socket_path_override: Option<String>,
-    progress: &mut ServerConnectionProgressSnapshot,
+    progress: &mut AppConnectionProgressSnapshot,
 ) -> Result<(), ClientError> {
     let server_id = config.server_id.clone();
     info!(
@@ -518,13 +516,13 @@ async fn run_guided_ssh_connect(
         credentials.port
     );
     progress.update_step(
-        ServerConnectionStepKind::ConnectingToSsh,
-        ServerConnectionStepState::Completed,
+        AppConnectionStepKind::ConnectingToSsh,
+        AppConnectionStepState::Completed,
         Some(format!("Connected to {}", credentials.host.as_str())),
     );
     progress.update_step(
-        ServerConnectionStepKind::FindingCodex,
-        ServerConnectionStepState::InProgress,
+        AppConnectionStepKind::FindingCodex,
+        AppConnectionStepState::InProgress,
         None,
     );
     mobile_client
@@ -548,13 +546,13 @@ async fn run_guided_ssh_connect(
                 binary.path()
             );
             progress.update_step(
-                ServerConnectionStepKind::FindingCodex,
-                ServerConnectionStepState::Completed,
+                AppConnectionStepKind::FindingCodex,
+                AppConnectionStepState::Completed,
                 Some(binary.path().to_string()),
             );
             progress.update_step(
-                ServerConnectionStepKind::InstallingCodex,
-                ServerConnectionStepState::Cancelled,
+                AppConnectionStepKind::InstallingCodex,
+                AppConnectionStepState::Cancelled,
                 Some("Already installed".to_string()),
             );
             mobile_client
@@ -570,8 +568,8 @@ async fn run_guided_ssh_connect(
             );
             progress.pending_install = true;
             progress.update_step(
-                ServerConnectionStepKind::FindingCodex,
-                ServerConnectionStepState::AwaitingUserInput,
+                AppConnectionStepKind::FindingCodex,
+                AppConnectionStepState::AwaitingUserInput,
                 Some("Codex not found on remote host".to_string()),
             );
             mobile_client
@@ -594,13 +592,13 @@ async fn run_guided_ssh_connect(
             progress.pending_install = false;
             if !should_install {
                 progress.update_step(
-                    ServerConnectionStepKind::FindingCodex,
-                    ServerConnectionStepState::Failed,
+                    AppConnectionStepKind::FindingCodex,
+                    AppConnectionStepState::Failed,
                     Some("Install declined".to_string()),
                 );
                 progress.update_step(
-                    ServerConnectionStepKind::InstallingCodex,
-                    ServerConnectionStepState::Cancelled,
+                    AppConnectionStepKind::InstallingCodex,
+                    AppConnectionStepState::Cancelled,
                     Some("Install declined".to_string()),
                 );
                 progress.terminal_message = Some("Install declined".to_string());
@@ -615,13 +613,13 @@ async fn run_guided_ssh_connect(
             }
 
             progress.update_step(
-                ServerConnectionStepKind::FindingCodex,
-                ServerConnectionStepState::Completed,
+                AppConnectionStepKind::FindingCodex,
+                AppConnectionStepState::Completed,
                 Some("Installing latest stable release".to_string()),
             );
             progress.update_step(
-                ServerConnectionStepKind::InstallingCodex,
-                ServerConnectionStepState::InProgress,
+                AppConnectionStepKind::InstallingCodex,
+                AppConnectionStepState::InProgress,
                 None,
             );
             mobile_client
@@ -646,8 +644,8 @@ async fn run_guided_ssh_connect(
                 installed_binary.path()
             );
             progress.update_step(
-                ServerConnectionStepKind::InstallingCodex,
-                ServerConnectionStepState::Completed,
+                AppConnectionStepKind::InstallingCodex,
+                AppConnectionStepState::Completed,
                 Some(installed_binary.path().to_string()),
             );
             mobile_client
@@ -658,8 +656,8 @@ async fn run_guided_ssh_connect(
     };
 
     progress.update_step(
-        ServerConnectionStepKind::StartingAppServer,
-        ServerConnectionStepState::InProgress,
+        AppConnectionStepKind::StartingAppServer,
+        AppConnectionStepState::InProgress,
         None,
     );
     mobile_client
@@ -685,18 +683,18 @@ async fn run_guided_ssh_connect(
     );
 
     progress.update_step(
-        ServerConnectionStepKind::StartingAppServer,
-        ServerConnectionStepState::Completed,
+        AppConnectionStepKind::StartingAppServer,
+        AppConnectionStepState::Completed,
         Some(format!("Remote port {}", bootstrap.server_port)),
     );
     progress.update_step(
-        ServerConnectionStepKind::OpeningTunnel,
-        ServerConnectionStepState::Completed,
+        AppConnectionStepKind::OpeningTunnel,
+        AppConnectionStepState::Completed,
         Some(format!("127.0.0.1:{}", bootstrap.tunnel_local_port)),
     );
     progress.update_step(
-        ServerConnectionStepKind::Connected,
-        ServerConnectionStepState::InProgress,
+        AppConnectionStepKind::Connected,
+        AppConnectionStepState::InProgress,
         None,
     );
     mobile_client
@@ -726,8 +724,8 @@ async fn run_guided_ssh_connect(
     );
 
     progress.update_step(
-        ServerConnectionStepKind::Connected,
-        ServerConnectionStepState::Completed,
+        AppConnectionStepKind::Connected,
+        AppConnectionStepState::Completed,
         Some("Connected".to_string()),
     );
     progress.terminal_message = None;
@@ -737,17 +735,17 @@ async fn run_guided_ssh_connect(
     Ok(())
 }
 
-fn mark_progress_failure(progress: &mut ServerConnectionProgressSnapshot, message: String) {
+fn mark_progress_failure(progress: &mut AppConnectionProgressSnapshot, message: String) {
     if let Some(step) = progress.steps.iter_mut().find(|step| {
         matches!(
             step.state,
-            ServerConnectionStepState::InProgress | ServerConnectionStepState::AwaitingUserInput
+            AppConnectionStepState::InProgress | AppConnectionStepState::AwaitingUserInput
         )
     }) {
-        step.state = ServerConnectionStepState::Failed;
+        step.state = AppConnectionStepState::Failed;
         step.detail = Some(message.clone());
     } else if let Some(step) = progress.steps.last_mut() {
-        step.state = ServerConnectionStepState::Failed;
+        step.state = AppConnectionStepState::Failed;
         step.detail = Some(message.clone());
     }
     progress.pending_install = false;

@@ -9,6 +9,7 @@ use ratatui::{
 };
 use tokio::sync::{broadcast, mpsc};
 
+use codex_app_server_protocol as upstream;
 use codex_mobile_client::MobileClient;
 use codex_mobile_client::store::{AppSnapshot, AppUpdate};
 use codex_mobile_client::types::{ApprovalDecisionValue, ThreadKey};
@@ -504,7 +505,7 @@ impl App {
                     self.set_status("Starting new session...".into());
                     let tx = self.bg_tx.clone();
                     tokio::spawn(async move {
-                        let params = codex_mobile_client::types::generated::ThreadStartParams {
+                        let params = upstream::ThreadStartParams {
                             model: None,
                             model_provider: None,
                             service_tier: None,
@@ -523,8 +524,7 @@ impl App {
                             experimental_raw_events: false,
                             persist_extended_history: true,
                         };
-                        if let Ok(response) =
-                            client.generated_thread_start(&sid, params.clone()).await
+                        if let Ok(response) = client.server_thread_start(&sid, params.clone()).await
                         {
                             let _ = client
                                 .reconcile_public_rpc(
@@ -575,13 +575,12 @@ impl App {
                             // For now, set a placeholder name; a proper rename would need a text input popup
                             let client = Arc::clone(&self.client);
                             tokio::spawn(async move {
-                                let params =
-                                    codex_mobile_client::types::generated::ThreadSetNameParams {
-                                        thread_id: key.thread_id.clone(),
-                                        name: "Renamed Session".into(),
-                                    };
+                                let params = upstream::ThreadSetNameParams {
+                                    thread_id: key.thread_id.clone(),
+                                    name: "Renamed Session".into(),
+                                };
                                 if let Ok(response) = client
-                                    .generated_thread_set_name(&key.server_id, params.clone())
+                                    .server_thread_set_name(&key.server_id, params.clone())
                                     .await
                                 {
                                     let _ = client
@@ -611,7 +610,9 @@ impl App {
                     let id = approval.id.clone();
                     let client = Arc::clone(&self.client);
                     tokio::spawn(async move {
-                        let _ = client.approve(&id).await;
+                        let _ = client
+                            .respond_to_approval(&id, ApprovalDecisionValue::Accept)
+                            .await;
                     });
                     return;
                 }
@@ -619,7 +620,9 @@ impl App {
                     let id = approval.id.clone();
                     let client = Arc::clone(&self.client);
                     tokio::spawn(async move {
-                        let _ = client.deny(&id).await;
+                        let _ = client
+                            .respond_to_approval(&id, ApprovalDecisionValue::Decline)
+                            .await;
                     });
                     return;
                 }
@@ -823,9 +826,9 @@ impl App {
 
         let client = Arc::clone(&self.client);
         tokio::spawn(async move {
-            let params = codex_mobile_client::types::generated::TurnStartParams {
+            let params = upstream::TurnStartParams {
                 thread_id: thread_key.thread_id.clone(),
-                input: vec![codex_mobile_client::types::generated::UserInput::Text {
+                input: vec![upstream::UserInput::Text {
                     text,
                     text_elements: vec![],
                 }],
@@ -842,7 +845,7 @@ impl App {
                 collaboration_mode: None,
             };
             if let Ok(response) = client
-                .generated_turn_start(&thread_key.server_id, params.clone())
+                .server_turn_start(&thread_key.server_id, params.clone())
                 .await
             {
                 let _ = client
@@ -976,7 +979,7 @@ impl App {
             let client = Arc::clone(&self.client);
             let sid = server_id.clone();
             tokio::spawn(async move {
-                let params = codex_mobile_client::types::generated::ThreadListParams {
+                let params = upstream::ThreadListParams {
                     limit: None,
                     cursor: None,
                     sort_key: None,
@@ -986,7 +989,7 @@ impl App {
                     cwd: None,
                     search_term: None,
                 };
-                if let Ok(response) = client.generated_thread_list(&sid, params.clone()).await {
+                if let Ok(response) = client.server_thread_list(&sid, params.clone()).await {
                     // Reconcile into the store so snapshot picks up the threads
                     let _ = client
                         .reconcile_public_rpc("thread/list", &sid, Some(&params), &response)
@@ -1008,11 +1011,11 @@ impl App {
             } => {
                 let client = Arc::clone(&self.client);
                 tokio::spawn(async move {
-                    let params = codex_mobile_client::types::generated::ThreadArchiveParams {
+                    let params = upstream::ThreadArchiveParams {
                         thread_id: thread_id.clone(),
                     };
                     if let Ok(response) = client
-                        .generated_thread_archive(&server_id, params.clone())
+                        .server_thread_archive(&server_id, params.clone())
                         .await
                     {
                         let _ = client
@@ -1036,12 +1039,12 @@ impl App {
                 if let Some(turn_id) = thread.active_turn_id.clone() {
                     let client = Arc::clone(&self.client);
                     tokio::spawn(async move {
-                        let params = codex_mobile_client::types::generated::TurnInterruptParams {
+                        let params = upstream::TurnInterruptParams {
                             thread_id: thread_key.thread_id.clone(),
                             turn_id,
                         };
                         if let Ok(response) = client
-                            .generated_turn_interrupt(&thread_key.server_id, params.clone())
+                            .server_turn_interrupt(&thread_key.server_id, params.clone())
                             .await
                         {
                             let _ = client
@@ -1105,7 +1108,7 @@ impl App {
         // Resume the thread in the background to load full conversation history.
         let client = Arc::clone(&self.client);
         tokio::spawn(async move {
-            let params = codex_mobile_client::types::generated::ThreadResumeParams {
+            let params = upstream::ThreadResumeParams {
                 thread_id: key.thread_id.clone(),
                 history: None,
                 path: None,
@@ -1123,7 +1126,7 @@ impl App {
                 persist_extended_history: true,
             };
             if let Ok(response) = client
-                .generated_thread_resume(&key.server_id, params.clone())
+                .server_thread_resume(&key.server_id, params.clone())
                 .await
             {
                 let _ = client

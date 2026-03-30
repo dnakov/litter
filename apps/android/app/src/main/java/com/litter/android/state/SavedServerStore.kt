@@ -4,8 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.codex_mobile_client.FfiDiscoveredServer
-import uniffi.codex_mobile_client.FfiDiscoverySource
+import uniffi.codex_mobile_client.AppDiscoveredServer
+import uniffi.codex_mobile_client.AppDiscoverySource
 
 /**
  * Persistent server list stored in SharedPreferences.
@@ -187,7 +187,7 @@ data class SavedServer(
             sshBanner = if (obj.has("sshBanner")) obj.getString("sshBanner") else null,
         )
 
-        fun from(server: FfiDiscoveredServer): SavedServer = SavedServer(
+        fun from(server: AppDiscoveredServer): SavedServer = SavedServer(
             id = server.id,
             name = server.displayName,
             hostname = server.host,
@@ -195,12 +195,12 @@ data class SavedServer(
             codexPorts = server.codexPorts.map { it.toInt() },
             sshPort = server.sshPort?.toInt(),
             source = when (server.source) {
-                FfiDiscoverySource.BONJOUR -> "bonjour"
-                FfiDiscoverySource.TAILSCALE -> "tailscale"
-                FfiDiscoverySource.LAN_PROBE -> "lanProbe"
-                FfiDiscoverySource.ARP_SCAN -> "arpScan"
-                FfiDiscoverySource.MANUAL -> "manual"
-                FfiDiscoverySource.LOCAL -> "local"
+                AppDiscoverySource.BONJOUR -> "bonjour"
+                AppDiscoverySource.TAILSCALE -> "tailscale"
+                AppDiscoverySource.LAN_PROBE -> "lanProbe"
+                AppDiscoverySource.ARP_SCAN -> "arpScan"
+                AppDiscoverySource.MANUAL -> "manual"
+                AppDiscoverySource.LOCAL -> "local"
             },
             hasCodexServer = server.codexPort != null || server.codexPorts.isNotEmpty(),
             os = if (server.sshBanner != null) server.os else server.os,

@@ -80,12 +80,7 @@ enum ToolCallKind: String, Equatable {
     }
 }
 
-enum ToolCallStatus: Equatable {
-    case inProgress
-    case completed
-    case failed
-    case unknown
-
+extension ToolCallStatus {
     var label: String {
         switch self {
         case .inProgress: return "In Progress"

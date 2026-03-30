@@ -78,7 +78,7 @@ import uniffi.codex_mobile_client.Account
 import uniffi.codex_mobile_client.AppVoiceSessionPhase
 import uniffi.codex_mobile_client.AppVoiceSpeaker
 import uniffi.codex_mobile_client.AppVoiceTranscriptEntry
-import uniffi.codex_mobile_client.GetAccountParams
+import uniffi.codex_mobile_client.AppRefreshAccountRequest
 import uniffi.codex_mobile_client.ThreadKey
 
 @Composable
@@ -145,9 +145,9 @@ fun RealtimeVoiceScreen(
 
     LaunchedEffect(threadKey) {
         try {
-            appModel.rpc.getAccount(
+            appModel.client.refreshAccount(
                 threadKey.serverId,
-                GetAccountParams(refreshToken = false),
+                AppRefreshAccountRequest(refreshToken = false),
             )
             appModel.refreshSnapshot()
             apiKeyError = null
@@ -283,7 +283,7 @@ fun RealtimeVoiceScreen(
                         try {
                             apiKeyStore.save(trimmedKey)
                             if (server?.account is Account.ApiKey) {
-                                appModel.rpc.logoutAccount(threadKey.serverId)
+                                appModel.client.logoutAccount(threadKey.serverId)
                             }
                             voiceController.stopActiveVoiceSession(appModel)
                             appModel.restartLocalServer()

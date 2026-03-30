@@ -61,9 +61,26 @@ for PATCH_FILE in "${PATCH_FILES[@]}"; do
     elif patch_already_upstreamed "$PATCH_FILE"; then
         echo "==> $PATCH_NAME already present upstream; skipping patch apply."
     else
-        echo "error: $PATCH_NAME no longer applies cleanly to codex $(git -C "$SUBMODULE_DIR" rev-parse --short HEAD)" >&2
-        echo "error: refresh $PATCH_FILE before rebuilding the bridge" >&2
-        exit 1
+        # When multiple patches touch the same files, reverse-check may fail even
+        # if the patch is applied.  Fall back to checking whether the added lines
+        # are already present in the working tree.
+        added_lines=$(grep '^+[^+]' "$PATCH_FILE" | sed 's/^+//' | head -5)
+        all_present=true
+        while IFS= read -r line; do
+            trimmed="${line#"${line%%[![:space:]]*}"}"
+            [ -z "$trimmed" ] && continue
+            if ! grep -rqF "$trimmed" "$SUBMODULE_DIR" 2>/dev/null; then
+                all_present=false
+                break
+            fi
+        done <<< "$added_lines"
+        if [ "$all_present" = true ]; then
+            echo "==> $PATCH_NAME already applied (content check)."
+        else
+            echo "error: $PATCH_NAME no longer applies cleanly to codex $(git -C "$SUBMODULE_DIR" rev-parse --short HEAD)" >&2
+            echo "error: refresh $PATCH_FILE before rebuilding the bridge" >&2
+            exit 1
+        fi
     fi
 done
 

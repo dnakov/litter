@@ -43,8 +43,8 @@ enum LitterPreviewData {
         hasCodexServer: true
     )
 
-    static let sampleModels: [Model] = [
-        Model(
+    static let sampleModels: [ModelInfo] = [
+        ModelInfo(
             id: "gpt-5.4",
             model: "gpt-5.4",
             upgrade: nil, upgradeInfo: nil, availabilityNux: nil,
@@ -61,7 +61,7 @@ enum LitterPreviewData {
             supportsPersonality: true,
             isDefault: true
         ),
-        Model(
+        ModelInfo(
             id: "gpt-5.4-mini",
             model: "gpt-5.4-mini",
             upgrade: nil, upgradeInfo: nil, availabilityNux: nil,
@@ -327,7 +327,7 @@ enum LitterPreviewData {
             activeTurnId: status == .active ? "turn-preview" : nil,
             contextTokensUsed: 156_000,
             modelContextWindow: 200_000,
-            rateLimitsJson: nil,
+            rateLimits: nil,
             realtimeSessionId: nil
         )
     }
@@ -386,7 +386,7 @@ enum LitterPreviewData {
             activeThread: activeThread,
             pendingApprovals: [],
             pendingUserInputs: [],
-            voiceSession: VoiceSessionSnapshot(
+            voiceSession: AppVoiceSessionSnapshot(
                 activeThread: nil,
                 sessionId: nil,
                 phase: nil,

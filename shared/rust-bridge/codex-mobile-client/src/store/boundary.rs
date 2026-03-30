@@ -2,13 +2,13 @@ use std::hash::{Hash, Hasher};
 
 use crate::conversation_uniffi::HydratedConversationItem;
 use crate::types::{PendingApproval, PendingUserInputRequest, ThreadInfo, ThreadKey};
-use crate::uniffi_shared::{
+use crate::types::{
     AppOperationStatus, AppSubagentStatus, AppVoiceHandoffRequest, AppVoiceTranscriptUpdate,
 };
 
 use super::snapshot::{
-    AppSnapshot, QueuedFollowUpPreview, ServerConnectionProgressSnapshot, ServerHealthSnapshot,
-    ServerSnapshot, ThreadSnapshot, VoiceSessionSnapshot,
+    AppSnapshot, AppQueuedFollowUpPreview, AppConnectionProgressSnapshot, ServerHealthSnapshot,
+    ServerSnapshot, ThreadSnapshot, AppVoiceSessionSnapshot,
 };
 use super::updates::{AppUpdate, ThreadStreamingDeltaKind};
 
@@ -21,11 +21,11 @@ pub struct AppServerSnapshot {
     pub is_local: bool,
     pub has_ipc: bool,
     pub health: AppServerHealth,
-    pub account: Option<crate::types::generated::Account>,
+    pub account: Option<crate::types::Account>,
     pub requires_openai_auth: bool,
-    pub rate_limits: Option<crate::types::generated::RateLimitSnapshot>,
-    pub available_models: Option<Vec<crate::types::generated::Model>>,
-    pub connection_progress: Option<ServerConnectionProgressSnapshot>,
+    pub rate_limits: Option<crate::types::RateLimitSnapshot>,
+    pub available_models: Option<Vec<crate::types::ModelInfo>>,
+    pub connection_progress: Option<AppConnectionProgressSnapshot>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -44,11 +44,11 @@ pub struct AppThreadSnapshot {
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub hydrated_conversation_items: Vec<HydratedConversationItem>,
-    pub queued_follow_ups: Vec<QueuedFollowUpPreview>,
+    pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
     pub model_context_window: Option<u64>,
-    pub rate_limits_json: Option<String>,
+    pub rate_limits: Option<crate::types::RateLimits>,
     pub realtime_session_id: Option<String>,
 }
 
@@ -58,11 +58,11 @@ pub struct AppThreadStateRecord {
     pub info: ThreadInfo,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
-    pub queued_follow_ups: Vec<QueuedFollowUpPreview>,
+    pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
     pub model_context_window: Option<u64>,
-    pub rate_limits_json: Option<String>,
+    pub rate_limits: Option<crate::types::RateLimits>,
     pub realtime_session_id: Option<String>,
 }
 
@@ -89,7 +89,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
             queued_follow_ups: thread
                 .queued_follow_ups
                 .iter()
-                .map(|preview| QueuedFollowUpPreview {
+                .map(|preview| AppQueuedFollowUpPreview {
                     id: preview.id.clone(),
                     text: preview.text.clone(),
                 })
@@ -97,12 +97,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
             active_turn_id: thread.active_turn_id.clone(),
             context_tokens_used: thread.context_tokens_used,
             model_context_window: thread.model_context_window,
-            rate_limits_json: thread
-                .rate_limits
-                .clone()
-                .map(|limits| serde_json::to_string(&limits))
-                .transpose()
-                .map_err(|error| format!("serialize rate limits: {error}"))?,
+            rate_limits: thread.rate_limits.clone(),
             realtime_session_id: thread.realtime_session_id.clone(),
         })
     }
@@ -120,7 +115,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadStateRecord {
             queued_follow_ups: thread
                 .queued_follow_ups
                 .iter()
-                .map(|preview| QueuedFollowUpPreview {
+                .map(|preview| AppQueuedFollowUpPreview {
                     id: preview.id.clone(),
                     text: preview.text.clone(),
                 })
@@ -128,12 +123,7 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadStateRecord {
             active_turn_id: thread.active_turn_id.clone(),
             context_tokens_used: thread.context_tokens_used,
             model_context_window: thread.model_context_window,
-            rate_limits_json: thread
-                .rate_limits
-                .clone()
-                .map(|limits| serde_json::to_string(&limits))
-                .transpose()
-                .map_err(|error| format!("serialize rate limits: {error}"))?,
+            rate_limits: thread.rate_limits.clone(),
             realtime_session_id: thread.realtime_session_id.clone(),
         })
     }
@@ -209,7 +199,7 @@ pub struct AppSnapshotRecord {
     pub active_thread: Option<ThreadKey>,
     pub pending_approvals: Vec<PendingApproval>,
     pub pending_user_inputs: Vec<PendingUserInputRequest>,
-    pub voice_session: VoiceSessionSnapshot,
+    pub voice_session: AppVoiceSessionSnapshot,
 }
 
 impl TryFrom<AppSnapshot> for AppSnapshotRecord {
@@ -626,19 +616,19 @@ pub enum AppStoreUpdateRecord {
     },
     RealtimeStarted {
         key: ThreadKey,
-        notification: crate::types::generated::ThreadRealtimeStartedNotification,
+        notification: crate::types::AppRealtimeStartedNotification,
     },
     RealtimeOutputAudioDelta {
         key: ThreadKey,
-        notification: crate::types::generated::ThreadRealtimeOutputAudioDeltaNotification,
+        notification: crate::types::AppRealtimeOutputAudioDeltaNotification,
     },
     RealtimeError {
         key: ThreadKey,
-        notification: crate::types::generated::ThreadRealtimeErrorNotification,
+        notification: crate::types::AppRealtimeErrorNotification,
     },
     RealtimeClosed {
         key: ThreadKey,
-        notification: crate::types::generated::ThreadRealtimeClosedNotification,
+        notification: crate::types::AppRealtimeClosedNotification,
     },
 }
 

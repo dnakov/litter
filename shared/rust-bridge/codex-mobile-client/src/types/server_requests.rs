@@ -1,12 +1,234 @@
 //! Mobile-owned server request projections.
 //!
-//! Upstream/generated request and response wrappers are the canonical protocol
+//! Upstream protocol request and response wrappers are the canonical protocol
 //! surface. This module is reserved for UI-specific projections that do not
 //! exist upstream.
 
+use crate::rpc::RpcClientError;
+use codex_app_server_protocol as upstream;
+use codex_protocol::config_types::ServiceTier as CoreServiceTier;
+use codex_protocol::openai_models::ReasoningEffort as CoreReasoningEffort;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use super::enums::ApprovalKind;
+use super::{
+    AbsolutePath, AppAskForApproval, AppDynamicToolSpec, JsonValue, AppMergeStrategy, AppReadOnlyAccess,
+    ReasoningEffort, AppReviewTarget, AppSandboxMode, AppSandboxPolicy, ServiceTier,
+    AppRealtimeAudioChunk, AppUserInput,
+};
+
+fn absolute_path_buf_from_mobile(value: AbsolutePath) -> Result<AbsolutePathBuf, RpcClientError> {
+    AbsolutePathBuf::try_from(value.value).map_err(|error| {
+        RpcClientError::Serialization(format!("convert AbsolutePath -> AbsolutePathBuf: {error}"))
+    })
+}
+
+fn path_buf_from_mobile(value: AbsolutePath) -> PathBuf {
+    PathBuf::from(value.value)
+}
+
+fn ask_for_approval_into_upstream(value: AppAskForApproval) -> upstream::AskForApproval {
+    match value {
+        AppAskForApproval::UnlessTrusted => upstream::AskForApproval::UnlessTrusted,
+        AppAskForApproval::OnFailure => upstream::AskForApproval::OnFailure,
+        AppAskForApproval::OnRequest => upstream::AskForApproval::OnRequest,
+        AppAskForApproval::Granular {
+            sandbox_approval,
+            rules,
+            skill_approval,
+            request_permissions,
+            mcp_elicitations,
+        } => upstream::AskForApproval::Granular {
+            sandbox_approval,
+            rules,
+            skill_approval,
+            request_permissions,
+            mcp_elicitations,
+        },
+        AppAskForApproval::Never => upstream::AskForApproval::Never,
+    }
+}
+
+fn sandbox_mode_into_upstream(value: AppSandboxMode) -> upstream::SandboxMode {
+    match value {
+        AppSandboxMode::ReadOnly => upstream::SandboxMode::ReadOnly,
+        AppSandboxMode::WorkspaceWrite => upstream::SandboxMode::WorkspaceWrite,
+        AppSandboxMode::DangerFullAccess => upstream::SandboxMode::DangerFullAccess,
+    }
+}
+
+fn service_tier_into_upstream(value: ServiceTier) -> CoreServiceTier {
+    match value {
+        ServiceTier::Fast => CoreServiceTier::Fast,
+        ServiceTier::Flex => CoreServiceTier::Flex,
+    }
+}
+
+fn reasoning_effort_into_upstream(value: ReasoningEffort) -> CoreReasoningEffort {
+    match value {
+        ReasoningEffort::None => CoreReasoningEffort::None,
+        ReasoningEffort::Minimal => CoreReasoningEffort::Minimal,
+        ReasoningEffort::Low => CoreReasoningEffort::Low,
+        ReasoningEffort::Medium => CoreReasoningEffort::Medium,
+        ReasoningEffort::High => CoreReasoningEffort::High,
+        ReasoningEffort::XHigh => CoreReasoningEffort::XHigh,
+    }
+}
+
+fn network_access_into_upstream(value: super::AppNetworkAccess) -> upstream::NetworkAccess {
+    match value {
+        super::AppNetworkAccess::Restricted => upstream::NetworkAccess::Restricted,
+        super::AppNetworkAccess::Enabled => upstream::NetworkAccess::Enabled,
+    }
+}
+
+fn read_only_access_into_upstream(
+    value: AppReadOnlyAccess,
+) -> Result<upstream::ReadOnlyAccess, RpcClientError> {
+    Ok(match value {
+        AppReadOnlyAccess::Restricted {
+            include_platform_defaults,
+            readable_roots,
+        } => upstream::ReadOnlyAccess::Restricted {
+            include_platform_defaults,
+            readable_roots: readable_roots
+                .into_iter()
+                .map(absolute_path_buf_from_mobile)
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        AppReadOnlyAccess::FullAccess => upstream::ReadOnlyAccess::FullAccess,
+    })
+}
+
+fn sandbox_policy_into_upstream(
+    value: AppSandboxPolicy,
+) -> Result<upstream::SandboxPolicy, RpcClientError> {
+    Ok(match value {
+        AppSandboxPolicy::DangerFullAccess => upstream::SandboxPolicy::DangerFullAccess,
+        AppSandboxPolicy::ReadOnly {
+            access,
+            network_access,
+        } => upstream::SandboxPolicy::ReadOnly {
+            access: read_only_access_into_upstream(access)?,
+            network_access,
+        },
+        AppSandboxPolicy::ExternalSandbox { network_access } => {
+            upstream::SandboxPolicy::ExternalSandbox {
+                network_access: network_access_into_upstream(network_access),
+            }
+        }
+        AppSandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            read_only_access,
+            network_access,
+            exclude_tmpdir_env_var,
+            exclude_slash_tmp,
+        } => upstream::SandboxPolicy::WorkspaceWrite {
+            writable_roots: writable_roots
+                .into_iter()
+                .map(absolute_path_buf_from_mobile)
+                .collect::<Result<Vec<_>, _>>()?,
+            read_only_access: read_only_access_into_upstream(read_only_access)?,
+            network_access,
+            exclude_tmpdir_env_var,
+            exclude_slash_tmp,
+        },
+    })
+}
+
+fn byte_range_into_upstream(
+    value: super::AppByteRange,
+) -> Result<upstream::ByteRange, RpcClientError> {
+    let start = usize::try_from(value.start).map_err(|error| {
+        RpcClientError::Serialization(format!("byte range start out of range: {error}"))
+    })?;
+    let end = usize::try_from(value.end).map_err(|error| {
+        RpcClientError::Serialization(format!("byte range end out of range: {error}"))
+    })?;
+    Ok(upstream::ByteRange { start, end })
+}
+
+fn text_element_into_upstream(
+    value: super::AppTextElement,
+) -> Result<upstream::TextElement, RpcClientError> {
+    Ok(upstream::TextElement::new(
+        byte_range_into_upstream(value.byte_range)?,
+        None,
+    ))
+}
+
+fn user_input_into_upstream(value: AppUserInput) -> Result<upstream::UserInput, RpcClientError> {
+    Ok(match value {
+        AppUserInput::Text {
+            text,
+            text_elements,
+        } => upstream::UserInput::Text {
+            text,
+            text_elements: text_elements
+                .into_iter()
+                .map(text_element_into_upstream)
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        AppUserInput::Image { url } => upstream::UserInput::Image { url },
+        AppUserInput::LocalImage { path } => upstream::UserInput::LocalImage {
+            path: path_buf_from_mobile(path),
+        },
+        AppUserInput::Skill { name, path } => upstream::UserInput::Skill {
+            name,
+            path: path_buf_from_mobile(path),
+        },
+        AppUserInput::Mention { name, path } => upstream::UserInput::Mention { name, path },
+    })
+}
+
+fn dynamic_tool_spec_into_upstream(
+    value: AppDynamicToolSpec,
+) -> Result<codex_protocol::dynamic_tools::DynamicToolSpec, RpcClientError> {
+    value.try_into()
+}
+
+fn realtime_audio_chunk_into_upstream(
+    value: AppRealtimeAudioChunk,
+) -> upstream::ThreadRealtimeAudioChunk {
+    upstream::ThreadRealtimeAudioChunk {
+        data: value.data,
+        sample_rate: value.sample_rate,
+        num_channels: value.num_channels as u16,
+        samples_per_channel: value.samples_per_channel,
+        item_id: value.item_id,
+    }
+}
+
+fn review_target_into_upstream(value: AppReviewTarget) -> upstream::ReviewTarget {
+    match value {
+        AppReviewTarget::UncommittedChanges => upstream::ReviewTarget::UncommittedChanges,
+        AppReviewTarget::BaseBranch { branch } => upstream::ReviewTarget::BaseBranch { branch },
+        AppReviewTarget::Commit { sha, title } => upstream::ReviewTarget::Commit { sha, title },
+        AppReviewTarget::Custom { instructions } => upstream::ReviewTarget::Custom { instructions },
+    }
+}
+
+fn review_delivery_into_upstream(
+    value: Option<String>,
+) -> Result<Option<upstream::ReviewDelivery>, RpcClientError> {
+    match value.as_deref() {
+        None => Ok(None),
+        Some("inline") => Ok(Some(upstream::ReviewDelivery::Inline)),
+        Some("detached") => Ok(Some(upstream::ReviewDelivery::Detached)),
+        Some(other) => Err(RpcClientError::Serialization(format!(
+            "invalid review delivery: {other}"
+        ))),
+    }
+}
+
+fn merge_strategy_into_upstream(value: AppMergeStrategy) -> upstream::MergeStrategy {
+    match value {
+        AppMergeStrategy::Replace => upstream::MergeStrategy::Replace,
+        AppMergeStrategy::Upsert => upstream::MergeStrategy::Upsert,
+    }
+}
 
 /// A pending approval request from the server that needs user action.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -35,11 +257,25 @@ pub struct PendingApproval {
     pub cwd: Option<String>,
     /// Human-readable reason/explanation for the approval request.
     pub reason: Option<String>,
-    /// Original method used to interpret decision payloads.
-    pub method: String,
-    /// Raw params from the server request as JSON string for forward compatibility.
-    #[serde(default)]
-    pub raw_params_json: String,
+}
+
+/// Rust-only raw request seed retained for IPC hydration and approval responses.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingApprovalSeed {
+    pub raw_params: serde_json::Value,
+}
+
+/// Internal pairing of the public approval projection with its raw request seed.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingApprovalWithSeed {
+    pub approval: PendingApproval,
+    pub seed: PendingApprovalSeed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PendingApprovalKey {
+    pub server_id: String,
+    pub request_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -84,6 +320,618 @@ pub struct PendingUserInputAnswer {
     pub answers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppStartThreadRequest {
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub approval_policy: Option<AppAskForApproval>,
+    pub sandbox: Option<AppSandboxMode>,
+    pub developer_instructions: Option<String>,
+    pub persist_extended_history: bool,
+}
+
+impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppStartThreadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            model: value.model,
+            model_provider: None,
+            service_tier: None,
+            cwd: value.cwd,
+            approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
+            approvals_reviewer: None,
+            sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            config: None,
+            service_name: None,
+            base_instructions: None,
+            developer_instructions: value.developer_instructions,
+            personality: None,
+            ephemeral: None,
+            dynamic_tools: None,
+            mock_experimental_field: None,
+            experimental_raw_events: false,
+            persist_extended_history: value.persist_extended_history,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppResumeThreadRequest {
+    pub thread_id: String,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub approval_policy: Option<AppAskForApproval>,
+    pub sandbox: Option<AppSandboxMode>,
+    pub developer_instructions: Option<String>,
+    pub persist_extended_history: bool,
+}
+
+impl TryFrom<AppResumeThreadRequest> for upstream::ThreadResumeParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppResumeThreadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            history: None,
+            path: None,
+            model: value.model,
+            model_provider: None,
+            service_tier: None,
+            cwd: value.cwd,
+            approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
+            approvals_reviewer: None,
+            sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            config: None,
+            base_instructions: None,
+            developer_instructions: value.developer_instructions,
+            personality: None,
+            persist_extended_history: value.persist_extended_history,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppForkThreadRequest {
+    pub thread_id: String,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub approval_policy: Option<AppAskForApproval>,
+    pub sandbox: Option<AppSandboxMode>,
+    pub developer_instructions: Option<String>,
+    pub persist_extended_history: bool,
+}
+
+impl TryFrom<AppForkThreadRequest> for upstream::ThreadForkParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppForkThreadRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            path: None,
+            model: value.model,
+            model_provider: None,
+            service_tier: None,
+            cwd: value.cwd,
+            approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
+            approvals_reviewer: None,
+            sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            config: None,
+            base_instructions: None,
+            developer_instructions: value.developer_instructions,
+            ephemeral: false,
+            persist_extended_history: value.persist_extended_history,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppForkThreadFromMessageRequest {
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub approval_policy: Option<AppAskForApproval>,
+    pub sandbox: Option<AppSandboxMode>,
+    pub developer_instructions: Option<String>,
+    pub persist_extended_history: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppArchiveThreadRequest {
+    pub thread_id: String,
+}
+
+impl From<AppArchiveThreadRequest> for upstream::ThreadArchiveParams {
+    fn from(value: AppArchiveThreadRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppRenameThreadRequest {
+    pub thread_id: String,
+    pub name: String,
+}
+
+impl From<AppRenameThreadRequest> for upstream::ThreadSetNameParams {
+    fn from(value: AppRenameThreadRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            name: value.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppListThreadsRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+    pub archived: Option<bool>,
+    pub cwd: Option<String>,
+    pub search_term: Option<String>,
+}
+
+impl From<AppListThreadsRequest> for upstream::ThreadListParams {
+    fn from(value: AppListThreadsRequest) -> Self {
+        Self {
+            cursor: value.cursor,
+            limit: value.limit,
+            sort_key: None,
+            model_providers: None,
+            source_kinds: None,
+            archived: value.archived,
+            cwd: value.cwd,
+            search_term: value.search_term,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppReadThreadRequest {
+    pub thread_id: String,
+    pub include_turns: bool,
+}
+
+impl From<AppReadThreadRequest> for upstream::ThreadReadParams {
+    fn from(value: AppReadThreadRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            include_turns: value.include_turns,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppListSkillsRequest {
+    pub cwds: Vec<String>,
+    pub force_reload: bool,
+}
+
+impl From<AppListSkillsRequest> for upstream::SkillsListParams {
+    fn from(value: AppListSkillsRequest) -> Self {
+        Self {
+            cwds: value.cwds.into_iter().map(PathBuf::from).collect(),
+            force_reload: value.force_reload,
+            per_cwd_extra_user_roots: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppStartTurnRequest {
+    pub thread_id: String,
+    pub input: Vec<AppUserInput>,
+    pub approval_policy: Option<AppAskForApproval>,
+    pub sandbox_policy: Option<AppSandboxPolicy>,
+    pub model: Option<String>,
+    pub service_tier: Option<ServiceTier>,
+    pub effort: Option<ReasoningEffort>,
+}
+
+impl TryFrom<AppStartTurnRequest> for upstream::TurnStartParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppStartTurnRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            input: value
+                .input
+                .into_iter()
+                .map(user_input_into_upstream)
+                .collect::<Result<Vec<_>, _>>()?,
+            cwd: None,
+            approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
+            approvals_reviewer: None,
+            sandbox_policy: value
+                .sandbox_policy
+                .map(sandbox_policy_into_upstream)
+                .transpose()?,
+            model: value.model,
+            service_tier: value.service_tier.map(service_tier_into_upstream).map(Some),
+            effort: value.effort.map(reasoning_effort_into_upstream),
+            summary: None,
+            personality: None,
+            output_schema: None,
+            collaboration_mode: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppInterruptTurnRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
+impl From<AppInterruptTurnRequest> for upstream::TurnInterruptParams {
+    fn from(value: AppInterruptTurnRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            turn_id: value.turn_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppStartRealtimeSessionRequest {
+    pub thread_id: String,
+    pub prompt: String,
+    pub session_id: Option<String>,
+    pub client_controlled_handoff: bool,
+    pub dynamic_tools: Option<Vec<AppDynamicToolSpec>>,
+}
+
+impl TryFrom<AppStartRealtimeSessionRequest> for upstream::ThreadRealtimeStartParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppStartRealtimeSessionRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            prompt: value.prompt,
+            session_id: value.session_id,
+            client_controlled_handoff: value.client_controlled_handoff,
+            dynamic_tools: value
+                .dynamic_tools
+                .map(|tools| {
+                    tools
+                        .into_iter()
+                        .map(dynamic_tool_spec_into_upstream)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppAppendRealtimeAudioRequest {
+    pub thread_id: String,
+    pub audio: AppRealtimeAudioChunk,
+}
+
+impl From<AppAppendRealtimeAudioRequest> for upstream::ThreadRealtimeAppendAudioParams {
+    fn from(value: AppAppendRealtimeAudioRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            audio: realtime_audio_chunk_into_upstream(value.audio),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppAppendRealtimeTextRequest {
+    pub thread_id: String,
+    pub text: String,
+}
+
+impl From<AppAppendRealtimeTextRequest> for upstream::ThreadRealtimeAppendTextParams {
+    fn from(value: AppAppendRealtimeTextRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            text: value.text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppStopRealtimeSessionRequest {
+    pub thread_id: String,
+}
+
+impl From<AppStopRealtimeSessionRequest> for upstream::ThreadRealtimeStopParams {
+    fn from(value: AppStopRealtimeSessionRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppResolveRealtimeHandoffRequest {
+    pub thread_id: String,
+    pub tool_call_output: String,
+}
+
+impl From<AppResolveRealtimeHandoffRequest> for upstream::ThreadRealtimeResolveHandoffParams {
+    fn from(value: AppResolveRealtimeHandoffRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            tool_call_output: value.tool_call_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppFinalizeRealtimeHandoffRequest {
+    pub thread_id: String,
+}
+
+impl From<AppFinalizeRealtimeHandoffRequest> for upstream::ThreadRealtimeFinalizeHandoffParams {
+    fn from(value: AppFinalizeRealtimeHandoffRequest) -> Self {
+        Self {
+            thread_id: value.thread_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppStartReviewRequest {
+    pub thread_id: String,
+    pub target: AppReviewTarget,
+    pub delivery: Option<String>,
+}
+
+impl TryFrom<AppStartReviewRequest> for upstream::ReviewStartParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppStartReviewRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            target: review_target_into_upstream(value.target),
+            delivery: review_delivery_into_upstream(value.delivery)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppRefreshModelsRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+    pub include_hidden: bool,
+}
+
+impl From<AppRefreshModelsRequest> for upstream::ModelListParams {
+    fn from(value: AppRefreshModelsRequest) -> Self {
+        Self {
+            cursor: value.cursor,
+            limit: value.limit,
+            include_hidden: Some(value.include_hidden),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppListExperimentalFeaturesRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+impl From<AppListExperimentalFeaturesRequest> for upstream::ExperimentalFeatureListParams {
+    fn from(value: AppListExperimentalFeaturesRequest) -> Self {
+        Self {
+            cursor: value.cursor,
+            limit: value.limit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+#[derive(uniffi::Enum)]
+pub enum AppLoginAccountRequest {
+    #[serde(rename = "apiKey")]
+    #[serde(rename_all = "camelCase")]
+    ApiKey {
+        #[serde(rename = "apiKey")]
+        api_key: String,
+    },
+    #[serde(rename = "chatgpt")]
+    Chatgpt,
+    #[serde(rename = "chatgptAuthTokens")]
+    #[serde(rename_all = "camelCase")]
+    ChatgptAuthTokens {
+        access_token: String,
+        chatgpt_account_id: String,
+        chatgpt_plan_type: Option<String>,
+    },
+}
+
+impl From<AppLoginAccountRequest> for upstream::LoginAccountParams {
+    fn from(value: AppLoginAccountRequest) -> Self {
+        match value {
+            AppLoginAccountRequest::ApiKey { api_key } => Self::ApiKey { api_key },
+            AppLoginAccountRequest::Chatgpt => Self::Chatgpt,
+            AppLoginAccountRequest::ChatgptAuthTokens {
+                access_token,
+                chatgpt_account_id,
+                chatgpt_plan_type,
+            } => Self::ChatgptAuthTokens {
+                access_token,
+                chatgpt_account_id,
+                chatgpt_plan_type,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppRefreshAccountRequest {
+    pub refresh_token: bool,
+}
+
+impl From<AppRefreshAccountRequest> for upstream::GetAccountParams {
+    fn from(value: AppRefreshAccountRequest) -> Self {
+        Self {
+            refresh_token: value.refresh_token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AuthStatusRequest {
+    pub include_token: Option<bool>,
+    pub refresh_token: Option<bool>,
+}
+
+impl From<AuthStatusRequest> for upstream::GetAuthStatusParams {
+    fn from(value: AuthStatusRequest) -> Self {
+        Self {
+            include_token: value.include_token,
+            refresh_token: value.refresh_token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppSearchFilesRequest {
+    pub query: String,
+    pub roots: Vec<String>,
+    pub cancellation_token: Option<String>,
+}
+
+impl From<AppSearchFilesRequest> for upstream::FuzzyFileSearchParams {
+    fn from(value: AppSearchFilesRequest) -> Self {
+        Self {
+            query: value.query,
+            roots: value.roots,
+            cancellation_token: value.cancellation_token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppExecCommandRequest {
+    pub command: Vec<String>,
+    pub process_id: Option<String>,
+    pub tty: bool,
+    pub stream_stdin: bool,
+    pub stream_stdout_stderr: bool,
+    pub output_bytes_cap: Option<u64>,
+    pub disable_output_cap: bool,
+    pub disable_timeout: bool,
+    pub timeout_ms: Option<i64>,
+    pub cwd: Option<String>,
+    pub sandbox_policy: Option<AppSandboxPolicy>,
+}
+
+impl TryFrom<AppExecCommandRequest> for upstream::CommandExecParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppExecCommandRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            command: value.command,
+            process_id: value.process_id,
+            tty: value.tty,
+            stream_stdin: value.stream_stdin,
+            stream_stdout_stderr: value.stream_stdout_stderr,
+            output_bytes_cap: value
+                .output_bytes_cap
+                .map(|cap| {
+                    usize::try_from(cap).map_err(|error| {
+                        RpcClientError::Serialization(format!(
+                            "output_bytes_cap out of range: {error}"
+                        ))
+                    })
+                })
+                .transpose()?,
+            disable_output_cap: value.disable_output_cap,
+            disable_timeout: value.disable_timeout,
+            timeout_ms: value.timeout_ms,
+            cwd: value.cwd.map(PathBuf::from),
+            env: None,
+            size: None,
+            sandbox_policy: value
+                .sandbox_policy
+                .map(sandbox_policy_into_upstream)
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppWriteConfigValueRequest {
+    pub key_path: String,
+    pub value: JsonValue,
+    pub merge_strategy: AppMergeStrategy,
+    pub file_path: Option<String>,
+    pub expected_version: Option<String>,
+}
+
+impl TryFrom<AppWriteConfigValueRequest> for upstream::ConfigValueWriteParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppWriteConfigValueRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            key_path: value.key_path,
+            value: value.value.try_into()?,
+            merge_strategy: merge_strategy_into_upstream(value.merge_strategy),
+            file_path: value.file_path,
+            expected_version: value.expected_version,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,8 +951,6 @@ mod tests {
             grant_root: None,
             cwd: Some("/home/user".to_string()),
             reason: Some("Command needs approval".to_string()),
-            method: "item/commandExecution/requestApproval".to_string(),
-            raw_params_json: "{}".to_string(),
         };
         let json = serde_json::to_string(&approval).unwrap();
         let deserialized: PendingApproval = serde_json::from_str(&json).unwrap();
@@ -125,8 +971,6 @@ mod tests {
             grant_root: Some("/home/user".to_string()),
             cwd: None,
             reason: Some("File modification requested".to_string()),
-            method: "item/fileChange/requestApproval".to_string(),
-            raw_params_json: r#"{"diff":"+new line"}"#.to_string(),
         };
         let json = serde_json::to_string(&approval).unwrap();
         let deserialized: PendingApproval = serde_json::from_str(&json).unwrap();
@@ -147,8 +991,6 @@ mod tests {
             grant_root: None,
             cwd: None,
             reason: None,
-            method: "item/permissions/requestApproval".to_string(),
-            raw_params_json: "null".to_string(),
         };
         let json = serde_json::to_value(&approval).unwrap();
         assert_eq!(json["id"], "1");

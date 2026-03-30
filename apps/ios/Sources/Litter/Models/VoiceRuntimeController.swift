@@ -92,9 +92,9 @@ final class VoiceRuntimeController: VoiceActions {
         }
 
         do {
-            _ = try await requireAppModel().rpc.threadRealtimeStop(
+            _ = try await requireAppModel().client.stopRealtimeSession(
                 serverId: key.serverId,
-                params: ThreadRealtimeStopParams(threadId: key.threadId)
+                params: AppStopRealtimeSessionRequest(threadId: key.threadId)
             )
             if voiceStopRequestedThreadKey == key {
                 voiceStopRequestedThreadKey = nil
@@ -162,15 +162,15 @@ final class VoiceRuntimeController: VoiceActions {
         if let storedThreadId = persistedLocalVoiceThreadId() {
             let key = ThreadKey(serverId: serverId, threadId: storedThreadId)
             do {
-                _ = try await requireAppModel().rpc.threadResume(
+                _ = try await requireAppModel().client.resumeThread(
                     serverId: key.serverId,
                     params: AppThreadLaunchConfig(
                         model: model,
-                        approvalPolicy: AskForApproval(wireValue: approvalPolicy),
-                        sandbox: SandboxMode(wireValue: sandboxMode),
+                        approvalPolicy: AppAskForApproval(wireValue: approvalPolicy),
+                        sandbox: AppSandboxMode(wireValue: sandboxMode),
                         developerInstructions: nil,
                         persistExtendedHistory: true
-                    ).threadResumeParams(
+                    ).threadResumeRequest(
                         threadId: key.threadId,
                         cwdOverride: preferredVoiceThreadCwd(for: key, fallback: cwd)
                     )
@@ -183,17 +183,16 @@ final class VoiceRuntimeController: VoiceActions {
             }
         }
 
-        let response = try await requireAppModel().rpc.threadStart(
+        let key = try await requireAppModel().client.startThread(
             serverId: serverId,
             params: AppThreadLaunchConfig(
                 model: model,
-                approvalPolicy: AskForApproval(wireValue: approvalPolicy),
-                sandbox: SandboxMode(wireValue: sandboxMode),
+                approvalPolicy: AppAskForApproval(wireValue: approvalPolicy),
+                sandbox: AppSandboxMode(wireValue: sandboxMode),
                 developerInstructions: nil,
                 persistExtendedHistory: true
-            ).threadStartParams(cwd: preferredVoiceThreadCwd(for: nil, fallback: cwd))
+            ).threadStartRequest(cwd: preferredVoiceThreadCwd(for: nil, fallback: cwd))
         )
-        let key = ThreadKey(serverId: serverId, threadId: response.thread.id)
         requireAppModel().store.setActiveThread(key: key)
         setPersistedLocalVoiceThreadId(key.threadId)
         await requireAppModel().refreshSnapshot()
@@ -226,7 +225,7 @@ final class VoiceRuntimeController: VoiceActions {
 
         var thread = appModel.snapshot?.threadSnapshot(for: key)
         if thread == nil {
-            _ = try? await appModel.rpc.threadResume(
+            _ = try? await appModel.client.resumeThread(
                 serverId: key.serverId,
                 params: AppThreadLaunchConfig(
                     model: model,
@@ -234,7 +233,7 @@ final class VoiceRuntimeController: VoiceActions {
                     sandbox: nil,
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                ).threadResumeParams(threadId: key.threadId, cwdOverride: nil)
+                ).threadResumeRequest(threadId: key.threadId, cwdOverride: nil)
             )
             appModel.store.setActiveThread(key: key)
             await appModel.refreshSnapshot()
@@ -262,9 +261,9 @@ final class VoiceRuntimeController: VoiceActions {
 
         do {
             let dynamicTools = try CrossServerTools.buildDynamicToolSpecs().map { try $0.rpcSpec() }
-            _ = try await appModel.rpc.threadRealtimeStart(
+            _ = try await appModel.client.startRealtimeSession(
                 serverId: key.serverId,
-                params: ThreadRealtimeStartParams(
+                params: AppStartRealtimeSessionRequest(
                     threadId: key.threadId,
                     prompt: realtimePrompt(),
                     sessionId: runtimeSessionId,
@@ -273,9 +272,9 @@ final class VoiceRuntimeController: VoiceActions {
                 )
             )
         } catch {
-            _ = try? await appModel.rpc.threadRealtimeStop(
+            _ = try? await appModel.client.stopRealtimeSession(
                 serverId: key.serverId,
-                params: ThreadRealtimeStopParams(threadId: key.threadId)
+                params: AppStopRealtimeSessionRequest(threadId: key.threadId)
             )
             failVoiceSession(error.localizedDescription)
             throw error
@@ -321,14 +320,14 @@ final class VoiceRuntimeController: VoiceActions {
     private func cleanupKnownRealtimeVoiceSessions(beforeStartingOn key: ThreadKey? = nil) async {
         for candidate in knownRealtimeVoiceThreadKeys where candidate != key {
             guard isServerConnected(candidate.serverId) else { continue }
-            _ = try? await requireAppModel().rpc.threadRealtimeStop(
+            _ = try? await requireAppModel().client.stopRealtimeSession(
                 serverId: candidate.serverId,
-                params: ThreadRealtimeStopParams(threadId: candidate.threadId)
+                params: AppStopRealtimeSessionRequest(threadId: candidate.threadId)
             )
         }
     }
 
-    private func handleRealtimeStarted(key: ThreadKey, notification: ThreadRealtimeStartedNotification) {
+    private func handleRealtimeStarted(key: ThreadKey, notification: AppRealtimeStartedNotification) {
         guard var session = activeVoiceSession, session.threadKey == key else { return }
         session.sessionId = notification.sessionId
         session.isListening = true
@@ -374,12 +373,12 @@ final class VoiceRuntimeController: VoiceActions {
         scheduleSharedVoiceSessionSync(for: key)
     }
 
-    private func handleRealtimeOutputAudioDelta(key: ThreadKey, notification: ThreadRealtimeOutputAudioDeltaNotification) {
+    private func handleRealtimeOutputAudioDelta(key: ThreadKey, notification: AppRealtimeOutputAudioDeltaNotification) {
         guard activeVoiceSession?.threadKey == key else { return }
         voiceSessionCoordinator.enqueueOutputAudio(notification.audio)
     }
 
-    private func handleRealtimeError(key: ThreadKey, notification: ThreadRealtimeErrorNotification) {
+    private func handleRealtimeError(key: ThreadKey, notification: AppRealtimeErrorNotification) {
         guard activeVoiceSession?.threadKey == key else { return }
         if notification.message.contains("active response in progress") {
             return
@@ -397,7 +396,7 @@ final class VoiceRuntimeController: VoiceActions {
         scheduleSharedVoiceSessionSync(for: key)
     }
 
-    private func handleRealtimeClosed(key: ThreadKey, notification: ThreadRealtimeClosedNotification) {
+    private func handleRealtimeClosed(key: ThreadKey, notification: AppRealtimeClosedNotification) {
         guard activeVoiceSession?.threadKey == key else { return }
 
         let reason = notification.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -453,7 +452,7 @@ final class VoiceRuntimeController: VoiceActions {
     private func executeHandoffStartThread(handoffId: String, serverId: String, cwd: String) async {
         guard let appModel else { return }
         do {
-            let response = try await appModel.rpc.threadStart(
+            let key = try await appModel.client.startThread(
                 serverId: serverId,
                 params: AppThreadLaunchConfig(
                     model: handoffModel,
@@ -461,9 +460,8 @@ final class VoiceRuntimeController: VoiceActions {
                     sandbox: nil,
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                ).threadStartParams(cwd: cwd)
+                ).threadStartRequest(cwd: cwd)
             )
-            let key = ThreadKey(serverId: serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: key)
             await appModel.refreshSnapshot()
             handoffManager.reportThreadCreated(handoffId: handoffId, serverId: serverId, threadId: key.threadId)
@@ -516,9 +514,9 @@ final class VoiceRuntimeController: VoiceActions {
         text: String
     ) async {
         _ = handoffId
-        _ = try? await requireAppModel().rpc.threadRealtimeResolveHandoff(
+        _ = try? await requireAppModel().client.resolveRealtimeHandoff(
             serverId: voiceServerId,
-            params: ThreadRealtimeResolveHandoffParams(
+            params: AppResolveRealtimeHandoffRequest(
                 threadId: voiceThreadId,
                 toolCallOutput: text
             )
@@ -531,9 +529,9 @@ final class VoiceRuntimeController: VoiceActions {
         voiceServerId: String,
         voiceThreadId: String
     ) async {
-        _ = try? await requireAppModel().rpc.threadRealtimeFinalizeHandoff(
+        _ = try? await requireAppModel().client.finalizeRealtimeHandoff(
             serverId: voiceServerId,
-            params: ThreadRealtimeFinalizeHandoffParams(
+            params: AppFinalizeRealtimeHandoffRequest(
                 threadId: voiceThreadId
             )
         )
@@ -632,12 +630,12 @@ final class VoiceRuntimeController: VoiceActions {
         }
     }
 
-    private func appendRealtimeAudioChunk(_ chunk: ThreadRealtimeAudioChunk, for key: ThreadKey) async {
+    private func appendRealtimeAudioChunk(_ chunk: AppRealtimeAudioChunk, for key: ThreadKey) async {
         guard activeVoiceSession?.threadKey == key, isServerConnected(key.serverId) else { return }
         do {
-            _ = try await requireAppModel().rpc.threadRealtimeAppendAudio(
+            _ = try await requireAppModel().client.appendRealtimeAudio(
                 serverId: key.serverId,
-                params: ThreadRealtimeAppendAudioParams(threadId: key.threadId, audio: chunk)
+                params: AppAppendRealtimeAudioRequest(threadId: key.threadId, audio: chunk)
             )
         } catch {
             failVoiceSession(error.localizedDescription)
@@ -817,7 +815,7 @@ final class VoiceRuntimeController: VoiceActions {
 }
 
 private extension VoiceRuntimeController {
-    func applySharedVoiceSession(_ shared: VoiceSessionSnapshot?, to session: inout VoiceSessionState) {
+    func applySharedVoiceSession(_ shared: AppVoiceSessionSnapshot?, to session: inout VoiceSessionState) {
         session.phase = shared?.phase.map(voiceSessionPhase) ?? .connecting
         session.lastError = shared?.lastError
         session.handoffRemoteThreadKey = shared?.handoffThreadKey

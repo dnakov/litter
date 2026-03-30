@@ -17,7 +17,7 @@ enum MessageContentBridge {
 
     private static let store = MessageParser()
 
-    private static func assistantContentSegments(from rustSegments: [FfiMessageSegment]) -> [AssistantContentSegment] {
+    private static func assistantContentSegments(from rustSegments: [AppMessageSegment]) -> [AssistantContentSegment] {
         rustSegments.compactMap { segment -> AssistantContentSegment? in
             switch segment {
             case .text(text: let text):
@@ -38,7 +38,7 @@ enum MessageContentBridge {
     }
 }
 
-private extension FfiToolCallKind {
+private extension AppToolCallKind {
     func toToolCallKind() -> ToolCallKind? {
         switch self {
         case .commandExecution: return .commandExecution
@@ -56,18 +56,7 @@ private extension FfiToolCallKind {
     }
 }
 
-private extension ToolCallStatus {
-    func toToolCallStatus() -> ToolCallStatus {
-        switch self {
-        case .inProgress: return .inProgress
-        case .completed: return .completed
-        case .failed: return .failed
-        case .unknown: return .unknown
-        }
-    }
-}
-
-private extension FfiToolCallSectionContent {
+private extension AppToolCallSectionContent {
     func toToolCallSection(label: String) -> ToolCallSection {
         switch self {
         case .keyValue(let entries):
@@ -91,7 +80,7 @@ private extension FfiToolCallSectionContent {
     }
 }
 
-private extension FfiToolCallCard {
+private extension AppToolCallCard {
     func toToolCallCardModel() -> ToolCallCardModel? {
         guard let kind = kind.toToolCallKind() else { return nil }
         let mappedSections = sections.map { $0.content.toToolCallSection(label: $0.label) }
@@ -115,7 +104,7 @@ private extension FfiToolCallCard {
             kind: kind,
             title: title,
             summary: summary,
-            status: status.toToolCallStatus(),
+            status: status,
             duration: duration,
             sections: normalizedSections,
             commandContext: commandContext

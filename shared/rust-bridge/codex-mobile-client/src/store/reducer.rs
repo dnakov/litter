@@ -12,10 +12,10 @@ use crate::conversation_uniffi::HydratedConversationItem;
 use crate::session::connection::ServerConfig;
 use crate::session::events::UiEvent;
 use crate::types::{
-    PendingApproval, PendingUserInputAnswer, PendingUserInputOption, PendingUserInputQuestion,
-    PendingUserInputRequest, ThreadInfo, ThreadKey, ThreadSummaryStatus, generated,
+    PendingApproval, PendingApprovalKey, PendingApprovalSeed, PendingApprovalWithSeed,
+    PendingUserInputAnswer, PendingUserInputRequest, ThreadInfo, ThreadKey, ThreadSummaryStatus,
 };
-use crate::uniffi_shared::{
+use crate::types::{
     AppOperationStatus, AppVoiceSessionPhase, AppVoiceTranscriptEntry, AppVoiceTranscriptUpdate,
 };
 
@@ -27,8 +27,8 @@ use super::boundary::{
     current_agent_directory_version, project_thread_state_update, project_thread_update,
 };
 use super::snapshot::{
-    AppSnapshot, QueuedFollowUpPreview, ServerConnectionProgressSnapshot, ServerHealthSnapshot,
-    ServerSnapshot, ThreadSnapshot, VoiceSessionSnapshot,
+    AppSnapshot, AppQueuedFollowUpPreview, AppConnectionProgressSnapshot, ServerHealthSnapshot,
+    ServerSnapshot, ThreadSnapshot, AppVoiceSessionSnapshot,
 };
 use super::updates::{AppUpdate, ThreadStreamingDeltaKind};
 use super::voice::{VoiceDerivedUpdate, VoiceRealtimeState};
@@ -155,6 +155,9 @@ impl AppStoreReducer {
                     .is_none_or(|tid| !removed_thread_keys.iter().any(|key| key.thread_id == tid))
             });
             snapshot
+                .pending_approval_seeds
+                .retain(|key, _| key.server_id != server_id);
+            snapshot
                 .pending_user_inputs
                 .retain(|request| request.server_id != server_id);
             if snapshot
@@ -163,7 +166,7 @@ impl AppStoreReducer {
                 .as_ref()
                 .is_some_and(|key| key.server_id == server_id)
             {
-                snapshot.voice_session = VoiceSessionSnapshot::default();
+                snapshot.voice_session = AppVoiceSessionSnapshot::default();
             }
             agent_directory_version = current_agent_directory_version(&snapshot);
         }
@@ -246,6 +249,17 @@ impl AppStoreReducer {
                         .any(|key| key.thread_id.as_str() == tid)
                 })
             });
+            let remaining_approval_keys = snapshot
+                .pending_approvals
+                .iter()
+                .map(|approval| PendingApprovalKey {
+                    server_id: approval.server_id.clone(),
+                    request_id: approval.id.clone(),
+                })
+                .collect::<HashSet<_>>();
+            snapshot
+                .pending_approval_seeds
+                .retain(|key, _| remaining_approval_keys.contains(key));
             if snapshot.pending_approvals.len() != approvals_before {
                 pending_approvals = Some(snapshot.pending_approvals.clone());
             }
@@ -267,7 +281,7 @@ impl AppStoreReducer {
                     key.server_id == server_id && !incoming_ids.contains(&key.thread_id)
                 })
             {
-                snapshot.voice_session = VoiceSessionSnapshot::default();
+                snapshot.voice_session = AppVoiceSessionSnapshot::default();
                 voice_session_changed = true;
             }
             agent_directory_version = current_agent_directory_version(&snapshot);
@@ -314,7 +328,7 @@ impl AppStoreReducer {
     pub fn enqueue_thread_follow_up_preview(
         &self,
         key: &ThreadKey,
-        preview: QueuedFollowUpPreview,
+        preview: AppQueuedFollowUpPreview,
     ) {
         if self
             .mutate_thread_with_result(key, |thread| {
@@ -348,7 +362,7 @@ impl AppStoreReducer {
                 snapshot.active_thread = None;
             }
             if snapshot.voice_session.active_thread.as_ref() == Some(key) {
-                snapshot.voice_session = VoiceSessionSnapshot::default();
+                snapshot.voice_session = AppVoiceSessionSnapshot::default();
             }
             snapshot
                 .pending_approvals
@@ -384,8 +398,38 @@ impl AppStoreReducer {
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
             snapshot.pending_approvals = approvals.clone();
+            snapshot.pending_approval_seeds.clear();
         }
         self.emit(AppUpdate::PendingApprovalsChanged { approvals });
+    }
+
+    pub(crate) fn replace_pending_approvals_with_seeds(
+        &self,
+        approvals: Vec<PendingApprovalWithSeed>,
+    ) {
+        let public_approvals = {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            snapshot.pending_approvals = approvals
+                .iter()
+                .map(|entry| entry.approval.clone())
+                .collect();
+            snapshot.pending_approval_seeds = approvals
+                .into_iter()
+                .map(|entry| {
+                    (
+                        PendingApprovalKey {
+                            server_id: entry.approval.server_id.clone(),
+                            request_id: entry.approval.id.clone(),
+                        },
+                        entry.seed,
+                    )
+                })
+                .collect();
+            snapshot.pending_approvals.clone()
+        };
+        self.emit(AppUpdate::PendingApprovalsChanged {
+            approvals: public_approvals,
+        });
     }
 
     pub fn replace_pending_user_inputs(&self, requests: Vec<PendingUserInputRequest>) {
@@ -402,9 +446,28 @@ impl AppStoreReducer {
             snapshot
                 .pending_approvals
                 .retain(|approval| approval.id != request_id);
+            snapshot
+                .pending_approval_seeds
+                .retain(|key, _| key.request_id != request_id);
             snapshot.pending_approvals.clone()
         };
         self.emit(AppUpdate::PendingApprovalsChanged { approvals });
+    }
+
+    pub(crate) fn pending_approval_seed(
+        &self,
+        server_id: &str,
+        request_id: &str,
+    ) -> Option<PendingApprovalSeed> {
+        self.snapshot
+            .read()
+            .expect("app store lock poisoned")
+            .pending_approval_seeds
+            .get(&PendingApprovalKey {
+                server_id: server_id.to_string(),
+                request_id: request_id.to_string(),
+            })
+            .cloned()
     }
 
     pub fn resolve_pending_user_input(&self, request_id: &str) {
@@ -463,7 +526,7 @@ impl AppStoreReducer {
     pub fn update_server_account(
         &self,
         server_id: &str,
-        account: Option<generated::Account>,
+        account: Option<crate::types::Account>,
         requires_openai_auth: bool,
     ) {
         {
@@ -481,7 +544,7 @@ impl AppStoreReducer {
     pub fn update_server_rate_limits(
         &self,
         server_id: &str,
-        rate_limits: Option<generated::RateLimitSnapshot>,
+        rate_limits: Option<crate::types::RateLimitSnapshot>,
     ) {
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
@@ -494,7 +557,7 @@ impl AppStoreReducer {
         });
     }
 
-    pub fn update_server_models(&self, server_id: &str, models: Option<Vec<generated::Model>>) {
+    pub fn update_server_models(&self, server_id: &str, models: Option<Vec<crate::types::ModelInfo>>) {
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
             if let Some(server) = snapshot.servers.get_mut(server_id) {
@@ -533,7 +596,7 @@ impl AppStoreReducer {
     pub fn update_server_connection_progress(
         &self,
         server_id: &str,
-        connection_progress: Option<ServerConnectionProgressSnapshot>,
+        connection_progress: Option<AppConnectionProgressSnapshot>,
     ) {
         {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
@@ -546,7 +609,7 @@ impl AppStoreReducer {
         });
     }
 
-    pub fn apply_ui_event(&self, event: &UiEvent) {
+    pub(crate) fn apply_ui_event(&self, event: &UiEvent) {
         match event {
             UiEvent::ThreadStarted { key, notification } => {
                 let info = thread_info_from_upstream(notification.thread.clone());
@@ -766,9 +829,16 @@ impl AppStoreReducer {
                     if !snapshot
                         .pending_approvals
                         .iter()
-                        .any(|existing| existing.id == approval.id)
+                        .any(|existing| existing.id == approval.approval.id)
                     {
-                        snapshot.pending_approvals.push(approval.clone());
+                        snapshot.pending_approvals.push(approval.approval.clone());
+                        snapshot.pending_approval_seeds.insert(
+                            PendingApprovalKey {
+                                server_id: approval.approval.server_id.clone(),
+                                request_id: approval.approval.id.clone(),
+                            },
+                            approval.seed.clone(),
+                        );
                     }
                     snapshot.pending_approvals.clone()
                 };
@@ -786,11 +856,8 @@ impl AppStoreReducer {
                 server_id,
                 notification,
             } => {
-                if let Ok(rate_limits) =
-                    crate::rpc::convert_generated_field(notification.rate_limits.clone())
-                {
-                    self.update_server_rate_limits(server_id, Some(rate_limits));
-                }
+                let rate_limits = notification.rate_limits.clone().into();
+                self.update_server_rate_limits(server_id, Some(rate_limits));
             }
             UiEvent::ConnectionStateChanged { server_id, health } => {
                 {
@@ -829,14 +896,21 @@ impl AppStoreReducer {
                     }
                 }
                 self.emit(AppUpdate::VoiceSessionChanged);
-                let generated_notification = generated::ThreadRealtimeStartedNotification {
+                let protocol_notification = crate::types::AppRealtimeStartedNotification {
                     thread_id: notification.thread_id.clone(),
                     session_id: notification.session_id.clone(),
-                    version: format!("{:?}", notification.version),
+                    version: match notification.version {
+                        codex_protocol::protocol::RealtimeConversationVersion::V1 => {
+                            "v1".to_string()
+                        }
+                        codex_protocol::protocol::RealtimeConversationVersion::V2 => {
+                            "v2".to_string()
+                        }
+                    },
                 };
                 self.emit(AppUpdate::RealtimeStarted {
                     key: key.clone(),
-                    notification: generated_notification,
+                    notification: protocol_notification,
                 });
                 self.emit_thread_state_update(key);
             }
@@ -858,41 +932,37 @@ impl AppStoreReducer {
                 }
             }
             UiEvent::RealtimeItemAdded { key, notification } => {
-                if let Ok(generated_item) =
-                    crate::rpc::convert_generated_field(notification.item.clone())
-                {
-                    for update in self.voice_state.handle_item(key, &generated_item) {
-                        match update {
-                            VoiceDerivedUpdate::Transcript(update) => {
-                                self.apply_voice_transcript_update(key, &update);
-                                self.emit(AppUpdate::RealtimeTranscriptUpdated {
-                                    key: key.clone(),
-                                    update,
-                                });
+                let protocol_item: crate::types::JsonValue = notification.item.clone().into();
+                for update in self.voice_state.handle_item(key, &protocol_item) {
+                    match update {
+                        VoiceDerivedUpdate::Transcript(update) => {
+                            self.apply_voice_transcript_update(key, &update);
+                            self.emit(AppUpdate::RealtimeTranscriptUpdated {
+                                key: key.clone(),
+                                update,
+                            });
+                        }
+                        VoiceDerivedUpdate::HandoffRequest(request) => {
+                            {
+                                let mut snapshot =
+                                    self.snapshot.write().expect("app store lock poisoned");
+                                snapshot.voice_session.phase = Some(AppVoiceSessionPhase::Handoff);
                             }
-                            VoiceDerivedUpdate::HandoffRequest(request) => {
-                                {
-                                    let mut snapshot =
-                                        self.snapshot.write().expect("app store lock poisoned");
-                                    snapshot.voice_session.phase =
-                                        Some(AppVoiceSessionPhase::Handoff);
-                                }
-                                self.emit(AppUpdate::VoiceSessionChanged);
-                                self.emit(AppUpdate::RealtimeHandoffRequested {
-                                    key: key.clone(),
-                                    request,
-                                });
+                            self.emit(AppUpdate::VoiceSessionChanged);
+                            self.emit(AppUpdate::RealtimeHandoffRequested {
+                                key: key.clone(),
+                                request,
+                            });
+                        }
+                        VoiceDerivedUpdate::SpeechStarted => {
+                            {
+                                let mut snapshot =
+                                    self.snapshot.write().expect("app store lock poisoned");
+                                snapshot.voice_session.phase =
+                                    Some(AppVoiceSessionPhase::Listening);
                             }
-                            VoiceDerivedUpdate::SpeechStarted => {
-                                {
-                                    let mut snapshot =
-                                        self.snapshot.write().expect("app store lock poisoned");
-                                    snapshot.voice_session.phase =
-                                        Some(AppVoiceSessionPhase::Listening);
-                                }
-                                self.emit(AppUpdate::VoiceSessionChanged);
-                                self.emit(AppUpdate::RealtimeSpeechStarted { key: key.clone() });
-                            }
+                            self.emit(AppUpdate::VoiceSessionChanged);
+                            self.emit(AppUpdate::RealtimeSpeechStarted { key: key.clone() });
                         }
                     }
                 }
@@ -905,20 +975,20 @@ impl AppStoreReducer {
                     }
                 }
                 self.emit(AppUpdate::VoiceSessionChanged);
-                let generated_notification =
-                    generated::ThreadRealtimeOutputAudioDeltaNotification {
+                let protocol_notification =
+                    crate::types::AppRealtimeOutputAudioDeltaNotification {
                         thread_id: notification.thread_id.clone(),
-                        audio: generated::ThreadRealtimeAudioChunk {
+                        audio: crate::types::AppRealtimeAudioChunk {
                             item_id: notification.audio.item_id.clone(),
                             data: notification.audio.data.clone(),
                             sample_rate: notification.audio.sample_rate,
-                            num_channels: notification.audio.num_channels as u32,
+                            num_channels: notification.audio.num_channels.into(),
                             samples_per_channel: notification.audio.samples_per_channel,
                         },
                     };
                 self.emit(AppUpdate::RealtimeOutputAudioDelta {
                     key: key.clone(),
-                    notification: generated_notification,
+                    notification: protocol_notification,
                 });
             }
             UiEvent::RealtimeError { key, notification } => {
@@ -928,13 +998,13 @@ impl AppStoreReducer {
                     snapshot.voice_session.last_error = Some(notification.message.clone());
                 }
                 self.emit(AppUpdate::VoiceSessionChanged);
-                let generated_notification = generated::ThreadRealtimeErrorNotification {
+                let protocol_notification = crate::types::AppRealtimeErrorNotification {
                     thread_id: notification.thread_id.clone(),
                     message: notification.message.clone(),
                 };
                 self.emit(AppUpdate::RealtimeError {
                     key: key.clone(),
-                    notification: generated_notification,
+                    notification: protocol_notification,
                 });
             }
             UiEvent::RealtimeClosed { key, notification } => {
@@ -946,7 +1016,7 @@ impl AppStoreReducer {
                     }
                     let reason = notification.reason.as_deref().unwrap_or("").trim();
                     if reason.is_empty() || reason == "requested" {
-                        snapshot.voice_session = VoiceSessionSnapshot::default();
+                        snapshot.voice_session = AppVoiceSessionSnapshot::default();
                     } else {
                         snapshot.voice_session.active_thread = Some(key.clone());
                         snapshot.voice_session.session_id = None;
@@ -956,13 +1026,13 @@ impl AppStoreReducer {
                     }
                 }
                 self.emit(AppUpdate::VoiceSessionChanged);
-                let generated_notification = generated::ThreadRealtimeClosedNotification {
+                let protocol_notification = crate::types::AppRealtimeClosedNotification {
                     thread_id: notification.thread_id.clone(),
                     reason: notification.reason.clone(),
                 };
                 self.emit(AppUpdate::RealtimeClosed {
                     key: key.clone(),
-                    notification: generated_notification,
+                    notification: protocol_notification,
                 });
                 self.emit_thread_state_update(key);
             }
@@ -986,26 +1056,18 @@ impl AppStoreReducer {
                     }
                 }
             }
-            UiEvent::RawNotification {
-                server_id,
-                method,
-                params_json,
-            } => {
-                if method == "item/tool/requestUserInput" {
-                    if let Some(request) = pending_user_input_from_raw(server_id, params_json) {
-                        let requests = {
-                            let mut snapshot =
-                                self.snapshot.write().expect("app store lock poisoned");
-                            snapshot
-                                .pending_user_inputs
-                                .retain(|existing| existing.id != request.id);
-                            snapshot.pending_user_inputs.push(request);
-                            snapshot.pending_user_inputs.clone()
-                        };
-                        self.emit(AppUpdate::PendingUserInputsChanged { requests });
-                    }
-                }
+            UiEvent::UserInputRequested { request } => {
+                let requests = {
+                    let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+                    snapshot
+                        .pending_user_inputs
+                        .retain(|existing| existing.id != request.id);
+                    snapshot.pending_user_inputs.push(request.clone());
+                    snapshot.pending_user_inputs.clone()
+                };
+                self.emit(AppUpdate::PendingUserInputsChanged { requests });
             }
+            UiEvent::RawNotification { .. } => {}
             _ => {}
         }
     }
@@ -1226,14 +1288,17 @@ impl AppStoreReducer {
                     item,
                 });
             }
-            Some((Some(ItemMutationUpdate::CommandExecutionUpdated {
-                item_id,
-                status,
-                exit_code,
-                duration_ms,
-                process_id,
-                output_delta,
-            }), queued_changed)) => {
+            Some((
+                Some(ItemMutationUpdate::CommandExecutionUpdated {
+                    item_id,
+                    status,
+                    exit_code,
+                    duration_ms,
+                    process_id,
+                    output_delta,
+                }),
+                queued_changed,
+            )) => {
                 if queued_changed {
                     self.emit_thread_state_update(key);
                 }
@@ -1287,13 +1352,13 @@ impl AppStoreReducer {
 
         snapshot.voice_session.phase = Some(match (update.speaker, update.is_final) {
             (_, false) => match update.speaker {
-                crate::uniffi_shared::AppVoiceSpeaker::User => AppVoiceSessionPhase::Listening,
-                crate::uniffi_shared::AppVoiceSpeaker::Assistant => AppVoiceSessionPhase::Speaking,
+                crate::types::AppVoiceSpeaker::User => AppVoiceSessionPhase::Listening,
+                crate::types::AppVoiceSpeaker::Assistant => AppVoiceSessionPhase::Speaking,
             },
-            (crate::uniffi_shared::AppVoiceSpeaker::Assistant, true) => {
+            (crate::types::AppVoiceSpeaker::Assistant, true) => {
                 AppVoiceSessionPhase::Thinking
             }
-            (crate::uniffi_shared::AppVoiceSpeaker::User, true) => AppVoiceSessionPhase::Listening,
+            (crate::types::AppVoiceSpeaker::User, true) => AppVoiceSessionPhase::Listening,
         });
     }
 
@@ -1389,88 +1454,6 @@ impl AppStoreReducer {
         }
         let _ = self.updates_tx.send(update);
     }
-}
-
-fn pending_user_input_from_raw(
-    server_id: &str,
-    params_json: &str,
-) -> Option<PendingUserInputRequest> {
-    let raw: serde_json::Value = serde_json::from_str(params_json).ok()?;
-    let request_id = raw.get("requestId")?.as_str()?.to_string();
-    let params = raw.get("params")?;
-    let thread_id = params
-        .get("thread_id")
-        .or_else(|| params.get("threadId"))?
-        .as_str()?
-        .to_string();
-    let turn_id = params
-        .get("turn_id")
-        .or_else(|| params.get("turnId"))?
-        .as_str()?
-        .to_string();
-    let item_id = params
-        .get("item_id")
-        .or_else(|| params.get("itemId"))?
-        .as_str()?
-        .to_string();
-    let questions = params
-        .get("questions")?
-        .as_array()?
-        .iter()
-        .filter_map(|question| {
-            Some(PendingUserInputQuestion {
-                id: question.get("id")?.as_str()?.to_string(),
-                header: question
-                    .get("header")
-                    .and_then(|value| value.as_str())
-                    .map(ToString::to_string),
-                question: question.get("question")?.as_str()?.to_string(),
-                is_other_allowed: question
-                    .get("is_other_allowed")
-                    .or_else(|| question.get("isOtherAllowed"))
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-                is_secret: question
-                    .get("is_secret")
-                    .or_else(|| question.get("isSecret"))
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-                options: question
-                    .get("options")
-                    .and_then(|value| value.as_array())
-                    .map(|options| {
-                        options
-                            .iter()
-                            .filter_map(|option| {
-                                Some(PendingUserInputOption {
-                                    label: option.get("label")?.as_str()?.to_string(),
-                                    description: option
-                                        .get("description")
-                                        .and_then(|value| value.as_str())
-                                        .map(ToString::to_string),
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
-            })
-        })
-        .collect::<Vec<_>>();
-
-    if questions.is_empty() {
-        return None;
-    }
-
-    Some(PendingUserInputRequest {
-        id: request_id,
-        server_id: server_id.to_string(),
-        thread_id,
-        turn_id,
-        item_id,
-        questions,
-        requester_agent_nickname: None,
-        requester_agent_role: None,
-    })
 }
 
 fn upsert_item(thread: &mut ThreadSnapshot, item: crate::conversation::ConversationItem) {
@@ -1612,6 +1595,7 @@ fn append_reasoning_delta(thread: &mut ThreadSnapshot, item_id: &str, delta: &st
 mod tests {
     use super::*;
     use crate::conversation::DividerData;
+    use crate::types::{PendingUserInputOption, PendingUserInputQuestion};
     use codex_app_server_protocol::{
         McpToolCallProgressNotification, ModelRerouteReason, ModelReroutedNotification,
         TurnDiffUpdatedNotification,
@@ -1963,17 +1947,18 @@ mod tests {
             server_id: "srv".to_string(),
             thread_id: "thread".to_string(),
         };
-        reducer.upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread")));
+        reducer
+            .upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread")));
         reducer.enqueue_thread_follow_up_preview(
             &key,
-            QueuedFollowUpPreview {
+            AppQueuedFollowUpPreview {
                 id: "queued-1".to_string(),
                 text: "first".to_string(),
             },
         );
         reducer.enqueue_thread_follow_up_preview(
             &key,
-            QueuedFollowUpPreview {
+            AppQueuedFollowUpPreview {
                 id: "queued-2".to_string(),
                 text: "second".to_string(),
             },
@@ -1998,10 +1983,11 @@ mod tests {
             server_id: "srv".to_string(),
             thread_id: "thread".to_string(),
         };
-        reducer.upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread")));
+        reducer
+            .upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread")));
         reducer.enqueue_thread_follow_up_preview(
             &key,
-            QueuedFollowUpPreview {
+            AppQueuedFollowUpPreview {
                 id: "queued-1".to_string(),
                 text: "queued follow-up".to_string(),
             },

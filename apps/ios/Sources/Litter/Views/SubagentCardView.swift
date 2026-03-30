@@ -446,7 +446,7 @@ private struct SubagentDetailSheet: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await appModel.rpc.threadResume(
+            _ = try await appModel.client.resumeThread(
                 serverId: threadKey.serverId,
                 params: AppThreadLaunchConfig(
                     model: nil,
@@ -454,7 +454,7 @@ private struct SubagentDetailSheet: View {
                     sandbox: nil,
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                ).threadResumeParams(threadId: threadKey.threadId, cwdOverride: nil)
+                ).threadResumeRequest(threadId: threadKey.threadId, cwdOverride: nil)
             )
             await appModel.refreshSnapshot()
         } catch {}

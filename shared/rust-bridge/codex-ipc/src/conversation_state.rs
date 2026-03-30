@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use codex_app_server_protocol as upstream;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -51,7 +51,7 @@ pub struct ProjectedApprovalRequest {
     pub grant_root: Option<String>,
     pub cwd: Option<String>,
     pub reason: Option<String>,
-    pub raw_params_json: String,
+    pub raw_params: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,7 +235,7 @@ pub fn project_conversation_state(
     conversation_id: &str,
     conversation_state: &Value,
 ) -> Result<ProjectedConversationState, ConversationProjectionError> {
-    let conversation: DesktopConversationState = serde_json::from_value(conversation_state.clone())
+    let conversation: DesktopConversationState = deserialize_json_value(conversation_state)
         .map_err(ConversationProjectionError::ConversationState)?;
 
     let turns = conversation
@@ -302,9 +302,8 @@ pub fn project_conversation_state(
 pub fn project_conversation_request_state(
     conversation_state: &Value,
 ) -> Result<ProjectedConversationRequestState, ConversationProjectionError> {
-    let conversation: DesktopConversationRequestState =
-        serde_json::from_value(conversation_state.clone())
-            .map_err(ConversationProjectionError::ConversationState)?;
+    let conversation: DesktopConversationRequestState = deserialize_json_value(conversation_state)
+        .map_err(ConversationProjectionError::ConversationState)?;
 
     Ok(ProjectedConversationRequestState {
         pending_approvals: project_pending_approvals(&conversation.requests),
@@ -320,8 +319,8 @@ pub fn project_conversation_turn(
     raw_turn: &Value,
     turn_index: usize,
 ) -> Result<upstream::Turn, ConversationProjectionError> {
-    let turn: DesktopTurn = serde_json::from_value(raw_turn.clone())
-        .map_err(ConversationProjectionError::ConversationState)?;
+    let turn: DesktopTurn =
+        deserialize_json_value(raw_turn).map_err(ConversationProjectionError::ConversationState)?;
     project_turn(&turn, turn_index)
 }
 
@@ -398,22 +397,21 @@ fn project_turn(
             continue;
         }
 
-        let mut normalized_item = raw_item.clone();
-        if item_type == "commandExecution" {
+        let item = if item_type == "commandExecution" {
+            let mut normalized_item = raw_item.clone();
             normalize_command_execution_status(
                 &mut normalized_item,
                 turn.status.as_deref(),
                 &turn.interrupted_command_execution_item_ids,
             );
+            deserialize_json_value::<upstream::ThreadItem>(&normalized_item)
+        } else {
+            deserialize_json_value::<upstream::ThreadItem>(raw_item)
         }
-
-        let item =
-            serde_json::from_value::<upstream::ThreadItem>(normalized_item).map_err(|source| {
-                ConversationProjectionError::TurnItem {
-                    item_type: item_type.to_string(),
-                    source,
-                }
-            })?;
+        .map_err(|source| ConversationProjectionError::TurnItem {
+            item_type: item_type.to_string(),
+            source,
+        })?;
 
         if let upstream::ThreadItem::UserMessage { content, .. } = &item {
             if *content == turn.params.input {
@@ -527,9 +525,9 @@ fn project_pending_approvals(requests: &[DesktopPendingRequest]) -> Vec<Projecte
         .filter_map(|request| match request.method.as_str() {
             COMMAND_APPROVAL_METHOD => {
                 let request_id = request_id_string(&request.id)?;
-                let params = serde_json::from_value::<
+                let params = deserialize_json_value::<
                     upstream::CommandExecutionRequestApprovalParams,
-                >(request.params.clone())
+                >(&request.params)
                 .ok()?;
                 Some(ProjectedApprovalRequest {
                     id: request_id,
@@ -543,13 +541,13 @@ fn project_pending_approvals(requests: &[DesktopPendingRequest]) -> Vec<Projecte
                     grant_root: None,
                     cwd: params.cwd.map(path_to_string),
                     reason: params.reason,
-                    raw_params_json: request.params.to_string(),
+                    raw_params: request.params.clone(),
                 })
             }
             FILE_CHANGE_APPROVAL_METHOD => {
                 let request_id = request_id_string(&request.id)?;
-                let params = serde_json::from_value::<upstream::FileChangeRequestApprovalParams>(
-                    request.params.clone(),
+                let params = deserialize_json_value::<upstream::FileChangeRequestApprovalParams>(
+                    &request.params,
                 )
                 .ok()?;
                 Some(ProjectedApprovalRequest {
@@ -564,13 +562,13 @@ fn project_pending_approvals(requests: &[DesktopPendingRequest]) -> Vec<Projecte
                     grant_root: params.grant_root.map(path_to_string),
                     cwd: None,
                     reason: params.reason,
-                    raw_params_json: request.params.to_string(),
+                    raw_params: request.params.clone(),
                 })
             }
             PERMISSIONS_APPROVAL_METHOD => {
                 let request_id = request_id_string(&request.id)?;
-                let params = serde_json::from_value::<upstream::PermissionsRequestApprovalParams>(
-                    request.params.clone(),
+                let params = deserialize_json_value::<upstream::PermissionsRequestApprovalParams>(
+                    &request.params,
                 )
                 .ok()?;
                 Some(ProjectedApprovalRequest {
@@ -585,7 +583,7 @@ fn project_pending_approvals(requests: &[DesktopPendingRequest]) -> Vec<Projecte
                     grant_root: None,
                     cwd: None,
                     reason: params.reason,
-                    raw_params_json: request.params.to_string(),
+                    raw_params: request.params.clone(),
                 })
             }
             _ => None,
@@ -607,10 +605,9 @@ fn project_pending_user_inputs(
         .filter(|request| request.method == USER_INPUT_METHOD)
         .filter_map(|request| {
             let request_id = request_id_string(&request.id)?;
-            let params = serde_json::from_value::<upstream::ToolRequestUserInputParams>(
-                request.params.clone(),
-            )
-            .ok()?;
+            let params =
+                deserialize_json_value::<upstream::ToolRequestUserInputParams>(&request.params)
+                    .ok()?;
             let questions = params
                 .questions
                 .into_iter()
@@ -646,6 +643,13 @@ fn project_pending_user_inputs(
             })
         })
         .collect()
+}
+
+fn deserialize_json_value<T>(value: &Value) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    T::deserialize(value)
 }
 
 fn resolve_thread_status(
@@ -1024,8 +1028,8 @@ mod tests {
 
     use super::{
         ProjectedApprovalKind, apply_stream_change_to_conversation_state,
-        project_conversation_state, project_conversation_state_to_thread,
-        seed_conversation_state_from_thread,
+        project_conversation_request_state, project_conversation_state,
+        project_conversation_state_to_thread, seed_conversation_state_from_thread,
     };
     use crate::protocol::params::{StreamChange, ThreadStreamStateChangedParams};
 
@@ -1295,6 +1299,80 @@ mod tests {
             }
             other => panic!("expected command execution item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn projects_request_state_pending_requests() {
+        let conversation_state = json!({
+            "agentNickname": "Scout",
+            "agentRole": "reviewer",
+            "requests": [
+                {
+                    "id": "req-1",
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "itemId": "cmd-1",
+                        "command": "git status",
+                        "cwd": "/repo",
+                        "reason": "Need approval"
+                    }
+                },
+                {
+                    "id": "req-2",
+                    "method": "item/tool/requestUserInput",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-2",
+                        "itemId": "tool-1",
+                        "questions": [
+                            {
+                                "id": "q-1",
+                                "header": "Target",
+                                "question": "Pick one",
+                                "isOther": false,
+                                "isSecret": false,
+                                "options": [
+                                    { "label": "Prod", "description": "Production" }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let projected = project_conversation_request_state(&conversation_state).unwrap();
+
+        assert_eq!(projected.pending_approvals.len(), 1);
+        assert_eq!(projected.pending_approvals[0].id, "req-1");
+        assert_eq!(
+            projected.pending_approvals[0].raw_params,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "cmd-1",
+                "command": "git status",
+                "cwd": "/repo",
+                "reason": "Need approval"
+            })
+        );
+
+        assert_eq!(projected.pending_user_inputs.len(), 1);
+        assert_eq!(projected.pending_user_inputs[0].id, "req-2");
+        assert_eq!(
+            projected.pending_user_inputs[0]
+                .requester_agent_nickname
+                .as_deref(),
+            Some("Scout")
+        );
+        assert_eq!(
+            projected.pending_user_inputs[0]
+                .requester_agent_role
+                .as_deref(),
+            Some("reviewer")
+        );
     }
 
     #[test]

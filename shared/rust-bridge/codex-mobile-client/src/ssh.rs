@@ -1178,11 +1178,6 @@ done"#,
         }
     }
 
-    /// Check if a TCP port is currently listening on the remote host.
-    async fn is_port_listening(&self, port: u16) -> bool {
-        self.is_port_listening_shell(port, RemoteShell::Posix).await
-    }
-
     async fn is_port_listening_shell(&self, port: u16, shell: RemoteShell) -> bool {
         let cmd = match shell {
             RemoteShell::Posix => format!(
@@ -1205,11 +1200,6 @@ fi"#
         }
     }
 
-    /// Check if a process is alive on the remote host.
-    async fn is_process_alive(&self, pid: u32) -> bool {
-        self.is_process_alive_shell(pid, RemoteShell::Posix).await
-    }
-
     async fn is_process_alive_shell(&self, pid: u32, shell: RemoteShell) -> bool {
         let cmd = match shell {
             RemoteShell::Posix => {
@@ -1223,12 +1213,6 @@ fi"#
             Ok(r) => r.stdout.trim() == "alive",
             Err(_) => false,
         }
-    }
-
-    /// Read the last 25 lines of a remote log file.
-    async fn fetch_log_tail(&self, log_path: &str) -> String {
-        self.fetch_log_tail_shell(log_path, RemoteShell::Posix)
-            .await
     }
 
     async fn fetch_log_tail_shell(&self, log_path: &str, shell: RemoteShell) -> String {
@@ -1324,12 +1308,6 @@ fi"#
         })
     }
 
-    /// Attempt to read the server version from `codex --version`.
-    async fn read_server_version(&self, codex_path: &str) -> Option<String> {
-        self.read_server_version_shell(codex_path, RemoteShell::Posix)
-            .await
-    }
-
     async fn read_server_version_shell(
         &self,
         codex_path: &str,
@@ -1420,10 +1398,6 @@ fi"#
                 Ok(result)
             }
         }
-    }
-
-    pub(crate) async fn detect_remote_platform(&self) -> Result<RemotePlatform, SshError> {
-        self.detect_remote_platform_with_shell(None).await
     }
 
     pub(crate) async fn detect_remote_platform_with_shell(

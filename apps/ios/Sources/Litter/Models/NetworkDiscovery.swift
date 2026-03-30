@@ -214,7 +214,7 @@ final class NetworkDiscovery {
 
         let subscription = store.scanServersWithMdnsContextProgressive(
             seeds: seeds.map {
-                FfiMdnsSeed(name: $0.name, host: $0.host, port: $0.port, serviceType: $0.serviceType)
+                AppMdnsSeed(name: $0.name, host: $0.host, port: $0.port, serviceType: $0.serviceType)
             },
             localIpv4: localIPv4
         )
@@ -246,7 +246,7 @@ final class NetworkDiscovery {
         }
     }
 
-    private func applyRustDiscoveryResults(_ discovered: [FfiDiscoveredServer]) {
+    private func applyRustDiscoveryResults(_ discovered: [AppDiscoveredServer]) {
         let now = Date()
         let metadataSources = loadSavedNetworkServers() + servers.filter { $0.source != .local }
         var existingByKey: [String: DiscoveredServer] = [:]
@@ -268,7 +268,7 @@ final class NetworkDiscovery {
     }
 
     private static func discoveredServer(
-        from rust: FfiDiscoveredServer,
+        from rust: AppDiscoveredServer,
         existing: DiscoveredServer?
     ) -> DiscoveredServer? {
         let host = rust.host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -333,8 +333,8 @@ final class NetworkDiscovery {
         return normalized.lowercased()
     }
 
-    private static func ffiDiscoveredServer(from server: DiscoveredServer) -> FfiDiscoveredServer {
-        FfiDiscoveredServer(
+    private static func ffiDiscoveredServer(from server: DiscoveredServer) -> AppDiscoveredServer {
+        AppDiscoveredServer(
             id: server.id,
             displayName: server.name,
             host: server.hostname,

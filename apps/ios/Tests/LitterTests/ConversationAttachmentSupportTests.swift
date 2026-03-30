@@ -4,7 +4,7 @@ import XCTest
 
 final class ConversationAttachmentSupportTests: XCTestCase {
     func testBuildTurnInputsOmitsWhitespaceOnlyTextAndKeepsAttachmentInput() {
-        let attachment = UserInput(type: "image", imageURL: "data:image/png;base64,abc")
+        let attachment = AppUserInput(type: "image", imageURL: "data:image/png;base64,abc")
 
         let inputs = ConversationAttachmentSupport.buildTurnInputs(
             text: "   \n",
@@ -17,7 +17,7 @@ final class ConversationAttachmentSupportTests: XCTestCase {
     }
 
     func testImageUserInputEncodesURLForTurnStartProtocol() throws {
-        let attachment = UserInput(type: "image", imageURL: "data:image/png;base64,abc")
+        let attachment = AppUserInput(type: "image", imageURL: "data:image/png;base64,abc")
 
         let data = try JSONEncoder().encode(attachment)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])

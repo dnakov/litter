@@ -72,7 +72,7 @@ import io.noties.prism4j.Prism4j
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.codex_mobile_client.AppOperationStatus
-import uniffi.codex_mobile_client.FfiMessageSegment
+import uniffi.codex_mobile_client.AppMessageSegment
 import uniffi.codex_mobile_client.HydratedConversationItem
 import uniffi.codex_mobile_client.HydratedConversationItemContent
 import uniffi.codex_mobile_client.HydratedPlanStepStatus
@@ -344,12 +344,12 @@ private fun AssistantMessageRow(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 segments.forEachIndexed { index, segment ->
                     when (segment) {
-                        is FfiMessageSegment.Text -> MarkdownText(text = segment.text)
-                        is FfiMessageSegment.CodeBlock -> CodeBlockSegment(
+                        is AppMessageSegment.Text -> MarkdownText(text = segment.text)
+                        is AppMessageSegment.CodeBlock -> CodeBlockSegment(
                             language = segment.language,
                             code = segment.code,
                         )
-                        is FfiMessageSegment.InlineImage -> {
+                        is AppMessageSegment.InlineImage -> {
                             val bitmap = remember(segment.data) {
                                 BitmapFactory.decodeByteArray(segment.data, 0, segment.data.size)
                             }

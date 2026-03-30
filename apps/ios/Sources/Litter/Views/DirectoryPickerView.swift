@@ -227,9 +227,9 @@ private final class DirectoryPickerSheetModel {
 
     private func listRemoteDirectory(_ path: String, serverId: String, appModel: AppModel) async {
         do {
-            let resp = try await appModel.rpc.oneOffCommandExec(
+            let resp = try await appModel.client.execCommand(
                 serverId: serverId,
-                params: CommandExecParams(
+                params: AppExecCommandRequest(
                     command: ["/bin/ls", "-1ap", path],
                     processId: nil,
                     tty: false,
@@ -239,9 +239,7 @@ private final class DirectoryPickerSheetModel {
                     disableOutputCap: false,
                     disableTimeout: false,
                     timeoutMs: nil,
-                    cwd: AbsolutePath(value: path),
-                    env: nil,
-                    size: nil,
+                    cwd: path,
                     sandboxPolicy: nil
                 )
             )
@@ -331,9 +329,9 @@ private final class DirectoryPickerSheetModel {
             return NSHomeDirectory()
         }
         do {
-            let response = try await appModel.rpc.oneOffCommandExec(
+            let response = try await appModel.client.execCommand(
                 serverId: serverId,
-                params: CommandExecParams(
+                params: AppExecCommandRequest(
                     command: ["/bin/sh", "-lc", "printf %s \"$HOME\""],
                     processId: nil,
                     tty: false,
@@ -343,9 +341,7 @@ private final class DirectoryPickerSheetModel {
                     disableOutputCap: false,
                     disableTimeout: false,
                     timeoutMs: nil,
-                    cwd: AbsolutePath(value: "/tmp"),
-                    env: nil,
-                    size: nil,
+                    cwd: "/tmp",
                     sandboxPolicy: nil
                 )
             )

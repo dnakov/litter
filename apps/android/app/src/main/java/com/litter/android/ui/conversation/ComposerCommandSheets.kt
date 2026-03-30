@@ -44,42 +44,42 @@ import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AbsolutePath
-import uniffi.codex_mobile_client.AskForApproval
-import uniffi.codex_mobile_client.ConfigValueWriteParams
+import uniffi.codex_mobile_client.AppAskForApproval
+import uniffi.codex_mobile_client.AppListExperimentalFeaturesRequest
+import uniffi.codex_mobile_client.AppListSkillsRequest
+import uniffi.codex_mobile_client.AppWriteConfigValueRequest
 import uniffi.codex_mobile_client.ExperimentalFeature
-import uniffi.codex_mobile_client.ExperimentalFeatureListParams
 import uniffi.codex_mobile_client.JsonValue
 import uniffi.codex_mobile_client.JsonValueKind
-import uniffi.codex_mobile_client.MergeStrategy
-import uniffi.codex_mobile_client.SandboxMode
+import uniffi.codex_mobile_client.AppMergeStrategy
+import uniffi.codex_mobile_client.AppSandboxMode
 import uniffi.codex_mobile_client.SkillMetadata
-import uniffi.codex_mobile_client.SkillsListParams
 
 private data class ComposerPermissionPreset(
     val title: String,
     val description: String,
-    val approvalPolicy: AskForApproval,
-    val sandboxMode: SandboxMode,
+    val approvalPolicy: AppAskForApproval,
+    val sandboxMode: AppSandboxMode,
 )
 
 private val composerPermissionPresets = listOf(
     ComposerPermissionPreset(
         title = "Read Only",
         description = "Ask before commands and run in read-only sandbox",
-        approvalPolicy = AskForApproval.OnRequest,
-        sandboxMode = SandboxMode.READ_ONLY,
+        approvalPolicy = AppAskForApproval.OnRequest,
+        sandboxMode = AppSandboxMode.READ_ONLY,
     ),
     ComposerPermissionPreset(
         title = "Auto",
         description = "No prompts and workspace-write sandbox",
-        approvalPolicy = AskForApproval.Never,
-        sandboxMode = SandboxMode.WORKSPACE_WRITE,
+        approvalPolicy = AppAskForApproval.Never,
+        sandboxMode = AppSandboxMode.WORKSPACE_WRITE,
     ),
     ComposerPermissionPreset(
         title = "Full Access",
         description = "No prompts and danger-full-access sandbox",
-        approvalPolicy = AskForApproval.Never,
-        sandboxMode = SandboxMode.DANGER_FULL_ACCESS,
+        approvalPolicy = AppAskForApproval.Never,
+        sandboxMode = AppSandboxMode.DANGER_FULL_ACCESS,
     ),
 )
 
@@ -107,18 +107,18 @@ fun ComposerPermissionsSheet(onDismiss: () -> Unit) {
                     .clickable {
                         appModel.launchState.updateApprovalPolicy(
                             when (preset.approvalPolicy) {
-                                AskForApproval.OnRequest -> "on-request"
-                                AskForApproval.Never -> "never"
-                                AskForApproval.OnFailure -> "on-failure"
-                                AskForApproval.UnlessTrusted -> "unless-trusted"
-                                is AskForApproval.Granular -> null
+                                AppAskForApproval.OnRequest -> "on-request"
+                                AppAskForApproval.Never -> "never"
+                                AppAskForApproval.OnFailure -> "on-failure"
+                                AppAskForApproval.UnlessTrusted -> "unless-trusted"
+                                is AppAskForApproval.Granular -> null
                             },
                         )
                         appModel.launchState.updateSandboxMode(
                             when (preset.sandboxMode) {
-                                SandboxMode.READ_ONLY -> "read-only"
-                                SandboxMode.WORKSPACE_WRITE -> "workspace-write"
-                                SandboxMode.DANGER_FULL_ACCESS -> "danger-full-access"
+                                AppSandboxMode.READ_ONLY -> "read-only"
+                                AppSandboxMode.WORKSPACE_WRITE -> "workspace-write"
+                                AppSandboxMode.DANGER_FULL_ACCESS -> "danger-full-access"
                             },
                         )
                         onDismiss()
@@ -161,12 +161,12 @@ fun ComposerExperimentalSheet(
     LaunchedEffect(serverId, reloadToken) {
         isLoading = true
         runCatching {
-            appModel.rpc.experimentalFeatureList(
+            appModel.client.listExperimentalFeatures(
                 serverId,
-                ExperimentalFeatureListParams(cursor = null, limit = 200u),
+                AppListExperimentalFeaturesRequest(cursor = null, limit = 200u),
             )
-        }.onSuccess { response ->
-            features = response.data.sortedBy { (it.displayName ?: it.name).lowercase() }
+        }.onSuccess { featuresResult ->
+            features = featuresResult.sortedBy { (it.displayName ?: it.name).lowercase() }
         }.onFailure { error ->
             features = emptyList()
             onError(error.message ?: "Failed to load experimental features")
@@ -236,9 +236,9 @@ fun ComposerExperimentalSheet(
                                     }
                                     scope.launch {
                                         runCatching {
-                                            appModel.rpc.configValueWrite(
+                                            appModel.client.writeConfigValue(
                                                 serverId,
-                                                ConfigValueWriteParams(
+                                                AppWriteConfigValueRequest(
                                                     keyPath = "features.${feature.name}",
                                                     value = JsonValue(
                                                         kind = JsonValueKind.BOOL,
@@ -250,7 +250,7 @@ fun ComposerExperimentalSheet(
                                                         arrayItems = null,
                                                         objectEntries = null,
                                                     ),
-                                                    mergeStrategy = MergeStrategy.UPSERT,
+                                                    mergeStrategy = AppMergeStrategy.UPSERT,
                                                     filePath = null,
                                                     expectedVersion = null,
                                                 ),
@@ -300,18 +300,15 @@ fun ComposerSkillsSheet(
     LaunchedEffect(serverId, cwd, reloadToken) {
         isLoading = true
         runCatching {
-            appModel.rpc.skillsList(
+            appModel.client.listSkills(
                 serverId,
-                SkillsListParams(
-                    cwds = listOf(AbsolutePath(cwd)),
+                AppListSkillsRequest(
+                    cwds = listOf(cwd),
                     forceReload = reloadToken > 0,
-                    perCwdExtraUserRoots = null,
                 ),
             )
-        }.onSuccess { response ->
-            skills = response.data
-                .flatMap { it.skills }
-                .sortedBy { it.name.lowercase() }
+        }.onSuccess { skillResults ->
+            skills = skillResults.sortedBy { it.name.lowercase() }
         }.onFailure { error ->
             skills = emptyList()
             onError(error.message ?: "Failed to load skills")

@@ -150,9 +150,9 @@ struct RealtimeVoiceScreen: View {
         .statusBarHidden()
         .task {
             do {
-                _ = try await appModel.rpc.getAccount(
+                _ = try await appModel.client.refreshAccount(
                     serverId: threadKey.serverId,
-                    params: GetAccountParams(refreshToken: false)
+                    params: AppRefreshAccountRequest(refreshToken: false)
                 )
                 await appModel.refreshSnapshot()
                 await MainActor.run {
@@ -350,7 +350,7 @@ struct RealtimeVoiceScreen: View {
             do {
                 try OpenAIApiKeyStore.shared.save(trimmedApiKey)
                 if case .apiKey? = server?.account {
-                    _ = try await appModel.rpc.logoutAccount(serverId: threadKey.serverId)
+                    _ = try await appModel.client.logoutAccount(serverId: threadKey.serverId)
                 }
                 await voiceRuntime.stopActiveVoiceSession()
                 try await appModel.restartLocalServer()

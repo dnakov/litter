@@ -2056,9 +2056,11 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-feedback",
+ "codex-git-utils",
  "codex-ios-audio",
  "codex-ipc",
  "codex-protocol",
+ "codex-utils-absolute-path",
  "futures",
  "lru 0.12.5",
  "openssl-sys",
@@ -2076,17 +2078,6 @@ dependencies = [
  "uniffi",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "codex-mobile-codegen"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "syn 2.0.117",
- "walkdir",
 ]
 
 [[package]]

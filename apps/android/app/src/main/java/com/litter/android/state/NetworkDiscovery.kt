@@ -17,8 +17,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.codex_mobile_client.DiscoveryBridge
-import uniffi.codex_mobile_client.FfiDiscoveredServer
-import uniffi.codex_mobile_client.FfiMdnsSeed
+import uniffi.codex_mobile_client.AppDiscoveredServer
+import uniffi.codex_mobile_client.AppMdnsSeed
 import uniffi.codex_mobile_client.ProgressiveDiscoveryUpdateKind
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -30,8 +30,8 @@ import kotlin.coroutines.resume
  */
 class NetworkDiscovery(private val discovery: DiscoveryBridge) {
 
-    private val _servers = MutableStateFlow<List<FfiDiscoveredServer>>(emptyList())
-    val servers: StateFlow<List<FfiDiscoveredServer>> = _servers.asStateFlow()
+    private val _servers = MutableStateFlow<List<AppDiscoveredServer>>(emptyList())
+    val servers: StateFlow<List<AppDiscoveredServer>> = _servers.asStateFlow()
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -90,7 +90,7 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
      * Browse for _ssh._tcp. and _codex._tcp. services via Android NSD.
      * Returns resolved seeds for Rust to process.
      */
-    private suspend fun discoverMdnsSeeds(context: Context): List<FfiMdnsSeed> {
+    private suspend fun discoverMdnsSeeds(context: Context): List<AppMdnsSeed> {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
             ?: return emptyList()
 
@@ -108,7 +108,7 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
                                 resolveService(nsdManager, service)
                             }?.let { resolved ->
                                 val host = resolved.host?.hostAddress ?: return@let null
-                                FfiMdnsSeed(
+                                AppMdnsSeed(
                                     name = resolved.serviceName,
                                     host = host,
                                     port = resolved.port.toUShort(),

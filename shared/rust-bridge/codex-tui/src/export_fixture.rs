@@ -123,7 +123,6 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|n| n.as_str())
             .or_else(|| thread.get("preview").and_then(|p| p.as_str()))
             .unwrap_or("(untitled)");
-        let id = thread.get("id").and_then(|i| i.as_str()).unwrap_or("?");
         let cwd = thread.get("cwd").and_then(|c| c.as_str()).unwrap_or("~");
         let model = thread
             .get("source")

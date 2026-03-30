@@ -28,7 +28,7 @@ struct ConversationComposerSnapshot {
     var modelContextWindow: Int64?
     var contextTokensUsed: Int64?
     var rateLimits: RateLimitSnapshot?
-    var availableModels: [Model]
+    var availableModels: [ModelInfo]
     var isConnected: Bool
 
     static let empty = ConversationComposerSnapshot(

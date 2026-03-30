@@ -249,9 +249,9 @@ private struct AccountConnectionView: View {
 
     private func refreshAccount() async {
         do {
-            _ = try await appModel.rpc.getAccount(
+            _ = try await appModel.client.refreshAccount(
                 serverId: server.serverId,
-                params: GetAccountParams(refreshToken: false)
+                params: AppRefreshAccountRequest(refreshToken: false)
             )
             await appModel.refreshSnapshot()
             authError = nil
@@ -268,7 +268,7 @@ private struct AccountConnectionView: View {
         do {
             authError = nil
             let tokens = try await ChatGPTOAuth.login()
-            _ = try await appModel.rpc.loginAccount(
+            _ = try await appModel.client.loginAccount(
                 serverId: server.serverId,
                 params: .chatgptAuthTokens(
                     accessToken: tokens.accessToken,
@@ -293,7 +293,7 @@ private struct AccountConnectionView: View {
             authError = nil
             try OpenAIApiKeyStore.shared.save(key)
             if case .apiKey? = server.account {
-                _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+                _ = try await appModel.client.logoutAccount(serverId: server.serverId)
             }
             try await appModel.restartLocalServer()
             hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
@@ -315,7 +315,7 @@ private struct AccountConnectionView: View {
         do {
             try? ChatGPTOAuthTokenStore.shared.clear()
             try? OpenAIApiKeyStore.shared.clear()
-            _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+            _ = try await appModel.client.logoutAccount(serverId: server.serverId)
             try await appModel.restartLocalServer()
             authError = nil
         } catch {

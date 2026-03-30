@@ -73,7 +73,7 @@ import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppThreadSnapshot
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.ThreadSetNameParams
+import uniffi.codex_mobile_client.AppRenameThreadRequest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -169,16 +169,12 @@ fun ConversationInfoScreen(
                                 val t = thread ?: return@launch
                                 val tk = threadKey ?: return@launch
                                 try {
-                                    val response = appModel.rpc.threadFork(
+                                    val newKey = appModel.client.forkThread(
                                         tk.serverId,
-                                        appModel.launchState.threadForkParams(
+                                        appModel.launchState.threadForkRequest(
                                             sourceThreadId = tk.threadId,
                                             cwdOverride = t.info.cwd,
                                         ),
-                                    )
-                                    val newKey = ThreadKey(
-                                        serverId = tk.serverId,
-                                        threadId = response.thread.id,
                                     )
                                     appModel.store.setActiveThread(newKey)
                                     appModel.refreshSnapshot()
@@ -284,9 +280,9 @@ fun ConversationInfoScreen(
                     showRenameDialog = false
                     scope.launch {
                         try {
-                            appModel.rpc.threadSetName(
+                            appModel.client.renameThread(
                                 threadKey.serverId,
-                                ThreadSetNameParams(
+                                AppRenameThreadRequest(
                                     threadId = threadKey.threadId,
                                     name = trimmed,
                                 ),

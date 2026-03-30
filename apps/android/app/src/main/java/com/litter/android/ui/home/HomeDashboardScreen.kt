@@ -310,9 +310,9 @@ fun HomeDashboardScreen(
                     scope.launch {
                         when (action) {
                             is ConfirmAction.ArchiveSession -> {
-                                appModel.rpc.threadArchive(
+                                appModel.client.archiveThread(
                                     action.session.key.serverId,
-                                    uniffi.codex_mobile_client.ThreadArchiveParams(
+                                    uniffi.codex_mobile_client.AppArchiveThreadRequest(
                                         threadId = action.session.key.threadId,
                                     ),
                                 )

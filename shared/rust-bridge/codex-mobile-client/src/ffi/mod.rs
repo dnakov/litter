@@ -5,18 +5,16 @@
 //! FFI helper types and exported functions.
 
 mod app_store;
+mod client;
 mod discovery;
 mod errors;
 mod parser;
-#[path = "rpc.generated.rs"]
-mod rpc;
-mod rpc_ext;
 pub(crate) mod shared;
 mod ssh;
 
 pub use app_store::{AppStore, AppStoreSubscription};
+pub use client::AppClient;
 pub use discovery::{DiscoveryBridge, DiscoveryScanSubscription, ServerBridge};
 pub use errors::ClientError;
 pub use parser::MessageParser;
-pub use rpc::AppServerRpc;
-pub use ssh::{FfiSshConnectionResult, SshBridge};
+pub use ssh::{AppSshConnectionResult, SshBridge};

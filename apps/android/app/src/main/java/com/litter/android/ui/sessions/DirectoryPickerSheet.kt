@@ -56,7 +56,7 @@ import com.litter.android.ui.RecentDirectoryEntry
 import com.litter.android.ui.RecentDirectoryStore
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AbsolutePath
-import uniffi.codex_mobile_client.CommandExecParams
+import uniffi.codex_mobile_client.AppExecCommandRequest
 
 @Composable
 fun DirectoryPickerSheet(
@@ -99,9 +99,9 @@ fun DirectoryPickerSheet(
 
     suspend fun resolveHome(serverId: String): String {
         val response = runCatching {
-            appModel.rpc.oneOffCommandExec(
+            appModel.client.execCommand(
                 serverId,
-                CommandExecParams(
+                AppExecCommandRequest(
                     command = listOf("/bin/sh", "-lc", "printf %s \"\$HOME\""),
                     processId = null,
                     tty = false,
@@ -111,9 +111,7 @@ fun DirectoryPickerSheet(
                     disableOutputCap = false,
                     disableTimeout = false,
                     timeoutMs = null,
-                    cwd = AbsolutePath("/tmp"),
-                    env = null,
-                    size = null,
+                    cwd = "/tmp",
                     sandboxPolicy = null,
                 ),
             )
@@ -127,9 +125,9 @@ fun DirectoryPickerSheet(
         isLoading = true
         errorMessage = null
         val response = runCatching {
-            appModel.rpc.oneOffCommandExec(
+            appModel.client.execCommand(
                 serverId,
-                CommandExecParams(
+                AppExecCommandRequest(
                     command = listOf("/bin/ls", "-1ap", normalizedPath),
                     processId = null,
                     tty = false,
@@ -139,9 +137,7 @@ fun DirectoryPickerSheet(
                     disableOutputCap = false,
                     disableTimeout = false,
                     timeoutMs = null,
-                    cwd = AbsolutePath(normalizedPath),
-                    env = null,
-                    size = null,
+                    cwd = normalizedPath,
                     sandboxPolicy = null,
                 ),
             )

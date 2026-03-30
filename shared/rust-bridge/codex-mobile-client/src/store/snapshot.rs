@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use crate::conversation::ConversationItem;
 use crate::types::{
-    PendingApproval, PendingUserInputRequest, RateLimits, ThreadInfo, ThreadKey, generated,
+    Account, ModelInfo, PendingApproval, PendingApprovalKey, PendingApprovalSeed,
+    PendingUserInputRequest, RateLimitSnapshot, RateLimits, ThreadInfo, ThreadKey,
 };
-use crate::uniffi_shared::{AppVoiceSessionPhase, AppVoiceTranscriptEntry};
+use crate::types::{AppVoiceSessionPhase, AppVoiceTranscriptEntry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum ServerConnectionStepKind {
+pub enum AppConnectionStepKind {
     ConnectingToSsh,
     FindingCodex,
     InstallingCodex,
@@ -17,7 +18,7 @@ pub enum ServerConnectionStepKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum ServerConnectionStepState {
+pub enum AppConnectionStepState {
     Pending,
     InProgress,
     Completed,
@@ -27,51 +28,51 @@ pub enum ServerConnectionStepState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct ServerConnectionStepSnapshot {
-    pub kind: ServerConnectionStepKind,
-    pub state: ServerConnectionStepState,
+pub struct AppConnectionStepSnapshot {
+    pub kind: AppConnectionStepKind,
+    pub state: AppConnectionStepState,
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct ServerConnectionProgressSnapshot {
-    pub steps: Vec<ServerConnectionStepSnapshot>,
+pub struct AppConnectionProgressSnapshot {
+    pub steps: Vec<AppConnectionStepSnapshot>,
     pub pending_install: bool,
     pub terminal_message: Option<String>,
 }
 
-impl ServerConnectionProgressSnapshot {
+impl AppConnectionProgressSnapshot {
     pub fn ssh_bootstrap() -> Self {
         Self {
             steps: vec![
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::ConnectingToSsh,
-                    state: ServerConnectionStepState::InProgress,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::ConnectingToSsh,
+                    state: AppConnectionStepState::InProgress,
                     detail: None,
                 },
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::FindingCodex,
-                    state: ServerConnectionStepState::Pending,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::FindingCodex,
+                    state: AppConnectionStepState::Pending,
                     detail: None,
                 },
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::InstallingCodex,
-                    state: ServerConnectionStepState::Pending,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::InstallingCodex,
+                    state: AppConnectionStepState::Pending,
                     detail: None,
                 },
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::StartingAppServer,
-                    state: ServerConnectionStepState::Pending,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::StartingAppServer,
+                    state: AppConnectionStepState::Pending,
                     detail: None,
                 },
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::OpeningTunnel,
-                    state: ServerConnectionStepState::Pending,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::OpeningTunnel,
+                    state: AppConnectionStepState::Pending,
                     detail: None,
                 },
-                ServerConnectionStepSnapshot {
-                    kind: ServerConnectionStepKind::Connected,
-                    state: ServerConnectionStepState::Pending,
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::Connected,
+                    state: AppConnectionStepState::Pending,
                     detail: None,
                 },
             ],
@@ -82,8 +83,8 @@ impl ServerConnectionProgressSnapshot {
 
     pub fn update_step(
         &mut self,
-        kind: ServerConnectionStepKind,
-        state: ServerConnectionStepState,
+        kind: AppConnectionStepKind,
+        state: AppConnectionStepState,
         detail: Option<String>,
     ) {
         if let Some(step) = self.steps.iter_mut().find(|step| step.kind == kind) {
@@ -123,15 +124,15 @@ pub struct ServerSnapshot {
     pub is_local: bool,
     pub has_ipc: bool,
     pub health: ServerHealthSnapshot,
-    pub account: Option<generated::Account>,
+    pub account: Option<Account>,
     pub requires_openai_auth: bool,
-    pub rate_limits: Option<generated::RateLimitSnapshot>,
-    pub available_models: Option<Vec<generated::Model>>,
-    pub connection_progress: Option<ServerConnectionProgressSnapshot>,
+    pub rate_limits: Option<RateLimitSnapshot>,
+    pub available_models: Option<Vec<ModelInfo>>,
+    pub connection_progress: Option<AppConnectionProgressSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, uniffi::Record)]
-pub struct VoiceSessionSnapshot {
+pub struct AppVoiceSessionSnapshot {
     pub active_thread: Option<ThreadKey>,
     pub session_id: Option<String>,
     pub phase: Option<AppVoiceSessionPhase>,
@@ -148,7 +149,7 @@ pub struct ThreadSnapshot {
     pub reasoning_effort: Option<String>,
     pub items: Vec<ConversationItem>,
     pub local_overlay_items: Vec<ConversationItem>,
-    pub queued_follow_ups: Vec<QueuedFollowUpPreview>,
+    pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
     pub model_context_window: Option<u64>,
@@ -157,7 +158,7 @@ pub struct ThreadSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct QueuedFollowUpPreview {
+pub struct AppQueuedFollowUpPreview {
     pub id: String,
     pub text: String,
 }
@@ -191,6 +192,7 @@ pub struct AppSnapshot {
     pub threads: HashMap<ThreadKey, ThreadSnapshot>,
     pub active_thread: Option<ThreadKey>,
     pub pending_approvals: Vec<PendingApproval>,
+    pub(crate) pending_approval_seeds: HashMap<PendingApprovalKey, PendingApprovalSeed>,
     pub pending_user_inputs: Vec<PendingUserInputRequest>,
-    pub voice_session: VoiceSessionSnapshot,
+    pub voice_session: AppVoiceSessionSnapshot,
 }

@@ -67,8 +67,8 @@ import com.litter.android.state.AppComposerPayload
 import com.litter.android.state.VoiceTranscriptionManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import uniffi.codex_mobile_client.FuzzyFileSearchParams
-import uniffi.codex_mobile_client.GetAuthStatusParams
+import uniffi.codex_mobile_client.AuthStatusRequest
+import uniffi.codex_mobile_client.AppSearchFilesRequest
 import uniffi.codex_mobile_client.PendingUserInputAnswer
 import uniffi.codex_mobile_client.PendingUserInputRequest
 import uniffi.codex_mobile_client.ReasoningEffort
@@ -81,7 +81,7 @@ import com.litter.android.ui.scaled
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.TurnInterruptParams
+import uniffi.codex_mobile_client.AppInterruptTurnRequest
 
 /** Slash command definitions matching iOS. */
 internal data class SlashCommand(val name: String, val description: String)
@@ -110,7 +110,7 @@ fun ComposerBar(
     activeTurnId: String?,
     contextPercent: Int?,
     isThinking: Boolean,
-    queuedFollowUps: List<uniffi.codex_mobile_client.AppQueuedFollowUpPreview> = emptyList(),
+    queuedFollowUps: List<uniffi.codex_mobile_client.AppAppQueuedFollowUpPreview> = emptyList(),
     rateLimits: uniffi.codex_mobile_client.RateLimitSnapshot? = null,
     onToggleModelSelector: (() -> Unit)? = null,
     onNavigateToSessions: (() -> Unit)? = null,
@@ -169,11 +169,11 @@ fun ComposerBar(
                 delay(140) // debounce
                 try {
                     val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd ?: "~"
-                    val resp = appModel.rpc.fuzzyFileSearch(
+                    val results = appModel.client.searchFiles(
                         threadKey.serverId,
-                        FuzzyFileSearchParams(query = query, roots = listOf(cwd), cancellationToken = null),
+                        AppSearchFilesRequest(query = query, roots = listOf(cwd), cancellationToken = null),
                     )
-                    fileSearchResults = resp.files.map { it.path }.take(8)
+                    fileSearchResults = results.map { it.path }.take(8)
                     showFileMenu = fileSearchResults.isNotEmpty()
                 } catch (_: Exception) {
                     showFileMenu = false
@@ -208,17 +208,13 @@ fun ComposerBar(
             "fork" -> scope.launch {
                 try {
                     val cwd = appModel.snapshot.value?.threads?.find { it.key == threadKey }?.info?.cwd
-                    val response = appModel.rpc.threadFork(
+                    val newKey = appModel.client.forkThread(
                         threadKey.serverId,
-                        appModel.launchState.threadForkParams(
+                        appModel.launchState.threadForkRequest(
                             sourceThreadId = threadKey.threadId,
                             cwdOverride = cwd,
                             modelOverride = appModel.launchState.snapshot.value.selectedModel.trim().ifEmpty { null },
                         ),
-                    )
-                    val newKey = ThreadKey(
-                        serverId = threadKey.serverId,
-                        threadId = response.thread.id,
                     )
                     appModel.store.setActiveThread(newKey)
                     appModel.refreshSnapshot()
@@ -228,11 +224,11 @@ fun ComposerBar(
             }
             "review" -> scope.launch {
                 try {
-                    appModel.rpc.reviewStart(
+                    appModel.client.startReview(
                         threadKey.serverId,
-                        uniffi.codex_mobile_client.ReviewStartParams(
+                        uniffi.codex_mobile_client.AppStartReviewRequest(
                             threadId = threadKey.threadId,
-                            target = uniffi.codex_mobile_client.ReviewTarget.UncommittedChanges,
+                            target = uniffi.codex_mobile_client.AppReviewTarget.UncommittedChanges,
                             delivery = null,
                         ),
                     )
@@ -417,9 +413,9 @@ fun ComposerBar(
                     if (isRecording) {
                         scope.launch {
                             val auth = runCatching {
-                                appModel.rpc.getAuthStatus(
+                                appModel.client.authStatus(
                                     threadKey.serverId,
-                                    GetAuthStatusParams(
+                                    AuthStatusRequest(
                                         includeToken = true,
                                         refreshToken = false,
                                     ),
@@ -580,9 +576,9 @@ fun ComposerBar(
                             onClick = {
                                 scope.launch {
                                     val auth = runCatching {
-                                        appModel.rpc.getAuthStatus(
+                                        appModel.client.authStatus(
                                             threadKey.serverId,
-                                            GetAuthStatusParams(
+                                            AuthStatusRequest(
                                                 includeToken = true,
                                                 refreshToken = false,
                                             ),
@@ -645,9 +641,9 @@ fun ComposerBar(
                             val turnId = activeTurnId ?: return@clickable
                             scope.launch {
                                 try {
-                                    appModel.rpc.turnInterrupt(
+                                    appModel.client.interruptTurn(
                                         threadKey.serverId,
-                                        TurnInterruptParams(threadId = threadKey.threadId, turnId = turnId),
+                                        AppInterruptTurnRequest(threadId = threadKey.threadId, turnId = turnId),
                                     )
                                 } catch (_: Exception) {}
                             }

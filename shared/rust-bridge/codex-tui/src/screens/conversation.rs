@@ -266,14 +266,3 @@ fn render_composer(frame: &mut Frame, area: Rect, state: &ConversationState, ins
 
     frame.render_widget(Paragraph::new(Line::from(text)).block(block), area);
 }
-
-/// Format a number compactly: 1234 → "1.2k", 1234567 → "1.2M"
-fn format_compact(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        format!("{n}")
-    }
-}

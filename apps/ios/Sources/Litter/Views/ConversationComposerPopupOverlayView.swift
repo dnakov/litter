@@ -3,14 +3,14 @@ import SwiftUI
 enum ConversationComposerPopupState {
     case none
     case slash([ComposerSlashCommand])
-    case file(loading: Bool, error: String?, suggestions: [FuzzyFileSearchResult])
+    case file(loading: Bool, error: String?, suggestions: [FileSearchResult])
     case skill(loading: Bool, suggestions: [SkillMetadata])
 }
 
 struct ConversationComposerPopupOverlayView: View {
     let state: ConversationComposerPopupState
     let onApplySlashSuggestion: (ComposerSlashCommand) -> Void
-    let onApplyFileSuggestion: (FuzzyFileSearchResult) -> Void
+    let onApplyFileSuggestion: (FileSearchResult) -> Void
     let onApplySkillSuggestion: (SkillMetadata) -> Void
 
     var body: some View {

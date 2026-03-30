@@ -19,19 +19,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import uniffi.codex_mobile_client.DynamicToolSpec
+import uniffi.codex_mobile_client.AppDynamicToolSpec
 import uniffi.codex_mobile_client.JsonObjectEntry
 import uniffi.codex_mobile_client.JsonValue
 import uniffi.codex_mobile_client.JsonValueKind
 import uniffi.codex_mobile_client.AppStoreUpdateRecord
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.ThreadRealtimeAppendAudioParams
-import uniffi.codex_mobile_client.ThreadRealtimeAudioChunk
-import uniffi.codex_mobile_client.ThreadRealtimeFinalizeHandoffParams
-import uniffi.codex_mobile_client.ThreadRealtimeResolveHandoffParams
-import uniffi.codex_mobile_client.ThreadRealtimeStartParams
-import uniffi.codex_mobile_client.ThreadRealtimeStopParams
+import uniffi.codex_mobile_client.AppAppendRealtimeAudioRequest
+import uniffi.codex_mobile_client.AppFinalizeRealtimeHandoffRequest
+import uniffi.codex_mobile_client.AppResolveRealtimeHandoffRequest
+import uniffi.codex_mobile_client.AppStartRealtimeSessionRequest
+import uniffi.codex_mobile_client.AppStopRealtimeSessionRequest
+import uniffi.codex_mobile_client.AppRealtimeAudioChunk
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
@@ -125,9 +125,9 @@ class VoiceRuntimeController {
         }
         cleanup(clearStopRequest = false)
         try {
-            appModel.rpc.threadRealtimeStop(
+            appModel.client.stopRealtimeSession(
                 key.serverId,
-                ThreadRealtimeStopParams(threadId = key.threadId),
+                AppStopRealtimeSessionRequest(threadId = key.threadId),
             )
         } catch (_: Exception) {}
         synchronized(sessionLock) {
@@ -268,11 +268,11 @@ class VoiceRuntimeController {
                 // Send to server
                 if (!shouldContinueCapturing(threadKey)) break
                 try {
-                    appModel.rpc.threadRealtimeAppendAudio(
+                    appModel.client.appendRealtimeAudio(
                         threadKey.serverId,
-                        ThreadRealtimeAppendAudioParams(
+                        AppAppendRealtimeAudioRequest(
                             threadId = threadKey.threadId,
-                            audio = ThreadRealtimeAudioChunk(
+                            audio = AppRealtimeAudioChunk(
                                 data = base64Data,
                                 sampleRate = TARGET_SAMPLE_RATE.toUInt(),
                                 numChannels = 1u,
@@ -378,9 +378,9 @@ class VoiceRuntimeController {
     ) {
         android.util.Log.e("VoiceRuntime", reason)
         try {
-            appModel.rpc.threadRealtimeStop(
+            appModel.client.stopRealtimeSession(
                 threadKey.serverId,
-                ThreadRealtimeStopParams(threadId = threadKey.threadId),
+                AppStopRealtimeSessionRequest(threadId = threadKey.threadId),
             )
         } catch (e: Exception) {
             android.util.Log.w("VoiceRuntime", "Failed to stop realtime after audio init failure: ${e.message}")
@@ -473,9 +473,9 @@ class VoiceRuntimeController {
 
             android.util.Log.i("VoiceRuntime", "Calling threadRealtimeStart...")
             _activeSession.value = VoiceSessionState(threadKey = threadKey)
-            appModel.rpc.threadRealtimeStart(
+            appModel.client.startRealtimeSession(
                 threadKey.serverId,
-                ThreadRealtimeStartParams(
+                AppStartRealtimeSessionRequest(
                     threadId = threadKey.threadId,
                     prompt = realtimePrompt(appModel),
                     sessionId = "litter-voice-${UUID.randomUUID().toString().lowercase()}",
@@ -502,9 +502,9 @@ class VoiceRuntimeController {
         persistedLocalVoiceThreadId(appModel)?.let { storedThreadId ->
             val key = ThreadKey(serverId = serverId, threadId = storedThreadId)
             try {
-                appModel.rpc.threadResume(
+                appModel.client.resumeThread(
                     key.serverId,
-                    launchConfig.toThreadResumeParams(
+                    launchConfig.toAppResumeThreadRequest(
                         threadId = key.threadId,
                         cwd = preferredVoiceThreadCwd(appModel, key, fallback = cwd),
                     ),
@@ -518,13 +518,12 @@ class VoiceRuntimeController {
         }
 
         return try {
-            val response = appModel.rpc.threadStart(
+            val key = appModel.client.startThread(
                 serverId,
-                launchConfig.toThreadStartParams(
+                launchConfig.toAppStartThreadRequest(
                     preferredVoiceThreadCwd(appModel, key = null, fallback = cwd),
                 ),
             )
-            val key = ThreadKey(serverId = serverId, threadId = response.thread.id)
             appModel.store.setActiveThread(key)
             setPersistedLocalVoiceThreadId(appModel, key.threadId)
             appModel.refreshSnapshot()
@@ -567,9 +566,9 @@ class VoiceRuntimeController {
         for (candidate in candidates) {
             if (candidate == keepThreadKey) continue
             runCatching {
-                appModel.rpc.threadRealtimeStop(
+                appModel.client.stopRealtimeSession(
                     candidate.serverId,
-                    ThreadRealtimeStopParams(threadId = candidate.threadId),
+                    AppStopRealtimeSessionRequest(threadId = candidate.threadId),
                 )
             }
         }
@@ -645,11 +644,11 @@ class VoiceRuntimeController {
         when (action) {
             is uniffi.codex_mobile_client.HandoffAction.StartThread -> {
                 try {
-                    val resp = appModel.rpc.threadStart(
+                    val key = appModel.client.startThread(
                         action.targetServerId,
-                        appModel.launchState.threadStartParams(action.cwd),
+                        appModel.launchState.threadStartRequest(action.cwd),
                     )
-                    handoffManager?.uniffiReportThreadCreated(action.handoffId, action.targetServerId, resp.thread.id)
+                    handoffManager?.uniffiReportThreadCreated(action.handoffId, action.targetServerId, key.threadId)
                 } catch (e: Exception) {
                     handoffManager?.uniffiReportThreadFailed(action.handoffId, e.message ?: "Thread creation failed")
                 }
@@ -672,9 +671,9 @@ class VoiceRuntimeController {
 
             is uniffi.codex_mobile_client.HandoffAction.ResolveHandoff -> {
                 try {
-                    appModel.rpc.threadRealtimeResolveHandoff(
+                    appModel.client.resolveRealtimeHandoff(
                         action.voiceThreadKey.serverId,
-                        ThreadRealtimeResolveHandoffParams(
+                        AppResolveRealtimeHandoffRequest(
                             threadId = action.voiceThreadKey.threadId,
                             toolCallOutput = action.text,
                         ),
@@ -684,9 +683,9 @@ class VoiceRuntimeController {
 
             is uniffi.codex_mobile_client.HandoffAction.FinalizeHandoff -> {
                 try {
-                    appModel.rpc.threadRealtimeFinalizeHandoff(
+                    appModel.client.finalizeRealtimeHandoff(
                         action.voiceThreadKey.serverId,
-                        ThreadRealtimeFinalizeHandoffParams(
+                        AppFinalizeRealtimeHandoffRequest(
                             threadId = action.voiceThreadKey.threadId,
                         ),
                     )
@@ -725,14 +724,14 @@ class VoiceRuntimeController {
         """.trimIndent()
     }
 
-    private fun buildDynamicToolSpecs(): List<DynamicToolSpec> = listOf(
-        DynamicToolSpec(
+    private fun buildDynamicToolSpecs(): List<AppDynamicToolSpec> = listOf(
+        AppDynamicToolSpec(
             name = "list_servers",
             description = "List all connected servers and their status.",
             inputSchema = jsonObject(emptyMap(), emptyList()),
             deferLoading = false,
         ),
-        DynamicToolSpec(
+        AppDynamicToolSpec(
             name = "list_sessions",
             description = "List recent sessions/threads on a specific server or all connected servers.",
             inputSchema = jsonObject(

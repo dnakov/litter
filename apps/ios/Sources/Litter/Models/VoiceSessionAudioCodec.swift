@@ -6,19 +6,19 @@ enum VoiceSessionAudioCodec {
     static let aecProcessingSampleRate: Double = 48_000
     static let targetChannels: Int = 1
 
-    static func makeInputChunk(buffer: AVAudioPCMBuffer) -> ThreadRealtimeAudioChunk? {
+    static func makeInputChunk(buffer: AVAudioPCMBuffer) -> AppRealtimeAudioChunk? {
         guard let samples = resampleToTarget(buffer: buffer) else { return nil }
         return encodeChunk(samples: samples)
     }
 
-    static func makeInputChunk(samples: [Float], sampleRate: Double, channels: Int) -> ThreadRealtimeAudioChunk? {
+    static func makeInputChunk(samples: [Float], sampleRate: Double, channels: Int) -> AppRealtimeAudioChunk? {
         guard !samples.isEmpty else { return nil }
         let resampled = resample(samples: samples, from: sampleRate, to: targetSampleRate)
         guard !resampled.isEmpty else { return nil }
         return encodeChunk(samples: resampled, channels: channels)
     }
 
-    static func makePlaybackBuffer(from chunk: ThreadRealtimeAudioChunk) -> AVAudioPCMBuffer? {
+    static func makePlaybackBuffer(from chunk: AppRealtimeAudioChunk) -> AVAudioPCMBuffer? {
         guard let samples = decodePCM16Base64(chunk.data, numChannels: Int(chunk.numChannels)) else {
             return nil
         }
@@ -53,9 +53,9 @@ enum VoiceSessionAudioCodec {
         resample(samples: samples, from: sampleRate, to: targetSampleRate)
     }
 
-    static func encodeChunk(samples: [Float], channels: Int = targetChannels) -> ThreadRealtimeAudioChunk {
+    static func encodeChunk(samples: [Float], channels: Int = targetChannels) -> AppRealtimeAudioChunk {
         let data = encodePCM16(samples: samples)
-        return ThreadRealtimeAudioChunk(
+        return AppRealtimeAudioChunk(
             data: data.base64EncodedString(),
             sampleRate: UInt32(targetSampleRate.rounded()),
             numChannels: UInt32(channels),

@@ -82,7 +82,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
-import uniffi.codex_mobile_client.FfiDiscoveredServer
+import uniffi.codex_mobile_client.AppDiscoveredServer
 
 /**
  * Server discovery and connection screen.
@@ -90,7 +90,7 @@ import uniffi.codex_mobile_client.FfiDiscoveredServer
  */
 @Composable
 fun DiscoveryScreen(
-    discoveredServers: List<FfiDiscoveredServer>,
+    discoveredServers: List<AppDiscoveredServer>,
     isScanning: Boolean,
     scanProgress: Float = 0f,
     scanProgressLabel: String? = null,
@@ -1105,7 +1105,7 @@ private fun connectedSnapshot(
     ?: servers.firstOrNull { it.host.lowercase().trim().trimStart('[').trimEnd(']') == entry.deduplicationKey }
 
 private fun mergeServers(
-    discovered: List<FfiDiscoveredServer>,
+    discovered: List<AppDiscoveredServer>,
     saved: List<SavedServer>,
 ): List<SavedServer> {
     val merged = linkedMapOf<String, SavedServer>()

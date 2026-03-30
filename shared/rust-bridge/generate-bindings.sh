@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Generate protocol wrappers plus Swift/Kotlin bindings from codex-mobile-client.
+# Generate Swift/Kotlin bindings from codex-mobile-client.
 #
 # Usage:  ./generate-bindings.sh [--release] [--swift-only] [--kotlin-only]
 #
@@ -17,6 +17,10 @@ OUT_SWIFT="$WORKSPACE_DIR/generated/swift"
 OUT_KOTLIN="$WORKSPACE_DIR/generated/kotlin"
 
 cd "$WORKSPACE_DIR"
+
+if [[ -z "${RUSTC_WRAPPER:-}" ]] && command -v sccache >/dev/null 2>&1; then
+    export RUSTC_WRAPPER="$(command -v sccache)"
+fi
 
 PROFILE="debug"
 GENERATE_SWIFT=1
@@ -44,20 +48,6 @@ if [[ "$GENERATE_SWIFT" -eq 0 && "$GENERATE_KOTLIN" -eq 0 ]]; then
     echo "error: nothing to generate" >&2
     exit 1
 fi
-
-UPSTREAM_V2="$WORKSPACE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/v2.rs"
-UPSTREAM_COMMON="$WORKSPACE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/common.rs"
-TYPES_OUT="$CRATE_DIR/src/types/codegen_types.generated.rs"
-RPC_OUT="$CRATE_DIR/src/rpc/generated_client.generated.rs"
-FFI_RPC_OUT="$CRATE_DIR/src/ffi/rpc.generated.rs"
-
-echo "==> Regenerating protocol wrappers..."
-cargo run -p codex-mobile-codegen -- \
-    --upstream "$UPSTREAM_V2" \
-    --common "$UPSTREAM_COMMON" \
-    --out "$TYPES_OUT" \
-    --rpc-out "$RPC_OUT" \
-    --ffi-rpc-out "$FFI_RPC_OUT"
 
 # ---------------------------------------------------------------------------
 # 1. Build the cdylib so uniffi-bindgen can read its metadata
@@ -87,6 +77,13 @@ fi
 if [[ "$GENERATE_SWIFT" -eq 1 ]]; then
     echo "==> Generating Swift bindings -> $OUT_SWIFT"
     mkdir -p "$OUT_SWIFT"
+    rm -f \
+        "$OUT_SWIFT/codex_app_server_protocol.swift" \
+        "$OUT_SWIFT/codex_app_server_protocolFFI.h" \
+        "$OUT_SWIFT/codex_app_server_protocolFFI.modulemap" \
+        "$OUT_SWIFT/codex_protocol.swift" \
+        "$OUT_SWIFT/codex_protocolFFI.h" \
+        "$OUT_SWIFT/codex_protocolFFI.modulemap"
     cargo run -p uniffi-bindgen -- generate \
         --library "$DYLIB_FILE" \
         --language swift \
@@ -97,6 +94,9 @@ fi
 if [[ "$GENERATE_KOTLIN" -eq 1 ]]; then
     echo "==> Generating Kotlin bindings -> $OUT_KOTLIN"
     mkdir -p "$OUT_KOTLIN"
+    rm -rf \
+        "$OUT_KOTLIN/uniffi/codex_app_server_protocol" \
+        "$OUT_KOTLIN/uniffi/codex_protocol"
     cargo run -p uniffi-bindgen -- generate \
         --library "$DYLIB_FILE" \
         --language kotlin \

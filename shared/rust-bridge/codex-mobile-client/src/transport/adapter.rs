@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn send_response_rejects_invalid_utf8() {
         let bad_bytes: &[u8] = &[0xff, 0xfe];
-        let result = std::str::from_utf8(bad_bytes);
+        let result = String::from_utf8(bad_bytes.to_vec());
         assert!(result.is_err());
     }
 

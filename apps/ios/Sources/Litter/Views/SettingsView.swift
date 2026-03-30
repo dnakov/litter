@@ -409,7 +409,7 @@ private struct SettingsConnectionAccountSection: View {
         do {
             authError = nil
             let tokens = try await ChatGPTOAuth.login()
-            _ = try await appModel.rpc.loginAccount(
+            _ = try await appModel.client.loginAccount(
                 serverId: server.serverId,
                 params: .chatgptAuthTokens(
                     accessToken: tokens.accessToken,
@@ -434,7 +434,7 @@ private struct SettingsConnectionAccountSection: View {
             authError = nil
             try OpenAIApiKeyStore.shared.save(key)
             if case .apiKey? = server.account {
-                _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+                _ = try await appModel.client.logoutAccount(serverId: server.serverId)
             }
             try await appModel.restartLocalServer()
             hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
@@ -455,7 +455,7 @@ private struct SettingsConnectionAccountSection: View {
         do {
             try? ChatGPTOAuthTokenStore.shared.clear()
             try? OpenAIApiKeyStore.shared.clear()
-            _ = try await appModel.rpc.logoutAccount(serverId: server.serverId)
+            _ = try await appModel.client.logoutAccount(serverId: server.serverId)
             try await appModel.restartLocalServer()
             authError = nil
         } catch {

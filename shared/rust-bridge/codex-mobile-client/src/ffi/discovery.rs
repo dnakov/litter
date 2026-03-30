@@ -1,5 +1,5 @@
 use crate::MobileClient;
-use crate::discovery_uniffi::{FfiDiscoveredServer, FfiMdnsSeed, FfiProgressiveDiscoveryUpdate};
+use crate::discovery_uniffi::{AppDiscoveredServer, AppMdnsSeed, AppProgressiveDiscoveryUpdate};
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
 use crate::session::connection::{InProcessConfig, ServerConfig};
@@ -36,22 +36,22 @@ impl DiscoveryBridge {
 
     pub async fn scan_servers_with_mdns_context(
         &self,
-        seeds: Vec<FfiMdnsSeed>,
+        seeds: Vec<AppMdnsSeed>,
         local_ipv4: Option<String>,
-    ) -> Result<Vec<FfiDiscoveredServer>, ClientError> {
+    ) -> Result<Vec<AppDiscoveredServer>, ClientError> {
         let seeds: Vec<_> = seeds.into_iter().map(Into::into).collect();
         blocking_async!(self.rt, self.inner, |c| {
             Ok(c.scan_servers_with_mdns_context(seeds, local_ipv4)
                 .await
                 .into_iter()
-                .map(FfiDiscoveredServer::from)
+                .map(AppDiscoveredServer::from)
                 .collect())
         })
     }
 
     pub fn scan_servers_with_mdns_context_progressive(
         &self,
-        seeds: Vec<FfiMdnsSeed>,
+        seeds: Vec<AppMdnsSeed>,
         local_ipv4: Option<String>,
     ) -> DiscoveryScanSubscription {
         let seeds: Vec<_> = seeds.into_iter().map(Into::into).collect();
@@ -65,13 +65,13 @@ impl DiscoveryBridge {
 
     pub fn reconcile_servers(
         &self,
-        candidates: Vec<FfiDiscoveredServer>,
-    ) -> Vec<FfiDiscoveredServer> {
+        candidates: Vec<AppDiscoveredServer>,
+    ) -> Vec<AppDiscoveredServer> {
         crate::discovery::reconcile_discovered_servers(
             candidates.into_iter().map(Into::into).collect(),
         )
         .into_iter()
-        .map(FfiDiscoveredServer::from)
+        .map(AppDiscoveredServer::from)
         .collect()
     }
 }
@@ -171,7 +171,7 @@ impl ServerBridge {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl DiscoveryScanSubscription {
-    pub async fn next_event(&self) -> Result<FfiProgressiveDiscoveryUpdate, ClientError> {
+    pub async fn next_event(&self) -> Result<AppProgressiveDiscoveryUpdate, ClientError> {
         let mut rx = {
             self.rx
                 .lock()

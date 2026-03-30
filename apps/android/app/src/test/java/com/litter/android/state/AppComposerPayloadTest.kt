@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.codex_mobile_client.AbsolutePath
-import uniffi.codex_mobile_client.UserInput
+import uniffi.codex_mobile_client.AppUserInput
 
 class AppComposerPayloadTest {
     @Test
@@ -14,30 +14,30 @@ class AppComposerPayloadTest {
                 text = "Describe this",
                 additionalInputs =
                     listOf(
-                        UserInput.Skill(name = "swiftui-pro", path = AbsolutePath("/Users/sigkitten/.codex/skills/swiftui-pro/SKILL.md")),
+                        AppUserInput.Skill(name = "swiftui-pro", path = AbsolutePath("/Users/sigkitten/.codex/skills/swiftui-pro/SKILL.md")),
                         ComposerImageAttachment(
                             data = byteArrayOf(0x01, 0x02, 0x03),
                             mimeType = "image/png",
                         ).toUserInput(),
-                        UserInput.Mention(name = "helper", path = "app://agent"),
+                        AppUserInput.Mention(name = "helper", path = "app://agent"),
                     ),
             )
 
-        val params = payload.toTurnStartParams(threadId = "thread-123")
+        val params = payload.toAppStartTurnRequest(threadId = "thread-123")
 
         assertEquals(4, params.input.size)
 
-        val textInput = params.input[0] as UserInput.Text
+        val textInput = params.input[0] as AppUserInput.Text
         assertEquals("Describe this", textInput.text)
 
-        val skillInput = params.input[1] as UserInput.Skill
+        val skillInput = params.input[1] as AppUserInput.Skill
         assertEquals("swiftui-pro", skillInput.name)
         assertEquals("/Users/sigkitten/.codex/skills/swiftui-pro/SKILL.md", skillInput.path.value)
 
-        val imageInput = params.input[2] as UserInput.Image
+        val imageInput = params.input[2] as AppUserInput.Image
         assertTrue(imageInput.url.startsWith("data:image/png;base64,"))
 
-        val mentionInput = params.input[3] as UserInput.Mention
+        val mentionInput = params.input[3] as AppUserInput.Mention
         assertEquals("helper", mentionInput.name)
         assertEquals("app://agent", mentionInput.path)
     }
@@ -56,10 +56,10 @@ class AppComposerPayloadTest {
                     ),
             )
 
-        val params = payload.toTurnStartParams(threadId = "thread-456")
+        val params = payload.toAppStartTurnRequest(threadId = "thread-456")
 
         assertEquals(1, params.input.size)
-        val imageInput = params.input.single() as UserInput.Image
+        val imageInput = params.input.single() as AppUserInput.Image
         assertTrue(imageInput.url.startsWith("data:image/jpeg;base64,"))
     }
 }

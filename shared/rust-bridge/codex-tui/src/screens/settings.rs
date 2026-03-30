@@ -72,10 +72,10 @@ pub fn render(frame: &mut Frame, area: Rect, state: &mut SettingsState, snapshot
 
     for server in snapshot.servers.values() {
         if let Some(account) = &server.account {
-            use codex_mobile_client::types::generated::Account;
+            use codex_mobile_client::types::AppAccount;
             let label = match account {
-                Account::Chatgpt { email, .. } => email.clone(),
-                Account::ApiKey => "API Key".to_string(),
+                AppAccount::Chatgpt { email, .. } => email.clone(),
+                AppAccount::ApiKey => "API Key".to_string(),
             };
             items.push(ListItem::new(Line::from(vec![
                 Span::raw("   "),

@@ -4,8 +4,7 @@ use crate::MobileClient;
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
 use crate::store::{AppSnapshotRecord, AppStoreUpdateRecord, AppThreadSnapshot, AppUpdate};
-use crate::types::generated;
-use crate::types::models::ThreadKey;
+use crate::types::{AppForkThreadFromMessageRequest, AppStartTurnRequest, ThreadKey};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -32,24 +31,17 @@ mod tests {
     use super::{AppStoreSubscription, AppStoreSubscriptionState};
     use crate::store::{AppStoreReducer, AppStoreUpdateRecord, ThreadStreamingDeltaKind};
     use crate::types::ThreadKey;
-    use crate::types::generated;
     use codex_app_server_protocol as upstream;
     use serde_json::json;
-    use std::collections::VecDeque;
-
-    fn convert_generated_thread_item(
-        item: generated::ThreadItem,
-    ) -> Result<upstream::ThreadItem, super::ClientError> {
-        crate::rpc::convert_generated_field(item).map_err(Into::into)
-    }
+    use std::collections::{HashMap, VecDeque};
 
     #[test]
-    fn generated_thread_item_parses_mcp_arguments_json() {
-        let item = generated::ThreadItem::McpToolCall {
+    fn thread_item_parses_mcp_arguments_json() {
+        let item = upstream::ThreadItem::McpToolCall {
             id: "mcp-1".into(),
             server: "filesystem".into(),
             tool: "read_file".into(),
-            status: generated::McpToolCallStatus::Completed,
+            status: upstream::McpToolCallStatus::Completed,
             arguments: serde_json::from_value(json!({"path": "/tmp/file.txt"}))
                 .expect("json value should convert"),
             result: None,
@@ -57,9 +49,7 @@ mod tests {
             duration_ms: Some(42),
         };
 
-        let upstream_item =
-            convert_generated_thread_item(item).expect("mcp tool item should convert");
-        let upstream::ThreadItem::McpToolCall { arguments, .. } = upstream_item else {
+        let upstream::ThreadItem::McpToolCall { arguments, .. } = item else {
             panic!("expected mcp tool call");
         };
         assert_eq!(
@@ -69,28 +59,26 @@ mod tests {
     }
 
     #[test]
-    fn generated_thread_item_parses_collab_agent_states_json() {
-        let item = generated::ThreadItem::CollabAgentToolCall {
+    fn thread_item_parses_collab_agent_states_json() {
+        let item = upstream::ThreadItem::CollabAgentToolCall {
             id: "collab-1".into(),
-            tool: generated::CollabAgentTool::SpawnAgent,
-            status: generated::CollabAgentToolCallStatus::Completed,
+            tool: upstream::CollabAgentTool::SpawnAgent,
+            status: upstream::CollabAgentToolCallStatus::Completed,
             sender_thread_id: "parent-thread".into(),
             receiver_thread_ids: vec!["sub-thread-1".into()],
             prompt: Some("Review the changes".into()),
             model: None,
             reasoning_effort: None,
-            agents_states: vec![generated::ThreadItemAgentsStatesEntry {
-                key: "sub-thread-1".into(),
-                value: generated::CollabAgentState {
-                    status: generated::CollabAgentStatus::Running,
+            agents_states: HashMap::from([(
+                "sub-thread-1".into(),
+                upstream::CollabAgentState {
+                    status: upstream::CollabAgentStatus::Running,
                     message: Some("Working".into()),
                 },
-            }],
+            )]),
         };
 
-        let upstream_item =
-            convert_generated_thread_item(item).expect("collab agent item should convert");
-        let upstream::ThreadItem::CollabAgentToolCall { agents_states, .. } = upstream_item else {
+        let upstream::ThreadItem::CollabAgentToolCall { agents_states, .. } = item else {
             panic!("expected collab agent tool call");
         };
         let state = agents_states
@@ -225,9 +213,14 @@ impl AppStore {
     pub async fn start_turn(
         &self,
         key: ThreadKey,
-        params: generated::TurnStartParams,
+        params: AppStartTurnRequest,
     ) -> Result<(), ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            let params = params
+                .try_into()
+                .map_err(|error: crate::rpc::RpcClientError| {
+                    ClientError::Serialization(error.to_string())
+                })?;
             c.start_turn(&key.server_id, params)
                 .await
                 .map_err(|e| ClientError::Rpc(e.to_string()))
@@ -271,7 +264,7 @@ impl AppStore {
         &self,
         key: ThreadKey,
         selected_turn_index: u32,
-        params: generated::ThreadForkParams,
+        params: AppForkThreadFromMessageRequest,
     ) -> Result<ThreadKey, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
             c.fork_thread_from_message(
@@ -501,7 +494,7 @@ fn merge_app_update(current: &mut AppUpdate, next: AppUpdate) -> Result<(), AppU
             *key = next_key;
             Ok(())
         }
-        (current, next) => Err(next),
+        (_current, next) => Err(next),
     }
 }
 

@@ -8,7 +8,7 @@ final class AppModel {
     /// priority inversion (tokio runtime init blocks at default QoS).
     private struct RustBridges: @unchecked Sendable {
         let store: AppStore
-        let rpc: AppServerRpc
+        let client: AppClient
         let discovery: DiscoveryBridge
         let serverBridge: ServerBridge
         let ssh: SshBridge
@@ -23,7 +23,7 @@ final class AppModel {
     private nonisolated static let _prewarmResult: RustBridges = {
         RustBridges(
             store: AppStore(),
-            rpc: AppServerRpc(),
+            client: AppClient(),
             discovery: DiscoveryBridge(),
             serverBridge: ServerBridge(),
             ssh: SshBridge()
@@ -39,7 +39,7 @@ final class AppModel {
     }
 
     let store: AppStore
-    let rpc: AppServerRpc
+    let client: AppClient
     let discovery: DiscoveryBridge
     let serverBridge: ServerBridge
     let ssh: SshBridge
@@ -54,14 +54,14 @@ final class AppModel {
 
     init(
         store: AppStore? = nil,
-        rpc: AppServerRpc? = nil,
+        client: AppClient? = nil,
         discovery: DiscoveryBridge? = nil,
         serverBridge: ServerBridge? = nil,
         ssh: SshBridge? = nil
     ) {
         let bridges = Self._prewarmResult
         self.store = store ?? bridges.store
-        self.rpc = rpc ?? bridges.rpc
+        self.client = client ?? bridges.client
         self.discovery = discovery ?? bridges.discovery
         self.serverBridge = serverBridge ?? bridges.serverBridge
         self.ssh = ssh ?? bridges.ssh
@@ -126,7 +126,7 @@ final class AppModel {
         }
 
         do {
-            _ = try await rpc.loginAccount(
+            _ = try await client.loginAccount(
                 serverId: serverId,
                 params: .chatgptAuthTokens(
                     accessToken: tokens.accessToken,
@@ -296,7 +296,7 @@ final class AppModel {
         thread.activeTurnId = state.activeTurnId
         thread.contextTokensUsed = state.contextTokensUsed
         thread.modelContextWindow = state.modelContextWindow
-        thread.rateLimitsJson = state.rateLimitsJson
+        thread.rateLimits = state.rateLimits
         thread.realtimeSessionId = state.realtimeSessionId
         snapshot.threads[threadIndex] = thread
 
@@ -480,7 +480,7 @@ final class AppModel {
         composerPrefillRequest = nil
     }
 
-    func availableModels(for serverId: String) -> [Model] {
+    func availableModels(for serverId: String) -> [ModelInfo] {
         snapshot?.serverSnapshot(for: serverId)?.availableModels ?? []
     }
 
@@ -500,9 +500,9 @@ final class AppModel {
         loadingModelServerIds.insert(serverId)
         defer { loadingModelServerIds.remove(serverId) }
         do {
-            _ = try await rpc.modelList(
+            _ = try await client.refreshModels(
                 serverId: serverId,
-                params: ModelListParams(cursor: nil, limit: nil, includeHidden: false)
+                params: AppRefreshModelsRequest(cursor: nil, limit: nil, includeHidden: false)
             )
             await refreshSnapshot()
         } catch {
@@ -515,7 +515,7 @@ final class AppModel {
         guard server.rateLimits == nil else { return }
         guard server.account != nil else { return }
         do {
-            _ = try await rpc.getAccountRateLimits(serverId: serverId)
+            _ = try await client.refreshRateLimits(serverId: serverId)
         } catch {
             lastError = error.localizedDescription
         }
@@ -525,7 +525,7 @@ final class AppModel {
         do {
             try await store.startTurn(
                 key: key,
-                params: payload.turnStartParams(threadId: key.threadId)
+                params: payload.turnStartRequest(threadId: key.threadId)
             )
         } catch {
             lastError = error.localizedDescription
@@ -545,14 +545,14 @@ final class AppModel {
         for attempt in 0..<maxAttempts {
             var readSucceeded = false
             do {
-                let response = try await rpc.threadRead(
+                let nextKey = try await client.readThread(
                     serverId: currentKey.serverId,
-                    params: ThreadReadParams(
+                    params: AppReadThreadRequest(
                         threadId: currentKey.threadId,
                         includeTurns: true
                     )
                 )
-                currentKey = ThreadKey(serverId: currentKey.serverId, threadId: response.thread.id)
+                currentKey = nextKey
                 store.setActiveThread(key: currentKey)
                 readSucceeded = true
             } catch {
@@ -566,14 +566,11 @@ final class AppModel {
 
             if !readSucceeded {
                 do {
-                    _ = try await rpc.threadList(
+                    _ = try await client.listThreads(
                         serverId: currentKey.serverId,
-                        params: ThreadListParams(
+                        params: AppListThreadsRequest(
                             cursor: nil,
                             limit: nil,
-                            sortKey: nil,
-                            modelProviders: nil,
-                            sourceKinds: nil,
                             archived: nil,
                             cwd: nil,
                             searchTerm: nil

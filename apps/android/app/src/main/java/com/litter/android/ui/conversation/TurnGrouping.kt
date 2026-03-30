@@ -44,7 +44,7 @@ import uniffi.codex_mobile_client.AppOperationStatus
 import uniffi.codex_mobile_client.HydratedCommandActionKind
 import uniffi.codex_mobile_client.HydratedConversationItem
 import uniffi.codex_mobile_client.HydratedConversationItemContent
-import uniffi.codex_mobile_client.MessagePhase
+import uniffi.codex_mobile_client.AppMessagePhase
 
 /**
  * A group of conversation items belonging to the same turn.
@@ -64,7 +64,7 @@ data class TranscriptTurn(
         get() = (
             items.firstOrNull {
                 val assistant = (it.content as? HydratedConversationItemContent.Assistant)?.v1
-                assistant?.phase == MessagePhase.FINAL_ANSWER
+                assistant?.phase == AppMessagePhase.FINAL_ANSWER
             }
                 ?: items.lastOrNull { it.content is HydratedConversationItemContent.Assistant }
             )

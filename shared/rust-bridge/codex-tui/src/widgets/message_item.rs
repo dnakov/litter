@@ -14,13 +14,17 @@ pub fn render(item: &ConversationItem, width: u16) -> Vec<Line<'static>> {
         ConversationItemContent::Reasoning(data) => render_reasoning(data),
         ConversationItemContent::CommandExecution(data) => render_command(data),
         ConversationItemContent::FileChange(data) => render_file_change(data),
+        ConversationItemContent::TurnDiff(data) => render_turn_diff(data),
         ConversationItemContent::McpToolCall(data) => render_mcp_tool_call(data),
         ConversationItemContent::DynamicToolCall(data) => render_dynamic_tool_call(data),
         ConversationItemContent::MultiAgentAction(data) => render_multi_agent(data),
         ConversationItemContent::WebSearch(data) => render_web_search(data),
         ConversationItemContent::TodoList(data) => render_todo_list(data),
         ConversationItemContent::ProposedPlan(data) => render_proposed_plan(data),
+        ConversationItemContent::Widget(data) => render_widget(data),
+        ConversationItemContent::UserInputResponse(data) => render_user_input_response(data),
         ConversationItemContent::Divider(data) => render_divider(data),
+        ConversationItemContent::Error(data) => render_error(data),
         ConversationItemContent::Note(data) => render_note(data),
     }
 }
@@ -183,6 +187,21 @@ fn render_mcp_tool_call(data: &McpToolCallData) -> Vec<Line<'static>> {
     ]
 }
 
+fn render_turn_diff(data: &TurnDiffData) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(" Diff:", theme::bold()))];
+    for diff_line in data.diff.lines().take(12) {
+        let style = if diff_line.starts_with('+') {
+            theme::diff_add()
+        } else if diff_line.starts_with('-') {
+            theme::diff_remove()
+        } else {
+            theme::dim()
+        };
+        lines.push(Line::from(Span::styled(format!("   {diff_line}"), style)));
+    }
+    lines
+}
+
 fn render_dynamic_tool_call(data: &DynamicToolCallData) -> Vec<Line<'static>> {
     vec![Line::from(vec![
         Span::styled(" ⚙ ", theme::dim()),
@@ -219,6 +238,36 @@ fn render_web_search(data: &WebSearchData) -> Vec<Line<'static>> {
         Span::styled(data.query.clone(), theme::accent()),
         Span::raw(indicator),
     ])]
+}
+
+fn render_widget(data: &WidgetData) -> Vec<Line<'static>> {
+    vec![
+        Line::from(vec![
+            Span::styled(" Widget: ", theme::bold()),
+            Span::styled(data.title.clone(), theme::accent()),
+        ]),
+        Line::from(Span::styled(
+            format!(
+                "   status={} size={}x{}{}",
+                data.status,
+                data.width,
+                data.height,
+                if data.is_finalized { " finalized" } else { "" }
+            ),
+            theme::secondary(),
+        )),
+    ]
+}
+
+fn render_user_input_response(data: &UserInputResponseData) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(" User Input:", theme::bold()))];
+    for question in &data.questions {
+        lines.push(Line::from(Span::styled(
+            format!("   {}: {}", question.question, question.answer),
+            theme::secondary(),
+        )));
+    }
+    lines
 }
 
 fn render_todo_list(data: &TodoListData) -> Vec<Line<'static>> {
@@ -265,10 +314,30 @@ fn render_proposed_plan(data: &ProposedPlanData) -> Vec<Line<'static>> {
 fn render_divider(data: &DividerData) -> Vec<Line<'static>> {
     let label = match data {
         DividerData::ContextCompaction { .. } => "── context compacted ──",
+        DividerData::ModelRerouted { .. } => "── model rerouted ──",
         DividerData::ReviewEntered { .. } => "── review entered ──",
         DividerData::ReviewExited { .. } => "── review exited ──",
     };
     vec![Line::from(Span::styled(format!(" {label}"), theme::dim()))]
+}
+
+fn render_error(data: &ErrorData) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!(" Error: {}", data.title),
+        Style::default()
+            .fg(theme::ERROR)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(Span::styled(
+        format!("   {}", data.message),
+        Style::default().fg(theme::ERROR),
+    )));
+    if let Some(details) = &data.details {
+        for line in details.lines().take(8) {
+            lines.push(Line::from(Span::styled(format!("   {line}"), theme::dim())));
+        }
+    }
+    lines
 }
 
 fn render_note(data: &NoteData) -> Vec<Line<'static>> {

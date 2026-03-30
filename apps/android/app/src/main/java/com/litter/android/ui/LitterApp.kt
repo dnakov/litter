@@ -104,11 +104,10 @@ fun LitterApp(appModel: AppModel) {
         }
 
         suspend fun startNewSession(serverId: String, cwd: String) {
-            val response = appModel.rpc.threadStart(
+            val startedKey = appModel.client.startThread(
                 serverId,
-                appModel.launchState.threadStartParams(cwd),
+                appModel.launchState.threadStartRequest(cwd),
             )
-            val startedKey = ThreadKey(serverId = serverId, threadId = response.thread.id)
             appModel.store.setActiveThread(startedKey)
             appModel.refreshSnapshot()
             val resolvedKey = appModel.ensureThreadLoaded(startedKey)

@@ -236,14 +236,11 @@ final class AppLifecycleController {
     private func refreshTrackedThreads(appModel: AppModel, keys: [ThreadKey]) async {
         let serverIds = Set(keys.map(\.serverId))
         for serverId in serverIds {
-            _ = try? await appModel.rpc.threadList(
+            _ = try? await appModel.client.listThreads(
                 serverId: serverId,
-                params: ThreadListParams(
+                params: AppListThreadsRequest(
                     cursor: nil,
                     limit: nil,
-                    sortKey: nil,
-                    modelProviders: nil,
-                    sourceKinds: nil,
                     archived: nil,
                     cwd: nil,
                     searchTerm: nil
@@ -262,9 +259,9 @@ final class AppLifecycleController {
                 developerInstructions: nil,
                 persistExtendedHistory: true
             )
-            _ = try? await appModel.rpc.threadResume(
+            _ = try? await appModel.client.resumeThread(
                 serverId: key.serverId,
-                params: config.threadResumeParams(
+                params: config.threadResumeRequest(
                     threadId: key.threadId,
                     cwdOverride: cwd?.isEmpty == false ? cwd : nil
                 )

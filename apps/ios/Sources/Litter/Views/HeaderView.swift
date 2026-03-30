@@ -18,7 +18,7 @@ struct HeaderView: View {
         appModel.snapshot?.serverSnapshot(for: thread.key.serverId)
     }
 
-    private var availableModels: [Model] {
+    private var availableModels: [ModelInfo] {
         appModel.availableModels(for: thread.key.serverId)
     }
 
@@ -247,29 +247,26 @@ struct HeaderView: View {
                 if server?.account == nil {
                     appState.showSettings = true
                 } else {
-                    _ = try? await appModel.rpc.threadList(
+                    _ = try? await appModel.client.listThreads(
                         serverId: thread.key.serverId,
-                        params: ThreadListParams(
+                        params: AppListThreadsRequest(
                             cursor: nil,
                             limit: nil,
-                            sortKey: nil,
-                            modelProviders: nil,
-                            sourceKinds: nil,
                             archived: nil,
                             cwd: nil,
                             searchTerm: nil
                         )
                     )
-                    let response = try? await appModel.rpc.threadResume(
+                    let nextKey = try? await appModel.client.resumeThread(
                         serverId: thread.key.serverId,
-                        params: reloadLaunchConfig().threadResumeParams(
+                        params: reloadLaunchConfig().threadResumeRequest(
                             threadId: thread.key.threadId,
                             cwdOverride: thread.info.cwd
                         )
                     )
-                    if let response {
+                    if let nextKey {
                         appModel.store.setActiveThread(
-                            key: ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
+                            key: nextKey
                         )
                     }
                     await appModel.refreshSnapshot()
@@ -315,7 +312,7 @@ struct HeaderView: View {
             return false
         }
         do {
-            let authURL = try await appModel.rpc.startRemoteSshOauthLogin(
+            let authURL = try await appModel.client.startRemoteSshOauthLogin(
                 serverId: server.serverId
             )
             if let url = URL(string: authURL) {
@@ -332,8 +329,8 @@ struct HeaderView: View {
         let resolvedModel = pendingModel.isEmpty ? nil : pendingModel
         return AppThreadLaunchConfig(
             model: resolvedModel,
-            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
             developerInstructions: nil,
             persistExtendedHistory: true
         )
@@ -347,13 +344,13 @@ private struct RemoteAuthSession: Identifiable {
 }
 
 struct InlineModelSelectorView: View {
-    let models: [Model]
+    let models: [ModelInfo]
     @Binding var selectedModel: String
     @Binding var reasoningEffort: String
     @AppStorage("fastMode") private var fastMode = false
     var onDismiss: () -> Void
 
-    private var currentModel: Model? {
+    private var currentModel: ModelInfo? {
         models.first { $0.id == selectedModel }
     }
 
@@ -472,12 +469,12 @@ private struct InAppSafariView: UIViewControllerRepresentable {
 }
 
 struct ModelSelectorSheet: View {
-    let models: [Model]
+    let models: [ModelInfo]
     @Binding var selectedModel: String
     @Binding var reasoningEffort: String
     @AppStorage("fastMode") private var fastMode = false
 
-    private var currentModel: Model? {
+    private var currentModel: ModelInfo? {
         models.first { $0.id == selectedModel }
     }
 

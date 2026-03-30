@@ -1,5 +1,5 @@
-use crate::hydration::FfiMessageSegment;
-use crate::parser::FfiToolCallCard;
+use crate::hydration::AppMessageSegment;
+use crate::parser::AppToolCallCard;
 
 #[derive(uniffi::Object)]
 pub struct MessageParser;
@@ -11,17 +11,17 @@ impl MessageParser {
         Self
     }
 
-    pub fn parse_tool_calls_typed(&self, text: String) -> Vec<FfiToolCallCard> {
+    pub fn parse_tool_calls_typed(&self, text: String) -> Vec<AppToolCallCard> {
         crate::parser::parse_tool_call_message(&text)
             .iter()
-            .map(FfiToolCallCard::from)
+            .map(AppToolCallCard::from)
             .collect()
     }
 
-    pub fn extract_segments_typed(&self, text: String) -> Vec<FfiMessageSegment> {
+    pub fn extract_segments_typed(&self, text: String) -> Vec<AppMessageSegment> {
         crate::hydration::extract_message_segments(&text)
             .into_iter()
-            .map(FfiMessageSegment::from)
+            .map(AppMessageSegment::from)
             .collect()
     }
 }

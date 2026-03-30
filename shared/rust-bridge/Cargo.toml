@@ -5,7 +5,6 @@ members = [
     "codex-ipc",
     "codex-mobile-client",
     "uniffi-bindgen",
-    "codegen",
     "codex-tui",
 ]
 resolver = "3"
@@ -22,6 +21,8 @@ codex-arg0 = { path = "../third_party/codex/codex-rs/arg0" }
 codex-feedback = { path = "../third_party/codex/codex-rs/feedback" }
 codex-cloud-requirements = { path = "../third_party/codex/codex-rs/cloud-requirements" }
 codex-config = { path = "../third_party/codex/codex-rs/config" }
+codex-utils-absolute-path = { path = "../third_party/codex/codex-rs/utils/absolute-path" }
+codex-git-utils = { path = "../third_party/codex/codex-rs/git-utils" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

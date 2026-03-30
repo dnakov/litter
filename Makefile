@@ -64,18 +64,17 @@ DEV_CARGO_ENV := env -u CARGO_INCREMENTAL
 
 PATCH_FILES := \
 	$(PATCHES_DIR)/ios-exec-hook.patch \
-	$(PATCHES_DIR)/client-controlled-handoff.patch
+	$(PATCHES_DIR)/client-controlled-handoff.patch \
+	$(PATCHES_DIR)/mobile-code-mode-stub.patch
 
 BOUNDARY_SOURCES := \
-	$(RUST_DIR)/codegen/src/main.rs \
 	$(RUST_DIR)/codex-mobile-client/Cargo.toml \
 	$(RUST_DIR)/codex-mobile-client/src/lib.rs \
 	$(RUST_DIR)/codex-mobile-client/src/conversation_uniffi.rs \
 	$(RUST_DIR)/codex-mobile-client/src/discovery_uniffi.rs \
-	$(RUST_DIR)/codex-mobile-client/src/uniffi_shared.rs \
 	$(RUST_DIR)/codex-mobile-client/src/mobile_client_impl.rs
 
-BOUNDARY_SOURCES += $(shell find $(RUST_DIR)/codex-mobile-client/src/ffi -type f -name '*.rs' 2>/dev/null)
+BOUNDARY_SOURCES += $(shell find $(RUST_DIR)/codex-mobile-client/src -type f -name '*.rs' 2>/dev/null)
 
 STAMP_SYNC := $(STAMPS)/sync
 STAMP_BINDINGS_S := $(STAMPS)/bindings-swift

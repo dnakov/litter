@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::types::ThreadKey;
-use crate::types::generated::{JsonObjectEntry, JsonValue, JsonValueKind};
-use crate::uniffi_shared::{AppVoiceHandoffRequest, AppVoiceSpeaker, AppVoiceTranscriptUpdate};
+use crate::types::{JsonObjectEntry, JsonValue, JsonValueKind, ThreadKey};
+use crate::types::{AppVoiceHandoffRequest, AppVoiceSpeaker, AppVoiceTranscriptUpdate};
 
 #[derive(Debug, Clone)]
 pub enum VoiceDerivedUpdate {
@@ -399,8 +398,8 @@ fn json_array(value: &JsonValue) -> Option<&[JsonValue]> {
 #[cfg(test)]
 mod tests {
     use super::{VoiceDerivedUpdate, VoiceRealtimeState};
+    use crate::types::JsonValue;
     use crate::types::ThreadKey;
-    use crate::types::generated::JsonValue;
     use serde_json::json;
 
     fn json_value(value: serde_json::Value) -> JsonValue {
@@ -505,7 +504,7 @@ mod tests {
         };
         assert_eq!(first.item_id, "voice-user-0");
         assert_eq!(second.item_id, "item_user_123");
-        assert_eq!(second.speaker, crate::uniffi_shared::AppVoiceSpeaker::User);
+        assert_eq!(second.speaker, crate::types::AppVoiceSpeaker::User);
         assert_eq!(second.text, "Hello there");
         assert!(second.is_final);
     }
@@ -542,7 +541,7 @@ mod tests {
         assert_eq!(second.item_id, "item_assistant_123");
         assert_eq!(
             second.speaker,
-            crate::uniffi_shared::AppVoiceSpeaker::Assistant
+            crate::types::AppVoiceSpeaker::Assistant
         );
         assert_eq!(second.text, "Hi there");
         assert!(second.is_final);
@@ -583,13 +582,13 @@ mod tests {
         };
         assert_eq!(
             flushed_user.speaker,
-            crate::uniffi_shared::AppVoiceSpeaker::User
+            crate::types::AppVoiceSpeaker::User
         );
         assert_eq!(flushed_user.text, "Search docs");
         assert!(flushed_user.is_final);
         assert_eq!(
             assistant_final.speaker,
-            crate::uniffi_shared::AppVoiceSpeaker::Assistant
+            crate::types::AppVoiceSpeaker::Assistant
         );
         assert_eq!(assistant_final.text, "Looking now");
         assert!(assistant_final.is_final);

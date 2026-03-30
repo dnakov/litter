@@ -27,8 +27,8 @@ final class RealtimeConversationProtocolTests: XCTestCase {
         XCTAssertEqual(json["reloadUserConfig"] as? Bool, true)
     }
 
-    func testThreadRealtimeStartParamsEncodeCamelCaseKeys() throws {
-        let params = ThreadRealtimeStartParams(
+    func testAppStartRealtimeSessionRequestEncodeCamelCaseKeys() throws {
+        let params = AppStartRealtimeSessionRequest(
             threadId: "thread-123",
             prompt: "hello",
             sessionId: "session-456"
@@ -57,7 +57,7 @@ final class RealtimeConversationProtocolTests: XCTestCase {
             """.data(using: .utf8)
         )
 
-        let notification = try JSONDecoder().decode(ThreadRealtimeOutputAudioDeltaNotification.self, from: data)
+        let notification = try JSONDecoder().decode(AppRealtimeOutputAudioDeltaNotification.self, from: data)
 
         XCTAssertEqual(notification.threadId, "thread-123")
         XCTAssertEqual(notification.audio.data, "AQID")

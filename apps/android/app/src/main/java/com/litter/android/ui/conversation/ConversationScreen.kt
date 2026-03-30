@@ -77,7 +77,7 @@ import com.litter.android.ui.isNearListBottom
 import com.litter.android.ui.rememberStickyFollowTail
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.HydratedConversationItemContent
-import uniffi.codex_mobile_client.ThreadSetNameParams
+import uniffi.codex_mobile_client.AppRenameThreadRequest
 import uniffi.codex_mobile_client.ThreadKey
 
 /**
@@ -151,18 +151,18 @@ fun ConversationScreen(
                 try {
                     appModel.externalResumeThread(threadKey)
                 } catch (_: Exception) {
-                    appModel.rpc.threadResume(
+                    appModel.client.resumeThread(
                         threadKey.serverId,
-                        appModel.launchState.threadResumeParams(
+                        appModel.launchState.threadResumeRequest(
                             threadKey.threadId,
                             cwdOverride = cwdOverride,
                         ),
                     )
                 }
             } else {
-                appModel.rpc.threadResume(
+                appModel.client.resumeThread(
                     threadKey.serverId,
-                    appModel.launchState.threadResumeParams(
+                    appModel.launchState.threadResumeRequest(
                         threadKey.threadId,
                         cwdOverride = cwdOverride,
                     ),
@@ -366,8 +366,7 @@ fun ConversationScreen(
                                                                 val newKey = appModel.store.forkThreadFromMessage(
                                                                     threadKey,
                                                                     turnIndex,
-                                                                    appModel.launchState.threadForkParams(
-                                                                        threadKey.threadId,
+                                                                    appModel.launchState.forkThreadFromMessageRequest(
                                                                         cwdOverride = thread.info.cwd,
                                                                     ),
                                                                 )
@@ -491,9 +490,9 @@ fun ConversationScreen(
                             if (trimmed.isNotEmpty()) {
                                 scope.launch {
                                     try {
-                                        appModel.rpc.threadSetName(
+                                        appModel.client.renameThread(
                                             threadKey.serverId,
-                                            ThreadSetNameParams(
+                                            AppRenameThreadRequest(
                                                 threadId = threadKey.threadId,
                                                 name = trimmed,
                                             ),
@@ -584,9 +583,9 @@ fun ConversationScreen(
                             showRenameDialog = false
                             scope.launch {
                                 try {
-                                    appModel.rpc.threadSetName(
+                                    appModel.client.renameThread(
                                         threadKey.serverId,
-                                        ThreadSetNameParams(
+                                        AppRenameThreadRequest(
                                             threadId = threadKey.threadId,
                                             name = nextTitle,
                                         ),

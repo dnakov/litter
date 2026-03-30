@@ -64,9 +64,9 @@ import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.home.HomeDashboardSupport
 import kotlinx.coroutines.launch
-import uniffi.codex_mobile_client.ThreadArchiveParams
+import uniffi.codex_mobile_client.AppArchiveThreadRequest
+import uniffi.codex_mobile_client.AppRenameThreadRequest
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.ThreadSetNameParams
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -181,16 +181,12 @@ fun SessionsScreen(
         if (isForkingActiveThread) return
         isForkingActiveThread = true
         try {
-            val response = appModel.rpc.threadFork(
+            val newKey = appModel.client.forkThread(
                 summary.key.serverId,
-                appModel.launchState.threadForkParams(
+                appModel.launchState.threadForkRequest(
                     sourceThreadId = summary.key.threadId,
                     cwdOverride = summary.cwd,
                 ),
-            )
-            val newKey = ThreadKey(
-                serverId = summary.key.serverId,
-                threadId = response.thread.id,
             )
             appModel.store.setActiveThread(newKey)
             appModel.refreshSnapshot()
@@ -605,9 +601,9 @@ private fun SessionNodeRow(
                     showRenameDialog = false
                     scope.launch {
                         try {
-                            appModel.rpc.threadSetName(
+                            appModel.client.renameThread(
                                 summary.key.serverId,
-                                ThreadSetNameParams(
+                                AppRenameThreadRequest(
                                     threadId = summary.key.threadId,
                                     name = newName,
                                 ),
@@ -634,9 +630,9 @@ private fun SessionNodeRow(
                     showArchiveDialog = false
                     scope.launch {
                         try {
-                            appModel.rpc.threadArchive(
+                            appModel.client.archiveThread(
                                 summary.key.serverId,
-                                ThreadArchiveParams(threadId = summary.key.threadId),
+                                AppArchiveThreadRequest(threadId = summary.key.threadId),
                             )
                             appModel.refreshSnapshot()
                         } catch (_: Exception) {}

@@ -242,7 +242,7 @@ fun HeaderBar(
                         isReloading = true
                         try {
                             if (server != null && !server.isLocal && server.account == null) {
-                                val authUrl = appModel.rpc.startRemoteSshOauthLogin(
+                                val authUrl = appModel.client.startRemoteSshOauthLogin(
                                     thread.key.serverId,
                                 )
                                 CustomTabsIntent.Builder()
@@ -255,18 +255,18 @@ fun HeaderBar(
                                 try {
                                     appModel.externalResumeThread(thread.key)
                                 } catch (_: Exception) {
-                                    appModel.rpc.threadResume(
+                                    appModel.client.resumeThread(
                                         thread.key.serverId,
-                                        appModel.launchState.threadResumeParams(
+                                        appModel.launchState.threadResumeRequest(
                                             thread.key.threadId,
                                             cwdOverride = thread.info.cwd,
                                         ),
                                     )
                                 }
                             } else {
-                                appModel.rpc.threadResume(
+                                appModel.client.resumeThread(
                                     thread.key.serverId,
-                                    appModel.launchState.threadResumeParams(
+                                    appModel.launchState.threadResumeRequest(
                                         thread.key.threadId,
                                         cwdOverride = thread.info.cwd,
                                     ),
@@ -337,7 +337,7 @@ object HeaderOverrides {
 @Composable
 private fun ModelSelectorPanel(
     thread: AppThreadSnapshot?,
-    availableModels: List<uniffi.codex_mobile_client.Model>,
+    availableModels: List<uniffi.codex_mobile_client.ModelInfo>,
 ) {
     val appModel = LocalAppModel.current
     val launchState by appModel.launchState.snapshot.collectAsState()

@@ -96,13 +96,16 @@ trap cleanup_patch EXIT
 
 mkdir -p "$FRAMEWORKS_DIR" "$GENERATED_HEADERS_DIR" "$GENERATED_DEVICE_DIR" "$GENERATED_SIM_DIR"
 
+if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER="$(command -v sccache)"
+fi
+
 export CXX_aarch64_apple_ios="$IOS_CLANGXX_WRAPPER"
 export CXX_aarch64_apple_ios_sim="$IOS_CLANGXX_WRAPPER"
 export IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
 
 bindings_inputs() {
   cat <<EOF
-$RUST_BRIDGE_DIR/codegen/src/main.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/src/lib.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/src/conversation_uniffi.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/src/discovery_uniffi.rs
@@ -118,7 +121,7 @@ $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/protocol/src/openai_models.rs
 $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/protocol/src/parse_command.rs
 $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/protocol/src/protocol.rs
 EOF
-  find "$RUST_BRIDGE_DIR/codex-mobile-client/src/ffi" -type f -name '*.rs' | sort
+  find "$RUST_BRIDGE_DIR/codex-mobile-client/src" -type f -name '*.rs' | sort
 }
 
 compute_bindings_hash() {

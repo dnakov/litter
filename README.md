@@ -126,11 +126,16 @@ This repo now vendors upstream Codex as a submodule:
 
 - `shared/third_party/codex` -> `https://github.com/openai/codex`
 
-Current local Codex patch set:
+Current local Codex patch set (applied by `sync-codex.sh`):
 
 - `patches/codex/ios-exec-hook.patch`
-- `patches/codex/realtime-transcript-deltas.patch`
 - `patches/codex/client-controlled-handoff.patch`
+- `patches/codex/mobile-code-mode-stub.patch` — stubs out v8/code-mode for iOS/Android targets
+
+Additional patches (not auto-applied):
+
+- `patches/codex/android-vendored-openssl.patch`
+- `patches/codex/realtime-transcript-deltas.patch`
 
 Sync/apply patch (idempotent):
 
@@ -220,7 +225,7 @@ gradle -p apps/android :app:assembleOnDeviceDebug :app:assembleRemoteOnlyDebug
 Run Android unit tests:
 
 ```bash
-gradle -p apps/android :app:testOnDeviceDebugUnitTest :app:testRemoteOnlyDebugUnitTest
+cd apps/android && ./gradlew :app:testDebugUnitTest
 ```
 
 Start emulator and install on-device debug build:

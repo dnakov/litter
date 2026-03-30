@@ -1,6 +1,6 @@
 use crate::conversation;
-use crate::types::generated::MessagePhase;
-use crate::uniffi_shared::{AppOperationStatus, AppSubagentStatus};
+use crate::types::AppMessagePhase;
+use crate::types::{AppOperationStatus, AppSubagentStatus};
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HydratedConversationItem {
@@ -44,7 +44,7 @@ pub struct HydratedAssistantMessageData {
     pub text: String,
     pub agent_nickname: Option<String>,
     pub agent_role: Option<String>,
-    pub phase: Option<MessagePhase>,
+    pub phase: Option<AppMessagePhase>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]

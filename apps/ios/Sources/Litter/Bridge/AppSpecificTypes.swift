@@ -51,7 +51,7 @@ enum TurnSandboxPolicy: Encodable {
         }
     }
 
-    var ffiValue: SandboxPolicy {
+    var ffiValue: AppSandboxPolicy {
         switch self {
         case .dangerFullAccess:
             return .dangerFullAccess
@@ -101,7 +101,7 @@ private enum TurnReadOnlyAccess: Encodable {
     }
 }
 
-extension ThreadRealtimeAudioChunk: Encodable {
+extension AppRealtimeAudioChunk: Encodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: AudioChunkEncodingKeys.self)
         try container.encode(data, forKey: .data)
@@ -123,13 +123,13 @@ extension ExperimentalFeature: Identifiable {
     public var id: String { name }
 }
 
-extension Model: Identifiable {}
+extension ModelInfo: Identifiable {}
 
 extension RateLimitSnapshot: Identifiable {
     public var id: String { limitId ?? UUID().uuidString }
 }
 
-extension AskForApproval {
+extension AppAskForApproval {
     init?(wireValue: String?) {
         switch wireValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "untrusted":
@@ -146,7 +146,7 @@ extension AskForApproval {
     }
 }
 
-extension SandboxMode {
+extension AppSandboxMode {
     init?(wireValue: String?) {
         switch wireValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "read-only":
@@ -206,7 +206,7 @@ extension ServiceTier {
     }
 }
 
-extension MergeStrategy {
+extension AppMergeStrategy {
     init?(wireValue: String?) {
         switch wireValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "replace":
@@ -490,7 +490,7 @@ extension ReasoningEffortOption: Identifiable {
     public var id: String { reasoningEffort.wireValue }
 }
 
-extension UserInput: Encodable {
+extension AppUserInput: Encodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: UserInputCodingKeys.self)
         switch self {
@@ -519,7 +519,7 @@ private enum UserInputCodingKeys: String, CodingKey {
     case type, text, url, path, name
 }
 
-extension ReviewTarget: Encodable {
+extension AppReviewTarget: Encodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: ReviewTargetCodingKeys.self)
         switch self {

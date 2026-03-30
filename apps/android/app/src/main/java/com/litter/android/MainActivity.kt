@@ -125,12 +125,14 @@ class MainActivity : ComponentActivity() {
             )
             appModel.restoreStoredLocalChatGptAuth("local")
             // Load thread list for the local server
-            appModel.rpc.threadList(
+            appModel.client.listThreads(
                 "local",
-                uniffi.codex_mobile_client.ThreadListParams(
-                    cursor = null, limit = null, sortKey = null,
-                    modelProviders = null, sourceKinds = null,
-                    archived = false, cwd = null, searchTerm = null,
+                uniffi.codex_mobile_client.AppListThreadsRequest(
+                    cursor = null,
+                    limit = null,
+                    archived = false,
+                    cwd = null,
+                    searchTerm = null,
                 ),
             )
             LLog.i("MainActivity", "Local in-process server connected")

@@ -361,9 +361,9 @@ private struct HomeNavigationView: View {
                         onConnectServer: { appState.showServerPicker = true },
                         onShowSettings: { appState.showSettings = true },
                         onDeleteThread: { key in
-                            _ = try? await appModel.rpc.threadArchive(
+                            _ = try? await appModel.client.archiveThread(
                                 serverId: key.serverId,
-                                params: ThreadArchiveParams(threadId: key.threadId)
+                                params: AppArchiveThreadRequest(threadId: key.threadId)
                             )
                             await appModel.refreshSnapshot()
                         },
@@ -661,14 +661,13 @@ private struct HomeNavigationView: View {
         appState.currentCwd = thread.cwd
         let openedKey: ThreadKey?
         do {
-            let response = try await appModel.rpc.threadResume(
+            let nextKey = try await appModel.client.resumeThread(
                 serverId: thread.key.serverId,
-                params: launchConfig().threadResumeParams(
+                params: launchConfig().threadResumeRequest(
                     threadId: thread.key.threadId,
                     cwdOverride: thread.cwd
                 )
             )
-            let nextKey = ThreadKey(serverId: thread.key.serverId, threadId: response.thread.id)
             appModel.store.setActiveThread(key: nextKey)
             await appModel.refreshSnapshot()
             openedKey = nextKey
@@ -706,11 +705,11 @@ private struct HomeNavigationView: View {
         appState.currentCwd = cwd
         let startedKey: ThreadKey
         do {
-            let response = try await appModel.rpc.threadStart(
+            let key = try await appModel.client.startThread(
                 serverId: serverId,
-                params: launchConfig().threadStartParams(cwd: cwd)
+                params: launchConfig().threadStartRequest(cwd: cwd)
             )
-            startedKey = ThreadKey(serverId: serverId, threadId: response.thread.id)
+            startedKey = key
             appModel.store.setActiveThread(key: startedKey)
             await appModel.refreshSnapshot()
         } catch {
@@ -750,8 +749,8 @@ private struct HomeNavigationView: View {
         let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
-            approvalPolicy: AskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: SandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
+            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
             developerInstructions: nil,
             persistExtendedHistory: true
         )

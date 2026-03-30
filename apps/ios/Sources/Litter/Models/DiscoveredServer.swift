@@ -7,7 +7,7 @@ enum ServerSource: String, Codable, Hashable {
     case tailscale
     case manual
 
-    init(_ source: FfiDiscoverySource) {
+    init(_ source: AppDiscoverySource) {
         switch source {
         case .bonjour, .lanProbe, .arpScan:
             self = .bonjour

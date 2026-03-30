@@ -23,7 +23,7 @@ struct ConversationAssistantMessageData: Equatable {
     var text: String
     var agentNickname: String?
     var agentRole: String?
-    var phase: MessagePhase?
+    var phase: AppMessagePhase?
 }
 
 struct ConversationReasoningData: Equatable {
