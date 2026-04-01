@@ -813,6 +813,8 @@ impl MobileClient {
                 response.thread,
                 current.model.clone(),
                 current.reasoning_effort.clone(),
+                current.effective_approval_policy.clone(),
+                current.effective_sandbox_policy.clone(),
             )
             .map_err(RpcError::Deserialization)?;
             copy_thread_runtime_fields(&current, &mut snapshot);
@@ -869,6 +871,8 @@ impl MobileClient {
             response.thread,
             fork_model.clone(),
             fork_reasoning.clone(),
+            Some(response.approval_policy.into()),
+            Some(response.sandbox.into()),
         )
         .map_err(RpcError::Deserialization)?;
         let next_key = snapshot.key.clone();
@@ -889,6 +893,8 @@ impl MobileClient {
                 rollback_response.thread,
                 fork_model,
                 fork_reasoning,
+                snapshot.effective_approval_policy.clone(),
+                snapshot.effective_sandbox_policy.clone(),
             )
             .map_err(RpcError::Deserialization)?;
         }
@@ -1987,12 +1993,16 @@ pub fn thread_snapshot_from_upstream_thread_with_overrides(
     thread: upstream::Thread,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    effective_approval_policy: Option<crate::types::AppAskForApproval>,
+    effective_sandbox_policy: Option<crate::types::AppSandboxPolicy>,
 ) -> Result<ThreadSnapshot, String> {
     Ok(thread_snapshot_from_upstream_thread_state(
         server_id,
         thread,
         model,
         reasoning_effort,
+        effective_approval_policy,
+        effective_sandbox_policy,
         None,
     ))
 }
@@ -2198,38 +2208,32 @@ async fn refresh_thread_snapshot_from_app_server(
     server_id: &str,
     thread_id: &str,
 ) -> Result<(), RpcError> {
-    let thread = read_thread_from_app_server(session, thread_id).await?;
-    upsert_thread_snapshot_from_app_server_thread(&app_store, server_id, thread);
+    let response = read_thread_response_from_app_server(session, thread_id).await?;
+    upsert_thread_snapshot_from_app_server_read_response(&app_store, server_id, response)?;
     Ok(())
 }
 
-async fn read_thread_from_app_server(
+async fn read_thread_response_from_app_server(
     session: Arc<ServerSession>,
     thread_id: &str,
-) -> Result<upstream::Thread, RpcError> {
+) -> Result<upstream::ThreadReadResponse, RpcError> {
     let response = session
         .request(
             "thread/read",
             serde_json::json!({ "threadId": thread_id, "includeTurns": true }),
         )
         .await?;
-    response
-        .get("thread")
-        .cloned()
-        .ok_or_else(|| RpcError::Deserialization("thread/read response missing thread".to_string()))
-        .and_then(|value| {
-            serde_json::from_value::<upstream::Thread>(value).map_err(|error| {
-                RpcError::Deserialization(format!("deserialize thread/read response: {error}"))
-            })
-        })
+    serde_json::from_value::<upstream::ThreadReadResponse>(response).map_err(|error| {
+        RpcError::Deserialization(format!("deserialize thread/read response: {error}"))
+    })
 }
 
-fn upsert_thread_snapshot_from_app_server_thread(
+fn upsert_thread_snapshot_from_app_server_read_response(
     app_store: &AppStoreReducer,
     server_id: &str,
-    thread: upstream::Thread,
-) {
-    let thread_id = thread.id.clone();
+    response: upstream::ThreadReadResponse,
+) -> Result<(), RpcError> {
+    let thread_id = response.thread.id.clone();
     let existing = app_store
         .snapshot()
         .threads
@@ -2238,11 +2242,20 @@ fn upsert_thread_snapshot_from_app_server_thread(
             thread_id: thread_id.to_string(),
         })
         .cloned();
-    let mut snapshot = thread_snapshot_from_upstream_thread(server_id, thread);
+    let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
+        server_id,
+        response.thread,
+        None,
+        None,
+        response.approval_policy.map(Into::into),
+        response.sandbox.map(Into::into),
+    )
+    .map_err(RpcError::Deserialization)?;
     if let Some(existing) = existing.as_ref() {
         copy_thread_runtime_fields(existing, &mut snapshot);
     }
     app_store.upsert_thread_snapshot(snapshot);
+    Ok(())
 }
 
 async fn recover_ipc_stream_cache_from_app_server(
@@ -2274,8 +2287,9 @@ async fn recover_ipc_stream_cache_from_app_server(
         .collect::<Vec<_>>();
     drop(app_snapshot);
 
-    let thread = read_thread_from_app_server(session, thread_id).await?;
-    upsert_thread_snapshot_from_app_server_thread(&app_store, server_id, thread.clone());
+    let response = read_thread_response_from_app_server(session, thread_id).await?;
+    let thread = response.thread.clone();
+    upsert_thread_snapshot_from_app_server_read_response(&app_store, server_id, response)?;
 
     let mut conversation_state = seed_conversation_state_from_thread(&thread);
     hydrate_seeded_ipc_conversation_state(
@@ -2293,7 +2307,7 @@ fn thread_snapshot_from_upstream_thread(
     server_id: &str,
     thread: upstream::Thread,
 ) -> ThreadSnapshot {
-    thread_snapshot_from_upstream_thread_state(server_id, thread, None, None, None)
+    thread_snapshot_from_upstream_thread_state(server_id, thread, None, None, None, None, None)
 }
 
 fn thread_snapshot_from_upstream_thread_state(
@@ -2301,6 +2315,8 @@ fn thread_snapshot_from_upstream_thread_state(
     thread: upstream::Thread,
     model: Option<String>,
     reasoning_effort: Option<String>,
+    effective_approval_policy: Option<crate::types::AppAskForApproval>,
+    effective_sandbox_policy: Option<crate::types::AppSandboxPolicy>,
     active_turn_id: Option<String>,
 ) -> ThreadSnapshot {
     let info = ThreadInfo::from(thread.clone());
@@ -2309,6 +2325,8 @@ fn thread_snapshot_from_upstream_thread_state(
     snapshot.items = items;
     snapshot.model = model;
     snapshot.reasoning_effort = reasoning_effort;
+    snapshot.effective_approval_policy = effective_approval_policy;
+    snapshot.effective_sandbox_policy = effective_sandbox_policy;
     snapshot.active_turn_id = active_turn_id.or_else(|| active_turn_id_from_turns(&thread.turns));
     snapshot
 }
@@ -2339,6 +2357,8 @@ fn thread_projection_from_conversation_json(
                 projection.thread,
                 projection.latest_model,
                 projection.latest_reasoning_effort,
+                None,
+                None,
                 projection.active_turn_id,
             ),
             pending_approvals: projection
@@ -3734,6 +3754,8 @@ mod mobile_client_tests {
             info: make_thread_info("thread-1"),
             model: Some("gpt-5".to_string()),
             reasoning_effort: Some("high".to_string()),
+            effective_approval_policy: None,
+            effective_sandbox_policy: None,
             items: Vec::new(),
             local_overlay_items: Vec::new(),
             queued_follow_ups: vec![AppQueuedFollowUpPreview {
@@ -3768,6 +3790,88 @@ mod mobile_client_tests {
             Some(20_000)
         );
         assert_eq!(target.realtime_session_id.as_deref(), Some("rt-1"));
+    }
+
+    #[test]
+    fn copy_thread_runtime_fields_does_not_preserve_effective_permissions() {
+        let source = ThreadSnapshot {
+            key: ThreadKey {
+                server_id: "srv".to_string(),
+                thread_id: "thread-1".to_string(),
+            },
+            info: make_thread_info("thread-1"),
+            model: None,
+            reasoning_effort: None,
+            effective_approval_policy: Some(crate::types::AppAskForApproval::Never),
+            effective_sandbox_policy: Some(crate::types::AppSandboxPolicy::DangerFullAccess),
+            items: Vec::new(),
+            local_overlay_items: Vec::new(),
+            queued_follow_ups: Vec::new(),
+            active_turn_id: None,
+            context_tokens_used: None,
+            model_context_window: None,
+            rate_limits: None,
+            realtime_session_id: None,
+        };
+        let mut target = ThreadSnapshot::from_info("srv", make_thread_info("thread-1"));
+
+        copy_thread_runtime_fields(&source, &mut target);
+
+        assert_eq!(target.effective_approval_policy, None);
+        assert_eq!(target.effective_sandbox_policy, None);
+    }
+
+    #[test]
+    fn upsert_thread_snapshot_from_thread_read_response_uses_effective_permissions() {
+        let reducer = AppStoreReducer::new();
+        let response: upstream::ThreadReadResponse = serde_json::from_value(serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "preview": "hi",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "status": { "type": "idle" },
+                "path": "/tmp/thread",
+                "cwd": "/tmp/thread",
+                "cliVersion": "1.0.0",
+                "source": "cli",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": "thread",
+                "turns": []
+            },
+            "approvalPolicy": "never",
+            "sandbox": {
+                "type": "dangerFullAccess"
+            }
+        }))
+        .expect("thread/read response should deserialize");
+
+        upsert_thread_snapshot_from_app_server_read_response(&reducer, "srv", response)
+            .expect("upsert should succeed");
+
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread-1".to_string(),
+        };
+        let snapshot = reducer
+            .snapshot()
+            .threads
+            .into_iter()
+            .find_map(|(thread_key, thread)| (thread_key == key).then_some(thread))
+            .expect("thread snapshot should exist");
+
+        assert_eq!(
+            snapshot.effective_approval_policy,
+            Some(crate::types::AppAskForApproval::Never)
+        );
+        assert_eq!(
+            snapshot.effective_sandbox_policy,
+            Some(crate::types::AppSandboxPolicy::DangerFullAccess)
+        );
     }
 
     #[test]

@@ -293,6 +293,8 @@ final class AppModel {
         thread.info = state.info
         thread.model = state.model
         thread.reasoningEffort = state.reasoningEffort
+        thread.effectiveApprovalPolicy = state.effectiveApprovalPolicy
+        thread.effectiveSandboxPolicy = state.effectiveSandboxPolicy
         thread.activeTurnId = state.activeTurnId
         thread.contextTokensUsed = state.contextTokensUsed
         thread.modelContextWindow = state.modelContextWindow
@@ -533,6 +535,29 @@ final class AppModel {
         }
     }
 
+    func hydrateThreadPermissions(for key: ThreadKey, appState: AppState) async -> ThreadKey? {
+        if let existing = snapshot?.threadSnapshot(for: key), hasAuthoritativePermissions(existing) {
+            appState.hydratePermissions(from: existing)
+            return key
+        }
+
+        do {
+            let nextKey = try await client.readThread(
+                serverId: key.serverId,
+                params: AppReadThreadRequest(
+                    threadId: key.threadId,
+                    includeTurns: true
+                )
+            )
+            await refreshSnapshot()
+            appState.hydratePermissions(from: snapshot?.threadSnapshot(for: nextKey))
+            return nextKey
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
     func ensureThreadLoaded(
         key: ThreadKey,
         maxAttempts: Int = 5
@@ -598,6 +623,10 @@ final class AppModel {
         }
 
         return nil
+    }
+
+    private func hasAuthoritativePermissions(_ thread: AppThreadSnapshot) -> Bool {
+        thread.effectiveApprovalPolicy != nil || thread.effectiveSandboxPolicy != nil
     }
 }
 

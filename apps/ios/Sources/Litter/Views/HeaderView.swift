@@ -329,8 +329,8 @@ struct HeaderView: View {
         let resolvedModel = pendingModel.isEmpty ? nil : pendingModel
         return AppThreadLaunchConfig(
             model: resolvedModel,
-            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: appState.launchApprovalPolicy(for: thread.key),
+            sandbox: appState.launchSandboxMode(for: thread.key),
             developerInstructions: nil,
             persistExtendedHistory: true
         )

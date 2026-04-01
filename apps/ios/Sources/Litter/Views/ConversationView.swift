@@ -112,6 +112,10 @@ struct ConversationView: View {
             guard !hasLoggedFirstRender else { return }
             hasLoggedFirstRender = true
             os_signpost(.event, log: conversationViewSignpostLog, name: "ConversationFirstRender")
+            appState.hydratePermissions(from: thread)
+        }
+        .onChange(of: thread) { _, newThread in
+            appState.hydratePermissions(from: newThread)
         }
     }
 
@@ -245,8 +249,8 @@ struct ConversationView: View {
         return AppComposerPayload(
             text: text,
             additionalInputs: additionalInputs,
-            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-            sandboxPolicy: TurnSandboxPolicy(mode: appState.sandboxMode)?.ffiValue,
+            approvalPolicy: appState.launchApprovalPolicy(for: activeThreadKey),
+            sandboxPolicy: appState.turnSandboxPolicy(for: activeThreadKey),
             model: pendingModelOverride,
             effort: ReasoningEffort(wireValue: pendingReasoningOverride),
             serviceTier: ServiceTier(wireValue: fastMode ? "fast" : nil)
@@ -256,8 +260,8 @@ struct ConversationView: View {
     private func launchConfig() -> AppThreadLaunchConfig {
         AppThreadLaunchConfig(
             model: pendingModelOverride,
-            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: appState.launchApprovalPolicy(for: activeThreadKey),
+            sandbox: appState.launchSandboxMode(for: activeThreadKey),
             developerInstructions: nil,
             persistExtendedHistory: true
         )
@@ -1793,8 +1797,8 @@ private struct ConversationInputBar: View {
                 serverId: snapshot.threadKey.serverId,
                 params: AppThreadLaunchConfig(
                     model: pendingModelOverride,
-                    approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-                    sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
+                    approvalPolicy: appState.launchApprovalPolicy(for: snapshot.threadKey),
+                    sandbox: appState.launchSandboxMode(for: snapshot.threadKey),
                     developerInstructions: nil,
                     persistExtendedHistory: true
                 ).threadForkRequest(threadId: snapshot.threadKey.threadId, cwdOverride: workDir)

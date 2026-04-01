@@ -50,8 +50,9 @@ impl TryFrom<AppDynamicToolSpec> for codex_protocol::dynamic_tools::DynamicToolS
         Ok(Self {
             name: value.name,
             description: value.description,
-            input_schema: serde_json::from_str(&value.input_schema_json)
-                .map_err(|e| RpcClientError::Serialization(format!("invalid input_schema JSON: {e}")))?,
+            input_schema: serde_json::from_str(&value.input_schema_json).map_err(|e| {
+                RpcClientError::Serialization(format!("invalid input_schema JSON: {e}"))
+            })?,
             defer_loading: value.defer_loading,
         })
     }
@@ -383,6 +384,15 @@ pub enum AppNetworkAccess {
     Enabled,
 }
 
+impl From<upstream::NetworkAccess> for AppNetworkAccess {
+    fn from(value: upstream::NetworkAccess) -> Self {
+        match value {
+            upstream::NetworkAccess::Restricted => Self::Restricted,
+            upstream::NetworkAccess::Enabled => Self::Enabled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[derive(uniffi::Enum)]
@@ -477,8 +487,6 @@ impl From<codex_protocol::config_types::ServiceTier> for ServiceTier {
     }
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[derive(uniffi::Enum)]
@@ -528,6 +536,30 @@ pub enum AppAskForApproval {
     Never,
 }
 
+impl From<upstream::AskForApproval> for AppAskForApproval {
+    fn from(value: upstream::AskForApproval) -> Self {
+        match value {
+            upstream::AskForApproval::UnlessTrusted => Self::UnlessTrusted,
+            upstream::AskForApproval::OnFailure => Self::OnFailure,
+            upstream::AskForApproval::OnRequest => Self::OnRequest,
+            upstream::AskForApproval::Granular {
+                sandbox_approval,
+                rules,
+                skill_approval,
+                request_permissions,
+                mcp_elicitations,
+            } => Self::Granular {
+                sandbox_approval,
+                rules,
+                skill_approval,
+                request_permissions,
+                mcp_elicitations,
+            },
+            upstream::AskForApproval::Never => Self::Never,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[derive(uniffi::Enum)]
@@ -541,6 +573,21 @@ pub enum AppReadOnlyAccess {
     },
     #[default]
     FullAccess,
+}
+
+impl From<upstream::ReadOnlyAccess> for AppReadOnlyAccess {
+    fn from(value: upstream::ReadOnlyAccess) -> Self {
+        match value {
+            upstream::ReadOnlyAccess::Restricted {
+                include_platform_defaults,
+                readable_roots,
+            } => Self::Restricted {
+                include_platform_defaults,
+                readable_roots: readable_roots.into_iter().map(Into::into).collect(),
+            },
+            upstream::ReadOnlyAccess::FullAccess => Self::FullAccess,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -582,6 +629,37 @@ pub enum AppSandboxPolicy {
         #[serde(default)]
         exclude_slash_tmp: bool,
     },
+}
+
+impl From<upstream::SandboxPolicy> for AppSandboxPolicy {
+    fn from(value: upstream::SandboxPolicy) -> Self {
+        match value {
+            upstream::SandboxPolicy::DangerFullAccess => Self::DangerFullAccess,
+            upstream::SandboxPolicy::ReadOnly {
+                access,
+                network_access,
+            } => Self::ReadOnly {
+                access: access.into(),
+                network_access,
+            },
+            upstream::SandboxPolicy::ExternalSandbox { network_access } => Self::ExternalSandbox {
+                network_access: network_access.into(),
+            },
+            upstream::SandboxPolicy::WorkspaceWrite {
+                writable_roots,
+                read_only_access,
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+            } => Self::WorkspaceWrite {
+                writable_roots: writable_roots.into_iter().map(Into::into).collect(),
+                read_only_access: read_only_access.into(),
+                network_access,
+                exclude_tmpdir_env_var,
+                exclude_slash_tmp,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -666,8 +744,6 @@ impl From<upstream::ReasoningEffortOption> for ReasoningEffortOption {
         }
     }
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -844,8 +920,14 @@ impl From<upstream::Model> for ModelInfo {
             model: value.model,
             upgrade: value.upgrade,
             upgrade_model: value.upgrade_info.as_ref().map(|u| u.model.clone()),
-            upgrade_copy: value.upgrade_info.as_ref().and_then(|u| u.upgrade_copy.clone()),
-            model_link: value.upgrade_info.as_ref().and_then(|u| u.model_link.clone()),
+            upgrade_copy: value
+                .upgrade_info
+                .as_ref()
+                .and_then(|u| u.upgrade_copy.clone()),
+            model_link: value
+                .upgrade_info
+                .as_ref()
+                .and_then(|u| u.model_link.clone()),
             migration_markdown: value.upgrade_info.and_then(|u| u.migration_markdown),
             availability_nux_message: value.availability_nux.map(|n| n.message),
             display_name: value.display_name,
@@ -1254,5 +1336,43 @@ mod tests {
             }
             other => panic!("unexpected approval policy: {other:?}"),
         }
+    }
+
+    #[test]
+    fn thread_read_response_deserializes_optional_effective_permissions() {
+        let response: upstream::ThreadReadResponse = serde_json::from_value(serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "preview": "hi",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "status": { "type": "idle" },
+                "path": "/tmp/thread",
+                "cwd": "/tmp/thread",
+                "cliVersion": "1.0.0",
+                "source": "cli",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": "thread",
+                "turns": []
+            },
+            "approvalPolicy": "never",
+            "sandbox": {
+                "type": "dangerFullAccess"
+            }
+        }))
+        .expect("thread/read response should deserialize optional permissions");
+
+        assert_eq!(
+            response.approval_policy,
+            Some(upstream::AskForApproval::Never)
+        );
+        assert_eq!(
+            response.sandbox,
+            Some(upstream::SandboxPolicy::DangerFullAccess)
+        );
     }
 }

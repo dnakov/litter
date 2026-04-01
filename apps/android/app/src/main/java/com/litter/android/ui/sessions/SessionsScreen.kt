@@ -185,11 +185,13 @@ fun SessionsScreen(
         if (isForkingActiveThread) return
         isForkingActiveThread = true
         try {
+            val sourceKey = appModel.hydrateThreadPermissions(summary.key) ?: summary.key
             val newKey = appModel.client.forkThread(
-                summary.key.serverId,
+                sourceKey.serverId,
                 appModel.launchState.threadForkRequest(
-                    sourceThreadId = summary.key.threadId,
+                    sourceThreadId = sourceKey.threadId,
                     cwdOverride = summary.cwd,
+                    threadKey = sourceKey,
                 ),
             )
             appModel.store.setActiveThread(newKey)

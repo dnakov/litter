@@ -1059,10 +1059,12 @@ struct SessionsScreen: View {
         appState.currentCwd = thread.cwd
         let openedKey: ThreadKey?
         do {
+            let resumeKey = await appModel.hydrateThreadPermissions(for: thread.key, appState: appState)
+                ?? thread.key
             let nextKey = try await appModel.client.resumeThread(
-                serverId: thread.key.serverId,
-                params: launchConfig().threadResumeRequest(
-                    threadId: thread.key.threadId,
+                serverId: resumeKey.serverId,
+                params: launchConfig(for: resumeKey).threadResumeRequest(
+                    threadId: resumeKey.threadId,
                     cwdOverride: thread.cwd
                 )
             )
@@ -1121,10 +1123,12 @@ struct SessionsScreen: View {
         isForkingActiveThread = true
         defer { isForkingActiveThread = false }
         do {
+            let sourceKey = await appModel.hydrateThreadPermissions(for: thread.key, appState: appState)
+                ?? thread.key
             let nextKey = try await appModel.client.forkThread(
-                serverId: thread.key.serverId,
-                params: launchConfig().threadForkRequest(
-                    threadId: thread.key.threadId,
+                serverId: sourceKey.serverId,
+                params: launchConfig(for: sourceKey).threadForkRequest(
+                    threadId: sourceKey.threadId,
                     cwdOverride: thread.cwd
                 )
             )
@@ -1138,12 +1142,12 @@ struct SessionsScreen: View {
         }
     }
 
-    private func launchConfig() -> AppThreadLaunchConfig {
+    private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
         let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
-            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: appState.launchApprovalPolicy(for: threadKey),
+            sandbox: appState.launchSandboxMode(for: threadKey),
             developerInstructions: nil,
             persistExtendedHistory: true
         )

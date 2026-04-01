@@ -222,8 +222,8 @@ protocol VoiceActions: AnyObject {
     func startPinnedLocalVoiceCall(
         cwd: String,
         model: String?,
-        approvalPolicy: String,
-        sandboxMode: String?
+        approvalPolicy: AppAskForApproval?,
+        sandboxMode: AppSandboxMode?
     ) async throws
 
     func startVoiceOnThread(_ key: ThreadKey) async throws

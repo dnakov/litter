@@ -144,27 +144,30 @@ fun ConversationScreen(
     // Load thread content on first open — resume it so Rust hydrates conversation items
     LaunchedEffect(threadKey) {
         try {
-            appModel.store.setActiveThread(threadKey)
-            val server = appModel.snapshot.value?.servers?.find { it.serverId == threadKey.serverId }
+            val resolvedThreadKey = appModel.hydrateThreadPermissions(threadKey) ?: threadKey
+            appModel.store.setActiveThread(resolvedThreadKey)
+            val server = appModel.snapshot.value?.servers?.find { it.serverId == resolvedThreadKey.serverId }
             val cwdOverride = thread?.info?.cwd
             if (server?.isIpcConnected == true) {
                 try {
-                    appModel.externalResumeThread(threadKey)
+                    appModel.externalResumeThread(resolvedThreadKey)
                 } catch (_: Exception) {
                     appModel.client.resumeThread(
-                        threadKey.serverId,
+                        resolvedThreadKey.serverId,
                         appModel.launchState.threadResumeRequest(
-                            threadKey.threadId,
+                            resolvedThreadKey.threadId,
                             cwdOverride = cwdOverride,
+                            threadKey = resolvedThreadKey,
                         ),
                     )
                 }
             } else {
                 appModel.client.resumeThread(
-                    threadKey.serverId,
+                    resolvedThreadKey.serverId,
                     appModel.launchState.threadResumeRequest(
-                        threadKey.threadId,
+                        resolvedThreadKey.threadId,
                         cwdOverride = cwdOverride,
+                        threadKey = resolvedThreadKey,
                     ),
                 )
             }
@@ -172,7 +175,11 @@ fun ConversationScreen(
         } catch (_: Exception) {}
     }
 
-    LaunchedEffect(thread?.info?.cwd) {
+    LaunchedEffect(
+        thread?.info?.cwd,
+        thread?.effectiveApprovalPolicy,
+        thread?.effectiveSandboxPolicy,
+    ) {
         appModel.launchState.syncFromThread(thread)
     }
 
@@ -370,6 +377,7 @@ fun ConversationScreen(
                                                                     turnIndex,
                                                                     appModel.launchState.forkThreadFromMessageRequest(
                                                                         cwdOverride = thread.info.cwd,
+                                                                        threadKey = threadKey,
                                                                     ),
                                                                 )
                                                                 appModel.store.setActiveThread(newKey)
@@ -528,6 +536,7 @@ fun ConversationScreen(
                 containerColor = LitterTheme.background,
             ) {
                 ComposerPermissionsSheet(
+                    threadKey = threadKey,
                     onDismiss = { showPermissionsSheet = false },
                 )
             }

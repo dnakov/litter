@@ -52,8 +52,8 @@ final class VoiceRuntimeController: VoiceActions {
     func startPinnedLocalVoiceCall(
         cwd: String,
         model: String?,
-        approvalPolicy: String,
-        sandboxMode: String?
+        approvalPolicy: AppAskForApproval?,
+        sandboxMode: AppSandboxMode?
     ) async throws {
         guard activeVoiceSession == nil else { return }
         let key = try await ensurePinnedLocalVoiceThread(
@@ -154,8 +154,8 @@ final class VoiceRuntimeController: VoiceActions {
     private func ensurePinnedLocalVoiceThread(
         cwd: String,
         model: String?,
-        approvalPolicy: String,
-        sandboxMode: String?
+        approvalPolicy: AppAskForApproval?,
+        sandboxMode: AppSandboxMode?
     ) async throws -> ThreadKey {
         let serverId = try await ensureLocalServerConnected()
 
@@ -166,8 +166,8 @@ final class VoiceRuntimeController: VoiceActions {
                     serverId: key.serverId,
                     params: AppThreadLaunchConfig(
                         model: model,
-                        approvalPolicy: AppAskForApproval(wireValue: approvalPolicy),
-                        sandbox: AppSandboxMode(wireValue: sandboxMode),
+                        approvalPolicy: approvalPolicy,
+                        sandbox: sandboxMode,
                         developerInstructions: nil,
                         persistExtendedHistory: true
                     ).threadResumeRequest(
@@ -187,8 +187,8 @@ final class VoiceRuntimeController: VoiceActions {
             serverId: serverId,
             params: AppThreadLaunchConfig(
                 model: model,
-                approvalPolicy: AppAskForApproval(wireValue: approvalPolicy),
-                sandbox: AppSandboxMode(wireValue: sandboxMode),
+                approvalPolicy: approvalPolicy,
+                sandbox: sandboxMode,
                 developerInstructions: nil,
                 persistExtendedHistory: true
             ).threadStartRequest(cwd: preferredVoiceThreadCwd(for: nil, fallback: cwd))

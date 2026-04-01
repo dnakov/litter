@@ -1,8 +1,8 @@
 use std::any::Any;
 
-use crate::MobileClient;
 use crate::transport::RpcError;
 use crate::types::{ThreadInfo, ThreadKey};
+use crate::MobileClient;
 use codex_app_server_protocol as upstream;
 
 impl MobileClient {
@@ -120,11 +120,7 @@ impl MobileClient {
         self.app_store.update_server_account(server_id, None, false);
     }
 
-    pub fn apply_account_response(
-        &self,
-        server_id: &str,
-        response: &upstream::GetAccountResponse,
-    ) {
+    pub fn apply_account_response(&self, server_id: &str, response: &upstream::GetAccountResponse) {
         self.app_store.update_server_account(
             server_id,
             response.account.clone().map(Into::into),
@@ -192,6 +188,8 @@ impl MobileClient {
                 .reasoning_effort
                 .map(Into::into)
                 .map(crate::reasoning_effort_string),
+            Some(response.approval_policy.clone().into()),
+            Some(response.sandbox.clone().into()),
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
@@ -209,6 +207,8 @@ impl MobileClient {
             response.thread.clone(),
             None,
             None,
+            response.approval_policy.clone().map(Into::into),
+            response.sandbox.clone().map(Into::into),
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
@@ -229,6 +229,8 @@ impl MobileClient {
                 .reasoning_effort
                 .map(Into::into)
                 .map(crate::reasoning_effort_string),
+            Some(response.approval_policy.clone().into()),
+            Some(response.sandbox.clone().into()),
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
@@ -249,6 +251,8 @@ impl MobileClient {
                 .reasoning_effort
                 .map(Into::into)
                 .map(crate::reasoning_effort_string),
+            Some(response.approval_policy.clone().into()),
+            Some(response.sandbox.clone().into()),
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
@@ -278,6 +282,12 @@ impl MobileClient {
                     .and_then(crate::reasoning_effort_from_string)
                     .map(crate::reasoning_effort_string)
             }),
+            current
+                .as_ref()
+                .and_then(|thread| thread.effective_approval_policy.clone()),
+            current
+                .as_ref()
+                .and_then(|thread| thread.effective_sandbox_policy.clone()),
         )
         .map_err(|e| e.to_string())?;
         if let Some(current) = current.as_ref() {
@@ -530,11 +540,9 @@ mod tests {
             )
             .await
             .expect_err("thread/rollback should reject missing params");
-        assert!(
-            missing_params_error
-                .to_string()
-                .contains("unexpected params type while reconciling thread/rollback")
-        );
+        assert!(missing_params_error
+            .to_string()
+            .contains("unexpected params type while reconciling thread/rollback"));
 
         let params = upstream::ThreadRollbackParams {
             thread_id: "thread-1".to_string(),

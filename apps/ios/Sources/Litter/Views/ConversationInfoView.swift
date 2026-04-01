@@ -676,17 +676,17 @@ struct ConversationInfoView: View {
     private func forkConversation() async {
         guard let threadKey else { return }
         do {
+            let sourceKey = await appModel.hydrateThreadPermissions(for: threadKey, appState: appState)
+                ?? threadKey
             let newKey = try await appModel.client.forkThread(
-                serverId: threadKey.serverId,
-                params: AppForkThreadRequest(
-                    threadId: threadKey.threadId,
+                serverId: sourceKey.serverId,
+                params: AppThreadLaunchConfig(
                     model: thread?.model,
-                    cwd: thread?.info.cwd,
-                    approvalPolicy: nil,
-                    sandbox: nil,
+                    approvalPolicy: appState.launchApprovalPolicy(for: sourceKey),
+                    sandbox: appState.launchSandboxMode(for: sourceKey),
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                )
+                ).threadForkRequest(threadId: sourceKey.threadId, cwdOverride: thread?.info.cwd)
             )
             appModel.store.setActiveThread(key: newKey)
             await appModel.refreshSnapshot()

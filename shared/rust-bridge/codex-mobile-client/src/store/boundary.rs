@@ -40,6 +40,8 @@ pub struct AppThreadSnapshot {
     pub info: ThreadInfo,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub effective_approval_policy: Option<crate::types::AppAskForApproval>,
+    pub effective_sandbox_policy: Option<crate::types::AppSandboxPolicy>,
     pub hydrated_conversation_items: Vec<HydratedConversationItem>,
     pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
@@ -55,6 +57,8 @@ pub struct AppThreadStateRecord {
     pub info: ThreadInfo,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub effective_approval_policy: Option<crate::types::AppAskForApproval>,
+    pub effective_sandbox_policy: Option<crate::types::AppSandboxPolicy>,
     pub queued_follow_ups: Vec<AppQueuedFollowUpPreview>,
     pub active_turn_id: Option<String>,
     pub context_tokens_used: Option<u64>,
@@ -82,6 +86,8 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadSnapshot {
             info: thread.info.clone(),
             model: thread.model.clone(),
             reasoning_effort: thread.reasoning_effort.clone(),
+            effective_approval_policy: thread.effective_approval_policy.clone(),
+            effective_sandbox_policy: thread.effective_sandbox_policy.clone(),
             hydrated_conversation_items,
             queued_follow_ups: thread
                 .queued_follow_ups
@@ -109,6 +115,8 @@ impl TryFrom<&super::snapshot::ThreadSnapshot> for AppThreadStateRecord {
             info: thread.info.clone(),
             model: thread.model.clone(),
             reasoning_effort: thread.reasoning_effort.clone(),
+            effective_approval_policy: thread.effective_approval_policy.clone(),
+            effective_sandbox_policy: thread.effective_sandbox_policy.clone(),
             queued_follow_ups: thread
                 .queued_follow_ups
                 .iter()
@@ -528,6 +536,8 @@ mod tests {
                 },
                 model: None,
                 reasoning_effort: None,
+                effective_approval_policy: None,
+                effective_sandbox_policy: None,
                 items: Vec::new(),
                 local_overlay_items: Vec::new(),
                 queued_follow_ups: Vec::new(),
@@ -543,5 +553,4 @@ mod tests {
         assert_eq!(current_agent_directory_version(&snapshot), expected);
     }
 }
-
 

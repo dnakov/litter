@@ -144,6 +144,21 @@ extension AppAskForApproval {
             return nil
         }
     }
+
+    var launchOverrideWireValue: String? {
+        switch self {
+        case .unlessTrusted:
+            return "untrusted"
+        case .onFailure:
+            return "on-failure"
+        case .onRequest:
+            return "on-request"
+        case .never:
+            return "never"
+        case .granular:
+            return nil
+        }
+    }
 }
 
 extension AppSandboxMode {
@@ -158,6 +173,25 @@ extension AppSandboxMode {
         default:
             return nil
         }
+    }
+}
+
+extension AppSandboxPolicy {
+    var launchOverrideModeWireValue: String? {
+        switch self {
+        case .dangerFullAccess:
+            return "danger-full-access"
+        case .readOnly:
+            return "read-only"
+        case .workspaceWrite:
+            return "workspace-write"
+        case .externalSandbox:
+            return nil
+        }
+    }
+
+    var launchOverrideMode: AppSandboxMode? {
+        launchOverrideModeWireValue.flatMap(AppSandboxMode.init(wireValue:))
     }
 }
 
@@ -323,4 +357,3 @@ extension AppReviewTarget: Encodable {
 private enum ReviewTargetCodingKeys: String, CodingKey {
     case type, branch, sha, title, instructions
 }
-

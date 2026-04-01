@@ -11,9 +11,18 @@ import uniffi.codex_mobile_client.AppReadOnlyAccess
 import uniffi.codex_mobile_client.AppDynamicToolSpec
 import uniffi.codex_mobile_client.AppSandboxMode
 import uniffi.codex_mobile_client.AppSandboxPolicy
+import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.generativeUiDynamicToolSpecs
 import com.litter.android.ui.ExperimentalFeatures
 import com.litter.android.ui.LitterFeature
+
+data class ThreadPermissionOverride(
+    val approvalPolicy: String,
+    val sandboxMode: String,
+    val isUserOverride: Boolean,
+    val rawApprovalPolicy: AppAskForApproval? = null,
+    val rawSandboxPolicy: AppSandboxPolicy? = null,
+)
 
 data class AppLaunchStateSnapshot(
     val currentCwd: String = "",
@@ -21,6 +30,7 @@ data class AppLaunchStateSnapshot(
     val reasoningEffort: String = "",
     val approvalPolicy: String = DEFAULT_APPROVAL_POLICY,
     val sandboxMode: String = DEFAULT_SANDBOX_MODE,
+    val threadPermissionOverrides: Map<String, ThreadPermissionOverride> = emptyMap(),
 )
 
 private const val PREFS_NAME = "litter.launchState"
@@ -28,6 +38,7 @@ private const val APPROVAL_POLICY_KEY = "litter.approvalPolicy"
 private const val SANDBOX_MODE_KEY = "litter.sandboxMode"
 private const val DEFAULT_APPROVAL_POLICY = "inherit"
 private const val DEFAULT_SANDBOX_MODE = "inherit"
+private const val CUSTOM_PERMISSION_VALUE = "custom"
 
 class AppLaunchState(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -85,25 +96,78 @@ class AppLaunchState(context: Context) {
 
     fun syncFromThread(thread: AppThreadSnapshot?) {
         updateCurrentCwd(thread?.info?.cwd)
+        val threadKey = thread?.key ?: return
+        val permissionKey = permissionKey(threadKey)
+        val existing = snapshot.value.threadPermissionOverrides[permissionKey]
+        if (existing?.isUserOverride == true) {
+            return
+        }
+
+        val rawApprovalPolicy = thread.effectiveApprovalPolicy
+        val rawSandboxPolicy = thread.effectiveSandboxPolicy
+
+        _snapshot.update { state ->
+            val nextOverrides = when {
+                rawApprovalPolicy == null && rawSandboxPolicy == null ->
+                    state.threadPermissionOverrides - permissionKey
+                else ->
+                    state.threadPermissionOverrides + (
+                        permissionKey to ThreadPermissionOverride(
+                            approvalPolicy = rawApprovalPolicy.toSelectionValue(),
+                            sandboxMode = rawSandboxPolicy.toSelectionValue(),
+                            isUserOverride = false,
+                            rawApprovalPolicy = rawApprovalPolicy,
+                            rawSandboxPolicy = rawSandboxPolicy,
+                        )
+                    )
+            }
+            if (nextOverrides == state.threadPermissionOverrides) {
+                state
+            } else {
+                state.copy(threadPermissionOverrides = nextOverrides)
+            }
+        }
     }
 
-    fun launchConfig(modelOverride: String? = null): AppThreadLaunchConfig {
+    fun launchConfig(modelOverride: String? = null, threadKey: ThreadKey? = null): AppThreadLaunchConfig {
         val state = snapshot.value
         val selectedModel = modelOverride.normalizedOrNull() ?: state.selectedModel.normalizedOrNull()
         return AppThreadLaunchConfig(
             model = selectedModel,
-            approvalPolicy = askForApprovalFromWireValue(state.approvalPolicy),
-            sandboxMode = sandboxModeFromWireValue(state.sandboxMode),
+            approvalPolicy = approvalPolicyValue(threadKey),
+            sandboxMode = sandboxModeValue(threadKey),
             developerInstructions = null,
             persistHistory = true,
         )
     }
 
-    fun approvalPolicyValue(): AppAskForApproval? = askForApprovalFromWireValue(snapshot.value.approvalPolicy)
+    fun approvalPolicyValue(threadKey: ThreadKey? = null): AppAskForApproval? =
+        if (threadKey != null) {
+            permissionOverride(threadKey)?.let { permission ->
+                permission.rawApprovalPolicy ?: askForApprovalFromWireValue(permission.approvalPolicy)
+            }
+        } else {
+            askForApprovalFromWireValue(snapshot.value.approvalPolicy)
+        }
 
-    fun sandboxModeValue(): AppSandboxMode? = sandboxModeFromWireValue(snapshot.value.sandboxMode)
+    fun sandboxModeValue(threadKey: ThreadKey? = null): AppSandboxMode? =
+        if (threadKey != null) {
+            permissionOverride(threadKey)?.let { permission ->
+                permission.rawSandboxPolicy?.toLaunchSandboxMode()
+                    ?: sandboxModeFromWireValue(permission.sandboxMode)
+            }
+        } else {
+            sandboxModeFromWireValue(snapshot.value.sandboxMode)
+        }
 
-    fun turnSandboxPolicy(): AppSandboxPolicy? = sandboxModeValue()?.toTurnSandboxPolicy()
+    fun turnSandboxPolicy(threadKey: ThreadKey? = null): AppSandboxPolicy? =
+        if (threadKey != null) {
+            permissionOverride(threadKey)?.let { permission ->
+                permission.rawSandboxPolicy ?: sandboxModeFromWireValue(permission.sandboxMode)?.toTurnSandboxPolicy()
+            }
+        } else {
+            sandboxModeValue()?.toTurnSandboxPolicy()
+        }
 
     fun threadStartRequest(cwd: String, modelOverride: String? = null) =
         launchConfig(modelOverride).toAppStartThreadRequest(
@@ -116,23 +180,67 @@ class AppLaunchState(context: Context) {
         threadId: String,
         cwdOverride: String? = null,
         modelOverride: String? = null,
-    ) = launchConfig(modelOverride).toAppResumeThreadRequest(threadId, resolvedCwdOverride(cwdOverride))
+        threadKey: ThreadKey? = null,
+    ) = launchConfig(modelOverride, threadKey).toAppResumeThreadRequest(threadId, resolvedCwdOverride(cwdOverride))
 
     fun threadForkRequest(
         sourceThreadId: String,
         cwdOverride: String? = null,
         modelOverride: String? = null,
-    ) = launchConfig(modelOverride).toAppForkThreadRequest(sourceThreadId, resolvedCwdOverride(cwdOverride))
+        threadKey: ThreadKey? = null,
+    ) = launchConfig(modelOverride, threadKey).toAppForkThreadRequest(sourceThreadId, resolvedCwdOverride(cwdOverride))
         .also { updateCurrentCwd(it.cwd) }
 
     fun forkThreadFromMessageRequest(
         cwdOverride: String? = null,
         modelOverride: String? = null,
-    ) = launchConfig(modelOverride).toAppForkThreadFromMessageRequest(resolvedCwdOverride(cwdOverride))
+        threadKey: ThreadKey? = null,
+    ) = launchConfig(modelOverride, threadKey).toAppForkThreadFromMessageRequest(resolvedCwdOverride(cwdOverride))
         .also { updateCurrentCwd(it.cwd) }
+
+    fun permissionOverride(threadKey: ThreadKey?): ThreadPermissionOverride? =
+        threadKey?.let { snapshot.value.threadPermissionOverrides[permissionKey(it)] }
+
+    fun selectedApprovalPolicy(threadKey: ThreadKey? = null): String =
+        if (threadKey != null) {
+            permissionOverride(threadKey)?.approvalPolicy ?: DEFAULT_APPROVAL_POLICY
+        } else {
+            snapshot.value.approvalPolicy
+        }
+
+    fun selectedSandboxMode(threadKey: ThreadKey? = null): String =
+        if (threadKey != null) {
+            permissionOverride(threadKey)?.sandboxMode ?: DEFAULT_SANDBOX_MODE
+        } else {
+            snapshot.value.sandboxMode
+        }
+
+    fun updateThreadPermissions(threadKey: ThreadKey?, approvalPolicy: String?, sandboxMode: String?) {
+        if (threadKey == null) {
+            updateApprovalPolicy(approvalPolicy)
+            updateSandboxMode(sandboxMode)
+            return
+        }
+        val normalizedApproval = approvalPolicy.normalizedLowercaseOr(default = DEFAULT_APPROVAL_POLICY)
+        val normalizedSandbox = sandboxMode.normalizedLowercaseOr(default = DEFAULT_SANDBOX_MODE)
+        _snapshot.update { state ->
+            val nextOverrides = state.threadPermissionOverrides + (
+                permissionKey(threadKey) to ThreadPermissionOverride(
+                    approvalPolicy = normalizedApproval,
+                    sandboxMode = normalizedSandbox,
+                    isUserOverride = true,
+                    rawApprovalPolicy = askForApprovalFromWireValue(normalizedApproval),
+                    rawSandboxPolicy = sandboxModeFromWireValue(normalizedSandbox)?.toTurnSandboxPolicy(),
+                )
+            )
+            state.copy(threadPermissionOverrides = nextOverrides)
+        }
+    }
 
     private fun resolvedCwdOverride(cwdOverride: String?): String? =
         cwdOverride.normalizedOrNull() ?: snapshot.value.currentCwd.normalizedOrNull()
+
+    private fun permissionKey(threadKey: ThreadKey): String = "${threadKey.serverId}/${threadKey.threadId}"
 }
 
 private fun askForApprovalFromWireValue(value: String?): AppAskForApproval? =
@@ -166,6 +274,43 @@ fun AppSandboxMode.toTurnSandboxPolicy(): AppSandboxPolicy =
             excludeSlashTmp = false,
         )
         AppSandboxMode.DANGER_FULL_ACCESS -> AppSandboxPolicy.DangerFullAccess
+    }
+
+private fun AppAskForApproval?.toWireValue(): String? =
+    when (this) {
+        AppAskForApproval.UnlessTrusted -> "untrusted"
+        AppAskForApproval.OnFailure -> "on-failure"
+        AppAskForApproval.OnRequest -> "on-request"
+        AppAskForApproval.Never -> "never"
+        is AppAskForApproval.Granular, null -> null
+    }
+
+private fun AppAskForApproval?.toSelectionValue(): String =
+    when (this) {
+        null -> DEFAULT_APPROVAL_POLICY
+        else -> toWireValue() ?: CUSTOM_PERMISSION_VALUE
+    }
+
+private fun AppSandboxPolicy?.toSandboxModeWireValue(): String? =
+    when (this) {
+        AppSandboxPolicy.DangerFullAccess -> "danger-full-access"
+        is AppSandboxPolicy.ReadOnly -> "read-only"
+        is AppSandboxPolicy.WorkspaceWrite -> "workspace-write"
+        is AppSandboxPolicy.ExternalSandbox, null -> null
+    }
+
+private fun AppSandboxPolicy?.toSelectionValue(): String =
+    when (this) {
+        null -> DEFAULT_SANDBOX_MODE
+        else -> toSandboxModeWireValue() ?: CUSTOM_PERMISSION_VALUE
+    }
+
+private fun AppSandboxPolicy.toLaunchSandboxMode(): AppSandboxMode? =
+    when (this) {
+        AppSandboxPolicy.DangerFullAccess -> AppSandboxMode.DANGER_FULL_ACCESS
+        is AppSandboxPolicy.ReadOnly -> AppSandboxMode.READ_ONLY
+        is AppSandboxPolicy.WorkspaceWrite -> AppSandboxMode.WORKSPACE_WRITE
+        is AppSandboxPolicy.ExternalSandbox -> null
     }
 
 private fun String?.normalizedOrEmpty(): String = this?.trim().orEmpty()

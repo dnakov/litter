@@ -119,7 +119,7 @@ final class CarPlayVoiceManager {
                 try await voiceActions.startPinnedLocalVoiceCall(
                     cwd: cwd,
                     model: nil,
-                    approvalPolicy: "never",
+                    approvalPolicy: .never,
                     sandboxMode: nil
                 )
                 if let session = voiceActions.activeVoiceSession {

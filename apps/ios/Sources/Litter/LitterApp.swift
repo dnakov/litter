@@ -601,11 +601,12 @@ private struct HomeNavigationView: View {
                 voiceRuntime.handoffModel = selectedModel
                 voiceRuntime.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
                 voiceRuntime.handoffFastMode = false
+                let voicePermissions = await voicePermissionConfig()
                 try await voiceRuntime.startPinnedLocalVoiceCall(
                     cwd: preferredVoiceWorkingDirectory(),
                     model: selectedModel,
-                    approvalPolicy: appState.approvalPolicy,
-                    sandboxMode: appState.sandboxMode
+                    approvalPolicy: voicePermissions.approvalPolicy,
+                    sandboxMode: voicePermissions.sandboxMode
                 )
                 if let voiceKey = await MainActor.run(body: { voiceRuntime.activeVoiceSession?.threadKey }) {
                     await MainActor.run {
@@ -661,10 +662,12 @@ private struct HomeNavigationView: View {
         appState.currentCwd = thread.cwd
         let openedKey: ThreadKey?
         do {
+            let resumeKey = await appModel.hydrateThreadPermissions(for: thread.key, appState: appState)
+                ?? thread.key
             let nextKey = try await appModel.client.resumeThread(
-                serverId: thread.key.serverId,
-                params: launchConfig().threadResumeRequest(
-                    threadId: thread.key.threadId,
+                serverId: resumeKey.serverId,
+                params: launchConfig(for: resumeKey).threadResumeRequest(
+                    threadId: resumeKey.threadId,
                     cwdOverride: thread.cwd
                 )
             )
@@ -750,14 +753,37 @@ private struct HomeNavigationView: View {
         }
     }
 
-    private func launchConfig() -> AppThreadLaunchConfig {
+    private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
         let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
-            approvalPolicy: AppAskForApproval(wireValue: appState.approvalPolicy),
-            sandbox: AppSandboxMode(wireValue: appState.sandboxMode),
+            approvalPolicy: appState.launchApprovalPolicy(for: threadKey),
+            sandbox: appState.launchSandboxMode(for: threadKey),
             developerInstructions: nil,
             persistExtendedHistory: true
+        )
+    }
+
+    private func voicePermissionConfig() async -> (
+        approvalPolicy: AppAskForApproval?,
+        sandboxMode: AppSandboxMode?
+    ) {
+        let storedThreadId = UserDefaults.standard.string(forKey: VoiceRuntimeController.persistedLocalVoiceThreadIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let threadKey = storedThreadId.flatMap { threadId -> ThreadKey? in
+            guard !threadId.isEmpty else { return nil }
+            return ThreadKey(serverId: VoiceRuntimeController.localServerID, threadId: threadId)
+        }
+        let resolvedThreadKey: ThreadKey?
+        if let threadKey {
+            resolvedThreadKey = await appModel.hydrateThreadPermissions(for: threadKey, appState: appState)
+                ?? threadKey
+        } else {
+            resolvedThreadKey = nil
+        }
+        return (
+            approvalPolicy: appState.launchApprovalPolicy(for: resolvedThreadKey),
+            sandboxMode: appState.launchSandboxMode(for: resolvedThreadKey)
         )
     }
 

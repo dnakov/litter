@@ -329,6 +329,30 @@ class AppModel private constructor(context: android.content.Context) {
         }
     }
 
+    suspend fun hydrateThreadPermissions(key: ThreadKey): ThreadKey? {
+        val existing = snapshot.value?.threads?.firstOrNull { it.key == key }
+        if (existing != null && hasAuthoritativePermissions(existing)) {
+            launchState.syncFromThread(existing)
+            return key
+        }
+
+        return try {
+            val nextKey = client.readThread(
+                key.serverId,
+                AppReadThreadRequest(
+                    threadId = key.threadId,
+                    includeTurns = true,
+                ),
+            )
+            refreshSnapshot()
+            launchState.syncFromThread(snapshot.value?.threads?.firstOrNull { it.key == nextKey })
+            nextKey
+        } catch (e: Exception) {
+            _lastError.value = e.message
+            null
+        }
+    }
+
     suspend fun startTurn(
         key: ThreadKey,
         payload: AppComposerPayload,
@@ -573,6 +597,8 @@ class AppModel private constructor(context: android.content.Context) {
             info = state.info,
             model = state.model,
             reasoningEffort = state.reasoningEffort,
+            effectiveApprovalPolicy = state.effectiveApprovalPolicy,
+            effectiveSandboxPolicy = state.effectiveSandboxPolicy,
             activeTurnId = state.activeTurnId,
             contextTokensUsed = state.contextTokensUsed,
             modelContextWindow = state.modelContextWindow,
@@ -746,6 +772,9 @@ class AppModel private constructor(context: android.content.Context) {
         }
         return if (nextTurn >= 0) nextTurn else items.size
     }
+
+    private fun hasAuthoritativePermissions(thread: AppThreadSnapshot): Boolean =
+        thread.effectiveApprovalPolicy != null || thread.effectiveSandboxPolicy != null
 
     private fun removeThreadSnapshot(key: ThreadKey, agentDirectoryVersion: ULong? = null) {
         val current = _snapshot.value ?: return
