@@ -36,8 +36,8 @@ data class AppLaunchStateSnapshot(
 private const val PREFS_NAME = "litter.launchState"
 private const val APPROVAL_POLICY_KEY = "litter.approvalPolicy"
 private const val SANDBOX_MODE_KEY = "litter.sandboxMode"
-private const val DEFAULT_APPROVAL_POLICY = "inherit"
-private const val DEFAULT_SANDBOX_MODE = "inherit"
+private const val DEFAULT_APPROVAL_POLICY = "never"
+private const val DEFAULT_SANDBOX_MODE = "danger-full-access"
 private const val CUSTOM_PERMISSION_VALUE = "custom"
 
 class AppLaunchState(context: Context) {

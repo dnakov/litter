@@ -27,7 +27,7 @@ final class VoiceRuntimeController: VoiceActions {
     @ObservationIgnored private var voiceStopRequestedThreadKey: ThreadKey?
     @ObservationIgnored private var lastHandledVoiceEndRequestToken: String?
     @ObservationIgnored private let fallbackApprovalPolicy = "never"
-    @ObservationIgnored private let fallbackSandboxMode = "workspace-write"
+    @ObservationIgnored private let fallbackSandboxMode = "danger-full-access"
 
     init() {
         voiceSessionCoordinator.onEvent = { [weak self] event in

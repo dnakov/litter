@@ -41,8 +41,8 @@ final class AppState {
     }
 
     init() {
-        approvalPolicy = UserDefaults.standard.string(forKey: Self.approvalPolicyKey) ?? "inherit"
-        sandboxMode = UserDefaults.standard.string(forKey: Self.sandboxModeKey) ?? "inherit"
+        approvalPolicy = UserDefaults.standard.string(forKey: Self.approvalPolicyKey) ?? "never"
+        sandboxMode = UserDefaults.standard.string(forKey: Self.sandboxModeKey) ?? "danger-full-access"
     }
 
     func toggleSessionFolder(_ folderPath: String) {
