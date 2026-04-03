@@ -58,6 +58,7 @@ import com.litter.android.state.canBrowseDirectories
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AbsolutePath
 import uniffi.codex_mobile_client.AppExecCommandRequest
+import uniffi.codex_mobile_client.AppSandboxPolicy
 
 @Composable
 fun DirectoryPickerSheet(
@@ -124,7 +125,7 @@ fun DirectoryPickerSheet(
                     disableTimeout = false,
                     timeoutMs = null,
                     cwd = "/tmp",
-                    sandboxPolicy = null,
+                    sandboxPolicy = AppSandboxPolicy.DangerFullAccess,
                 ),
             )
         }.getOrNull()
@@ -157,7 +158,7 @@ fun DirectoryPickerSheet(
                     disableTimeout = false,
                     timeoutMs = null,
                     cwd = normalizedPath,
-                    sandboxPolicy = null,
+                    sandboxPolicy = AppSandboxPolicy.DangerFullAccess,
                 ),
             )
         }

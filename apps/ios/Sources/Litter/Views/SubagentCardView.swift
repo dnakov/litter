@@ -450,8 +450,8 @@ private struct SubagentDetailSheet: View {
                 key: threadKey,
                 launchConfig: AppThreadLaunchConfig(
                     model: nil,
-                    approvalPolicy: nil,
-                    sandbox: nil,
+                    approvalPolicy: .never,
+                    sandbox: .dangerFullAccess,
                     developerInstructions: nil,
                     persistExtendedHistory: true
                 ),

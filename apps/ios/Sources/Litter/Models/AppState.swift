@@ -41,8 +41,8 @@ final class AppState {
     }
 
     init() {
-        approvalPolicy = UserDefaults.standard.string(forKey: Self.approvalPolicyKey) ?? "inherit"
-        sandboxMode = UserDefaults.standard.string(forKey: Self.sandboxModeKey) ?? "inherit"
+        approvalPolicy = UserDefaults.standard.string(forKey: Self.approvalPolicyKey) ?? "never"
+        sandboxMode = UserDefaults.standard.string(forKey: Self.sandboxModeKey) ?? "danger-full-access"
     }
 
     func toggleSessionFolder(_ folderPath: String) {
@@ -60,13 +60,13 @@ final class AppState {
     func approvalPolicy(for threadKey: ThreadKey?) -> String {
         guard let threadKey else { return approvalPolicy }
         return threadPermissionOverrides[permissionKey(for: threadKey)]?.approvalPolicy
-            ?? Self.inheritPermissionValue
+            ?? approvalPolicy
     }
 
     func sandboxMode(for threadKey: ThreadKey?) -> String {
         guard let threadKey else { return sandboxMode }
         return threadPermissionOverrides[permissionKey(for: threadKey)]?.sandboxMode
-            ?? Self.inheritPermissionValue
+            ?? sandboxMode
     }
 
     func launchApprovalPolicy(for threadKey: ThreadKey?) -> AppAskForApproval? {
@@ -74,7 +74,7 @@ final class AppState {
             return AppAskForApproval(wireValue: approvalPolicy)
         }
         guard let permissions = threadPermissionOverrides[permissionKey(for: threadKey)] else {
-            return nil
+            return AppAskForApproval(wireValue: approvalPolicy)
         }
         return permissions.rawApprovalPolicy ?? AppAskForApproval(wireValue: permissions.approvalPolicy)
     }
@@ -84,7 +84,7 @@ final class AppState {
             return AppSandboxMode(wireValue: sandboxMode)
         }
         guard let permissions = threadPermissionOverrides[permissionKey(for: threadKey)] else {
-            return nil
+            return AppSandboxMode(wireValue: sandboxMode)
         }
         return permissions.rawSandboxPolicy?.launchOverrideMode
             ?? AppSandboxMode(wireValue: permissions.sandboxMode)
@@ -95,7 +95,7 @@ final class AppState {
             return TurnSandboxPolicy(mode: sandboxMode)?.ffiValue
         }
         guard let permissions = threadPermissionOverrides[permissionKey(for: threadKey)] else {
-            return nil
+            return TurnSandboxPolicy(mode: sandboxMode)?.ffiValue
         }
         return permissions.rawSandboxPolicy ?? TurnSandboxPolicy(mode: permissions.sandboxMode)?.ffiValue
     }

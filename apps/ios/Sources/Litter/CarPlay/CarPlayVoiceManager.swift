@@ -118,7 +118,7 @@ final class CarPlayVoiceManager {
                     cwd: cwd,
                     model: nil,
                     approvalPolicy: .never,
-                    sandboxMode: nil
+                    sandboxMode: .dangerFullAccess
                 )
                 if let session = voiceActions.activeVoiceSession {
                     pushActiveSession(session)

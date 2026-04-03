@@ -36,8 +36,8 @@ data class AppLaunchStateSnapshot(
 private const val PREFS_NAME = "litter.launchState"
 private const val APPROVAL_POLICY_KEY = "litter.approvalPolicy"
 private const val SANDBOX_MODE_KEY = "litter.sandboxMode"
-private const val DEFAULT_APPROVAL_POLICY = "inherit"
-private const val DEFAULT_SANDBOX_MODE = "inherit"
+private const val DEFAULT_APPROVAL_POLICY = "never"
+private const val DEFAULT_SANDBOX_MODE = "danger-full-access"
 private const val CUSTOM_PERMISSION_VALUE = "custom"
 
 class AppLaunchState(context: Context) {
@@ -145,7 +145,7 @@ class AppLaunchState(context: Context) {
         if (threadKey != null) {
             permissionOverride(threadKey)?.let { permission ->
                 permission.rawApprovalPolicy ?: askForApprovalFromWireValue(permission.approvalPolicy)
-            }
+            } ?: askForApprovalFromWireValue(snapshot.value.approvalPolicy)
         } else {
             askForApprovalFromWireValue(snapshot.value.approvalPolicy)
         }
@@ -155,7 +155,7 @@ class AppLaunchState(context: Context) {
             permissionOverride(threadKey)?.let { permission ->
                 permission.rawSandboxPolicy?.toLaunchSandboxMode()
                     ?: sandboxModeFromWireValue(permission.sandboxMode)
-            }
+            } ?: sandboxModeFromWireValue(snapshot.value.sandboxMode)
         } else {
             sandboxModeFromWireValue(snapshot.value.sandboxMode)
         }
@@ -164,7 +164,7 @@ class AppLaunchState(context: Context) {
         if (threadKey != null) {
             permissionOverride(threadKey)?.let { permission ->
                 permission.rawSandboxPolicy ?: sandboxModeFromWireValue(permission.sandboxMode)?.toTurnSandboxPolicy()
-            }
+            } ?: sandboxModeFromWireValue(snapshot.value.sandboxMode)?.toTurnSandboxPolicy()
         } else {
             sandboxModeValue()?.toTurnSandboxPolicy()
         }
@@ -203,14 +203,14 @@ class AppLaunchState(context: Context) {
 
     fun selectedApprovalPolicy(threadKey: ThreadKey? = null): String =
         if (threadKey != null) {
-            permissionOverride(threadKey)?.approvalPolicy ?: DEFAULT_APPROVAL_POLICY
+            permissionOverride(threadKey)?.approvalPolicy ?: snapshot.value.approvalPolicy
         } else {
             snapshot.value.approvalPolicy
         }
 
     fun selectedSandboxMode(threadKey: ThreadKey? = null): String =
         if (threadKey != null) {
-            permissionOverride(threadKey)?.sandboxMode ?: DEFAULT_SANDBOX_MODE
+            permissionOverride(threadKey)?.sandboxMode ?: snapshot.value.sandboxMode
         } else {
             snapshot.value.sandboxMode
         }

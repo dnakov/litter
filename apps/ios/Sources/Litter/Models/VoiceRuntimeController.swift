@@ -26,6 +26,8 @@ final class VoiceRuntimeController: VoiceActions {
     @ObservationIgnored private var voiceOutputDecayToken: UUID?
     @ObservationIgnored private var voiceStopRequestedThreadKey: ThreadKey?
     @ObservationIgnored private var lastHandledVoiceEndRequestToken: String?
+    @ObservationIgnored private let fallbackApprovalPolicy = "never"
+    @ObservationIgnored private let fallbackSandboxMode = "danger-full-access"
 
     init() {
         voiceSessionCoordinator.onEvent = { [weak self] event in
@@ -220,6 +222,7 @@ final class VoiceRuntimeController: VoiceActions {
         model: String? = nil
     ) async throws {
         let appModel = requireAppModel()
+        let launchPolicy = currentLaunchPolicy()
         syncHandoffServers()
         await cleanupKnownRealtimeVoiceSessions(beforeStartingOn: key)
 
@@ -229,8 +232,8 @@ final class VoiceRuntimeController: VoiceActions {
                 serverId: key.serverId,
                 params: AppThreadLaunchConfig(
                     model: model,
-                    approvalPolicy: nil,
-                    sandbox: nil,
+                    approvalPolicy: launchPolicy.approvalPolicy,
+                    sandbox: launchPolicy.sandboxMode,
                     developerInstructions: nil,
                     persistExtendedHistory: true
                 ).threadResumeRequest(threadId: key.threadId, cwdOverride: nil)
@@ -451,13 +454,14 @@ final class VoiceRuntimeController: VoiceActions {
 
     private func executeHandoffStartThread(handoffId: String, serverId: String, cwd: String) async {
         guard let appModel else { return }
+        let launchPolicy = currentLaunchPolicy()
         do {
             let key = try await appModel.client.startThread(
                 serverId: serverId,
                 params: AppThreadLaunchConfig(
                     model: handoffModel,
-                    approvalPolicy: nil,
-                    sandbox: nil,
+                    approvalPolicy: launchPolicy.approvalPolicy,
+                    sandbox: launchPolicy.sandboxMode,
                     developerInstructions: nil,
                     persistExtendedHistory: true
                 ).threadStartRequest(cwd: cwd)
@@ -484,6 +488,7 @@ final class VoiceRuntimeController: VoiceActions {
         fastMode: Bool
     ) async {
         guard let appModel else { return }
+        let launchPolicy = currentLaunchPolicy()
         let key = ThreadKey(serverId: serverId, threadId: threadId)
         do {
             try await appModel.startTurn(
@@ -491,8 +496,8 @@ final class VoiceRuntimeController: VoiceActions {
                 payload: AppComposerPayload(
                     text: transcript,
                     additionalInputs: [],
-                    approvalPolicy: nil,
-                    sandboxPolicy: nil,
+                    approvalPolicy: launchPolicy.approvalPolicy,
+                    sandboxPolicy: sandboxPolicy(from: launchPolicy.sandboxMode),
                     model: model,
                     effort: ReasoningEffort(wireValue: effort),
                     serviceTier: fastMode ? .fast : nil
@@ -813,6 +818,40 @@ final class VoiceRuntimeController: VoiceActions {
             applySharedVoiceSession(shared, to: &session)
             activeVoiceSession = session
             syncVoiceCallActivity()
+        }
+    }
+
+    private func currentLaunchPolicy() -> (approvalPolicy: AppAskForApproval?, sandboxMode: AppSandboxMode?) {
+        let defaults = UserDefaults.standard
+        let approvalRaw = defaults
+            .string(forKey: "litter.approvalPolicy")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let sandboxRaw = defaults
+            .string(forKey: "litter.sandboxMode")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        let approval = AppAskForApproval(wireValue: approvalRaw?.isEmpty == false ? approvalRaw : fallbackApprovalPolicy)
+        let sandbox = AppSandboxMode(wireValue: sandboxRaw?.isEmpty == false ? sandboxRaw : fallbackSandboxMode)
+        return (approval, sandbox)
+    }
+
+    private func sandboxPolicy(from mode: AppSandboxMode?) -> AppSandboxPolicy? {
+        guard let mode else { return nil }
+        switch mode {
+        case .dangerFullAccess:
+            return .dangerFullAccess
+        case .readOnly:
+            return .readOnly(access: .fullAccess, networkAccess: false)
+        case .workspaceWrite:
+            return .workspaceWrite(
+                writableRoots: [],
+                readOnlyAccess: .fullAccess,
+                networkAccess: false,
+                excludeTmpdirEnvVar: false,
+                excludeSlashTmp: false
+            )
         }
     }
 }

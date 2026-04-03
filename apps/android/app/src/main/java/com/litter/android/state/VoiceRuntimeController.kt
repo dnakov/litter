@@ -693,7 +693,11 @@ class VoiceRuntimeController {
 
             is uniffi.codex_mobile_client.HandoffAction.SendTurn -> {
                 try {
-                    val payload = AppComposerPayload(text = action.transcript)
+                    val payload = AppComposerPayload(
+                        text = action.transcript,
+                        approvalPolicy = appModel.launchState.approvalPolicyValue(),
+                        sandboxPolicy = appModel.launchState.turnSandboxPolicy(),
+                    )
                     appModel.startTurn(
                         ThreadKey(serverId = action.targetServerId, threadId = action.threadId),
                         payload,
