@@ -252,7 +252,7 @@ private final class DirectoryPickerSheetModel {
                     disableTimeout: false,
                     timeoutMs: nil,
                     cwd: path,
-                    sandboxPolicy: nil
+                    sandboxPolicy: .dangerFullAccess
                 )
             )
             guard serverId == lastLoadedServerId else { return }
@@ -356,7 +356,7 @@ private final class DirectoryPickerSheetModel {
                     disableTimeout: false,
                     timeoutMs: nil,
                     cwd: "/tmp",
-                    sandboxPolicy: nil
+                    sandboxPolicy: .dangerFullAccess
                 )
             )
             if response.exitCode == 0 {

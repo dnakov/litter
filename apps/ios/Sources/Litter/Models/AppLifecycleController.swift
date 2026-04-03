@@ -447,8 +447,8 @@ final class AppLifecycleController {
             let cwd = existing?.info.cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
             let config = AppThreadLaunchConfig(
                 model: existing?.resolvedModel,
-                approvalPolicy: nil,
-                sandbox: nil,
+                approvalPolicy: .never,
+                sandbox: .dangerFullAccess,
                 developerInstructions: nil,
                 persistExtendedHistory: true
             )
