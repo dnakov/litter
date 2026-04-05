@@ -651,7 +651,7 @@ impl SshClient {
 tmp="${TMPDIR:-${TMP:-/tmp}}"
 tmp="${tmp%/}"
 printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
-        let result = self.exec(SCRIPT).await?;
+        let result = self.exec_posix(SCRIPT).await?;
         let path = result.stdout.trim().to_string();
         if path.is_empty() {
             return Err(SshError::ExecFailed {
@@ -676,7 +676,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             "if [ -S {path} ]; then printf '%s' {path}; fi",
             path = shell_quote(&socket_path),
         );
-        let result = self.exec(&check).await?;
+        let result = self.exec_posix(&check).await?;
         if result.exit_code != 0 {
             return Err(SshError::ExecFailed {
                 exit_code: result.exit_code,
@@ -1166,7 +1166,7 @@ done"#,
             profile_init = PROFILE_INIT
         );
 
-        match self.exec(&script).await {
+        match self.exec_posix(&script).await {
             Ok(result) => result.stdout.trim().to_string(),
             Err(error) => format!("failed to collect resolver diagnostics: {error}"),
         }
@@ -1370,7 +1370,9 @@ fi"#
             command.len()
         );
         match shell {
-            RemoteShell::Posix => self.exec(command).await,
+            // Force bootstrap scripts through a POSIX shell even when the
+            // account's login shell is fish or another non-POSIX shell.
+            RemoteShell::Posix => self.exec_posix(command).await,
             RemoteShell::PowerShell => {
                 // Use -EncodedCommand to avoid all escaping issues between
                 // cmd.exe and PowerShell. The encoded command is a UTF-16LE
@@ -1392,6 +1394,10 @@ fi"#
                 Ok(result)
             }
         }
+    }
+
+    async fn exec_posix(&self, command: &str) -> Result<ExecResult, SshError> {
+        self.exec(&build_posix_exec_command(command)).await
     }
 
     pub(crate) async fn detect_remote_platform_with_shell(
@@ -1441,7 +1447,9 @@ fi"#
             }
             RemoteShell::Posix => {
                 let result = self
-                    .exec(r#"uname_s="$(uname -s 2>/dev/null || true)"; uname_m="$(uname -m 2>/dev/null || true)"; printf '%s\n%s' "$uname_s" "$uname_m""#)
+                    .exec_posix(
+                        r#"uname_s="$(uname -s 2>/dev/null || true)"; uname_m="$(uname -m 2>/dev/null || true)"; printf '%s\n%s' "$uname_s" "$uname_m""#,
+                    )
                     .await?;
                 let mut lines = result.stdout.lines();
                 let os = lines.next().unwrap_or_default().trim();
@@ -1535,7 +1543,7 @@ printf '%s' "$stable_bin""#,
             binary_name = shell_quote(&release.binary_name),
             download_url = shell_quote(&release.download_url),
         );
-        let result = self.exec(&install_script).await?;
+        let result = self.exec_posix(&install_script).await?;
         if result.exit_code != 0 {
             return Err(SshError::ExecFailed {
                 exit_code: result.exit_code,
@@ -1751,7 +1759,7 @@ async fn proxy_connection(
 
 /// Shell snippet that sources common profile files to pick up PATH additions.
 /// Runs each file in a subshell so zsh-specific syntax (plugins, eval
-/// `starship init zsh`, etc.) cannot crash the parent bash process.
+/// `starship init zsh`, etc.) cannot crash the parent `/bin/sh` process.
 /// The subshell exports PATH changes via a temp file.
 const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
 
@@ -2006,6 +2014,10 @@ fn resolve_release_from_listing(
     })
 }
 
+fn build_posix_exec_command(command: &str) -> String {
+    format!("/bin/sh -c {}", shell_quote(command))
+}
+
 async fn fetch_latest_stable_codex_release(
     platform: RemotePlatform,
 ) -> Result<ResolvedCodexRelease, SshError> {
@@ -2146,6 +2158,14 @@ mod tests {
         assert_eq!(
             shell_quote("/home/user/my file.txt"),
             "'/home/user/my file.txt'"
+        );
+    }
+
+    #[test]
+    fn test_build_posix_exec_command_uses_non_login_sh() {
+        assert_eq!(
+            build_posix_exec_command("echo 'hi' && printf '%s' \"$HOME\""),
+            "/bin/sh -c 'echo '\"'\"'hi'\"'\"' && printf '\"'\"'%s'\"'\"' \"$HOME\"'"
         );
     }
 
