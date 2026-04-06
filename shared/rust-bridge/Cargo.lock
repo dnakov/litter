@@ -283,7 +283,7 @@ checksum = "8fac2ce611db8b8cee9b2aa886ca03c924e9da5e5295d0dbd0526e5d0b0710f7"
 dependencies = [
  "allocative_derive",
  "bumpalo",
- "ctor",
+ "ctor 0.1.26",
  "hashbrown 0.14.5",
  "num-bigint",
 ]
@@ -2040,6 +2040,7 @@ dependencies = [
  "codex-keyring-store",
  "codex-protocol",
  "codex-terminal-detection",
+ "codex-utils-rustls-provider",
  "once_cell",
  "os_info",
  "rand 0.9.2",
@@ -2078,6 +2079,7 @@ dependencies = [
  "codex-ipc",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "codex-utils-rustls-provider",
  "futures",
  "lru 0.12.5",
  "openssl-sys",

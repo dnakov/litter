@@ -24,6 +24,7 @@ codex-cloud-requirements = { path = "../third_party/codex/codex-rs/cloud-require
 codex-config = { path = "../third_party/codex/codex-rs/config" }
 codex-utils-absolute-path = { path = "../third_party/codex/codex-rs/utils/absolute-path" }
 codex-git-utils = { path = "../third_party/codex/codex-rs/git-utils" }
+codex-utils-rustls-provider = { path = "../third_party/codex/codex-rs/utils/rustls-provider" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

@@ -22,6 +22,7 @@ codex-utils-absolute-path = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-feedback = { workspace = true }
 codex-arg0 = { workspace = true }
+codex-utils-rustls-provider = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

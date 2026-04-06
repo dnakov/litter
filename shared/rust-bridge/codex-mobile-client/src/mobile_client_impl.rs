@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, info, trace, warn};
 use url::Url;
 
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use crate::discovery::{DiscoveredServer, DiscoveryConfig, DiscoveryService, MdnsSeed};
 use crate::session::connection::InProcessConfig;
 use crate::session::connection::{
@@ -173,6 +174,7 @@ impl MobileClient {
     /// Create a new `MobileClient`.
     pub fn new() -> Self {
         crate::logging::install_ipc_wire_trace_logger();
+        ensure_rustls_crypto_provider();
         let event_processor = Arc::new(EventProcessor::new());
         let app_store = Arc::new(AppStoreReducer::new());
         let sessions = Arc::new(RwLock::new(HashMap::new()));

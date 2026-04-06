@@ -1,4 +1,5 @@
 use crate::MobileClient;
+use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use std::sync::Arc;
 use std::sync::OnceLock;
 static SHARED_RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
@@ -7,6 +8,7 @@ static PLATFORM_INIT: OnceLock<()> = OnceLock::new();
 
 fn ensure_platform_init() {
     PLATFORM_INIT.get_or_init(|| {
+        ensure_rustls_crypto_provider();
         #[cfg(target_os = "ios")]
         crate::ios_exec::install();
     });
