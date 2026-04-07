@@ -24,6 +24,7 @@ struct HomeDashboardServer: Identifiable {
     let sourceLabel: String
     let statusLabel: String
     let statusColor: Color
+    let backendKind: ServerBackendKind
 
     var deduplicationKey: String {
         if isLocal {
@@ -86,7 +87,8 @@ enum HomeDashboardSupport {
                     health: server.health,
                     sourceLabel: server.connectionModeLabel,
                     statusLabel: server.statusLabel,
-                    statusColor: server.statusColor
+                    statusColor: server.statusColor,
+                    backendKind: server.backendKind
                 )
             }
             .sorted { lhs, rhs in

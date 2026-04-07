@@ -9,7 +9,7 @@ use crate::types::{
 
 use super::snapshot::{
     AppConnectionProgressSnapshot, AppQueuedFollowUpPreview, AppSnapshot, AppVoiceSessionSnapshot,
-    ServerHealthSnapshot, ServerIpcStateSnapshot, ServerSnapshot, ThreadSnapshot,
+    ServerBackendKind, ServerHealthSnapshot, ServerIpcStateSnapshot, ServerSnapshot, ThreadSnapshot,
 };
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -30,6 +30,7 @@ pub struct AppServerSnapshot {
     pub requires_openai_auth: bool,
     pub rate_limits: Option<crate::types::RateLimitSnapshot>,
     pub available_models: Option<Vec<crate::types::ModelInfo>>,
+    pub backend_kind: ServerBackendKind,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
 }
 
@@ -242,6 +243,7 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                     requires_openai_auth: server.requires_openai_auth,
                     rate_limits: server.rate_limits,
                     available_models: server.available_models,
+                    backend_kind: server.backend_kind,
                     connection_progress: server.connection_progress,
                 }
             })

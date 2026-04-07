@@ -14,8 +14,12 @@ use crate::session::connection::{
 };
 use crate::session::events::{EventProcessor, UiEvent};
 use crate::ssh::{SshBootstrapResult, SshClient, SshCredentials};
+use pi_mono_client::mapper::MappedEvent as PiMappedEvent;
+use pi_mono_client::session::{PiConnectionHealth, PiMonoSession, PiSessionConfig};
+use pi_mono_client::transport::PiMonoTransport;
 use crate::store::snapshot::{
-    IpcFailureClassification, ServerMutatingCommandKind, ServerMutatingCommandRoute,
+    AppConnectionStepKind, AppConnectionStepState, IpcFailureClassification,
+    ServerBackendKind, ServerMutatingCommandKind, ServerMutatingCommandRoute,
     ServerTransportAuthority,
 };
 use crate::store::{
@@ -62,10 +66,20 @@ pub use self::thread_projection::{
 /// All methods are safe to call from any thread (`Send + Sync`).
 pub struct MobileClient {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<ServerSession>>>>,
+    /// Pi-mono sessions keyed by thread_id (each session = one pi process with its own cwd)
+    pub(crate) pi_sessions: Arc<RwLock<HashMap<String, Arc<PiMonoSession>>>>,
+    /// Pending pi connections keyed by server_id (SSH connected, pi binary found, awaiting cwd)
+    pub(crate) pending_pi_connections: Arc<RwLock<HashMap<String, PendingPiConnection>>>,
     pub(crate) event_processor: Arc<EventProcessor>,
     pub app_store: Arc<AppStoreReducer>,
     pub(crate) discovery: RwLock<DiscoveryService>,
     oauth_callback_tunnels: Arc<Mutex<HashMap<String, OAuthCallbackTunnel>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingPiConnection {
+    pub ssh_client: Arc<SshClient>,
+    pub pi_binary_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +106,55 @@ fn ipc_command_error_context(error: &IpcError) -> &'static str {
         "IPC transport is no longer connected"
     } else {
         "IPC stream is still attached, but desktop follower commands are unavailable"
+    }
+}
+
+fn pi_mapped_event_to_ui_event(mapped: PiMappedEvent, key: &ThreadKey) -> Option<UiEvent> {
+    match mapped {
+        PiMappedEvent::TurnStarted { turn_id } => Some(UiEvent::TurnStarted {
+            key: key.clone(),
+            turn_id,
+        }),
+        PiMappedEvent::TurnCompleted { turn_id } => Some(UiEvent::TurnCompleted {
+            key: key.clone(),
+            turn_id,
+        }),
+        PiMappedEvent::ItemStarted { notification } => Some(UiEvent::ItemStarted {
+            key: key.clone(),
+            notification,
+        }),
+        PiMappedEvent::ItemCompleted { notification } => Some(UiEvent::ItemCompleted {
+            key: key.clone(),
+            notification,
+        }),
+        PiMappedEvent::MessageDelta { item_id, delta } => Some(UiEvent::MessageDelta {
+            key: key.clone(),
+            item_id,
+            delta,
+        }),
+        PiMappedEvent::ReasoningDelta { item_id, delta } => Some(UiEvent::ReasoningDelta {
+            key: key.clone(),
+            item_id,
+            delta,
+        }),
+        PiMappedEvent::CommandOutputDelta { item_id, delta } => {
+            Some(UiEvent::CommandOutputDelta {
+                key: key.clone(),
+                item_id,
+                delta,
+            })
+        }
+        PiMappedEvent::ThreadStatusChanged { notification } => {
+            Some(UiEvent::ThreadStatusChanged {
+                key: key.clone(),
+                notification,
+            })
+        }
+        PiMappedEvent::ApprovalRequested { .. } => {
+            // Approvals from pi-mono are handled by the pi session layer
+            // and don't need to route through UiEvent.
+            None
+        }
     }
 }
 
@@ -322,6 +385,8 @@ impl MobileClient {
         );
         Self {
             sessions,
+            pi_sessions: Arc::new(RwLock::new(HashMap::new())),
+            pending_pi_connections: Arc::new(RwLock::new(HashMap::new())),
             event_processor,
             app_store,
             discovery: RwLock::new(DiscoveryService::new(DiscoveryConfig::default())),
@@ -802,17 +867,318 @@ impl MobileClient {
     }
 
     /// Disconnect a server by its ID.
+    // ── Pi-mono helpers ───────────────────────────────────────────────
+
+    fn pi_sessions_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Arc<PiMonoSession>>> {
+        match self.pi_sessions.read() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!("MobileClient: recovering poisoned pi_sessions read lock");
+                error.into_inner()
+            }
+        }
+    }
+
+    fn pi_sessions_write(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, Arc<PiMonoSession>>> {
+        match self.pi_sessions.write() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!("MobileClient: recovering poisoned pi_sessions write lock");
+                error.into_inner()
+            }
+        }
+    }
+
+    /// Get a pi-mono session by thread_id.
+    pub(crate) fn get_pi_session_by_thread(&self, thread_id: &str) -> Option<Arc<PiMonoSession>> {
+        self.pi_sessions_read().get(thread_id).cloned()
+    }
+
+    /// Get the pi-mono session for a server (finds any session belonging to this server).
+    pub(crate) fn get_pi_session(&self, server_id: &str) -> Option<Arc<PiMonoSession>> {
+        let sessions = self.pi_sessions_read();
+        sessions.values().find(|s| s.config().server_id == server_id).cloned()
+    }
+
+    /// Check if a server is a pi-mono backend (has pending connection or active sessions).
+    pub fn is_pi_mono_server(&self, server_id: &str) -> bool {
+        self.pending_pi_connections.read().expect("pending pi lock").contains_key(server_id)
+            || self.pi_sessions_read().values().any(|s| s.config().server_id == server_id)
+    }
+
+    /// Connect to a remote pi-mono agent over SSH.
+    pub async fn connect_pi_mono_over_ssh(
+        &self,
+        config: ServerConfig,
+        ssh_credentials: SshCredentials,
+        accept_unknown_host: bool,
+    ) -> Result<String, TransportError> {
+        let server_id = config.server_id.clone();
+        info!(
+            "MobileClient: connect_pi_mono_over_ssh start server_id={} host={}",
+            server_id, ssh_credentials.host
+        );
+        self.app_store
+            .upsert_server(&config, ServerHealthSnapshot::Connecting, false);
+        self.app_store
+            .set_server_backend_kind(&server_id, ServerBackendKind::PiMono);
+        self.app_store.update_server_connection_progress(
+            &server_id,
+            Some(AppConnectionProgressSnapshot::pi_mono_bootstrap()),
+        );
+
+        // Remove any existing session for this server
+        self.replace_existing_session(&server_id).await;
+        {
+            let removed = self.pi_sessions_write().remove(&server_id);
+            if let Some(session) = removed {
+                session.disconnect().await;
+            }
+        }
+
+        // 1. SSH connect
+        let ssh_client = Arc::new(
+            SshClient::connect(
+                ssh_credentials.clone(),
+                make_accept_unknown_host_callback(accept_unknown_host),
+            )
+            .await
+            .map_err(map_ssh_transport_error)?,
+        );
+        self.app_store
+            .update_connection_step(&server_id, AppConnectionStepKind::ConnectingToSsh, AppConnectionStepState::Completed, None);
+        info!(
+            "MobileClient: pi-mono SSH connected server_id={} host={}",
+            server_id, ssh_credentials.host
+        );
+
+        // 2. Find pi binary
+        self.app_store
+            .update_connection_step(&server_id, AppConnectionStepKind::FindingPi, AppConnectionStepState::InProgress, None);
+        let pi_binary = match ssh_client.resolve_pi_binary_optional().await {
+            Ok(Some(path)) => {
+                self.app_store.update_connection_step(
+                    &server_id,
+                    AppConnectionStepKind::FindingPi,
+                    AppConnectionStepState::Completed,
+                    Some(path.clone()),
+                );
+                info!("MobileClient: pi binary found at {}", path);
+                path
+            }
+            Ok(None) => {
+                // Pi not found — try installing
+                self.app_store.update_connection_step(
+                    &server_id,
+                    AppConnectionStepKind::FindingPi,
+                    AppConnectionStepState::Completed,
+                    Some("not found, installing...".to_string()),
+                );
+                info!("MobileClient: pi binary not found, installing");
+                let shell = ssh_client.detect_remote_shell().await;
+                match ssh_client.install_pi_mono(shell).await {
+                    Ok(path) => path,
+                    Err(e) => {
+                        warn!("MobileClient: pi-mono install failed: {}", e);
+                        ssh_client.disconnect().await;
+                        self.app_store
+                            .update_server_health(&server_id, ServerHealthSnapshot::Disconnected);
+                        self.app_store
+                            .update_server_connection_progress(&server_id, None);
+                        return Err(map_ssh_transport_error(e));
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("MobileClient: pi binary resolve failed: {}", e);
+                ssh_client.disconnect().await;
+                self.app_store
+                    .update_server_health(&server_id, ServerHealthSnapshot::Disconnected);
+                self.app_store
+                    .update_server_connection_progress(&server_id, None);
+                return Err(map_ssh_transport_error(e));
+            }
+        };
+
+        // 3. Store SSH client + pi binary for deferred launch (pi starts when start_thread is called with a cwd)
+        {
+            let mut pending = self.pending_pi_connections.write().expect("pending pi lock");
+            pending.insert(server_id.clone(), PendingPiConnection {
+                ssh_client: Arc::clone(&ssh_client),
+                pi_binary_path: pi_binary.clone(),
+            });
+        }
+
+        // 4. Mark connected (pi process will start when user picks a directory)
+        self.app_store
+            .update_server_health(&server_id, ServerHealthSnapshot::Connected);
+        self.app_store.update_connection_step(
+            &server_id,
+            AppConnectionStepKind::Connected,
+            AppConnectionStepState::Completed,
+            None,
+        );
+        self.app_store
+            .update_server_connection_progress(&server_id, None);
+
+        info!("MobileClient: pi-mono SSH ready server_id={} (awaiting cwd selection)", server_id);
+        Ok(server_id)
+    }
+
+    /// Launch a pi-mono session with a specific working directory.
+    /// Called from start_thread when the user picks a directory.
+    pub(crate) async fn launch_pi_session(
+        &self,
+        server_id: &str,
+        cwd: &str,
+    ) -> Result<ThreadKey, TransportError> {
+        let pending = {
+            let pending = self.pending_pi_connections.read().expect("pending pi lock");
+            pending.get(server_id).cloned()
+                .ok_or_else(|| TransportError::ConnectionFailed("no pending pi connection".to_string()))?
+        };
+
+        let pi_command = format!(
+            "cd {} && {} {} --mode rpc",
+            crate::ssh::shell_quote(cwd),
+            crate::ssh::PROFILE_INIT,
+            crate::ssh::shell_quote(&pending.pi_binary_path),
+        );
+        let channel = match pending.ssh_client.open_exec_channel(&pi_command).await {
+            Ok(ch) => ch,
+            Err(e) => {
+                warn!("MobileClient: pi-mono exec channel open failed: {}", e);
+                self.app_store
+                    .update_server_health(server_id, ServerHealthSnapshot::Disconnected);
+                self.app_store
+                    .update_server_connection_progress(server_id, None);
+                return Err(map_ssh_transport_error(e));
+            }
+        };
+
+        let transport = PiMonoTransport::launch(channel);
+        static PI_SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let session_num = PI_SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let thread_id = format!("pi-{}-{}", server_id, session_num);
+        let pi_session = Arc::new(PiMonoSession::new(
+            PiSessionConfig {
+                server_id: server_id.to_string(),
+                thread_id: thread_id.clone(),
+            },
+            transport,
+        ));
+
+        self.app_store.update_connection_step(
+            server_id,
+            AppConnectionStepKind::StartingPi,
+            AppConnectionStepState::Completed,
+            None,
+        );
+
+        // Spawn event reader
+        let event_processor = Arc::clone(&self.event_processor);
+        let app_store = Arc::clone(&self.app_store);
+        let pi_session_for_reader = Arc::clone(&pi_session);
+        let server_id_for_reader = server_id.to_string();
+        let thread_id_for_reader = thread_id.clone();
+        Self::spawn_detached(async move {
+            let mut rx = pi_session_for_reader.subscribe();
+            loop {
+                match rx.recv().await {
+                    Ok(mapped) => {
+                        let key = ThreadKey {
+                            server_id: server_id_for_reader.clone(),
+                            thread_id: thread_id_for_reader.clone(),
+                        };
+                        let ui_event = pi_mapped_event_to_ui_event(mapped, &key);
+                        if let Some(evt) = ui_event {
+                            event_processor.emit_event(evt);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("pi-mono event reader lagged by {n}");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("pi-mono event reader closed for server {}", server_id_for_reader);
+                        app_store.update_server_health(
+                            &server_id_for_reader,
+                            ServerHealthSnapshot::Disconnected,
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Insert session keyed by thread_id (each pi process gets its own thread)
+        self.pi_sessions_write()
+            .insert(thread_id.clone(), Arc::clone(&pi_session));
+
+        // Create synthetic thread
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let thread_info = ThreadInfo {
+            id: thread_id.clone(),
+            title: Some("Pi session".to_string()),
+            model: None,
+            status: crate::types::ThreadSummaryStatus::Idle,
+            preview: None,
+            cwd: Some(cwd.to_string()),
+            path: None,
+            model_provider: None,
+            agent_nickname: None,
+            agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
+            created_at: Some(now),
+            updated_at: Some(now),
+        };
+        let thread_snapshot = crate::store::snapshot::ThreadSnapshot::from_info(server_id, thread_info);
+        self.app_store.upsert_thread_snapshot(thread_snapshot);
+
+        let key = ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id,
+        };
+        self.app_store.set_active_thread(Some(key.clone()));
+
+        info!("MobileClient: pi-mono session launched server_id={} cwd={}", server_id, cwd);
+        Ok(key)
+    }
+
     pub fn disconnect_server(&self, server_id: &str) {
         let session = self.sessions_write().remove(server_id);
+        // Remove all pi sessions for this server
+        let pi_sessions_to_remove: Vec<(String, Arc<PiMonoSession>)> = {
+            let mut sessions = self.pi_sessions_write();
+            let keys: Vec<String> = sessions.keys()
+                .filter(|k| sessions.get(*k).map_or(false, |s| s.config().server_id == server_id))
+                .cloned()
+                .collect();
+            keys.into_iter().filter_map(|k| sessions.remove(&k).map(|s| (k, s))).collect()
+        };
+        // Also remove pending connection
+        self.pending_pi_connections.write().expect("pending pi lock").remove(server_id);
 
-        if let Some(session) = session {
+        if session.is_some() || !pi_sessions_to_remove.is_empty() {
             // Swift/Kotlin can call this from outside any Tokio runtime.
             self.app_store.remove_server(server_id);
             let inner = Arc::clone(&self.oauth_callback_tunnels);
             let server_id_owned = server_id.to_string();
             Self::spawn_detached(async move {
                 inner.lock().await.remove(&server_id_owned);
-                session.disconnect().await;
+                if let Some(session) = session {
+                    session.disconnect().await;
+                }
+                for (_, pi_session) in pi_sessions_to_remove {
+                    pi_session.disconnect().await;
+                }
             });
             info!("MobileClient: disconnected server {server_id}");
         } else {
@@ -1073,6 +1439,25 @@ impl MobileClient {
         server_id: &str,
         params: upstream::TurnStartParams,
     ) -> Result<(), RpcError> {
+        // Pi-mono dispatch: send prompt directly (look up by thread_id)
+        if let Some(pi_session) = self.get_pi_session_by_thread(&params.thread_id) {
+            let text = params
+                .input
+                .iter()
+                .filter_map(|input| match input {
+                    upstream::UserInput::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            pi_session
+                .send_prompt(text, vec![], None)
+                .await
+                .map_err(|e| {
+                    RpcError::Transport(TransportError::ConnectionFailed(e.to_string()))
+                })?;
+            return Ok(());
+        }
         let session = self.get_session(server_id)?;
         let mut params = params;
         let thread_key = ThreadKey {
@@ -1680,6 +2065,25 @@ impl MobileClient {
         decision: ApprovalDecisionValue,
     ) -> Result<(), RpcError> {
         let approval = self.pending_approval(request_id)?;
+
+        // Pi-mono dispatch: respond via extension UI
+        if let Some(pi_session) = self.get_pi_session(&approval.server_id) {
+            let confirmed = match &decision {
+                ApprovalDecisionValue::Accept | ApprovalDecisionValue::AcceptForSession => {
+                    Some(true)
+                }
+                ApprovalDecisionValue::Decline | ApprovalDecisionValue::Cancel => Some(false),
+            };
+            pi_session
+                .respond_extension_ui(approval.id.clone(), None, confirmed, None)
+                .await
+                .map_err(|e| {
+                    RpcError::Transport(TransportError::ConnectionFailed(e.to_string()))
+                })?;
+            self.app_store.resolve_approval(request_id);
+            return Ok(());
+        }
+
         let approval_seed = self
             .app_store
             .pending_approval_seed(&approval.server_id, &approval.id);
@@ -1778,6 +2182,22 @@ impl MobileClient {
         answers: Vec<PendingUserInputAnswer>,
     ) -> Result<(), RpcError> {
         let request = self.pending_user_input(request_id)?;
+
+        // Pi-mono dispatch: respond via extension UI with the answer value
+        if let Some(pi_session) = self.get_pi_session(&request.server_id) {
+            let value = answers.first().and_then(|a| a.answers.first().cloned());
+            pi_session
+                .respond_extension_ui(request.id.clone(), value, None, None)
+                .await
+                .map_err(|e| {
+                    RpcError::Transport(TransportError::ConnectionFailed(e.to_string()))
+                })?;
+            let normalized_answers = normalize_pending_user_input_answers(&request, &answers);
+            self.app_store
+                .resolve_pending_user_input_with_response(request_id, normalized_answers);
+            return Ok(());
+        }
+
         let normalized_answers = normalize_pending_user_input_answers(&request, &answers);
         let answered_inputs = normalized_answers.clone();
         let session = self.get_session(&request.server_id)?;

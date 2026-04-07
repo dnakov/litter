@@ -58,6 +58,12 @@ extension AppServerSnapshot {
             return "tunneling"
         case .connected:
             return "connected"
+        case .findingPi:
+            return "finding pi"
+        case .installingPi:
+            return "installing pi"
+        case .startingPi:
+            return "starting pi"
         }
     }
 
@@ -69,7 +75,7 @@ extension AppServerSnapshot {
         if let connectionProgressLabel {
             return connectionProgressLabel
         }
-        if transportState == .connected, !isLocal, account == nil {
+        if transportState == .connected, !isLocal, account == nil, backendKind != .piMono {
             return "Sign in required"
         }
         if transportState == .connected, ipcState == .disconnected {

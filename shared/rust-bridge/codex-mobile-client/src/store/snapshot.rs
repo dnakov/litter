@@ -19,6 +19,15 @@ pub enum AppConnectionStepKind {
     StartingAppServer,
     OpeningTunnel,
     Connected,
+    FindingPi,
+    InstallingPi,
+    StartingPi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ServerBackendKind {
+    Codex,
+    PiMono,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -71,6 +80,35 @@ impl AppConnectionProgressSnapshot {
                 },
                 AppConnectionStepSnapshot {
                     kind: AppConnectionStepKind::OpeningTunnel,
+                    state: AppConnectionStepState::Pending,
+                    detail: None,
+                },
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::Connected,
+                    state: AppConnectionStepState::Pending,
+                    detail: None,
+                },
+            ],
+            pending_install: false,
+            terminal_message: None,
+        }
+    }
+
+    pub fn pi_mono_bootstrap() -> Self {
+        Self {
+            steps: vec![
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::ConnectingToSsh,
+                    state: AppConnectionStepState::InProgress,
+                    detail: None,
+                },
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::FindingPi,
+                    state: AppConnectionStepState::Pending,
+                    detail: None,
+                },
+                AppConnectionStepSnapshot {
+                    kind: AppConnectionStepKind::StartingPi,
                     state: AppConnectionStepState::Pending,
                     detail: None,
                 },
@@ -222,6 +260,7 @@ pub struct ServerSnapshot {
     pub requires_openai_auth: bool,
     pub rate_limits: Option<RateLimitSnapshot>,
     pub available_models: Option<Vec<ModelInfo>>,
+    pub backend_kind: ServerBackendKind,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
     pub transport: ServerTransportDiagnostics,
 }

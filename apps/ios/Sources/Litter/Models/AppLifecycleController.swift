@@ -152,6 +152,48 @@ final class AppLifecycleController {
         }
     }
 
+    private func reconnectPiMonoServer(
+        appModel: AppModel,
+        serverId: String,
+        displayName: String,
+        host: String,
+        port: UInt16,
+        credentials: SSHCredentials
+    ) async throws {
+        switch credentials {
+        case .password(let username, let password):
+            _ = try await appModel.ssh.sshConnectPiMono(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: password,
+                privateKeyPem: nil,
+                passphrase: nil,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                provider: nil,
+                model: nil
+            )
+        case .key(let username, let privateKey, let passphrase):
+            _ = try await appModel.ssh.sshConnectPiMono(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: nil,
+                privateKeyPem: privateKey,
+                passphrase: passphrase,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                provider: nil,
+                model: nil
+            )
+        }
+    }
+
     func appDidEnterBackground(
         snapshot: AppSnapshotRecord?,
         hasActiveVoiceSession: Bool,
@@ -340,7 +382,7 @@ final class AppLifecycleController {
         guard !serverIDs.isEmpty else { return }
 
         let plans = SavedServerStore.rememberedServers().compactMap { savedServer -> SavedReconnectPlan? in
-            guard savedServer.preferredConnectionMode == .ssh,
+            guard savedServer.preferredConnectionMode == .ssh || savedServer.preferredConnectionMode == .piMono,
                   serverIDs.contains(savedServer.id) else {
                 return nil
             }
@@ -350,6 +392,15 @@ final class AppLifecycleController {
                 port: Int(server.resolvedSSHPort)
             ) else {
                 return nil
+            }
+            if savedServer.preferredConnectionMode == .piMono {
+                return .piMono(
+                    serverId: server.id,
+                    displayName: server.name,
+                    host: server.hostname,
+                    port: server.resolvedSSHPort,
+                    credentials: credential.toConnectionCredential()
+                )
             }
             return .ssh(
                 serverId: server.id,
@@ -464,7 +515,21 @@ final class AppLifecycleController {
         }
 
         do {
-            if savedServer.preferredConnectionMode == .ssh {
+            if savedServer.preferredConnectionMode == .piMono {
+                guard let credential = try SSHCredentialStore.shared.load(
+                    host: server.hostname,
+                    port: Int(server.resolvedSSHPort)
+                ) else {
+                    return nil
+                }
+                return .piMono(
+                    serverId: server.id,
+                    displayName: server.name,
+                    host: server.hostname,
+                    port: server.resolvedSSHPort,
+                    credentials: credential.toConnectionCredential()
+                )
+            } else if savedServer.preferredConnectionMode == .ssh {
                 guard let credential = try SSHCredentialStore.shared.load(
                     host: server.hostname,
                     port: Int(server.resolvedSSHPort)
@@ -501,6 +566,14 @@ final class AppLifecycleController {
                     )
                 case .sshThenRemote(let host, let credentials):
                     return .ssh(
+                        serverId: server.id,
+                        displayName: server.name,
+                        host: host,
+                        port: server.resolvedSSHPort,
+                        credentials: credentials
+                    )
+                case .sshThenPiMono(let host, let credentials):
+                    return .piMono(
                         serverId: server.id,
                         displayName: server.name,
                         host: host,
@@ -566,6 +639,15 @@ final class AppLifecycleController {
                     displayName: displayName,
                     websocketUrl: websocketUrl
                 )
+            case .piMono(let serverId, let displayName, let host, let port, let credentials):
+                try await reconnectPiMonoServer(
+                    appModel: appModel,
+                    serverId: serverId,
+                    displayName: displayName,
+                    host: host,
+                    port: port,
+                    credentials: credentials
+                )
             }
         } catch {}
     }
@@ -593,6 +675,13 @@ final class AppLifecycleController {
             serverId: String,
             displayName: String,
             websocketUrl: String
+        )
+        case piMono(
+            serverId: String,
+            displayName: String,
+            host: String,
+            port: UInt16,
+            credentials: SSHCredentials
         )
     }
 

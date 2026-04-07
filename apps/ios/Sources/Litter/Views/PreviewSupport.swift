@@ -366,6 +366,7 @@ enum LitterPreviewData {
             requiresOpenaiAuth: false,
             rateLimits: nil,
             availableModels: sampleModels,
+            backendKind: .codex,
             connectionProgress: nil
         )
 

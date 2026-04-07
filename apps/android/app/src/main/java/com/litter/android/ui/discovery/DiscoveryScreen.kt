@@ -83,6 +83,7 @@ import kotlinx.coroutines.withContext
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppDiscoveredServer
+import uniffi.codex_mobile_client.ServerBackendKind
 
 /**
  * Server discovery and connection screen.
@@ -489,37 +490,72 @@ fun DiscoveryScreen(
                             "os" to server.os,
                         ),
                     )
+                    val isPiMono = server.source == "pi-mono"
                     when (credential.method) {
                         SshAuthMethod.PASSWORD -> {
-                            appModel.ssh.sshStartRemoteServerConnect(
-                                serverId = server.id,
-                                displayName = server.name,
-                                host = server.hostname,
-                                port = server.resolvedSshPort.toUShort(),
-                                username = credential.username,
-                                password = credential.password,
-                                privateKeyPem = null,
-                                passphrase = null,
-                                acceptUnknownHost = true,
-                                workingDir = null,
-                                ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
-                            )
+                            if (isPiMono) {
+                                appModel.ssh.sshConnectPiMono(
+                                    serverId = server.id,
+                                    displayName = server.name,
+                                    host = server.hostname,
+                                    port = server.resolvedSshPort.toUShort(),
+                                    username = credential.username,
+                                    password = credential.password,
+                                    privateKeyPem = null,
+                                    passphrase = null,
+                                    acceptUnknownHost = true,
+                                    workingDir = null,
+                                    provider = null,
+                                    model = null,
+                                )
+                            } else {
+                                appModel.ssh.sshStartRemoteServerConnect(
+                                    serverId = server.id,
+                                    displayName = server.name,
+                                    host = server.hostname,
+                                    port = server.resolvedSshPort.toUShort(),
+                                    username = credential.username,
+                                    password = credential.password,
+                                    privateKeyPem = null,
+                                    passphrase = null,
+                                    acceptUnknownHost = true,
+                                    workingDir = null,
+                                    ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
+                                )
+                            }
                         }
 
                         SshAuthMethod.KEY -> {
-                            appModel.ssh.sshStartRemoteServerConnect(
-                                serverId = server.id,
-                                displayName = server.name,
-                                host = server.hostname,
-                                port = server.resolvedSshPort.toUShort(),
-                                username = credential.username,
-                                password = null,
-                                privateKeyPem = credential.privateKey,
-                                passphrase = credential.passphrase,
-                                acceptUnknownHost = true,
-                                workingDir = null,
-                                ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
-                            )
+                            if (isPiMono) {
+                                appModel.ssh.sshConnectPiMono(
+                                    serverId = server.id,
+                                    displayName = server.name,
+                                    host = server.hostname,
+                                    port = server.resolvedSshPort.toUShort(),
+                                    username = credential.username,
+                                    password = null,
+                                    privateKeyPem = credential.privateKey,
+                                    passphrase = credential.passphrase,
+                                    acceptUnknownHost = true,
+                                    workingDir = null,
+                                    provider = null,
+                                    model = null,
+                                )
+                            } else {
+                                appModel.ssh.sshStartRemoteServerConnect(
+                                    serverId = server.id,
+                                    displayName = server.name,
+                                    host = server.hostname,
+                                    port = server.resolvedSshPort.toUShort(),
+                                    username = credential.username,
+                                    password = null,
+                                    privateKeyPem = credential.privateKey,
+                                    passphrase = credential.passphrase,
+                                    acceptUnknownHost = true,
+                                    workingDir = null,
+                                    ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride(),
+                                )
+                            }
                         }
                     }
                     if (rememberCredentials) {
@@ -678,7 +714,7 @@ private fun ServerRow(
                 append(" - wake")
             }
         }
-    val serverIcon = serverIconForEntry(entry)
+    val serverIcon = serverIconForEntry(entry, connectedServer)
 
     Row(
         modifier = Modifier
@@ -797,6 +833,15 @@ private fun ManualEntryDialog(
                         selected = mode == ManualConnectionMode.SSH,
                         onClick = { mode = ManualConnectionMode.SSH },
                         label = { Text(ManualConnectionMode.SSH.label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = LitterTheme.accent.copy(alpha = 0.18f),
+                            selectedLabelColor = LitterTheme.textPrimary,
+                        ),
+                    )
+                    FilterChip(
+                        selected = mode == ManualConnectionMode.PI_MONO,
+                        onClick = { mode = ManualConnectionMode.PI_MONO },
+                        label = { Text(ManualConnectionMode.PI_MONO.label) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = LitterTheme.accent.copy(alpha = 0.18f),
                             selectedLabelColor = LitterTheme.textPrimary,
@@ -1068,7 +1113,11 @@ private fun SSHLoginDialog(
     )
 }
 
-private fun serverIconForEntry(entry: SavedServer): androidx.compose.ui.graphics.vector.ImageVector {
+private fun serverIconForEntry(
+    entry: SavedServer,
+    connectedServer: AppServerSnapshot? = null,
+): androidx.compose.ui.graphics.vector.ImageVector {
+    if (connectedServer?.backendKind == ServerBackendKind.PI_MONO) return Icons.Outlined.Terminal
     if (entry.source == "local") return Icons.Outlined.PhoneAndroid
     val os = entry.os?.lowercase()
     if (os != null) {
@@ -1201,6 +1250,7 @@ private enum class ManualConnectionMode(
 ) {
     CODEX("Codex", "Connect"),
     SSH("SSH", "Continue to SSH Login"),
+    PI_MONO("Pi", "Continue to SSH Login"),
 }
 
 private fun buildManualEntryAction(
@@ -1212,6 +1262,7 @@ private fun buildManualEntryAction(
 ): ManualEntryBuild = when (mode) {
     ManualConnectionMode.CODEX -> buildManualCodexEntry(codexUrl)
     ManualConnectionMode.SSH -> buildManualSshEntry(host, sshPort, wakeMac)
+    ManualConnectionMode.PI_MONO -> buildManualSshEntry(host, sshPort, wakeMac, source = "pi-mono")
 }
 
 private fun buildManualCodexEntry(rawInput: String): ManualEntryBuild {
@@ -1272,6 +1323,7 @@ private fun buildManualSshEntry(
     hostInput: String,
     sshPortInput: String,
     wakeMacInput: String,
+    source: String = "manual",
 ): ManualEntryBuild {
     val host = hostInput.trim()
     if (host.isEmpty()) {
@@ -1297,7 +1349,7 @@ private fun buildManualSshEntry(
                 hostname = host,
                 port = sshPort,
                 sshPort = sshPort,
-                source = "manual",
+                source = source,
                 hasCodexServer = false,
                 wakeMAC = normalizedWakeMac,
                 preferredConnectionMode = "ssh",

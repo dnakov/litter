@@ -336,7 +336,8 @@ private extension Font.TextStyle {
     }
 }
 
-func serverIconName(for server: DiscoveredServer) -> String {
+func serverIconName(for server: DiscoveredServer, backendKind: ServerBackendKind? = nil) -> String {
+    if backendKind == .piMono { return "terminal.fill" }
     if server.source == .local { return "iphone" }
 
     if let os = server.os?.lowercased() {

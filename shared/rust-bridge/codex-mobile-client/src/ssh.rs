@@ -92,6 +92,13 @@ pub struct SshBootstrapResult {
     pub pid: Option<u32>,
 }
 
+/// Result of a successful `bootstrap_pi_mono` call.
+#[derive(Debug, Clone)]
+pub struct PiMonoBootstrapResult {
+    pub pi_binary_path: String,
+    pub pi_version: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCodexRelease {
     pub tag_name: String,
@@ -422,6 +429,35 @@ impl SshClient {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
+    }
+
+    // --------------------------------------------------------------------
+    // open_exec_channel (persistent exec)
+    // --------------------------------------------------------------------
+
+    /// Open a persistent SSH exec channel for an interactive process.
+    /// Unlike `exec()`, this does NOT wait for the command to complete.
+    /// The caller owns the channel and is responsible for reading/writing.
+    pub async fn open_exec_channel(
+        &self,
+        command: &str,
+    ) -> Result<russh::Channel<Msg>, SshError> {
+        let handle = self.handle.lock().await;
+        if handle.is_closed() {
+            return Err(SshError::Disconnected);
+        }
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::ConnectionFailed(format!("open session: {e}")))?;
+        drop(handle);
+
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| SshError::ConnectionFailed(format!("exec: {e}")))?;
+
+        Ok(channel)
     }
 
     // --------------------------------------------------------------------
@@ -1674,6 +1710,133 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
             }
         }
     }
+
+    // --------------------------------------------------------------------
+    // pi-mono resolution and installation
+    // --------------------------------------------------------------------
+
+    /// Locate the `pi` binary on the remote host (POSIX only).
+    /// Returns the absolute path if found, or `None` if not present.
+    pub(crate) async fn resolve_pi_binary_optional(
+        &self,
+    ) -> Result<Option<String>, SshError> {
+        let script = resolve_pi_binary_script_posix();
+        let result = self.exec_posix(&script).await?;
+        let raw = result.stdout.trim();
+        if raw.is_empty() {
+            info!("ssh resolve pi binary: not found");
+            return Ok(None);
+        }
+        info!("ssh resolve pi binary found path={}", raw);
+        Ok(Some(raw.to_string()))
+    }
+
+    /// Install pi-mono via npm into `~/.litter/pi/`.
+    /// Returns the installed binary path.
+    pub(crate) async fn install_pi_mono(
+        &self,
+        shell: RemoteShell,
+    ) -> Result<String, SshError> {
+        info!(
+            "ssh install pi-mono start shell={}",
+            remote_shell_name(shell)
+        );
+        let script = match shell {
+            RemoteShell::Posix => format!(
+                r#"{profile_init}
+set -e
+litter_dir="$HOME/.litter/pi"
+mkdir -p "$litter_dir"
+cd "$litter_dir"
+[ -f package.json ] || npm init -y >/dev/null 2>&1
+npm install @mariozechner/pi-coding-agent >/dev/null 2>&1
+bin="$litter_dir/node_modules/.bin/pi"
+if [ -x "$bin" ]; then printf '%s' "$bin"; else echo "pi not found after install" >&2; exit 1; fi"#,
+                profile_init = PROFILE_INIT
+            ),
+            RemoteShell::PowerShell => {
+                r#"$ErrorActionPreference = 'Stop'
+$litterDir = Join-Path $env:USERPROFILE '.litter\pi'
+if (-not (Test-Path $litterDir)) { New-Item -ItemType Directory -Path $litterDir -Force | Out-Null }
+Set-Location $litterDir
+if (-not (Test-Path 'package.json')) { npm init -y 2>$null | Out-Null }
+npm install @mariozechner/pi-coding-agent 2>$null | Out-Null
+$bin = Join-Path $litterDir 'node_modules\.bin\pi.cmd'
+if (Test-Path $bin) { Write-Output $bin } else { Write-Error 'pi not found after install'; exit 1 }"#.to_string()
+            }
+        };
+
+        let result = self.exec_shell(&script, shell).await?;
+        if result.exit_code != 0 {
+            warn!(
+                "ssh install pi-mono failed shell={} exit_code={} stderr={}",
+                remote_shell_name(shell),
+                result.exit_code,
+                result.stderr.trim()
+            );
+            return Err(SshError::ExecFailed {
+                exit_code: result.exit_code,
+                stderr: if result.stderr.trim().is_empty() {
+                    "npm install @mariozechner/pi-coding-agent failed".to_string()
+                } else {
+                    result.stderr
+                },
+            });
+        }
+        let installed_path = result.stdout.trim().to_string();
+        if installed_path.is_empty() {
+            return Err(SshError::ExecFailed {
+                exit_code: 1,
+                stderr: "pi binary path not returned after npm install".to_string(),
+            });
+        }
+        info!(
+            "ssh install pi-mono completed shell={} path={}",
+            remote_shell_name(shell),
+            installed_path
+        );
+        Ok(installed_path)
+    }
+
+    /// Bootstrap pi-mono: resolve binary, read version.
+    /// Does NOT install — installation is handled separately in the guided SSH flow.
+    pub(crate) async fn bootstrap_pi_mono(
+        &self,
+    ) -> Result<PiMonoBootstrapResult, SshError> {
+        let pi_binary_path = match self.resolve_pi_binary_optional().await? {
+            Some(path) => path,
+            None => {
+                return Err(SshError::ExecFailed {
+                    exit_code: 1,
+                    stderr: "pi binary not found on remote host".to_string(),
+                });
+            }
+        };
+
+        let version_cmd = format!(
+            "{} {} --version 2>/dev/null",
+            PROFILE_INIT,
+            shell_quote(&pi_binary_path)
+        );
+        let pi_version = match self.exec_posix(&version_cmd).await {
+            Ok(r) if r.exit_code == 0 => {
+                let v = r.stdout.trim().to_string();
+                if v.is_empty() { None } else { Some(v) }
+            }
+            _ => None,
+        };
+
+        info!(
+            "ssh bootstrap pi-mono path={} version={}",
+            pi_binary_path,
+            pi_version.clone().unwrap_or_else(|| "<unknown>".to_string())
+        );
+
+        Ok(PiMonoBootstrapResult {
+            pi_binary_path,
+            pi_version,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1781,7 +1944,7 @@ async fn proxy_connection(
 /// Runs each file in a subshell so zsh-specific syntax (plugins, eval
 /// `starship init zsh`, etc.) cannot crash the parent `/bin/sh` process.
 /// The subshell exports PATH changes via a temp file.
-const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
+pub(crate) const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
 
 fn resolve_codex_binary_script_posix() -> String {
     format!(
@@ -1817,6 +1980,31 @@ else
   elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
     printf 'app-server:%s' "$HOME/.cargo/bin/codex-app-server"
   fi
+fi"#,
+        profile_init = PROFILE_INIT
+    )
+}
+
+fn resolve_pi_binary_script_posix() -> String {
+    format!(
+        r#"{profile_init}
+if [ -x "$HOME/.litter/bin/pi" ]; then
+  printf '%s' "$HOME/.litter/bin/pi"
+  exit 0
+fi
+pi_path="$(command -v pi 2>/dev/null || true)"
+if [ -n "$pi_path" ] && [ -f "$pi_path" ] && [ -x "$pi_path" ]; then
+  printf '%s' "$pi_path"
+elif [ -x "$HOME/.volta/bin/pi" ]; then
+  printf '%s' "$HOME/.volta/bin/pi"
+elif [ -x "$HOME/.local/bin/pi" ]; then
+  printf '%s' "$HOME/.local/bin/pi"
+elif [ -x "/opt/homebrew/bin/pi" ]; then
+  printf '%s' "/opt/homebrew/bin/pi"
+elif [ -x "/usr/local/bin/pi" ]; then
+  printf '%s' "/usr/local/bin/pi"
+elif [ -x "$HOME/.litter/pi/node_modules/.bin/pi" ]; then
+  printf '%s' "$HOME/.litter/pi/node_modules/.bin/pi"
 fi"#,
         profile_init = PROFILE_INIT
     )
@@ -1929,7 +2117,7 @@ fn normalize_host(host: &str) -> String {
     h
 }
 
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 

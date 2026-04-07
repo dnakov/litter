@@ -631,6 +631,10 @@ impl EventProcessor {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
+    pub(crate) fn emit_event(&self, event: UiEvent) {
+        self.emit(event);
+    }
+
     fn emit(&self, event: UiEvent) {
         // Ignore the error — it just means there are no active subscribers.
         let _ = self.ui_event_tx.send(event);

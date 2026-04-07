@@ -16,6 +16,7 @@ struct SSHLoginSheet: View {
     @State private var loadedSavedCredentials = false
     @State private var isConnecting = false
     @State private var errorMessage: String?
+    @State private var backendType: SSHBackendType = .codex
 
     init(
         server: DiscoveredServer,
@@ -107,6 +108,19 @@ struct SSHLoginSheet: View {
                         }
                     } header: {
                         Text("Authentication")
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+                    .listRowBackground(LitterTheme.surface.opacity(0.6))
+
+                    Section {
+                        Picker("Backend", selection: $backendType) {
+                            ForEach(SSHBackendType.allCases) { backend in
+                                Text(backend.label).tag(backend)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    } header: {
+                        Text("Backend")
                             .foregroundColor(LitterTheme.textSecondary)
                     }
                     .listRowBackground(LitterTheme.surface.opacity(0.6))
@@ -210,7 +224,11 @@ struct SSHLoginSheet: View {
 
                 clearSensitiveInput()
                 isConnecting = false
-                onConnect(.sshThenRemote(host: server.hostname, credentials: credentials))
+                if backendType == .piMono {
+                    onConnect(.sshThenPiMono(host: server.hostname, credentials: credentials))
+                } else {
+                    onConnect(.sshThenRemote(host: server.hostname, credentials: credentials))
+                }
             } catch {
                 isConnecting = false
                 errorMessage = error.localizedDescription

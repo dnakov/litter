@@ -14,6 +14,7 @@ struct DiscoveryView: View {
     @State private var manualHost = ""
     @State private var manualSSHPort = "22"
     @State private var manualWakeMAC = ""
+    @State private var sshBackendType: SSHBackendType = .codex
     @State private var autoSSHStarted = false
     @State private var connectingServer: DiscoveredServer?
     @State private var wakingServer: DiscoveredServer?
@@ -110,7 +111,14 @@ struct DiscoveryView: View {
         .sheet(item: $sshServer) { server in
             SSHLoginSheet(server: server) { target in
                 sshServer = nil
-                Task { await connectToServer(server, targetOverride: target) }
+                let resolvedTarget: ConnectionTarget
+                if sshBackendType == .piMono,
+                   case .sshThenRemote(let host, let credentials) = target {
+                    resolvedTarget = .sshThenPiMono(host: host, credentials: credentials)
+                } else {
+                    resolvedTarget = target
+                }
+                Task { await connectToServer(server, targetOverride: resolvedTarget) }
             }
         }
         .confirmationDialog(
@@ -790,6 +798,9 @@ struct DiscoveryView: View {
             case .sshThenRemote(let host, let credentials):
                 startedAsyncBootstrap = true
                 connectedServerId = try await connectViaSSH(server: server, host: host, credentials: credentials)
+            case .sshThenPiMono(let host, let credentials):
+                startedAsyncBootstrap = true
+                connectedServerId = try await connectViaPiMonoSSH(server: server, host: host, credentials: credentials)
             }
         } catch {
             connectingServer = nil
@@ -827,6 +838,65 @@ struct DiscoveryView: View {
             server.withConnectionPreference(.ssh)
         )
         return serverId
+    }
+
+    private func connectViaPiMonoSSH(
+        server: DiscoveredServer,
+        host: String,
+        credentials: SSHCredentials
+    ) async throws -> String {
+        let serverId = try await sshConnectPiMono(
+            serverId: server.id,
+            displayName: server.name,
+            host: host,
+            credentials: credentials,
+            port: server.resolvedSSHPort
+        )
+        SavedServerStore.remember(
+            server.withConnectionPreference(.piMono)
+        )
+        return serverId
+    }
+
+    private func sshConnectPiMono(
+        serverId: String,
+        displayName: String,
+        host: String,
+        credentials: SSHCredentials,
+        port: UInt16
+    ) async throws -> String {
+        switch credentials {
+        case .password(let username, let password):
+            return try await appModel.ssh.sshConnectPiMono(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: password,
+                privateKeyPem: nil,
+                passphrase: nil,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                provider: nil,
+                model: nil
+            )
+        case .key(let username, let privateKey, let passphrase):
+            return try await appModel.ssh.sshConnectPiMono(
+                serverId: serverId,
+                displayName: displayName,
+                host: host,
+                port: port,
+                username: username,
+                password: nil,
+                privateKeyPem: privateKey,
+                passphrase: passphrase,
+                acceptUnknownHost: true,
+                workingDir: nil,
+                provider: nil,
+                model: nil
+            )
+        }
     }
 
     private func sshConnectAndConnectServer(
@@ -928,6 +998,12 @@ struct DiscoveryView: View {
                                 .foregroundColor(LitterTheme.textPrimary)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
+                            Picker("Backend", selection: $sshBackendType) {
+                                ForEach(SSHBackendType.allCases) { backend in
+                                    Text(backend.label).tag(backend)
+                                }
+                            }
+                            .pickerStyle(.segmented)
                         }
                     } header: {
                         Text(manualConnectionMode.formHeader)
@@ -1227,6 +1303,20 @@ private enum ManualConnectionMode: String, CaseIterable, Identifiable {
             return "Connect"
         case .ssh:
             return "Continue to SSH Login"
+        }
+    }
+}
+
+enum SSHBackendType: String, CaseIterable, Identifiable {
+    case codex
+    case piMono
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .codex: return "Codex"
+        case .piMono: return "Pi"
         }
     }
 }

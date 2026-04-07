@@ -94,6 +94,9 @@ val AppServerSnapshot.connectionProgressLabel: String?
         AppConnectionStepKind.STARTING_APP_SERVER -> "starting"
         AppConnectionStepKind.OPENING_TUNNEL -> "tunneling"
         AppConnectionStepKind.CONNECTED -> "connected"
+        AppConnectionStepKind.FINDING_PI -> "finding pi"
+        AppConnectionStepKind.INSTALLING_PI -> "installing pi"
+        AppConnectionStepKind.STARTING_PI -> "starting pi"
         null -> null
     }
 

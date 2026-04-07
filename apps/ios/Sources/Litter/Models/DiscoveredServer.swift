@@ -24,6 +24,7 @@ enum ServerSource: String, Codable, Hashable {
 enum PreferredConnectionMode: String, Codable, Hashable {
     case directCodex
     case ssh
+    case piMono
 }
 
 struct DiscoveredServer: Identifiable, Hashable {
@@ -216,6 +217,8 @@ struct DiscoveredServer: Identifiable, Hashable {
             return !codexPorts.isEmpty || websocketURL != nil ? .directCodex : nil
         case .ssh:
             return sshPort != nil ? .ssh : nil
+        case .piMono:
+            return sshPort != nil ? .piMono : nil
         case nil:
             return nil
         }

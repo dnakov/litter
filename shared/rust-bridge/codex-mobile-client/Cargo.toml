@@ -14,6 +14,7 @@ codex-app-server = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-ipc = { path = "../codex-ipc" }
+pi-mono-client = { path = "../pi-mono-client" }
 codex-protocol = { workspace = true }
 codex-core = { workspace = true }
 codex-config = { workspace = true }

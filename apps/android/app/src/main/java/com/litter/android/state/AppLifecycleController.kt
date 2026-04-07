@@ -145,37 +145,72 @@ class AppLifecycleController {
                 "os" to server.os,
             ),
         )
+        val isPiMono = server.source == "pi-mono"
         val ipcSocketPathOverride = ExperimentalFeatures.ipcSocketPathOverride()
         when (credential.method) {
             SshAuthMethod.PASSWORD -> {
-                appModel.ssh.sshStartRemoteServerConnect(
-                    serverId = server.id,
-                    displayName = server.name,
-                    host = server.hostname,
-                    port = server.resolvedSshPort.toUShort(),
-                    username = credential.username,
-                    password = credential.password,
-                    privateKeyPem = null,
-                    passphrase = null,
-                    acceptUnknownHost = true,
-                    workingDir = null,
-                    ipcSocketPathOverride = ipcSocketPathOverride,
-                )
+                if (isPiMono) {
+                    appModel.ssh.sshConnectPiMono(
+                        serverId = server.id,
+                        displayName = server.name,
+                        host = server.hostname,
+                        port = server.resolvedSshPort.toUShort(),
+                        username = credential.username,
+                        password = credential.password,
+                        privateKeyPem = null,
+                        passphrase = null,
+                        acceptUnknownHost = true,
+                        workingDir = null,
+                        provider = null,
+                        model = null,
+                    )
+                } else {
+                    appModel.ssh.sshStartRemoteServerConnect(
+                        serverId = server.id,
+                        displayName = server.name,
+                        host = server.hostname,
+                        port = server.resolvedSshPort.toUShort(),
+                        username = credential.username,
+                        password = credential.password,
+                        privateKeyPem = null,
+                        passphrase = null,
+                        acceptUnknownHost = true,
+                        workingDir = null,
+                        ipcSocketPathOverride = ipcSocketPathOverride,
+                    )
+                }
             }
             SshAuthMethod.KEY -> {
-                appModel.ssh.sshStartRemoteServerConnect(
-                    serverId = server.id,
-                    displayName = server.name,
-                    host = server.hostname,
-                    port = server.resolvedSshPort.toUShort(),
-                    username = credential.username,
-                    password = null,
-                    privateKeyPem = credential.privateKey,
-                    passphrase = credential.passphrase,
-                    acceptUnknownHost = true,
-                    workingDir = null,
-                    ipcSocketPathOverride = ipcSocketPathOverride,
-                )
+                if (isPiMono) {
+                    appModel.ssh.sshConnectPiMono(
+                        serverId = server.id,
+                        displayName = server.name,
+                        host = server.hostname,
+                        port = server.resolvedSshPort.toUShort(),
+                        username = credential.username,
+                        password = null,
+                        privateKeyPem = credential.privateKey,
+                        passphrase = credential.passphrase,
+                        acceptUnknownHost = true,
+                        workingDir = null,
+                        provider = null,
+                        model = null,
+                    )
+                } else {
+                    appModel.ssh.sshStartRemoteServerConnect(
+                        serverId = server.id,
+                        displayName = server.name,
+                        host = server.hostname,
+                        port = server.resolvedSshPort.toUShort(),
+                        username = credential.username,
+                        password = null,
+                        privateKeyPem = credential.privateKey,
+                        passphrase = credential.passphrase,
+                        acceptUnknownHost = true,
+                        workingDir = null,
+                        ipcSocketPathOverride = ipcSocketPathOverride,
+                    )
+                }
             }
         }
     }

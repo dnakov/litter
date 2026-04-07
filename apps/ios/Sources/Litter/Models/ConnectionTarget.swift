@@ -6,6 +6,7 @@ enum ConnectionTarget: Equatable {
     case remote(host: String, port: UInt16)
     case remoteURL(URL)
     case sshThenRemote(host: String, credentials: SSHCredentials)
+    case sshThenPiMono(host: String, credentials: SSHCredentials)
 }
 
 enum SSHCredentials: Equatable {

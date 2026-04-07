@@ -441,7 +441,10 @@ impl MobileClient {
 
     pub(crate) fn get_session(&self, server_id: &str) -> Result<Arc<ServerSession>, RpcError> {
         self.sessions_read().get(server_id).cloned().ok_or_else(|| {
-            self.mark_server_transport_disconnected(server_id);
+            // Don't mark pi-mono servers as disconnected — they don't use codex sessions
+            if !self.is_pi_mono_server(server_id) {
+                self.mark_server_transport_disconnected(server_id);
+            }
             RpcError::Transport(TransportError::Disconnected)
         })
     }

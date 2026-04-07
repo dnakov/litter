@@ -59,6 +59,30 @@ impl AppClient {
         params: types::AppStartThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            // Pi-mono: if there's a pending pi connection, launch the session with the cwd
+            if c.pending_pi_connections.read().expect("pending pi lock").contains_key(&server_id) {
+                let params = convert_params::<_, upstream::ThreadStartParams>(params)?;
+                let cwd = params.cwd.as_deref().unwrap_or("~");
+                let key = c.launch_pi_session(&server_id, cwd)
+                    .await
+                    .map_err(|e| ClientError::Transport(e.to_string()))?;
+                return Ok(types::ThreadKey {
+                    server_id: key.server_id,
+                    thread_id: key.thread_id,
+                });
+            }
+            // Pi-mono: if session already running, create a new session
+            if let Some(pi_session) = c.get_pi_session(&server_id) {
+                let _ = pi_session
+                    .new_session()
+                    .await
+                    .map_err(|e| ClientError::Transport(e.to_string()))?;
+                let thread_id = format!("pi-{}", &server_id);
+                return Ok(types::ThreadKey {
+                    server_id: server_id.clone(),
+                    thread_id,
+                });
+            }
             let params = convert_params::<_, upstream::ThreadStartParams>(params)?;
             let response: upstream::ThreadStartResponse =
                 rpc(c.as_ref(), &server_id, req!(server_id, ThreadStart, params)).await?;
@@ -121,6 +145,13 @@ impl AppClient {
         params: types::AppRenameThreadRequest,
     ) -> Result<(), ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            if let Some(pi_session) = c.get_pi_session(&server_id) {
+                pi_session
+                    .set_session_name(params.name.clone())
+                    .await
+                    .map_err(|e| ClientError::Rpc(e.to_string()))?;
+                return Ok(());
+            }
             let _: upstream::ThreadSetNameResponse = rpc(
                 c.as_ref(),
                 &server_id,
@@ -188,6 +219,13 @@ impl AppClient {
         params: types::AppInterruptTurnRequest,
     ) -> Result<(), ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            if let Some(pi_session) = c.get_pi_session(&server_id) {
+                pi_session
+                    .send_abort()
+                    .await
+                    .map_err(|e| ClientError::Rpc(e.to_string()))?;
+                return Ok(());
+            }
             let _: upstream::TurnInterruptResponse = rpc(
                 c.as_ref(),
                 &server_id,
@@ -331,6 +369,60 @@ impl AppClient {
         params: types::AppRefreshModelsRequest,
     ) -> Result<(), ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            if let Some(pi_session) = c.get_pi_session(&server_id) {
+                let pi_models = pi_session
+                    .get_available_models()
+                    .await
+                    .map_err(|e| ClientError::Rpc(e.to_string()))?;
+                let tuples =
+                    pi_mono_client::mapper::PiMonoEventMapper::pi_models_to_model_tuples(
+                        &pi_models,
+                    );
+                let models: Vec<types::ModelInfo> = tuples
+                    .into_iter()
+                    .map(|t| types::ModelInfo {
+                        id: t.id,
+                        model: t.model_id,
+                        upgrade: None,
+                        upgrade_model: None,
+                        upgrade_copy: None,
+                        model_link: None,
+                        migration_markdown: None,
+                        availability_nux_message: None,
+                        display_name: t.display_name,
+                        description: t.provider.clone(),
+                        hidden: false,
+                        supported_reasoning_efforts: if t.reasoning {
+                            vec![
+                                types::ReasoningEffortOption {
+                                    reasoning_effort: types::ReasoningEffort::Low,
+                                    description: "Low".to_string(),
+                                },
+                                types::ReasoningEffortOption {
+                                    reasoning_effort: types::ReasoningEffort::Medium,
+                                    description: "Medium".to_string(),
+                                },
+                                types::ReasoningEffortOption {
+                                    reasoning_effort: types::ReasoningEffort::High,
+                                    description: "High".to_string(),
+                                },
+                            ]
+                        } else {
+                            vec![]
+                        },
+                        default_reasoning_effort: if t.reasoning {
+                            types::ReasoningEffort::Medium
+                        } else {
+                            types::ReasoningEffort::None
+                        },
+                        input_modalities: vec![],
+                        supports_personality: false,
+                        is_default: false,
+                    })
+                    .collect();
+                c.app_store.update_server_models(&server_id, Some(models));
+                return Ok(());
+            }
             let response: upstream::ModelListResponse = rpc(
                 c.as_ref(),
                 &server_id,
@@ -462,6 +554,26 @@ impl AppClient {
         params: types::AppExecCommandRequest,
     ) -> Result<types::CommandExecResult, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            // Pi-mono: use SSH exec instead of codex RPC
+            if let Some(pending) = c.pending_pi_connections.read().expect("pending pi lock").get(&server_id).cloned() {
+                let cmd_str = params.command.iter()
+                    .map(|arg| crate::ssh::shell_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let full_cmd = if let Some(ref cwd) = params.cwd {
+                    format!("cd {} && {}", crate::ssh::shell_quote(cwd), cmd_str)
+                } else {
+                    cmd_str
+                };
+                let result = pending.ssh_client.exec(&full_cmd).await
+                    .map_err(|e| ClientError::Transport(e.to_string()))?;
+                return Ok(types::CommandExecResult {
+                    exit_code: result.exit_code as i32,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                });
+            }
+
             let params = convert_params::<_, upstream::CommandExecParams>(params)?;
             let response: upstream::CommandExecResponse = rpc(
                 c.as_ref(),

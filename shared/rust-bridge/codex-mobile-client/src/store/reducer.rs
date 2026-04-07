@@ -35,7 +35,7 @@ use super::snapshot::{
     AppConnectionProgressSnapshot, AppLifecyclePhaseSnapshot, AppQueuedFollowUpPreview,
     AppSnapshot, AppVoiceSessionSnapshot, IpcFailureClassification, PendingServerMutatingCommand,
     QueuedFollowUpDraft, ServerHealthSnapshot, ServerMutatingCommandKind,
-    ServerMutatingCommandRoute, ServerSnapshot, ServerTransportAuthority,
+    ServerBackendKind, ServerMutatingCommandRoute, ServerSnapshot, ServerTransportAuthority,
     ServerTransportDiagnostics, ThreadSnapshot,
 };
 use super::updates::{AppStoreUpdateRecord, ThreadStreamingDeltaKind};
@@ -152,6 +152,7 @@ impl AppStoreReducer {
                     requires_openai_auth,
                     rate_limits: existing_rate_limits,
                     available_models: existing_available_models,
+                    backend_kind: ServerBackendKind::Codex,
                     connection_progress: existing_connection_progress,
                     transport: existing_transport,
                 },
@@ -159,6 +160,18 @@ impl AppStoreReducer {
         }
         self.emit(AppStoreUpdateRecord::ServerChanged {
             server_id: config.server_id.clone(),
+        });
+    }
+
+    pub fn set_server_backend_kind(&self, server_id: &str, kind: ServerBackendKind) {
+        {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            if let Some(server) = snapshot.servers.get_mut(server_id) {
+                server.backend_kind = kind;
+            }
+        }
+        self.emit(AppStoreUpdateRecord::ServerChanged {
+            server_id: server_id.to_string(),
         });
     }
 
@@ -1214,6 +1227,26 @@ impl AppStoreReducer {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
             if let Some(server) = snapshot.servers.get_mut(server_id) {
                 server.connection_progress = connection_progress;
+            }
+        }
+        self.emit(AppStoreUpdateRecord::ServerChanged {
+            server_id: server_id.to_string(),
+        });
+    }
+
+    pub fn update_connection_step(
+        &self,
+        server_id: &str,
+        kind: crate::store::snapshot::AppConnectionStepKind,
+        state: crate::store::snapshot::AppConnectionStepState,
+        detail: Option<String>,
+    ) {
+        {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            if let Some(server) = snapshot.servers.get_mut(server_id) {
+                if let Some(progress) = server.connection_progress.as_mut() {
+                    progress.update_step(kind, state, detail);
+                }
             }
         }
         self.emit(AppStoreUpdateRecord::ServerChanged {

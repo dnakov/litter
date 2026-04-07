@@ -1,0 +1,20 @@
+[package]
+name = "pi-mono-client"
+version = "0.1.0"
+edition = "2024"
+description = "Rust client for the pi-mono JSONL RPC protocol"
+
+[lib]
+name = "pi_mono_client"
+
+[dependencies]
+codex-app-server-protocol = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+russh = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

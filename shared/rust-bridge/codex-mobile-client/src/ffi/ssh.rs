@@ -444,6 +444,77 @@ impl SshBridge {
             .send(install)
             .map_err(|_| ClientError::EventClosed("install prompt already closed".to_string()))
     }
+
+    pub async fn ssh_connect_pi_mono(
+        &self,
+        server_id: String,
+        display_name: String,
+        host: String,
+        port: u16,
+        username: String,
+        password: Option<String>,
+        private_key_pem: Option<String>,
+        passphrase: Option<String>,
+        accept_unknown_host: bool,
+        working_dir: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
+    ) -> Result<String, ClientError> {
+        let normalized_host = normalize_ssh_host(&host);
+        let auth = ssh_auth(password, private_key_pem, passphrase)?;
+        info!(
+            "SshBridge: ssh_connect_pi_mono start server_id={} host={} normalized_host={} ssh_port={} username={} auth={} working_dir={} provider={} model={}",
+            server_id,
+            host.as_str(),
+            normalized_host.as_str(),
+            port,
+            username.as_str(),
+            ssh_auth_kind(&auth),
+            working_dir.as_deref().unwrap_or("<none>"),
+            provider.as_deref().unwrap_or("<none>"),
+            model.as_deref().unwrap_or("<none>"),
+        );
+        let credentials = SshCredentials {
+            host: normalized_host.clone(),
+            port,
+            username,
+            auth,
+        };
+        let config = ServerConfig {
+            server_id: server_id.clone(),
+            display_name,
+            host: normalized_host,
+            port: 0,
+            websocket_url: None,
+            is_local: false,
+            tls: false,
+        };
+
+        let mobile_client = shared_mobile_client();
+        let task_server_id = server_id.clone();
+        let (tx, rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let result = mobile_client
+                .connect_pi_mono_over_ssh(config, credentials, accept_unknown_host)
+                .await
+                .map_err(|e| ClientError::Transport(e.to_string()));
+            match &result {
+                Ok(sid) => info!(
+                    "SshBridge: ssh_connect_pi_mono completed server_id={}",
+                    sid
+                ),
+                Err(error) => warn!(
+                    "SshBridge: ssh_connect_pi_mono failed server_id={} error={}",
+                    task_server_id, error
+                ),
+            }
+            let _ = tx.send(result);
+        });
+
+        rx.await
+            .map_err(|_| ClientError::Rpc("pi-mono connect task cancelled".to_string()))?
+    }
 }
 
 fn ssh_auth_kind(auth: &SshAuth) -> &'static str {
