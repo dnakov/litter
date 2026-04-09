@@ -39,21 +39,15 @@ final class AppLifecycleController {
     }
 
     func reconnectSavedServers(appModel: AppModel) async {
-        let plans = SavedServerStore.rememberedServers().compactMap {
-            reconnectPlan(for: $0, appModel: appModel)
+        let servers = SavedServerStore.reconnectRecords(
+            localDisplayName: appModel.resolvedLocalServerDisplayName(),
+            rememberedOnly: true
+        )
+        appModel.reconnectController.syncSavedServers(servers: servers)
+        let results = await appModel.reconnectController.reconnectSavedServers()
+        for result in results where result.needsLocalAuthRestore {
+            await appModel.restoreStoredLocalChatGPTAuth(serverId: result.serverId)
         }
-
-        let tasks = plans.map { plan in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.runReconnectPlan(plan, appModel: appModel)
-            }
-        }
-
-        for task in tasks {
-            await task.value
-        }
-
         await appModel.refreshSnapshot()
     }
 
@@ -63,93 +57,15 @@ final class AppLifecycleController {
     }
 
     func reconnectServer(serverId: String, appModel: AppModel) async {
-        let snapshotServer = appModel.snapshot?.serverSnapshot(for: serverId)
-        if snapshotServer?.isLocal == true || serverId == "local" {
-            try? await appModel.restartLocalServer()
-            return
-        }
-
-        if let savedServer = SavedServerStore.load().first(where: { $0.id == serverId }),
-           let plan = reconnectPlan(
-            for: savedServer,
-            appModel: appModel,
-            skipIfAlreadyConnected: false
-           ) {
-            await SshSessionStore.shared.close(serverId: serverId, ssh: appModel.ssh)
-            appModel.serverBridge.disconnectServer(serverId: serverId)
-            await runReconnectPlan(plan, appModel: appModel)
-            await appModel.refreshSnapshot()
-            return
-        }
-
-        await SshSessionStore.shared.close(serverId: serverId, ssh: appModel.ssh)
-        appModel.serverBridge.disconnectServer(serverId: serverId)
-        if let snapshotServer {
-            _ = try? await appModel.serverBridge.connectRemoteServer(
-                serverId: snapshotServer.serverId,
-                displayName: snapshotServer.displayName,
-                host: snapshotServer.host,
-                port: snapshotServer.port
-            )
+        let servers = SavedServerStore.reconnectRecords(
+            localDisplayName: appModel.resolvedLocalServerDisplayName()
+        )
+        appModel.reconnectController.syncSavedServers(servers: servers)
+        let result = await appModel.reconnectController.reconnectServer(serverId: serverId)
+        if result.needsLocalAuthRestore {
+            await appModel.restoreStoredLocalChatGPTAuth(serverId: serverId)
         }
         await appModel.refreshSnapshot()
-    }
-
-    private func reconnectSSHServer(
-        appModel: AppModel,
-        serverId: String,
-        displayName: String,
-        host: String,
-        port: UInt16,
-        credentials: SSHCredentials
-    ) async throws {
-        let authMethod: String = switch credentials {
-        case .password:
-            "password"
-        case .key:
-            "private_key"
-        }
-        LLog.trace(
-            "lifecycle",
-            "reconnecting saved SSH server",
-            fields: [
-                "serverId": serverId,
-                "host": host,
-                "sshPort": Int(port),
-                "authMethod": authMethod
-            ]
-        )
-        let ipcSocketPathOverride = ExperimentalFeatures.shared.ipcSocketPathOverride()
-        switch credentials {
-        case .password(let username, let password):
-            _ = try await appModel.ssh.sshStartRemoteServerConnect(
-                serverId: serverId,
-                displayName: displayName,
-                host: host,
-                port: port,
-                username: username,
-                password: password,
-                privateKeyPem: nil,
-                passphrase: nil,
-                acceptUnknownHost: true,
-                workingDir: nil,
-                ipcSocketPathOverride: ipcSocketPathOverride
-            )
-        case .key(let username, let privateKey, let passphrase):
-            _ = try await appModel.ssh.sshStartRemoteServerConnect(
-                serverId: serverId,
-                displayName: displayName,
-                host: host,
-                port: port,
-                username: username,
-                password: nil,
-                privateKeyPem: privateKey,
-                passphrase: passphrase,
-                acceptUnknownHost: true,
-                workingDir: nil,
-                ipcSocketPathOverride: ipcSocketPathOverride
-            )
-        }
     }
 
     func appDidEnterBackground(
@@ -333,47 +249,6 @@ final class AppLifecycleController {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    private func reconnectActiveSSHServers(
-        appModel: AppModel,
-        serverIDs: Set<String>
-    ) async {
-        guard !serverIDs.isEmpty else { return }
-
-        let plans = SavedServerStore.rememberedServers().compactMap { savedServer -> SavedReconnectPlan? in
-            guard savedServer.preferredConnectionMode == .ssh,
-                  serverIDs.contains(savedServer.id) else {
-                return nil
-            }
-            let server = savedServer.toDiscoveredServer()
-            guard let credential = try? SSHCredentialStore.shared.load(
-                host: server.hostname,
-                port: Int(server.resolvedSSHPort)
-            ) else {
-                return nil
-            }
-            return .ssh(
-                serverId: server.id,
-                displayName: server.name,
-                host: server.hostname,
-                port: server.resolvedSSHPort,
-                credentials: credential.toConnectionCredential()
-            )
-        }
-
-        let tasks = plans.map { plan in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.runReconnectPlan(plan, appModel: appModel)
-            }
-        }
-
-        for task in tasks {
-            await task.value
-        }
-
-        await appModel.refreshSnapshot()
-    }
-
     func reconcileBackgroundedTurns(
         snapshot: AppSnapshotRecord,
         trackedKeys: Set<ThreadKey>,
@@ -451,151 +326,6 @@ final class AppLifecycleController {
         return keys
     }
 
-    private func reconnectPlan(
-        for savedServer: SavedServer,
-        appModel: AppModel,
-        skipIfAlreadyConnected: Bool = true
-    ) -> SavedReconnectPlan? {
-        let server = savedServer.toDiscoveredServer()
-        if skipIfAlreadyConnected,
-           let snapshot = appModel.snapshot?.serverSnapshot(for: server.id),
-           snapshot.health != .disconnected {
-            return nil
-        }
-
-        do {
-            if savedServer.preferredConnectionMode == .ssh {
-                guard let credential = try SSHCredentialStore.shared.load(
-                    host: server.hostname,
-                    port: Int(server.resolvedSSHPort)
-                ) else {
-                    return nil
-                }
-                return .ssh(
-                    serverId: server.id,
-                    displayName: server.name,
-                    host: server.hostname,
-                    port: server.resolvedSSHPort,
-                    credentials: credential.toConnectionCredential()
-                )
-            } else if let target = server.connectionTarget {
-                switch target {
-                case .local:
-                    return .local(
-                        serverId: server.id,
-                        displayName: server.name,
-                        restoreLocalAuth: true
-                    )
-                case .remote(let host, let port):
-                    return .remote(
-                        serverId: server.id,
-                        displayName: server.name,
-                        host: host,
-                        port: port
-                    )
-                case .remoteURL(let url):
-                    return .remoteURL(
-                        serverId: server.id,
-                        displayName: server.name,
-                        websocketUrl: url.absoluteString
-                    )
-                case .sshThenRemote(let host, let credentials):
-                    return .ssh(
-                        serverId: server.id,
-                        displayName: server.name,
-                        host: host,
-                        port: server.resolvedSSHPort,
-                        credentials: credentials
-                    )
-                }
-            } else if savedServer.preferredConnectionMode == nil,
-                      let credential = try SSHCredentialStore.shared.load(
-                host: server.hostname,
-                port: Int(server.resolvedSSHPort)
-            ) {
-                return .ssh(
-                    serverId: server.id,
-                    displayName: server.name,
-                    host: server.hostname,
-                    port: server.resolvedSSHPort,
-                    credentials: credential.toConnectionCredential()
-                )
-            }
-        } catch {
-            return nil
-        }
-
-        return nil
-    }
-
-    private func runReconnectPlan(
-        _ plan: SavedReconnectPlan,
-        appModel: AppModel
-    ) async {
-        do {
-            switch plan {
-            case .ssh(let serverId, let displayName, let host, let port, let credentials):
-                try await reconnectSSHServer(
-                    appModel: appModel,
-                    serverId: serverId,
-                    displayName: displayName,
-                    host: host,
-                    port: port,
-                    credentials: credentials
-                )
-            case .local(let serverId, let displayName, let restoreLocalAuth):
-                _ = try await appModel.serverBridge.connectLocalServer(
-                    serverId: serverId,
-                    displayName: displayName,
-                    host: "127.0.0.1",
-                    port: 0
-                )
-                if restoreLocalAuth {
-                    await appModel.restoreStoredLocalChatGPTAuth(serverId: serverId)
-                }
-            case .remote(let serverId, let displayName, let host, let port):
-                _ = try await appModel.serverBridge.connectRemoteServer(
-                    serverId: serverId,
-                    displayName: displayName,
-                    host: host,
-                    port: port
-                )
-            case .remoteURL(let serverId, let displayName, let websocketUrl):
-                _ = try await appModel.serverBridge.connectRemoteUrlServer(
-                    serverId: serverId,
-                    displayName: displayName,
-                    websocketUrl: websocketUrl
-                )
-            }
-        } catch {}
-    }
-
-    private enum SavedReconnectPlan {
-        case ssh(
-            serverId: String,
-            displayName: String,
-            host: String,
-            port: UInt16,
-            credentials: SSHCredentials
-        )
-        case local(
-            serverId: String,
-            displayName: String,
-            restoreLocalAuth: Bool
-        )
-        case remote(
-            serverId: String,
-            displayName: String,
-            host: String,
-            port: UInt16
-        )
-        case remoteURL(
-            serverId: String,
-            displayName: String,
-            websocketUrl: String
-        )
-    }
-
     private func performForegroundRecovery(
         appModel: AppModel,
         liveActivities: TurnLiveActivityController,
@@ -615,9 +345,17 @@ final class AppLifecycleController {
             ]
         )
         // Always attempt to reconnect saved servers on foreground return.
-        // reconnectSavedServers skips servers whose health != .disconnected,
+        // The ReconnectController skips servers whose health != .disconnected,
         // so this is cheap when everything is still connected.
-        await reconnectSavedServers(appModel: appModel)
+        let servers = SavedServerStore.reconnectRecords(
+            localDisplayName: appModel.resolvedLocalServerDisplayName(),
+            rememberedOnly: true
+        )
+        appModel.reconnectController.syncSavedServers(servers: servers)
+        let results = await appModel.reconnectController.onAppBecameActive()
+        for result in results where result.needsLocalAuthRestore {
+            await appModel.restoreStoredLocalChatGPTAuth(serverId: result.serverId)
+        }
         guard !Task.isCancelled else { return }
 
         let trustedLiveKeys = Set(keysToRefresh.filter {

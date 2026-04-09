@@ -6,6 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.codex_mobile_client.AppDiscoveredServer
 import uniffi.codex_mobile_client.AppDiscoverySource
+import uniffi.codex_mobile_client.SavedServerRecord
 
 /**
  * Persistent server list stored in SharedPreferences.
@@ -215,6 +216,23 @@ data class SavedServer(
         )
     }
 }
+
+fun SavedServer.toRecord() = SavedServerRecord(
+    id = id,
+    name = name,
+    hostname = hostname,
+    port = port.toUShort(),
+    codexPorts = codexPorts.map { it.toUShort() },
+    sshPort = sshPort?.toUShort(),
+    source = source,
+    hasCodexServer = hasCodexServer,
+    wakeMac = wakeMAC,
+    preferredConnectionMode = preferredConnectionMode,
+    preferredCodexPort = preferredCodexPort?.toUShort(),
+    sshPortForwardingEnabled = sshPortForwardingEnabled,
+    websocketUrl = websocketURL,
+    rememberedByUser = rememberedByUser,
+)
 
 object SavedServerStore {
     private const val PREFS_NAME = "codex_saved_servers_prefs"

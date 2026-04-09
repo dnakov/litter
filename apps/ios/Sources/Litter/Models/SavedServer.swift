@@ -145,4 +145,23 @@ struct SavedServer: Codable, Identifiable, Equatable {
     private var migratedPreferredConnectionMode: PreferredConnectionMode? {
         preferredConnectionMode ?? (sshPortForwardingEnabled == true ? .ssh : nil)
     }
+
+    func toRecord() -> SavedServerRecord {
+        SavedServerRecord(
+            id: id,
+            name: name,
+            hostname: hostname,
+            port: port ?? 0,
+            codexPorts: codexPorts,
+            sshPort: sshPort,
+            source: source.rawValue,
+            hasCodexServer: hasCodexServer,
+            wakeMac: wakeMAC,
+            preferredConnectionMode: preferredConnectionMode?.rawValue,
+            preferredCodexPort: preferredCodexPort,
+            sshPortForwardingEnabled: sshPortForwardingEnabled,
+            websocketUrl: websocketURL,
+            rememberedByUser: rememberedByUser
+        )
+    }
 }

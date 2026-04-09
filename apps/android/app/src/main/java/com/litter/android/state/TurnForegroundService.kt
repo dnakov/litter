@@ -65,7 +65,7 @@ class TurnForegroundService : Service() {
 
         monitorJob?.cancel()
         monitorJob = scope.launch {
-            lifecycleController.onResume(this@TurnForegroundService, appModel)
+            lifecycleController.onBackgroundServiceStart(this@TurnForegroundService, appModel)
             while (true) {
                 delay(2000)
                 val snap = appModel.snapshot.value

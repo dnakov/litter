@@ -3,7 +3,6 @@
 use crate::MobileClient;
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
-use crate::store::snapshot::AppLifecyclePhaseSnapshot;
 use crate::store::{AppSnapshotRecord, AppStoreUpdateRecord, AppThreadSnapshot};
 use crate::types::{AppForkThreadFromMessageRequest, AppModeKind, AppStartTurnRequest, ThreadKey};
 use std::collections::VecDeque;
@@ -210,24 +209,6 @@ impl AppStore {
             .map_err(ClientError::Serialization)
     }
 
-    pub fn note_app_became_active(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Active);
-    }
-
-    pub fn note_app_became_inactive(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Inactive);
-    }
-
-    pub fn note_app_entered_background(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Background);
-    }
-
     pub async fn start_turn(
         &self,
         key: ThreadKey,
@@ -372,6 +353,10 @@ impl AppStore {
 
     pub fn set_active_thread(&self, key: Option<ThreadKey>) {
         self.inner.set_active_thread(key);
+    }
+
+    pub fn rename_server(&self, server_id: String, display_name: String) {
+        self.inner.app_store.rename_server(&server_id, display_name);
     }
 
     pub fn set_voice_handoff_thread(&self, key: Option<ThreadKey>) {

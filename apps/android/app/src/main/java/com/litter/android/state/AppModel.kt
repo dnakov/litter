@@ -27,6 +27,7 @@ import uniffi.codex_mobile_client.HydratedConversationItem
 import uniffi.codex_mobile_client.HydratedConversationItemContent
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.MessageParser
+import uniffi.codex_mobile_client.ReconnectController
 import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
 import uniffi.codex_mobile_client.ThreadKey
@@ -73,6 +74,7 @@ class AppModel private constructor(context: android.content.Context) {
     val ssh: SshBridge
     val sshSessionStore: SshSessionStore
     val parser: MessageParser
+    val reconnectController: ReconnectController
     val launchState: AppLaunchState
     val appContext: android.content.Context = context
     init {
@@ -85,6 +87,13 @@ class AppModel private constructor(context: android.content.Context) {
         ssh = SshBridge()
         sshSessionStore = SshSessionStore(ssh)
         parser = MessageParser()
+        reconnectController = ReconnectController()
+        reconnectController.setCredentialProvider(
+            KotlinSshCredentialProvider(SshCredentialStore(context))
+        )
+        reconnectController.setIpcSocketPathOverride(
+            com.litter.android.ui.ExperimentalFeatures.ipcSocketPathOverride()
+        )
         launchState = AppLaunchState(context)
     }
 

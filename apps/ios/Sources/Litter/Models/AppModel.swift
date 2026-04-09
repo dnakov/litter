@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 @MainActor
 @Observable
@@ -39,6 +40,7 @@ final class AppModel {
         let discovery: DiscoveryBridge
         let serverBridge: ServerBridge
         let ssh: SshBridge
+        let reconnectController: ReconnectController
     }
 
     /// Kick off Rust bridge construction on a background thread.
@@ -48,12 +50,16 @@ final class AppModel {
     }
 
     private nonisolated static let _prewarmResult: RustBridges = {
-        RustBridges(
+        let rc = ReconnectController()
+        rc.setCredentialProvider(provider: SwiftSshCredentialProvider())
+        rc.setIpcSocketPathOverride(path: ExperimentalFeatures.shared.ipcSocketPathOverride())
+        return RustBridges(
             store: AppStore(),
             client: AppClient(),
             discovery: DiscoveryBridge(),
             serverBridge: ServerBridge(),
-            ssh: SshBridge()
+            ssh: SshBridge(),
+            reconnectController: rc
         )
     }()
 
@@ -70,6 +76,7 @@ final class AppModel {
     let discovery: DiscoveryBridge
     let serverBridge: ServerBridge
     let ssh: SshBridge
+    let reconnectController: ReconnectController
 
     private(set) var snapshot: AppSnapshotRecord? {
         didSet {
@@ -104,7 +111,8 @@ final class AppModel {
         client: AppClient? = nil,
         discovery: DiscoveryBridge? = nil,
         serverBridge: ServerBridge? = nil,
-        ssh: SshBridge? = nil
+        ssh: SshBridge? = nil,
+        reconnectController: ReconnectController? = nil
     ) {
         let bridges = Self._prewarmResult
         self.store = store ?? bridges.store
@@ -112,6 +120,7 @@ final class AppModel {
         self.discovery = discovery ?? bridges.discovery
         self.serverBridge = serverBridge ?? bridges.serverBridge
         self.ssh = ssh ?? bridges.ssh
+        self.reconnectController = reconnectController ?? bridges.reconnectController
     }
 
     deinit {
@@ -212,17 +221,15 @@ final class AppModel {
         cwdOverride: String?
     ) async throws -> ThreadKey {
         let trimmedCwdOverride = cwdOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresResumeOverrides = requiresResumeOverrides(
+            for: key,
+            launchConfig: launchConfig,
+            cwdOverride: trimmedCwdOverride
+        )
         let requiresDistinctCwdOverride = requiresResumeCwdOverride(
             for: key,
             cwdOverride: trimmedCwdOverride
         )
-        let requiresResumeOverrides =
-            launchConfig.model != nil ||
-            launchConfig.approvalPolicy != nil ||
-            launchConfig.sandbox != nil ||
-            !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) ||
-            requiresDistinctCwdOverride ||
-            !launchConfig.persistExtendedHistory
 
         if requiresResumeOverrides {
             return try await client.resumeThread(
@@ -245,17 +252,15 @@ final class AppModel {
         cwdOverride: String?
     ) async throws -> ThreadKey {
         let trimmedCwdOverride = cwdOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresResumeOverrides = requiresResumeOverrides(
+            for: key,
+            launchConfig: launchConfig,
+            cwdOverride: trimmedCwdOverride
+        )
         let requiresDistinctCwdOverride = requiresResumeCwdOverride(
             for: key,
             cwdOverride: trimmedCwdOverride
         )
-        let requiresResumeOverrides =
-            launchConfig.model != nil ||
-            launchConfig.approvalPolicy != nil ||
-            launchConfig.sandbox != nil ||
-            !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) ||
-            requiresDistinctCwdOverride ||
-            !launchConfig.persistExtendedHistory
 
         if requiresResumeOverrides {
             return try await client.resumeThread(
@@ -290,10 +295,72 @@ final class AppModel {
         return existingCwd != normalizedOverride
     }
 
+    private func requiresResumeOverrides(
+        for key: ThreadKey,
+        launchConfig: AppThreadLaunchConfig,
+        cwdOverride: String?
+    ) -> Bool {
+        if !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return true
+        }
+        if !launchConfig.persistExtendedHistory {
+            return true
+        }
+        if requiresResumeCwdOverride(for: key, cwdOverride: cwdOverride) {
+            return true
+        }
+
+        guard let existingThread = threadSnapshot(for: key) else {
+            let existingModel = snapshot?.sessionSummary(for: key)?.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let requestedModel = launchConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let requestedModel, !requestedModel.isEmpty, requestedModel != existingModel {
+                return true
+            }
+            return launchConfig.approvalPolicy != nil
+                || launchConfig.sandbox != nil
+        }
+
+        let requestedModel = launchConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingModel = (existingThread.model ?? existingThread.info.model)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let requestedModel, !requestedModel.isEmpty, requestedModel != existingModel {
+            return true
+        }
+        if let requestedApproval = launchConfig.approvalPolicy,
+           requestedApproval != existingThread.effectiveApprovalPolicy {
+            return true
+        }
+        if let requestedSandbox = launchConfig.sandbox,
+           requestedSandbox != existingThread.effectiveSandboxPolicy?.launchOverrideMode {
+            return true
+        }
+        return false
+    }
+
+    func resolvedLocalServerDisplayName() -> String {
+        let connectedLocalName = snapshot?.servers
+            .first(where: \.isLocal)
+            .flatMap { $0.displayName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        if let connectedLocalName, !connectedLocalName.isEmpty, connectedLocalName != "This Device" {
+            return connectedLocalName
+        }
+
+        let savedLocalName = SavedServerStore.load()
+            .first(where: { $0.id == "local" || $0.source == .local })
+            .flatMap { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        if let savedLocalName, !savedLocalName.isEmpty, savedLocalName != "This Device" {
+            return savedLocalName
+        }
+
+        return UIDevice.current.name
+    }
+
     func restartLocalServer() async throws {
         let currentLocal = snapshot?.servers.first(where: \.isLocal)
         let serverId = currentLocal?.serverId ?? "local"
-        let displayName = currentLocal?.displayName ?? "This Device"
+        let displayName = resolvedLocalServerDisplayName()
         serverBridge.disconnectServer(serverId: serverId)
         _ = try await serverBridge.connectLocalServer(
             serverId: serverId,
@@ -325,7 +392,8 @@ final class AppModel {
     }
 
     func applySnapshot(_ snapshot: AppSnapshotRecord?) {
-        let mergedSnapshot = snapshot.map(mergingCachedThreadSnapshots)
+        let normalizedSnapshot = snapshot.map(normalizingLocalServerDisplayNames)
+        let mergedSnapshot = normalizedSnapshot.map(mergingCachedThreadSnapshots)
         self.snapshot = mergedSnapshot
         if let mergedSnapshot {
             persistWakeMACs(from: mergedSnapshot.servers)
@@ -342,6 +410,19 @@ final class AppModel {
                 wakeMAC: server.wakeMac
             )
         }
+    }
+
+    private func normalizingLocalServerDisplayNames(_ snapshot: AppSnapshotRecord) -> AppSnapshotRecord {
+        var snapshot = snapshot
+        let fallbackName = UIDevice.current.name
+        for index in snapshot.servers.indices {
+            guard snapshot.servers[index].isLocal else { continue }
+            let displayName = snapshot.servers[index].displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if displayName.isEmpty || displayName == "This Device" {
+                snapshot.servers[index].displayName = fallbackName
+            }
+        }
+        return snapshot
     }
 
     private func handleStoreUpdate(_ update: AppStoreUpdateRecord) async {
@@ -983,16 +1064,11 @@ final class AppModel {
         }
 
         do {
-            let nextKey = try await client.resumeThread(
+            let nextKey = try await client.readThread(
                 serverId: key.serverId,
-                params: AppResumeThreadRequest(
+                params: AppReadThreadRequest(
                     threadId: key.threadId,
-                    model: nil,
-                    cwd: nil,
-                    approvalPolicy: nil,
-                    sandbox: nil,
-                    developerInstructions: nil,
-                    persistExtendedHistory: true
+                    includeTurns: true
                 )
             )
             if let threadSnapshot = try await store.threadSnapshot(key: nextKey) {

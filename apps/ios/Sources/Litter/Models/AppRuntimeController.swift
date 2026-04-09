@@ -83,7 +83,7 @@ final class AppRuntimeController {
 
     func appDidEnterBackground() {
         guard let appModel else { return }
-        appModel.store.noteAppEnteredBackground()
+        appModel.reconnectController.onAppEnteredBackground()
         lifecycle.appDidEnterBackground(
             snapshot: appModel.snapshot,
             hasActiveVoiceSession: voiceRuntime?.activeVoiceSession != nil,
@@ -93,12 +93,14 @@ final class AppRuntimeController {
 
     func appDidBecomeInactive() {
         guard let appModel else { return }
-        appModel.store.noteAppBecameInactive()
+        appModel.reconnectController.onAppBecameInactive()
     }
 
     func appDidBecomeActive() {
         guard let appModel else { return }
-        appModel.store.noteAppBecameActive()
+        // Keep lifecycle state in sync even when foreground recovery exits early
+        // for an already-running voice session.
+        appModel.reconnectController.noteAppBecameActive()
         lifecycle.appDidBecomeActive(
             appModel: appModel,
             hasActiveVoiceSession: voiceRuntime?.activeVoiceSession != nil,
