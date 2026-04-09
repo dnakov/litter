@@ -1,19 +1,43 @@
 import SwiftUI
 
 struct RealtimeVoiceScreen: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(AppModel.self) private var appModel
     @Environment(VoiceRuntimeController.self) private var voiceRuntime
     let threadKey: ThreadKey
     let onEnd: () -> Void
     let onToggleSpeaker: () -> Void
 
-    @State private var glowPalette: GlowPalette = .fromCurrentTheme()
     @State private var apiKey = ""
     @State private var isSavingApiKey = false
     @State private var hasCheckedAuth = false
     @State private var hasStoredApiKey = OpenAIApiKeyStore.shared.hasStoredKey
     @State private var apiKeyError: String?
     @State private var isRetryingAfterAuthSave = false
+
+    private var glowPalette: GlowPalette {
+        .from(colorScheme: colorScheme)
+    }
+
+    private var primaryTextColor: Color {
+        LitterTheme.textPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        LitterTheme.textSecondary
+    }
+
+    private var promptFillColor: Color {
+        LitterTheme.surface.opacity(colorScheme == .dark ? 0.82 : 0.92)
+    }
+
+    private var promptStrokeColor: Color {
+        LitterTheme.border.opacity(colorScheme == .dark ? 0.55 : 0.8)
+    }
+
+    private var controlFillColor: Color {
+        LitterTheme.surfaceLight.opacity(colorScheme == .dark ? 0.72 : 0.88)
+    }
     private var session: VoiceSessionState? {
         guard let session = voiceRuntime.activeVoiceSession,
               session.threadKey == threadKey else { return nil }
@@ -251,7 +275,7 @@ struct RealtimeVoiceScreen: View {
 
         return Text(entry.text)
             .font(LitterFont.styled(textStyle, weight: fontWeight))
-            .foregroundColor(.white.opacity(opacity))
+            .foregroundColor(primaryTextColor.opacity(opacity))
             .multilineTextAlignment(.center)
             .lineSpacing(isUser ? 4 : 6)
             .fixedSize(horizontal: false, vertical: true)
@@ -266,13 +290,15 @@ struct RealtimeVoiceScreen: View {
                         Image(systemName: session.route.iconName)
                             .font(.system(size: 20, weight: .medium))
                             .frame(width: 52, height: 52)
-                            .background(Color.white.opacity(0.1))
+                            .background(controlFillColor)
                             .clipShape(Circle())
 
                         Text(session.route.label)
                             .font(LitterFont.monospaced(.caption2, weight: .medium))
                     }
-                    .foregroundColor(session.route.supportsSpeakerToggle ? .white : .white.opacity(0.4))
+                    .foregroundColor(
+                        session.route.supportsSpeakerToggle ? primaryTextColor : secondaryTextColor.opacity(0.6)
+                    )
                 }
                 .buttonStyle(.plain)
                 .disabled(!session.route.supportsSpeakerToggle)
@@ -281,9 +307,9 @@ struct RealtimeVoiceScreen: View {
             Button(action: onEnd) {
                 Image(systemName: "xmark")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(LitterTheme.textOnAccent)
                     .frame(width: 64, height: 64)
-                    .background(Color(hex: "#FF5555"))
+                    .background(LitterTheme.danger)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -294,31 +320,31 @@ struct RealtimeVoiceScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Realtime needs an API key")
                 .font(LitterFont.styled(.headline, weight: .semibold))
-                .foregroundColor(.white)
+                .foregroundColor(primaryTextColor)
 
             Text("Enter your OpenAI API key for this device. Litter will store it in the local Codex environment as OPENAI_API_KEY.")
                 .font(LitterFont.styled(.caption))
-                .foregroundColor(.white.opacity(0.78))
+                .foregroundColor(secondaryTextColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             SecureField("sk-...", text: $apiKey)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(LitterFont.monospaced(.body))
-                .foregroundColor(.white)
+                .foregroundColor(primaryTextColor)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
-                .background(Color.white.opacity(0.08))
+                .background(controlFillColor)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        .stroke(promptStrokeColor.opacity(1.75), lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 
             if let apiKeyError, !apiKeyError.isEmpty {
                 Text(apiKeyError)
                     .font(LitterFont.styled(.caption))
-                    .foregroundColor(Color(hex: "#FF8A8A"))
+                    .foregroundColor(LitterTheme.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -326,10 +352,10 @@ struct RealtimeVoiceScreen: View {
         }
         .padding(18)
         .frame(maxWidth: 420)
-        .background(Color.black.opacity(0.34))
+        .background(promptFillColor)
         .overlay(
             RoundedRectangle(cornerRadius: 24)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(promptStrokeColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 24))
     }
@@ -407,11 +433,11 @@ struct RealtimeVoiceScreen: View {
             apiKeySaveButtonLabel
                 .background(
                     RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.white.opacity(0.12))
+                        .fill(controlFillColor)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        .stroke(promptStrokeColor, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -423,13 +449,13 @@ struct RealtimeVoiceScreen: View {
         HStack(spacing: 10) {
             if isSavingApiKey {
                 ProgressView()
-                    .tint(.white)
+                    .tint(primaryTextColor)
                     .scaleEffect(0.85)
             }
             Text(isSavingApiKey ? "Saving…" : "Save API Key")
                 .font(LitterFont.styled(.subheadline, weight: .semibold))
         }
-        .foregroundColor(.white)
+        .foregroundColor(primaryTextColor)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
     }
@@ -443,7 +469,7 @@ struct RealtimeVoiceScreen: View {
         case .speaking, .thinking, .handoff:
             return Color(hex: glowPalette.warning)
         case .error:
-            return Color(hex: "#FF5555")
+            return LitterTheme.danger
         }
     }
 }
@@ -456,9 +482,8 @@ struct GlowPalette: Equatable {
     let success: String
     let danger: String
 
-    static func fromCurrentTheme() -> GlowPalette {
-        let isDark = UITraitCollection.current.userInterfaceStyle == .dark
-        let theme = isDark ? ThemeStore.shared.dark : ThemeStore.shared.light
+    static func from(colorScheme: ColorScheme) -> GlowPalette {
+        let theme = colorScheme == .dark ? ThemeStore.shared.dark : ThemeStore.shared.light
         return GlowPalette(
             background: theme.background,
             accent: theme.accent,
