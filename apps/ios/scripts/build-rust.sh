@@ -112,6 +112,20 @@ export CXX_aarch64_apple_ios="$IOS_CLANGXX_WRAPPER"
 export CXX_aarch64_apple_ios_sim="$IOS_CLANGXX_WRAPPER"
 export IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
 
+ios_sdk_path() {
+  xcrun --sdk "$1" --show-sdk-path
+}
+
+IOS_DEVICE_SDK_PATH="$(ios_sdk_path iphoneos)"
+IOS_SIM_SDK_PATH="$(ios_sdk_path iphonesimulator)"
+
+# bindgen does not inherit the Meson/cc target sysroot flags above. Without
+# target-specific clang args it can pick Homebrew LLVM libc++ headers while
+# parsing iOS C++ headers, which produces bogus stdlib/math errors.
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="${BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios:-"--target=arm64-apple-ios -isysroot $IOS_DEVICE_SDK_PATH -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET -stdlib=libc++"}"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="${BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim:-"--target=arm64-apple-ios-simulator -isysroot $IOS_SIM_SDK_PATH -mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET -stdlib=libc++"}"
+export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios="${BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_ios:-"--target=x86_64-apple-ios-simulator -isysroot $IOS_SIM_SDK_PATH -mios-simulator-version-min=$IOS_DEPLOYMENT_TARGET -stdlib=libc++"}"
+
 bindings_inputs() {
   cat <<EOF
 $RUST_BRIDGE_DIR/codex-mobile-client/src/lib.rs
