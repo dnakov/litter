@@ -1070,7 +1070,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
     // Private helpers
     // --------------------------------------------------------------------
 
-    /// Locate the `codex` (or `codex-app-server`) binary on the remote host.
+    /// Locate the `codex` binary on the remote host.
     pub(crate) async fn resolve_codex_binary_optional(
         &self,
     ) -> Result<Option<RemoteCodexBinary>, SshError> {
@@ -1112,14 +1112,6 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             );
             return Ok(Some(RemoteCodexBinary::Codex(path.to_string())));
         }
-        if let Some(path) = raw.strip_prefix("app-server:") {
-            info!(
-                "ssh resolve codex binary found selector=app-server shell={} path={}",
-                remote_shell_name(shell),
-                path
-            );
-            return Ok(Some(RemoteCodexBinary::AppServer(path.to_string())));
-        }
         warn!(
             "ssh resolve codex binary unexpected selector shell={} raw={}",
             remote_shell_name(shell),
@@ -1139,10 +1131,10 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                 Err(SshError::ExecFailed {
                     exit_code: 1,
                     stderr: if diagnostics.is_empty() {
-                        "codex/codex-app-server not found on remote host".into()
+                        "codex not found on remote host".into()
                     } else {
                         format!(
-                            "codex/codex-app-server not found on remote host\nresolver diagnostics:\n{}",
+                            "codex not found on remote host\nresolver diagnostics:\n{}",
                             diagnostics
                         )
                     },
@@ -1167,9 +1159,6 @@ printf 'pwd='; pwd 2>/dev/null || true
 printf 'command -v codex='
 command -v codex 2>/dev/null || printf '<missing>'
 printf '\n'
-printf 'command -v codex-app-server='
-command -v codex-app-server 2>/dev/null || printf '<missing>'
-printf '\n'
 for candidate in \
   "$HOME/.litter/bin/codex" \
   "$HOME/.litter/codex/node_modules/.bin/codex" \
@@ -1182,12 +1171,7 @@ for candidate in \
   "${{_litter_npm_global_bin:-}}/codex" \
   "${{_litter_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
-  "/usr/local/bin/codex" \
-  "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex-app-server" \
-  "${{_litter_npm_global_bin:-}}/codex-app-server" \
-  "${{_litter_pnpm_global_bin:-}}/codex-app-server" \
-  "/opt/homebrew/bin/codex-app-server" \
-  "/usr/local/bin/codex-app-server"
+  "/usr/local/bin/codex" 
 do
   if [ -e "$candidate" ]; then
     if [ -x "$candidate" ]; then
@@ -1849,15 +1833,9 @@ _litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
 _litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
 _litter_emit_candidate codex "/opt/homebrew/bin/codex"
 _litter_emit_candidate codex "/usr/local/bin/codex"
-_litter_emit_candidate app-server "$(command -v codex-app-server 2>/dev/null || true)"
-_litter_emit_from_dir app-server codex-app-server "${{CARGO_HOME:-$HOME/.cargo}}/bin"
-_litter_emit_candidate app-server "/opt/homebrew/bin/codex-app-server"
-_litter_emit_candidate app-server "/usr/local/bin/codex-app-server"
 {pkg_probe}
 _litter_emit_from_dir codex codex "$_litter_npm_global_bin"
-_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin"
-_litter_emit_from_dir app-server codex-app-server "$_litter_npm_global_bin"
-_litter_emit_from_dir app-server codex-app-server "$_litter_pnpm_global_bin""#,
+_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
         pkg_probe = PACKAGE_MANAGER_PROBE
     )
@@ -1869,22 +1847,19 @@ if (Test-Path $litterBin) { Write-Output "codex:$litterBin"; exit 0 }
 $litterNpm = Join-Path $env:USERPROFILE '.litter\codex\node_modules\.bin\codex.cmd'
 if (Test-Path $litterNpm) { Write-Output "codex:$litterNpm"; exit 0 }
 $found = Get-Command codex -ErrorAction SilentlyContinue
-if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }
-$found = Get-Command codex-app-server -ErrorAction SilentlyContinue
-if ($found) { Write-Output "app-server:$($found.Source)"; exit 0 }"#
+if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }"#
         .to_string()
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum RemoteCodexBinary {
     Codex(String),
-    AppServer(String),
 }
 
 impl RemoteCodexBinary {
     pub(crate) fn path(&self) -> &str {
         match self {
-            Self::Codex(path) | Self::AppServer(path) => path,
+            Self::Codex(path) => path,
         }
     }
 }
@@ -1896,7 +1871,6 @@ fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (
             ps_quote("--listen"),
             ps_quote(listen_url),
         ],
-        RemoteCodexBinary::AppServer(_) => vec![ps_quote("--listen"), ps_quote(listen_url)],
     };
 
     if is_windows_cmd_script(binary.path()) {
@@ -1907,9 +1881,6 @@ fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (
                     cmd_quote(path),
                     listen_url
                 )
-            }
-            RemoteCodexBinary::AppServer(path) => {
-                format!(r#""{}" --listen {}"#, cmd_quote(path), listen_url)
             }
         };
         (
@@ -1933,9 +1904,6 @@ fn server_launch_command(
                 shell_quote(path),
                 shell_quote(listen_url)
             ),
-            RemoteCodexBinary::AppServer(path) => {
-                format!("{} --listen {}", shell_quote(path), shell_quote(listen_url))
-            }
         },
         RemoteShell::PowerShell => match binary {
             RemoteCodexBinary::Codex(path) => format!(
@@ -1943,9 +1911,6 @@ fn server_launch_command(
                 ps_quote(path),
                 ps_quote(listen_url)
             ),
-            RemoteCodexBinary::AppServer(path) => {
-                format!("{} --listen {}", ps_quote(path), ps_quote(listen_url))
-            }
         },
     }
 }
@@ -2159,19 +2124,6 @@ mod tests {
     }
 
     #[test]
-    fn test_server_launch_command_for_codex_app_server() {
-        let command = server_launch_command(
-            &RemoteCodexBinary::AppServer("/usr/local/bin/codex-app-server".into()),
-            "ws://[::]:8390",
-            RemoteShell::Posix,
-        );
-        assert_eq!(
-            command,
-            "'/usr/local/bin/codex-app-server' --listen 'ws://[::]:8390'"
-        );
-    }
-
-    #[test]
     fn test_windows_start_process_spec_for_cmd_shim() {
         let (file_path, argument_list) = windows_start_process_spec(
             &RemoteCodexBinary::Codex(r#"C:\Users\me\AppData\Roaming\npm\codex.cmd"#.into()),
@@ -2187,14 +2139,14 @@ mod tests {
     #[test]
     fn test_windows_start_process_spec_for_exe() {
         let (file_path, argument_list) = windows_start_process_spec(
-            &RemoteCodexBinary::AppServer(r#"C:\Program Files\Codex\codex-app-server.exe"#.into()),
+            &RemoteCodexBinary::Codex(r#"C:\Program Files\Codex\codex.exe"#.into()),
             "ws://127.0.0.1:8390",
         );
+        assert_eq!(file_path, r#"'C:\Program Files\Codex\codex.exe'"#);
         assert_eq!(
-            file_path,
-            r#"'C:\Program Files\Codex\codex-app-server.exe'"#
+            argument_list,
+            "@('app-server', '--listen', 'ws://127.0.0.1:8390')"
         );
-        assert_eq!(argument_list, "@('--listen', 'ws://127.0.0.1:8390')");
     }
 
     #[test]
@@ -2328,10 +2280,7 @@ mod tests {
             script.find("command -v codex 2>/dev/null || true")
                 < script.find("pnpm bin -g").unwrap()
         );
-        assert!(
-            script.find("command -v codex-app-server 2>/dev/null || true")
-                < script.find("pnpm bin -g").unwrap()
-        );
+        assert!(!script.contains("codex-app-server"));
     }
 
     #[test]
