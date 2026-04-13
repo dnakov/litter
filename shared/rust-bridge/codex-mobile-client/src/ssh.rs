@@ -1154,8 +1154,14 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
     async fn fetch_codex_resolver_diagnostics(&self) -> String {
         let script = format!(
             r#"{profile_init}
+{pkg_probe}
 printf 'shell=%s\n' "${{SHELL:-}}"
 printf 'path=%s\n' "${{PATH:-}}"
+printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
+printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
+printf 'npm_prefix=%s\n' "$_litter_npm_prefix"
+printf 'pnpm_global_bin=%s\n' "$_litter_pnpm_global_bin"
+printf 'npm_global_bin=%s\n' "$_litter_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
 printf 'pwd='; pwd 2>/dev/null || true
 printf 'command -v codex='
@@ -1166,12 +1172,20 @@ command -v codex-app-server 2>/dev/null || printf '<missing>'
 printf '\n'
 for candidate in \
   "$HOME/.litter/bin/codex" \
+  "$HOME/.litter/codex/node_modules/.bin/codex" \
   "$HOME/.volta/bin/codex" \
-  "$HOME/.cargo/bin/codex" \
   "$HOME/.local/bin/codex" \
+  "${{PNPM_HOME:-}}/codex" \
+  "${{NVM_BIN:-}}/codex" \
+  "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
+  "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
+  "${{_litter_npm_global_bin:-}}/codex" \
+  "${{_litter_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
   "/usr/local/bin/codex" \
-  "$HOME/.cargo/bin/codex-app-server" \
+  "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex-app-server" \
+  "${{_litter_npm_global_bin:-}}/codex-app-server" \
+  "${{_litter_pnpm_global_bin:-}}/codex-app-server" \
   "/opt/homebrew/bin/codex-app-server" \
   "/usr/local/bin/codex-app-server"
 do
@@ -1183,7 +1197,8 @@ do
     fi
   fi
 done"#,
-            profile_init = PROFILE_INIT
+            profile_init = PROFILE_INIT,
+            pkg_probe = PACKAGE_MANAGER_PROBE
         );
 
         match self.exec_posix(&script).await {
@@ -1778,47 +1793,73 @@ async fn proxy_connection(
 // ---------------------------------------------------------------------------
 
 /// Shell snippet that sources common profile files to pick up PATH additions.
-/// Runs each file in a subshell so zsh-specific syntax (plugins, eval
-/// `starship init zsh`, etc.) cannot crash the parent `/bin/sh` process.
-/// The subshell exports PATH changes via a temp file.
+/// Runs each file in a subshell so shell-specific syntax cannot crash the
+/// parent `/bin/sh` process, then imports the resulting PATH into the current
+/// shell via a temp file.
 const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
+
+/// Shell snippet that probes npm/pnpm for their global binary directories.
+/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`, and
+/// `_litter_pnpm_global_bin`.
+const PACKAGE_MANAGER_PROBE: &str = r#"_litter_npm_prefix=""
+_litter_npm_global_bin=""
+_litter_pnpm_global_bin=""
+if command -v npm >/dev/null 2>&1; then
+  _litter_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+  case "$_litter_npm_prefix" in
+    "" | "undefined" | "null")
+      _litter_npm_prefix=""
+      ;;
+    *)
+      _litter_npm_global_bin="$_litter_npm_prefix/bin"
+      ;;
+  esac
+fi
+if command -v pnpm >/dev/null 2>&1; then
+  _litter_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
     format!(
         r#"{profile_init}
-if [ -x "$HOME/.litter/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.litter/bin/codex"
-  exit 0
-fi
-litter_npm="$HOME/.litter/codex/node_modules/.bin/codex"
-if [ -x "$litter_npm" ]; then
-  printf 'codex:%s' "$litter_npm"
-  exit 0
-fi
-codex_path="$(command -v codex 2>/dev/null || true)"
-if [ -n "$codex_path" ] && [ -f "$codex_path" ] && [ -x "$codex_path" ]; then
-  printf 'codex:%s' "$codex_path"
-elif [ -x "$HOME/.volta/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.volta/bin/codex"
-elif [ -x "$HOME/.cargo/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.cargo/bin/codex"
-elif [ -x "$HOME/.local/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.local/bin/codex"
-elif [ -x "/opt/homebrew/bin/codex" ]; then
-  printf 'codex:%s' "/opt/homebrew/bin/codex"
-elif [ -x "/usr/local/bin/codex" ]; then
-  printf 'codex:%s' "/usr/local/bin/codex"
-else
-  app_server_path="$(command -v codex-app-server 2>/dev/null || true)"
-  if [ -n "$app_server_path" ] && [ -f "$app_server_path" ] && [ -x "$app_server_path" ]; then
-    printf 'app-server:%s' "$app_server_path"
-  elif [ -x "/opt/homebrew/bin/codex-app-server" ]; then
-    printf 'app-server:%s' "/opt/homebrew/bin/codex-app-server"
-  elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
-    printf 'app-server:%s' "$HOME/.cargo/bin/codex-app-server"
+_litter_emit_candidate() {{
+  _litter_selector="$1"
+  _litter_path="$2"
+  if [ -n "$_litter_path" ] && [ -f "$_litter_path" ] && [ -x "$_litter_path" ]; then
+    printf '%s:%s' "$_litter_selector" "$_litter_path"
+    exit 0
   fi
-fi"#,
-        profile_init = PROFILE_INIT
+}}
+_litter_emit_from_dir() {{
+  _litter_selector="$1"
+  _litter_name="$2"
+  _litter_dir="$3"
+  if [ -n "$_litter_dir" ]; then
+    _litter_emit_candidate "$_litter_selector" "$_litter_dir/$_litter_name"
+  fi
+}}
+_litter_emit_candidate codex "$HOME/.litter/bin/codex"
+_litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
+_litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_litter_emit_candidate codex "$HOME/.volta/bin/codex"
+_litter_emit_candidate codex "$HOME/.local/bin/codex"
+_litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
+_litter_emit_from_dir codex codex "${{NVM_BIN:-}}"
+_litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
+_litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
+_litter_emit_candidate codex "/opt/homebrew/bin/codex"
+_litter_emit_candidate codex "/usr/local/bin/codex"
+_litter_emit_candidate app-server "$(command -v codex-app-server 2>/dev/null || true)"
+_litter_emit_from_dir app-server codex-app-server "${{CARGO_HOME:-$HOME/.cargo}}/bin"
+_litter_emit_candidate app-server "/opt/homebrew/bin/codex-app-server"
+_litter_emit_candidate app-server "/usr/local/bin/codex-app-server"
+{pkg_probe}
+_litter_emit_from_dir codex codex "$_litter_npm_global_bin"
+_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin"
+_litter_emit_from_dir app-server codex-app-server "$_litter_npm_global_bin"
+_litter_emit_from_dir app-server codex-app-server "$_litter_pnpm_global_bin""#,
+        profile_init = PROFILE_INIT,
+        pkg_probe = PACKAGE_MANAGER_PROBE
     )
 }
 
@@ -2269,6 +2310,28 @@ mod tests {
         assert!(PROFILE_INIT.contains(".bashrc"));
         assert!(PROFILE_INIT.contains(".zprofile"));
         assert!(PROFILE_INIT.contains(".zshrc"));
+        assert!(!PROFILE_INIT.contains("-ic 'printf %s \"$PATH\"'"));
+    }
+
+    #[test]
+    fn test_posix_resolver_probes_package_manager_bins() {
+        let script = resolve_codex_binary_script_posix();
+        assert!(script.contains("npm config get prefix"));
+        assert!(script.contains("pnpm bin -g"));
+        assert!(script.contains("PNPM_HOME"));
+        assert!(script.contains("NVM_BIN"));
+        assert!(script.contains("$HOME/.volta/bin/codex"));
+        assert!(script.contains("$HOME/.local/bin/codex"));
+        assert!(script.contains("/opt/homebrew/bin/codex"));
+        assert!(script.contains("/usr/local/bin/codex"));
+        assert!(
+            script.find("command -v codex 2>/dev/null || true")
+                < script.find("pnpm bin -g").unwrap()
+        );
+        assert!(
+            script.find("command -v codex-app-server 2>/dev/null || true")
+                < script.find("pnpm bin -g").unwrap()
+        );
     }
 
     #[test]
