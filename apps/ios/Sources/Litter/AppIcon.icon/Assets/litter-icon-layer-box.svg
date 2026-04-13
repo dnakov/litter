@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50.0 37.5 400 400" width="1024" height="1024">
+<g id="cardboard-box">
+    <!-- Box Body -->
+    <path d="M 100 256 L 400 256 L 385 360 C 383 366 378 370 372 370 L 128 370 C 122 370 117 366 115 360 Z" fill="#D98A53" />
+    
+    <!-- Minimalist Cutout Handle -->
+    <rect x="220" y="285" width="60" height="16" rx="8" fill="#B06535" opacity="0.8" />
+    
+    <!-- Inner Shadow under Box Lip -->
+    <polygon points="100,256 400,256 397,268 103,268" fill="#B06535" opacity="0.4" />
+    
+    <!-- Box Lip/Rim -->
+    <rect x="90" y="240" width="320" height="16" rx="8" fill="#C27A45" />
+  </g>
+</svg>
