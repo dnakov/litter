@@ -5,6 +5,9 @@ options:
     iOS: "18.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
+  fileTypes:
+    icon:
+      file: true
 
 
 settings:
