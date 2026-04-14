@@ -1,5 +1,10 @@
 import Foundation
 
+enum SavedServerBackendKind: String, Codable, Equatable {
+    case codex
+    case openCode
+}
+
 struct SavedServer: Codable, Identifiable, Equatable {
     let id: String
     let name: String
@@ -15,6 +20,11 @@ struct SavedServer: Codable, Identifiable, Equatable {
     let sshPortForwardingEnabled: Bool?
     let websocketURL: String?
     let rememberedByUser: Bool
+    let backendKind: SavedServerBackendKind
+    let openCodeBaseURL: String?
+    let openCodeBasicAuthUsername: String?
+    let openCodeBasicAuthPassword: String?
+    let openCodeKnownDirectories: [String]
 
     init(
         id: String,
@@ -30,7 +40,12 @@ struct SavedServer: Codable, Identifiable, Equatable {
         preferredCodexPort: UInt16?,
         sshPortForwardingEnabled: Bool?,
         websocketURL: String?,
-        rememberedByUser: Bool = false
+        rememberedByUser: Bool = false,
+        backendKind: SavedServerBackendKind = .codex,
+        openCodeBaseURL: String? = nil,
+        openCodeBasicAuthUsername: String? = nil,
+        openCodeBasicAuthPassword: String? = nil,
+        openCodeKnownDirectories: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -46,6 +61,11 @@ struct SavedServer: Codable, Identifiable, Equatable {
         self.sshPortForwardingEnabled = sshPortForwardingEnabled
         self.websocketURL = websocketURL
         self.rememberedByUser = rememberedByUser
+        self.backendKind = backendKind
+        self.openCodeBaseURL = openCodeBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openCodeBasicAuthUsername = openCodeBasicAuthUsername?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openCodeBasicAuthPassword = openCodeBasicAuthPassword
+        self.openCodeKnownDirectories = Self.normalizedOpenCodeDirectories(openCodeKnownDirectories)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -63,6 +83,11 @@ struct SavedServer: Codable, Identifiable, Equatable {
         case sshPortForwardingEnabled
         case websocketURL
         case rememberedByUser
+        case backendKind
+        case openCodeBaseURL
+        case openCodeBasicAuthUsername
+        case openCodeBasicAuthPassword
+        case openCodeKnownDirectories
     }
 
     init(from decoder: Decoder) throws {
@@ -91,9 +116,44 @@ struct SavedServer: Codable, Identifiable, Equatable {
         )
         self.websocketURL = try container.decodeIfPresent(String.self, forKey: .websocketURL)
         self.rememberedByUser = try container.decodeIfPresent(Bool.self, forKey: .rememberedByUser) ?? true
+        self.backendKind = try container.decodeIfPresent(SavedServerBackendKind.self, forKey: .backendKind) ?? .codex
+        self.openCodeBaseURL = (
+            try container.decodeIfPresent(String.self, forKey: .openCodeBaseURL)
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openCodeBasicAuthUsername = (
+            try container.decodeIfPresent(
+                String.self,
+                forKey: .openCodeBasicAuthUsername
+            )
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openCodeBasicAuthPassword = try container.decodeIfPresent(
+            String.self,
+            forKey: .openCodeBasicAuthPassword
+        )
+        self.openCodeKnownDirectories = Self.normalizedOpenCodeDirectories(
+            try container.decodeIfPresent([String].self, forKey: .openCodeKnownDirectories) ?? []
+        )
     }
 
-    func toDiscoveredServer() -> DiscoveredServer {
+    var deduplicationKey: String {
+        switch backendKind {
+        case .codex:
+            if let websocketURL, let url = URL(string: websocketURL) {
+                let host = Self.normalizedKey(url.host ?? hostname)
+                return host.isEmpty ? id : "codex:\(host)"
+            }
+            let host = Self.normalizedKey(hostname)
+            return host.isEmpty ? id : "codex:\(host)"
+        case .openCode:
+            let keySource = openCodeBaseURL ?? hostname
+            let key = Self.normalizedKey(keySource)
+            return key.isEmpty ? "opencode:\(id)" : "opencode:\(key)"
+        }
+    }
+
+    func toDiscoveredServer() -> DiscoveredServer? {
+        guard backendKind == .codex else { return nil }
+
         let codexPort = hasCodexServer ? (preferredCodexPort ?? port) : nil
         let resolvedSshPort = sshPort ?? (hasCodexServer ? nil : port)
         return DiscoveredServer(
@@ -113,6 +173,30 @@ struct SavedServer: Codable, Identifiable, Equatable {
         )
     }
 
+    func normalizedForPersistence() -> SavedServer {
+        SavedServer(
+            id: id,
+            name: name,
+            hostname: hostname,
+            port: port,
+            codexPorts: backendKind == .codex ? resolvedCodexPorts : [],
+            sshPort: sshPort,
+            source: source,
+            hasCodexServer: backendKind == .codex ? hasCodexServer : false,
+            wakeMAC: wakeMAC,
+            preferredConnectionMode: backendKind == .codex ? migratedPreferredConnectionMode : nil,
+            preferredCodexPort: backendKind == .codex ? preferredCodexPort : nil,
+            sshPortForwardingEnabled: backendKind == .codex ? sshPortForwardingEnabled : nil,
+            websocketURL: backendKind == .codex ? websocketURL : nil,
+            rememberedByUser: rememberedByUser,
+            backendKind: backendKind,
+            openCodeBaseURL: openCodeBaseURL,
+            openCodeBasicAuthUsername: openCodeBasicAuthUsername,
+            openCodeBasicAuthPassword: openCodeBasicAuthPassword,
+            openCodeKnownDirectories: openCodeKnownDirectories
+        )
+    }
+
     static func from(_ server: DiscoveredServer, rememberedByUser: Bool = false) -> SavedServer {
         SavedServer(
             id: server.id,
@@ -128,7 +212,8 @@ struct SavedServer: Codable, Identifiable, Equatable {
             preferredCodexPort: server.preferredCodexPort,
             sshPortForwardingEnabled: nil,
             websocketURL: server.websocketURL,
-            rememberedByUser: rememberedByUser
+            rememberedByUser: rememberedByUser,
+            backendKind: .codex
         )
     }
 
@@ -161,7 +246,43 @@ struct SavedServer: Codable, Identifiable, Equatable {
             preferredCodexPort: preferredCodexPort,
             sshPortForwardingEnabled: sshPortForwardingEnabled,
             websocketUrl: websocketURL,
-            rememberedByUser: rememberedByUser
+            rememberedByUser: rememberedByUser,
+            backendKind: backendKind == .openCode ? .openCode : .codex,
+            opencodeBaseUrl: openCodeBaseURL,
+            opencodeBasicAuthUsername: openCodeBasicAuthUsername,
+            opencodeBasicAuthPassword: openCodeBasicAuthPassword,
+            opencodeKnownDirectories: openCodeKnownDirectories.map { directory in
+                SavedOpenCodeDirectoryScopeRecord(directory: directory)
+            }
         )
+    }
+
+    private static func normalizedOpenCodeDirectories(_ directories: [String]) -> [String] {
+        var seen = Set<String>()
+        return directories
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private static func normalizedKey(_ raw: String) -> String {
+        if let url = URL(string: raw), let scheme = url.scheme, !scheme.isEmpty {
+            let host = (url.host ?? raw).lowercased()
+            if let port = url.port {
+                return "\(host):\(port)"
+            }
+            return host
+        }
+
+        var normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .replacingOccurrences(of: "%25", with: "%")
+
+        if !normalized.contains(":"), let scopeIndex = normalized.firstIndex(of: "%") {
+            normalized = String(normalized[..<scopeIndex])
+        }
+
+        return normalized.lowercased()
     }
 }

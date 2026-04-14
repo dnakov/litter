@@ -1,0 +1,22 @@
+{
+  "id": "proj_litter",
+  "worktree": "/Users/franklin/Development/OpenSource/litter",
+  "vcs": "git",
+  "name": "litter",
+  "icon": {
+    "url": "https://example.com/icon.png",
+    "override": "book",
+    "color": "#00FF9C"
+  },
+  "commands": {
+    "start": "bun run dev"
+  },
+  "time": {
+    "created": 1710000000000,
+    "updated": 1710000005000,
+    "initialized": 1710000010000
+  },
+  "sandboxes": [
+    "/tmp/litter-sandbox"
+  ]
+}

@@ -57,6 +57,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.state.SavedServer
+import com.litter.android.state.SavedServerBackendKind
 import com.litter.android.state.SavedServerStore
 import com.litter.android.state.SavedSshCredential
 import com.litter.android.state.SshAuthMethod
@@ -148,7 +149,7 @@ fun DiscoveryScreen(
     }
 
     suspend fun prepareServerForSelection(entry: SavedServer): SavedServer {
-        if (entry.source == "local" || entry.websocketURL != null) {
+        if (entry.backendKind == SavedServerBackendKind.OPEN_CODE || entry.source == "local" || entry.websocketURL != null) {
             return entry
         }
 
@@ -201,6 +202,34 @@ fun DiscoveryScreen(
 
             val prepared = prepareServerForSelection(entry)
             when {
+                prepared.backendKind == SavedServerBackendKind.OPEN_CODE -> {
+                    val baseUrl = prepared.openCodeBaseUrl?.trim().orEmpty()
+                    if (baseUrl.isEmpty()) {
+                        connectError = "OpenCode base URL is required."
+                        return
+                    }
+                    if (prepared.openCodeKnownDirectories.isEmpty()) {
+                        connectError = "OpenCode directory is required."
+                        return
+                    }
+                    appModel.serverBridge.connectOpencodeServer(
+                        uniffi.codex_mobile_client.AppOpenCodeConnectRequest(
+                            serverId = prepared.id,
+                            displayName = prepared.name,
+                            baseUrl = baseUrl,
+                            basicAuthUsername = prepared.openCodeBasicAuthUsername,
+                            basicAuthPassword = prepared.openCodeBasicAuthPassword,
+                            knownDirectories = prepared.openCodeKnownDirectories.map { directory ->
+                                uniffi.codex_mobile_client.AppOpenCodeDirectoryScope(directory = directory)
+                            },
+                        ),
+                    )
+                    SavedServerStore.remember(context, prepared.normalizedForPersistence())
+                    reloadSavedServers()
+                    appModel.refreshSnapshot()
+                    onDismiss()
+                }
+
                 prepared.source == "local" -> {
                     appModel.serverBridge.connectLocalServer(
                         prepared.id,
@@ -661,21 +690,35 @@ private fun ServerRow(
     val displayHost = connectedServer?.host ?: entry.hostname
     val subtitle = connectedServer?.connectionProgressDetail
         ?: buildString {
-            append(displayHost)
-            if (entry.os != null) {
-                append(" - ")
-                append(entry.os)
-            }
-            if (entry.availableDirectCodexPorts.isNotEmpty()) {
-                append(" - codex ")
-                append(entry.availableDirectCodexPorts.joinToString(", "))
-            }
-            if (entry.canConnectViaSsh) {
-                append(" - ssh ")
-                append(entry.resolvedSshPort)
-            }
-            if (entry.wakeMAC != null) {
-                append(" - wake")
+            if (entry.backendKind == SavedServerBackendKind.OPEN_CODE) {
+                append(entry.openCodeBaseUrl ?: displayHost)
+                append(" - OpenCode")
+                entry.openCodeKnownDirectories.firstOrNull()?.let { directory ->
+                    append(" - ")
+                    append(directory)
+                    if (entry.openCodeKnownDirectories.size > 1) {
+                        append(" - +")
+                        append(entry.openCodeKnownDirectories.size - 1)
+                        append(" more")
+                    }
+                }
+            } else {
+                append(displayHost)
+                if (entry.os != null) {
+                    append(" - ")
+                    append(entry.os)
+                }
+                if (entry.availableDirectCodexPorts.isNotEmpty()) {
+                    append(" - codex ")
+                    append(entry.availableDirectCodexPorts.joinToString(", "))
+                }
+                if (entry.canConnectViaSsh) {
+                    append(" - ssh ")
+                    append(entry.resolvedSshPort)
+                }
+                if (entry.wakeMAC != null) {
+                    append(" - wake")
+                }
             }
         }
     val serverIcon = serverIconForEntry(entry)
@@ -691,7 +734,11 @@ private fun ServerRow(
         Icon(
             imageVector = serverIcon,
             contentDescription = entry.os ?: entry.source,
-            tint = if (entry.hasCodexServer) LitterTheme.accent else LitterTheme.textMuted,
+            tint = if (entry.hasCodexServer || entry.backendKind == SavedServerBackendKind.OPEN_CODE) {
+                LitterTheme.accent
+            } else {
+                LitterTheme.textMuted
+            },
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.width(10.dp))
@@ -699,7 +746,9 @@ private fun ServerRow(
             Text(entry.name.ifBlank { entry.hostname }, color = LitterTheme.textPrimary, fontSize = 14.sp)
             Text(subtitle, color = LitterTheme.textSecondary, fontSize = 11.sp)
         }
-        val (sourceColor, sourceLabel) = when (entry.source) {
+        val (sourceColor, sourceLabel) = when {
+            entry.backendKind == SavedServerBackendKind.OPEN_CODE -> LitterTheme.accent to "OpenCode"
+            else -> when (entry.source) {
             "bonjour" -> LitterTheme.info to "Bonjour"
             "tailscale" -> Color(0xFFC797D8) to "Tailscale"
             "lanProbe" -> LitterTheme.accent to "LAN"
@@ -707,6 +756,7 @@ private fun ServerRow(
             "ssh" -> Color(0xFFFF9500) to "SSH"
             "local" -> LitterTheme.accent to "Local"
             else -> LitterTheme.textMuted to "Manual"
+            }
         }
         Text(
             text = sourceLabel,
@@ -770,6 +820,10 @@ private fun ManualEntryDialog(
 ) {
     var mode by remember { mutableStateOf(ManualConnectionMode.SSH) }
     var codexUrl by remember { mutableStateOf("") }
+    var openCodeBaseUrl by remember { mutableStateOf("") }
+    var openCodeUsername by remember { mutableStateOf("") }
+    var openCodePassword by remember { mutableStateOf("") }
+    var openCodeDirectory by remember { mutableStateOf("") }
     var host by remember { mutableStateOf("") }
     var sshPort by remember { mutableStateOf("22") }
     var wakeMac by remember { mutableStateOf("") }
@@ -788,6 +842,15 @@ private fun ManualEntryDialog(
                         selected = mode == ManualConnectionMode.CODEX,
                         onClick = { mode = ManualConnectionMode.CODEX },
                         label = { Text(ManualConnectionMode.CODEX.label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = LitterTheme.accent.copy(alpha = 0.18f),
+                            selectedLabelColor = LitterTheme.textPrimary,
+                        ),
+                    )
+                    FilterChip(
+                        selected = mode == ManualConnectionMode.OPEN_CODE,
+                        onClick = { mode = ManualConnectionMode.OPEN_CODE },
+                        label = { Text(ManualConnectionMode.OPEN_CODE.label) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = LitterTheme.accent.copy(alpha = 0.18f),
                             selectedLabelColor = LitterTheme.textPrimary,
@@ -817,6 +880,52 @@ private fun ManualEntryDialog(
                     )
                     Text(
                         text = "Run: codex app-server --listen ws://0.0.0.0:8390",
+                        color = LitterTheme.textMuted,
+                        fontSize = 11.sp,
+                    )
+                } else if (mode == ManualConnectionMode.OPEN_CODE) {
+                    OutlinedTextField(
+                        value = openCodeBaseUrl,
+                        onValueChange = {
+                            openCodeBaseUrl = it
+                            errorMessage = null
+                        },
+                        label = { Text("OpenCode base URL") },
+                        placeholder = { Text("http://127.0.0.1:4187") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = openCodeUsername,
+                        onValueChange = {
+                            openCodeUsername = it
+                            errorMessage = null
+                        },
+                        label = { Text("Username") },
+                        placeholder = { Text("optional") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = openCodePassword,
+                        onValueChange = {
+                            openCodePassword = it
+                            errorMessage = null
+                        },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = openCodeDirectory,
+                        onValueChange = {
+                            openCodeDirectory = it
+                            errorMessage = null
+                        },
+                        label = { Text("Directory") },
+                        placeholder = { Text("/path/to/project") },
+                        singleLine = true,
+                    )
+                    Text(
+                        text = "Run: litter-opencode-start",
                         color = LitterTheme.textMuted,
                         fontSize = 11.sp,
                     )
@@ -864,7 +973,19 @@ private fun ManualEntryDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    errorMessage = when (val action = buildManualEntryAction(mode, codexUrl, host, sshPort, wakeMac)) {
+                    errorMessage = when (
+                        val action = buildManualEntryAction(
+                            mode,
+                            codexUrl,
+                            openCodeBaseUrl,
+                            openCodeUsername,
+                            openCodePassword,
+                            openCodeDirectory,
+                            host,
+                            sshPort,
+                            wakeMac,
+                        )
+                    ) {
                         is ManualEntryBuild.Action -> {
                             onSubmit(action.action)
                             null
@@ -1070,6 +1191,7 @@ private fun SSHLoginDialog(
 
 private fun serverIconForEntry(entry: SavedServer): androidx.compose.ui.graphics.vector.ImageVector {
     if (entry.source == "local") return Icons.Outlined.PhoneAndroid
+    if (entry.backendKind == SavedServerBackendKind.OPEN_CODE) return Icons.Outlined.Lan
     val os = entry.os?.lowercase()
     if (os != null) {
         if (os.contains("windows")) return Icons.Outlined.DesktopWindows
@@ -1200,17 +1322,28 @@ private enum class ManualConnectionMode(
     val primaryButtonTitle: String,
 ) {
     CODEX("Codex", "Connect"),
+    OPEN_CODE("OpenCode", "Connect"),
     SSH("SSH", "Continue to SSH Login"),
 }
 
 private fun buildManualEntryAction(
     mode: ManualConnectionMode,
     codexUrl: String,
+    openCodeBaseUrl: String,
+    openCodeUsername: String,
+    openCodePassword: String,
+    openCodeDirectory: String,
     host: String,
     sshPort: String,
     wakeMac: String,
 ): ManualEntryBuild = when (mode) {
     ManualConnectionMode.CODEX -> buildManualCodexEntry(codexUrl)
+    ManualConnectionMode.OPEN_CODE -> buildManualOpenCodeEntry(
+        openCodeBaseUrl,
+        openCodeUsername,
+        openCodePassword,
+        openCodeDirectory,
+    )
     ManualConnectionMode.SSH -> buildManualSshEntry(host, sshPort, wakeMac)
 }
 
@@ -1263,6 +1396,54 @@ private fun buildManualCodexEntry(rawInput: String): ManualEntryBuild {
                 hasCodexServer = true,
                 preferredConnectionMode = "directCodex",
                 preferredCodexPort = port,
+            ).normalizedForPersistence(),
+        ),
+    )
+}
+
+private fun buildManualOpenCodeEntry(
+    baseUrlInput: String,
+    usernameInput: String,
+    passwordInput: String,
+    directoryInput: String,
+): ManualEntryBuild {
+    val baseUrl = baseUrlInput.trim()
+    val directory = directoryInput.trim()
+    if (baseUrl.isEmpty()) {
+        return ManualEntryBuild.Error("Enter an OpenCode base URL.")
+    }
+    if (directory.isEmpty()) {
+        return ManualEntryBuild.Error("Enter an OpenCode directory.")
+    }
+
+    val uri = runCatching { URI(baseUrl) }.getOrNull()
+        ?: return ManualEntryBuild.Error("Enter an http:// or https:// URL.")
+    val scheme = uri.scheme?.lowercase()
+    val host = uri.host?.takeIf { it.isNotBlank() }
+    if ((scheme != "http" && scheme != "https") || host == null) {
+        return ManualEntryBuild.Error("Enter an http:// or https:// URL.")
+    }
+
+    val port = when {
+        uri.port > 0 -> uri.port
+        scheme == "https" -> 443
+        else -> 80
+    }
+    return ManualEntryBuild.Action(
+        ManualEntryAction.Connect(
+            SavedServer(
+                id = "manual-opencode-$host:$port",
+                name = host,
+                hostname = host,
+                port = port,
+                source = "manual",
+                hasCodexServer = false,
+                rememberedByUser = true,
+                backendKind = SavedServerBackendKind.OPEN_CODE,
+                openCodeBaseUrl = baseUrl,
+                openCodeBasicAuthUsername = usernameInput.trim().ifBlank { null },
+                openCodeBasicAuthPassword = passwordInput.ifBlank { null },
+                openCodeKnownDirectories = listOf(directory),
             ).normalizedForPersistence(),
         ),
     )

@@ -58,6 +58,13 @@ impl AppClient {
         server_id: String,
         params: types::AppStartThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_start_thread(&server_id, params)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let params = convert_params::<_, upstream::ThreadStartParams>(params)?;
             let response: upstream::ThreadStartResponse =
@@ -72,6 +79,13 @@ impl AppClient {
         server_id: String,
         params: types::AppResumeThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_resume_thread(&server_id, &params.thread_id)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let params = convert_params::<_, upstream::ThreadResumeParams>(params)?;
             let response: upstream::ThreadResumeResponse = rpc(
@@ -90,6 +104,13 @@ impl AppClient {
         server_id: String,
         params: types::AppForkThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_fork_thread(&server_id, &params.thread_id)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let params = convert_params::<_, upstream::ThreadForkParams>(params)?;
             let response: upstream::ThreadForkResponse =
@@ -120,6 +141,13 @@ impl AppClient {
         server_id: String,
         params: types::AppRenameThreadRequest,
     ) -> Result<(), ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_rename_thread(&server_id, params)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let _: upstream::ThreadSetNameResponse = rpc(
                 c.as_ref(),
@@ -136,6 +164,13 @@ impl AppClient {
         server_id: String,
         params: types::AppListThreadsRequest,
     ) -> Result<(), ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_list_threads(&server_id, params)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let params: upstream::ThreadListParams = params.into();
             let mut request_params = params.clone();
@@ -168,6 +203,13 @@ impl AppClient {
         server_id: String,
         params: types::AppReadThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_read_thread(&server_id, &params.thread_id, params.include_turns)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let response: upstream::ThreadReadResponse = rpc(
                 c.as_ref(),
@@ -187,6 +229,13 @@ impl AppClient {
         server_id: String,
         params: types::AppInterruptTurnRequest,
     ) -> Result<(), ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_interrupt_turn(&server_id, params)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let _: upstream::TurnInterruptResponse = rpc(
                 c.as_ref(),
@@ -330,6 +379,13 @@ impl AppClient {
         server_id: String,
         params: types::AppRefreshModelsRequest,
     ) -> Result<(), ClientError> {
+        if self.inner.has_opencode_server(&server_id) {
+            return blocking_async!(self.rt, self.inner, |c| {
+                c.opencode_refresh_models(&server_id, params)
+                    .await
+                    .map_err(|error| ClientError::Rpc(error.to_string()))
+            });
+        }
         blocking_async!(self.rt, self.inner, |c| {
             let response: upstream::ModelListResponse = rpc(
                 c.as_ref(),

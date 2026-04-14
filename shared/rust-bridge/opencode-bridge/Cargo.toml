@@ -1,0 +1,18 @@
+[package]
+name = "opencode-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Internal OpenCode contract types and fixtures for Litter mobile"
+
+[lib]
+name = "opencode_bridge"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]

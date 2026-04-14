@@ -2,7 +2,7 @@
 
 ## Scope
 
-This matrix covers transport reliability and startup-path parity for Android websocket + bridge flows.
+This matrix covers transport reliability and startup-path parity for Android websocket + bridge flows, including manual OpenCode server connectivity.
 
 ## Automated Regression Scaffolding
 
@@ -32,6 +32,9 @@ Current automated checks:
 | App launch | App launches and can start local bridge-backed session | App launches and does not auto-start local bridge |
 | Connect local/on-device | Success (`ServerConfig.local`) | Expected failure with clear "disabled" error |
 | Connect remote server | Success | Success |
+| Connect manual OpenCode server | Success with base URL, basic auth credentials, and directory saved after first successful connect | Success with base URL, basic auth credentials, and directory saved after first successful connect |
+| Relaunch reconnect to saved OpenCode server | Saved server reconnects, rehydrates thread list for saved directory scopes, and keeps disconnected/reconnected state coherent in UI | Same |
+| OpenCode prompt lifecycle | Thread list, read/resume, start thread in selected directory, async prompt streaming, interrupt, approval response, and model refresh all work through Rust runtime state | Same |
 | SSH-discovered remote server | Prompts for SSH credentials, connects through SSH port forwarding, and never attempts `ws://host:22` directly | Same |
 | Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC | N/A (local startup disabled) |
 | Remote transport drop | Reconnect behavior via Rust `AppStore` updates and resumed RPC notifications | Same |
@@ -43,6 +46,9 @@ Current automated checks:
 2. `onDeviceDebug`: kill local bridge process (or force stop app), relaunch, confirm initialize and thread list recover.
 3. `remoteOnlyDebug`: attempt local connect path, verify explicit disabled error; connect remote server and run thread/list + turn/start.
 4. Both flavors: verify account read/login status refresh still updates UI after reconnect.
+5. Start OpenCode with `litter-opencode-start`, inspect helper-managed credentials with `litter-opencode-creds`, then manually connect to `http://127.0.0.1:4187` using the OpenCode form.
+6. On both flavors, verify saved OpenCode credentials plus directory scope survive relaunch and reconnect to the same server.
+7. On both flavors, in the connected OpenCode directory, verify thread read/resume, new thread creation, async prompt streaming, interrupt, approval response, and model refresh.
 
 ## Sidebar + Picker Parity Checklist (iOS + Android)
 

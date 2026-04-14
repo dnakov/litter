@@ -84,12 +84,31 @@ final class HomeDashboardSupportTests: XCTestCase {
         """.data(using: .utf8)!
 
         let saved = try JSONDecoder().decode(SavedServer.self, from: data)
-        let discovered = saved.toDiscoveredServer()
+        let discovered = try XCTUnwrap(saved.toDiscoveredServer())
 
         XCTAssertNil(discovered.port)
         XCTAssertEqual(discovered.sshPort, 8390)
         XCTAssertEqual(discovered.resolvedSSHPort, 8390)
         XCTAssertFalse(discovered.hasCodexServer)
+    }
+
+    func testSavedServerDefaultsBackendKindToCodexForLegacyRecords() throws {
+        let data = """
+        {
+          "id": "legacy-codex",
+          "name": "Legacy Codex",
+          "hostname": "127.0.0.1",
+          "port": 8390,
+          "source": "manual",
+          "hasCodexServer": true
+        }
+        """.data(using: .utf8)!
+
+        let saved = try JSONDecoder().decode(SavedServer.self, from: data)
+
+        XCTAssertEqual(saved.backendKind, .codex)
+        XCTAssertNil(saved.openCodeBaseURL)
+        XCTAssertTrue(saved.openCodeKnownDirectories.isEmpty)
     }
 
     func testHomeDashboardModelRefreshesWhenObservedSnapshotChanges() async {

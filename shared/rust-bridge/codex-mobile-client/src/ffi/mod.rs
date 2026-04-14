@@ -25,6 +25,6 @@ pub use ssh::{AppSshConnectionResult, SshBridge};
 
 // Re-export reconnect boundary types so UniFFI can discover them.
 pub use crate::reconnect::{
-    ReconnectResult, SavedServerRecord, SshAuthMethodRecord, SshCredentialProvider,
-    SshCredentialRecord,
+    ReconnectResult, SavedOpenCodeDirectoryScopeRecord, SavedServerBackendKindRecord,
+    SavedServerRecord, SshAuthMethodRecord, SshCredentialProvider, SshCredentialRecord,
 };

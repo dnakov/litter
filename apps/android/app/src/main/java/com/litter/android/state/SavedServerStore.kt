@@ -6,12 +6,24 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.codex_mobile_client.AppDiscoveredServer
 import uniffi.codex_mobile_client.AppDiscoverySource
+import uniffi.codex_mobile_client.SavedOpenCodeDirectoryScopeRecord
+import uniffi.codex_mobile_client.SavedServerBackendKindRecord
 import uniffi.codex_mobile_client.SavedServerRecord
 
 /**
  * Persistent server list stored in SharedPreferences.
  * Platform-specific — cannot live in Rust.
  */
+enum class SavedServerBackendKind(val rawValue: String) {
+    CODEX("codex"),
+    OPEN_CODE("openCode");
+
+    companion object {
+        fun fromRawValue(value: String?): SavedServerBackendKind =
+            values().firstOrNull { it.rawValue == value } ?: CODEX
+    }
+}
+
 data class SavedServer(
     val id: String,
     val name: String,
@@ -29,10 +41,24 @@ data class SavedServer(
     val os: String? = null,
     val sshBanner: String? = null,
     val rememberedByUser: Boolean = false,
+    val backendKind: SavedServerBackendKind = SavedServerBackendKind.CODEX,
+    val openCodeBaseUrl: String? = null,
+    val openCodeBasicAuthUsername: String? = null,
+    val openCodeBasicAuthPassword: String? = null,
+    val openCodeKnownDirectories: List<String> = emptyList(),
 ) {
     /** Stable key for deduplication across discovery cycles. */
     val deduplicationKey: String
-        get() = websocketURL ?: normalizedHostKey(hostname)
+        get() = when (backendKind) {
+            SavedServerBackendKind.CODEX -> {
+                val key = websocketURL ?: normalizedHostKey(hostname)
+                if (key.isBlank()) id else "codex:$key"
+            }
+            SavedServerBackendKind.OPEN_CODE -> {
+                val key = normalizedBaseUrlKey(openCodeBaseUrl ?: hostname)
+                if (key.isBlank()) "opencode:$id" else "opencode:$key"
+            }
+        }
 
     private fun normalizedHostKey(host: String): String {
         val trimmed = host.trim().trimStart('[').trimEnd(']')
@@ -43,6 +69,26 @@ data class SavedServer(
         }
         return withoutScope.lowercase()
     }
+
+    private fun normalizedBaseUrlKey(raw: String): String =
+        runCatching { java.net.URI(raw.trim()) }
+            .getOrNull()
+            ?.takeIf { !it.scheme.isNullOrBlank() }
+            ?.let { uri ->
+                val host = uri.host?.lowercase().orEmpty()
+                val port = when {
+                    uri.port > 0 -> uri.port
+                    uri.scheme.equals("https", ignoreCase = true) -> 443
+                    uri.scheme.equals("http", ignoreCase = true) -> 80
+                    else -> -1
+                }
+                when {
+                    host.isBlank() -> ""
+                    port > 0 -> "$host:$port"
+                    else -> host
+                }
+            }
+            ?: normalizedHostKey(raw)
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -61,10 +107,18 @@ data class SavedServer(
         os?.let { put("os", it) }
         sshBanner?.let { put("sshBanner", it) }
         put("rememberedByUser", rememberedByUser)
+        put("backendKind", backendKind.rawValue)
+        openCodeBaseUrl?.let { put("openCodeBaseUrl", it) }
+        openCodeBasicAuthUsername?.let { put("openCodeBasicAuthUsername", it) }
+        openCodeBasicAuthPassword?.let { put("openCodeBasicAuthPassword", it) }
+        put("openCodeKnownDirectories", JSONArray(openCodeKnownDirectories))
     }
 
     val availableDirectCodexPorts: List<Int>
         get() {
+            if (backendKind == SavedServerBackendKind.OPEN_CODE) {
+                return emptyList()
+            }
             val ordered = buildList {
                 if (hasCodexServer && port > 0) add(port)
                 addAll(codexPorts.filter { it > 0 })
@@ -73,17 +127,20 @@ data class SavedServer(
         }
 
     val resolvedPreferredConnectionMode: String?
-        get() = when (preferredConnectionMode) {
-            "directCodex" -> if (availableDirectCodexPorts.isNotEmpty() || websocketURL != null) "directCodex" else null
-            "ssh" -> if (canConnectViaSsh) "ssh" else null
-            else -> if (sshPortForwardingEnabled == true) "ssh" else null
+        get() = when (backendKind) {
+            SavedServerBackendKind.OPEN_CODE -> null
+            SavedServerBackendKind.CODEX -> when (preferredConnectionMode) {
+                "directCodex" -> if (availableDirectCodexPorts.isNotEmpty() || websocketURL != null) "directCodex" else null
+                "ssh" -> if (canConnectViaSsh) "ssh" else null
+                else -> if (sshPortForwardingEnabled == true) "ssh" else null
+            }
         }
 
     val prefersSshConnection: Boolean
         get() = resolvedPreferredConnectionMode == "ssh"
 
     val canConnectViaSsh: Boolean
-        get() = websocketURL == null && (
+        get() = backendKind == SavedServerBackendKind.CODEX && websocketURL == null && (
             sshPort != null ||
                 source == "ssh" ||
                 (!hasCodexServer && resolvedSshPort > 0) ||
@@ -102,7 +159,8 @@ data class SavedServer(
         }
 
     val requiresConnectionChoice: Boolean
-        get() = websocketURL == null &&
+        get() = backendKind == SavedServerBackendKind.CODEX &&
+            websocketURL == null &&
             resolvedPreferredConnectionMode == null &&
             (
                 availableDirectCodexPorts.size > 1 ||
@@ -120,27 +178,47 @@ data class SavedServer(
         }
 
     fun withPreferredConnection(mode: String?, codexPort: Int? = null): SavedServer =
-        copy(
-            port = when (mode) {
-                "directCodex" -> codexPort ?: directCodexPort ?: availableDirectCodexPorts.firstOrNull() ?: port
-                "ssh" -> resolvedSshPort
-                else -> port
-            },
-            codexPorts = availableDirectCodexPorts,
-            sshPort = sshPort ?: if (canConnectViaSsh) resolvedSshPort else null,
-            preferredConnectionMode = mode,
-            preferredCodexPort = if (mode == "directCodex") {
-                codexPort ?: directCodexPort ?: availableDirectCodexPorts.firstOrNull()
-            } else {
-                null
-            },
-            sshPortForwardingEnabled = null,
-        )
+        if (backendKind == SavedServerBackendKind.OPEN_CODE) {
+            normalizedForPersistence()
+        } else {
+            copy(
+                port = when (mode) {
+                    "directCodex" -> codexPort ?: directCodexPort ?: availableDirectCodexPorts.firstOrNull() ?: port
+                    "ssh" -> resolvedSshPort
+                    else -> port
+                },
+                codexPorts = availableDirectCodexPorts,
+                sshPort = sshPort ?: if (canConnectViaSsh) resolvedSshPort else null,
+                preferredConnectionMode = mode,
+                preferredCodexPort = if (mode == "directCodex") {
+                    codexPort ?: directCodexPort ?: availableDirectCodexPorts.firstOrNull()
+                } else {
+                    null
+                },
+                sshPortForwardingEnabled = null,
+            )
+        }
 
-    fun normalizedForPersistence(): SavedServer = withPreferredConnection(
-        mode = resolvedPreferredConnectionMode,
-        codexPort = resolvedPreferredCodexPort ?: availableDirectCodexPorts.firstOrNull(),
-    )
+    fun normalizedForPersistence(): SavedServer = when (backendKind) {
+        SavedServerBackendKind.OPEN_CODE -> copy(
+            codexPorts = emptyList(),
+            preferredConnectionMode = null,
+            preferredCodexPort = null,
+            sshPortForwardingEnabled = null,
+            websocketURL = null,
+            openCodeBaseUrl = openCodeBaseUrl?.trim()?.takeIf { it.isNotEmpty() },
+            openCodeBasicAuthUsername = openCodeBasicAuthUsername?.trim()?.takeIf { it.isNotEmpty() },
+            openCodeBasicAuthPassword = openCodeBasicAuthPassword?.takeIf { it.isNotBlank() },
+            openCodeKnownDirectories = openCodeKnownDirectories
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct(),
+        )
+        SavedServerBackendKind.CODEX -> withPreferredConnection(
+            mode = resolvedPreferredConnectionMode,
+            codexPort = resolvedPreferredCodexPort ?: availableDirectCodexPorts.firstOrNull(),
+        )
+    }
 
     companion object {
         fun normalizeWakeMac(raw: String?): String? {
@@ -193,6 +271,18 @@ data class SavedServer(
             } else {
                 true
             },
+            backendKind = SavedServerBackendKind.fromRawValue(obj.optString("backendKind").ifBlank { null }),
+            openCodeBaseUrl = obj.optString("openCodeBaseUrl").ifBlank { null },
+            openCodeBasicAuthUsername = obj.optString("openCodeBasicAuthUsername").ifBlank { null },
+            openCodeBasicAuthPassword = obj.optString("openCodeBasicAuthPassword").ifBlank { null },
+            openCodeKnownDirectories = buildList {
+                val directories = obj.optJSONArray("openCodeKnownDirectories")
+                if (directories != null) {
+                    for (index in 0 until directories.length()) {
+                        add(directories.optString(index))
+                    }
+                }
+            },
         )
 
         fun from(server: AppDiscoveredServer): SavedServer = SavedServer(
@@ -213,6 +303,7 @@ data class SavedServer(
             hasCodexServer = server.codexPort != null || server.codexPorts.isNotEmpty(),
             os = if (server.sshBanner != null) server.os else server.os,
             sshBanner = server.sshBanner,
+            backendKind = SavedServerBackendKind.CODEX,
         )
     }
 }
@@ -232,6 +323,14 @@ fun SavedServer.toRecord() = SavedServerRecord(
     sshPortForwardingEnabled = sshPortForwardingEnabled,
     websocketUrl = websocketURL,
     rememberedByUser = rememberedByUser,
+    backendKind = when (backendKind) {
+        SavedServerBackendKind.OPEN_CODE -> SavedServerBackendKindRecord.OPEN_CODE
+        SavedServerBackendKind.CODEX -> SavedServerBackendKindRecord.CODEX
+    },
+    opencodeBaseUrl = openCodeBaseUrl,
+    opencodeBasicAuthUsername = openCodeBasicAuthUsername,
+    opencodeBasicAuthPassword = openCodeBasicAuthPassword,
+    opencodeKnownDirectories = openCodeKnownDirectories.map(::SavedOpenCodeDirectoryScopeRecord),
 )
 
 object SavedServerStore {

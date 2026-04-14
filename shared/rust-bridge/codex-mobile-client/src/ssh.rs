@@ -2400,7 +2400,7 @@ mod tests {
         assert!(script.contains("/usr/local/bin/codex"));
         assert!(
             script.find("command -v codex 2>/dev/null || true")
-                < script.find("pnpm bin -g").unwrap()
+                < Some(script.find("pnpm bin -g").unwrap())
         );
         assert!(!script.contains("codex-app-server"));
     }

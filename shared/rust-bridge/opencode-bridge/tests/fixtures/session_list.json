@@ -1,0 +1,38 @@
+[
+  {
+    "id": "sess_root",
+    "projectID": "project_litter",
+    "directory": "/Users/franklin/Development/OpenSource/litter",
+    "title": "Fix bridge contract",
+    "version": "0.1.0",
+    "time": {
+      "created": 1730000000000,
+      "updated": 1730000100000
+    },
+    "summary": {
+      "additions": 12,
+      "deletions": 4,
+      "files": 2,
+      "diffs": [
+        {
+          "file": "shared/rust-bridge/opencode-bridge/src/types.rs",
+          "before": "abc123",
+          "after": "def456",
+          "additions": 12,
+          "deletions": 4
+        }
+      ]
+    }
+  },
+  {
+    "id": "sess_other",
+    "projectID": "project_other",
+    "directory": "/tmp/other-project",
+    "title": "Other project session",
+    "version": "0.1.0",
+    "time": {
+      "created": 1730000200000,
+      "updated": 1730000300000
+    }
+  }
+]

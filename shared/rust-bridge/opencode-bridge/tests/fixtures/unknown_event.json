@@ -1,0 +1,7 @@
+{
+  "type": "session.archived",
+  "properties": {
+    "sessionID": "sess_created",
+    "reason": "manual"
+  }
+}

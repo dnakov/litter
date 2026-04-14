@@ -1,0 +1,10 @@
+{
+  "type": "message.part.delta",
+  "properties": {
+    "sessionID": "sess_created",
+    "messageID": "msg_assistant_1",
+    "partID": "part_text_2",
+    "field": "text",
+    "delta": " continues"
+  }
+}

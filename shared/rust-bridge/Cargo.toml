@@ -5,6 +5,7 @@ members = [
     "codex-ios-audio",
     "codex-ipc",
     "codex-mobile-client",
+    "opencode-bridge",
     "uniffi-bindgen",
     "codex-tui",
 ]

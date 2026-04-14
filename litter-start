@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+resolve_script_path() {
+  local source="$1"
+
+  while [[ -L "$source" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    if [[ "$source" != /* ]]; then
+      source="$dir/$source"
+    fi
+  done
+
+  local dir
+  dir="$(cd -P "$(dirname "$source")" && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$source")"
+}
+
+SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+export OPENCODE_START_NAME="${OPENCODE_START_NAME:-$(basename "$0")}"
+
+exec "$ROOT_DIR/opencode-start" "$@"

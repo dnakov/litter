@@ -42,6 +42,7 @@ use codex_ipc::{
 mod dynamic_tools;
 mod event_loop;
 mod ipc_attach;
+mod opencode;
 mod store_listener;
 #[cfg(test)]
 mod tests;
@@ -49,6 +50,7 @@ mod thread_projection;
 
 use self::dynamic_tools::*;
 use self::ipc_attach::*;
+pub(crate) use self::opencode::opencode_connect_request_to_config;
 use self::store_listener::*;
 use self::thread_projection::*;
 pub use self::thread_projection::{
@@ -62,6 +64,7 @@ pub use self::thread_projection::{
 /// All methods are safe to call from any thread (`Send + Sync`).
 pub struct MobileClient {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<ServerSession>>>>,
+    pub(crate) opencode_servers: Arc<RwLock<HashMap<String, Arc<opencode::OpenCodeServerRuntime>>>>,
     pub(crate) event_processor: Arc<EventProcessor>,
     pub app_store: Arc<AppStoreReducer>,
     pub(crate) discovery: RwLock<DiscoveryService>,
@@ -311,6 +314,7 @@ impl MobileClient {
         let event_processor = Arc::new(EventProcessor::new());
         let app_store = Arc::new(AppStoreReducer::new());
         let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let opencode_servers = Arc::new(RwLock::new(HashMap::new()));
         spawn_store_listener(
             Arc::clone(&app_store),
             Arc::clone(&sessions),
@@ -318,6 +322,7 @@ impl MobileClient {
         );
         Self {
             sessions,
+            opencode_servers,
             event_processor,
             app_store,
             discovery: RwLock::new(DiscoveryService::new(DiscoveryConfig::default())),
@@ -502,15 +507,6 @@ impl MobileClient {
         }
     }
 
-    async fn replace_existing_session(&self, server_id: &str) {
-        self.clear_oauth_callback_tunnel(server_id).await;
-        let existing = self.sessions_write().remove(server_id);
-        if let Some(session) = existing {
-            info!("MobileClient: replacing existing server session {server_id}");
-            session.disconnect().await;
-        }
-    }
-
     // ── Server Management ─────────────────────────────────────────────
 
     /// Connect to a local (in-process) Codex server.
@@ -526,7 +522,7 @@ impl MobileClient {
             info!("MobileClient: reusing existing local server session {server_id}");
             return Ok(server_id);
         }
-        self.replace_existing_session(server_id.as_str()).await;
+        self.replace_existing_backend(server_id.as_str()).await;
         let session = Arc::new(ServerSession::connect_local(config, in_process).await?);
         self.app_store.upsert_server(
             session.config(),
@@ -554,7 +550,7 @@ impl MobileClient {
             info!("MobileClient: reusing existing remote server session {server_id}");
             return Ok(server_id);
         }
-        self.replace_existing_session(server_id.as_str()).await;
+        self.replace_existing_backend(server_id.as_str()).await;
         let session = Arc::new(ServerSession::connect_remote(config).await?);
         self.app_store.upsert_server(
             session.config(),
@@ -600,7 +596,7 @@ impl MobileClient {
         // that may be torn down while the app is backgrounded even if the
         // session health never observed a clean disconnect. Prefer replacing
         // any existing session so resume can rebuild the full SSH transport.
-        self.replace_existing_session(server_id.as_str()).await;
+        self.replace_existing_backend(server_id.as_str()).await;
 
         let ssh_client = Arc::new(
             SshClient::connect(
@@ -801,6 +797,7 @@ impl MobileClient {
     /// Disconnect a server by its ID.
     pub fn disconnect_server(&self, server_id: &str) {
         let session = self.sessions_write().remove(server_id);
+        let opencode_runtime = self.opencode_servers_write().remove(server_id);
 
         if let Some(session) = session {
             // Swift/Kotlin can call this from outside any Tokio runtime.
@@ -812,6 +809,10 @@ impl MobileClient {
                 session.disconnect().await;
             });
             info!("MobileClient: disconnected server {server_id}");
+        } else if let Some(runtime) = opencode_runtime {
+            self.app_store.remove_server(server_id);
+            runtime.close();
+            info!("MobileClient: disconnected OpenCode server {server_id}");
         } else {
             warn!("MobileClient: disconnect_server called for unknown {server_id}");
         }
@@ -821,10 +822,17 @@ impl MobileClient {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn connected_servers(&self) -> Vec<ServerConfig> {
-        self.sessions_read()
+        let mut servers = self
+            .sessions_read()
             .values()
             .map(|s| s.config().clone())
-            .collect()
+            .collect::<Vec<_>>();
+        servers.extend(
+            self.opencode_servers_read()
+                .values()
+                .map(|runtime| opencode::server_config_from_opencode(runtime.config())),
+        );
+        servers
     }
 
     // ── Threads ───────────────────────────────────────────────────────
@@ -988,6 +996,10 @@ impl MobileClient {
         thread_id: &str,
         host_id: Option<String>,
     ) -> Result<(), RpcError> {
+        if self.has_opencode_server(server_id) {
+            self.opencode_read_thread(server_id, thread_id, true).await?;
+            return Ok(());
+        }
         let session = self.get_session(server_id)?;
         if self.app_store.server_transport_authority(server_id)
             == Some(ServerTransportAuthority::DirectOnly)
@@ -1105,6 +1117,9 @@ impl MobileClient {
         server_id: &str,
         params: upstream::TurnStartParams,
     ) -> Result<(), RpcError> {
+        if self.has_opencode_server(server_id) {
+            return self.opencode_start_turn(server_id, params).await;
+        }
         let session = self.get_session(server_id)?;
         let mut params = params;
         let thread_key = ThreadKey {
@@ -1710,6 +1725,9 @@ impl MobileClient {
         decision: ApprovalDecisionValue,
     ) -> Result<(), RpcError> {
         let approval = self.pending_approval(request_id)?;
+        if self.has_opencode_server(&approval.server_id) {
+            return self.opencode_respond_to_approval(approval, decision).await;
+        }
         let approval_seed = self
             .app_store
             .pending_approval_seed(&approval.server_id, &approval.id);

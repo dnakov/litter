@@ -2080,6 +2080,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "futures",
  "lru 0.12.5",
+ "opencode-bridge",
  "openssl-sys",
  "regex",
  "reqwest",
@@ -6216,6 +6217,18 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "opencode-bridge"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "openssl"

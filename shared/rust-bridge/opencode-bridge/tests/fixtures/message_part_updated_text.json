@@ -1,0 +1,16 @@
+{
+  "type": "message.part.updated",
+  "properties": {
+    "part": {
+      "id": "part_text_2",
+      "sessionID": "sess_created",
+      "messageID": "msg_assistant_1",
+      "type": "text",
+      "text": "Streaming response",
+      "metadata": {
+        "stream": true
+      }
+    },
+    "delta": " continues"
+  }
+}

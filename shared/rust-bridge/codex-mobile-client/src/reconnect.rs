@@ -6,9 +6,21 @@
 use crate::mobile_client::MobileClient;
 use crate::session::connection::{InProcessConfig, ServerConfig};
 use crate::ssh::{SshAuth, SshCredentials};
+use opencode_bridge::{OpenCodeDirectoryScope, OpenCodeServerConfig};
 use tracing::{info, warn};
 
 // ── UniFFI boundary types ───────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum SavedServerBackendKindRecord {
+    Codex,
+    OpenCode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SavedOpenCodeDirectoryScopeRecord {
+    pub directory: String,
+}
 
 /// Mirrors the platform `SavedServer` data class / struct.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -27,6 +39,11 @@ pub struct SavedServerRecord {
     pub ssh_port_forwarding_enabled: Option<bool>,
     pub websocket_url: Option<String>,
     pub remembered_by_user: bool,
+    pub backend_kind: SavedServerBackendKindRecord,
+    pub opencode_base_url: Option<String>,
+    pub opencode_basic_auth_username: Option<String>,
+    pub opencode_basic_auth_password: Option<String>,
+    pub opencode_known_directories: Vec<SavedOpenCodeDirectoryScopeRecord>,
 }
 
 /// SSH auth method discriminator.
@@ -86,6 +103,10 @@ pub(crate) enum ReconnectPlan {
         server_id: String,
         display_name: String,
         websocket_url: String,
+    },
+    OpenCode {
+        server_id: String,
+        config: OpenCodeServerConfig,
     },
 }
 
@@ -226,6 +247,14 @@ pub(crate) fn compute_reconnect_plan(
         return None;
     }
 
+    if server.backend_kind == SavedServerBackendKindRecord::OpenCode {
+        let config = saved_server_opencode_config(server).ok()?;
+        return Some(ReconnectPlan::OpenCode {
+            server_id: server.id.clone(),
+            config,
+        });
+    }
+
     // 2. WebSocket URL override → RemoteUrl
     if let Some(ref ws_url) = server.websocket_url {
         return Some(ReconnectPlan::RemoteUrl {
@@ -285,6 +314,47 @@ pub(crate) fn compute_reconnect_plan(
 
     // 7. No viable transport
     None
+}
+
+fn saved_server_opencode_config(
+    server: &SavedServerRecord,
+) -> Result<OpenCodeServerConfig, String> {
+    let base_url = server
+        .opencode_base_url
+        .clone()
+        .ok_or_else(|| "OpenCode saved server missing base URL".to_string())?;
+    let parsed =
+        url::Url::parse(&base_url).map_err(|error| format!("invalid OpenCode base URL: {error}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "OpenCode base URL host missing".to_string())?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "OpenCode base URL port missing".to_string())?;
+    let tls = matches!(parsed.scheme(), "https");
+    let mut config = OpenCodeServerConfig::new(
+        server.id.clone(),
+        server.name.clone(),
+        base_url,
+        host,
+        port,
+        tls,
+    )
+    .map_err(|error| error.to_string())?;
+    config.basic_auth_username = server.opencode_basic_auth_username.clone();
+    config.basic_auth_password = server.opencode_basic_auth_password.clone();
+    config.known_directories = server
+        .opencode_known_directories
+        .iter()
+        .map(|scope| {
+            OpenCodeDirectoryScope::new(scope.directory.clone()).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if config.known_directories.is_empty() {
+        return Err("OpenCode saved server missing directory scopes".to_string());
+    }
+    Ok(config)
 }
 
 // ── Plan execution ──────────────────────────────────────────────────────
@@ -472,6 +542,29 @@ pub(crate) async fn execute_reconnect_plan(
                 }
             }
         }
+        ReconnectPlan::OpenCode { server_id, config } => {
+            info!("reconnect: executing OpenCode plan server_id={}", server_id);
+            match client.connect_opencode(config.clone()).await {
+                Ok(_) => ReconnectResult {
+                    server_id: server_id.clone(),
+                    success: true,
+                    needs_local_auth_restore: false,
+                    error_message: None,
+                },
+                Err(error) => {
+                    warn!(
+                        "reconnect: OpenCode plan failed server_id={} error={}",
+                        server_id, error
+                    );
+                    ReconnectResult {
+                        server_id: server_id.clone(),
+                        success: false,
+                        needs_local_auth_restore: false,
+                        error_message: Some(error.to_string()),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -497,6 +590,11 @@ mod tests {
             ssh_port_forwarding_enabled: None,
             websocket_url: None,
             remembered_by_user: true,
+            backend_kind: SavedServerBackendKindRecord::Codex,
+            opencode_base_url: None,
+            opencode_basic_auth_username: None,
+            opencode_basic_auth_password: None,
+            opencode_known_directories: vec![],
         }
     }
 
@@ -709,5 +807,29 @@ mod tests {
         s.codex_ports = vec![];
         s.source = "manual".into();
         assert!(compute_reconnect_plan(&s, None, false).is_none());
+    }
+
+    #[test]
+    fn plan_opencode_when_saved_server_has_backend_config() {
+        let mut s = base_server();
+        s.backend_kind = SavedServerBackendKindRecord::OpenCode;
+        s.opencode_base_url = Some("http://127.0.0.1:4187".into());
+        s.opencode_basic_auth_username = Some("alice".into());
+        s.opencode_basic_auth_password = Some("secret".into());
+        s.opencode_known_directories = vec![SavedOpenCodeDirectoryScopeRecord {
+            directory: "/tmp/project".into(),
+        }];
+
+        match compute_reconnect_plan(&s, None, false) {
+            Some(ReconnectPlan::OpenCode { server_id, config }) => {
+                assert_eq!(server_id, "srv-1");
+                assert_eq!(config.server_id, "srv-1");
+                assert_eq!(config.base_url.as_str(), "http://127.0.0.1:4187/");
+                assert_eq!(config.basic_auth_username.as_deref(), Some("alice"));
+                assert_eq!(config.basic_auth_password.as_deref(), Some("secret"));
+                assert_eq!(config.known_directories[0].directory, "/tmp/project");
+            }
+            other => panic!("expected OpenCode plan, got {other:?}"),
+        }
     }
 }

@@ -34,7 +34,7 @@ Pi / `pi-mono` support is expected later, but it is not part of this OpenCode sl
 
 ## OpenCode Server Contract
 
-OpenCode already has a client/server model. `opencode serve` starts a headless HTTP server, defaulting to `127.0.0.1:4096`, with optional mDNS and CORS settings. The server publishes an OpenAPI 3.1 spec at `/doc`.
+OpenCode already has a client/server model. For local repo work and manual validation in this repo, start it through the shell helper alias `litter-opencode-start` from `~/.zshrc`. That alias runs the repo-local `./opencode-start` helper in tmux, which wraps `opencode serve`, enables HTTP basic auth, and defaults to port `4187`. Use `litter-opencode-status`, `litter-opencode-stop`, and `litter-opencode-creds` alongside it when testing so the server process, listener state, and helper-managed basic auth credentials stay aligned. Raw `opencode serve` still exists upstream, but repo testing should use the Litter helper path. The server publishes an OpenAPI 3.1 spec at `/doc`.
 
 Authentication has two layers:
 
@@ -297,6 +297,185 @@ Expose unsupported operations through backend capabilities and clear Rust errors
 7. Keep Swift/Kotlin changes limited to connection configuration and capability-driven UI state.
 8. Do not expose Pi-specific APIs yet; only keep the Rust backend boundary ready for a later `pi-bridge`.
 
+#### Phase 5 Goal
+
+Make `codex-mobile-client` backend-aware so the existing mobile facade can host both:
+
+- the current Codex app-server transport path
+- the new OpenCode HTTP/SSE path backed by `opencode-bridge`
+
+without teaching Swift/Kotlin any OpenCode transport, event, or payload shapes.
+
+At the end of Phase 5, OpenCode should be able to:
+
+- connect as a first-class mobile server
+- hydrate threads into the existing `AppStore` snapshot model
+- stream conversation updates into the existing conversation projections
+- surface pending approvals through the existing approval state
+- expose connected-provider model choices through the existing mobile-facing model path
+
+while Codex app-server behavior stays unchanged.
+
+#### Explicit Non-Goals For Phase 5
+
+- no new public multi-backend UI redesign
+- no OpenCode-specific rendering logic in Swift/Kotlin
+- no provider auth write flows or OAuth login flows
+- no Pi backend implementation
+- no broad UniFFI surface expansion beyond the minimum connect/config path needed for OpenCode
+- no full cross-directory global session browser unless required by the chosen thread list path
+
+#### Recommended Direction
+
+Do the Phase 5 work inside `codex-mobile-client` as a Rust-only backend integration pass.
+
+The important design choice is:
+
+- `opencode-bridge` owns transport and mapping semantics
+- `codex-mobile-client` owns backend selection, store updates, lifecycle, and UniFFI exposure
+- store/reducer code should receive backend-neutral mobile state inputs, not raw OpenCode payloads
+
+That keeps OpenCode-specific protocol handling out of the store and out of the native platforms.
+
+#### Main Integration Constraints
+
+The current `codex-mobile-client` shape is still Codex-specific in a few important places:
+
+- connected sessions are stored as `HashMap<String, Arc<ServerSession>>`
+- thread identity is still `ThreadKey { server_id, thread_id }`
+- post-connect warmup assumes Codex account + thread RPCs
+- event readers assume Codex notifications or Codex IPC followers
+- `AppClient` methods are still largely Codex JSON-RPC shaped
+
+Phase 5 needs to introduce the backend boundary without breaking that existing path.
+
+#### Phase 5 Implementation Plan
+
+1. Define a Rust-only backend kind and server runtime abstraction
+   Add an internal abstraction in `codex-mobile-client` for a connected backend runtime. It should cover:
+   - connect / disconnect
+   - health updates
+   - event stream hookup
+   - post-connect warmup
+   - direct operations needed by `AppClient`
+   - capability reporting
+
+   This should stay Rust-only at first.
+
+2. Separate server identity from transport implementation
+   Introduce a backend-aware server/session container so `MobileClient` no longer assumes every connected server is a `ServerSession`.
+   The container should be able to hold:
+   - Codex app-server runtime state
+   - OpenCode runtime state
+
+   Keep the external `server_id` stable.
+
+3. Make thread identity backend-aware
+   Replace the current implicit `(server_id, thread_id)` assumption with a backend-aware internal thread identity model that can represent:
+   - Codex: `(server_id, thread_id)`
+   - OpenCode: `(server_id, directory, session_id)`
+
+   If the public `ThreadKey` stays unchanged for one transition step, the backend-specific identity still needs to exist internally and losslessly.
+
+4. Add backend-neutral store input types
+   Define narrow `codex-mobile-client` input types for:
+   - thread summary upserts/removals
+   - conversation hydration snapshots
+   - conversation deltas
+   - approval upserts/resolutions
+   - model list projections
+   - server capability updates
+
+   These should be the seam between backends and the reducer/store layer.
+
+5. Route Codex app-server through the new boundary first
+   Before plugging in OpenCode, move the current Codex session lifecycle behind the backend abstraction.
+   This is the safety step that proves the boundary is viable without changing behavior.
+
+6. Add an OpenCode backend runtime
+   Create an OpenCode backend implementation that uses:
+   - `OpenCodeClient` for REST
+   - `OpenCodeEventStreamClient` for SSE
+   - Phase 4 mapping outputs for normalization
+
+   This backend should own:
+   - OpenCode connection config
+   - directory-scoped event stream setup
+   - initial warmup
+   - mapping of live updates into backend-neutral store inputs
+
+7. Define OpenCode post-connect warmup
+   The OpenCode warmup path should fetch and map:
+   - health
+   - session list for known directory scopes
+   - session statuses for those scopes
+   - hydrated messages for any active/restored thread when needed
+   - connected provider/default model projections
+
+   Do not run Codex account sync for OpenCode.
+
+8. Add OpenCode-backed implementations for the required `AppClient` operations
+   Implement the subset of direct operations needed for parity with the current mobile workflow:
+   - connect
+   - list/resume/read thread equivalents
+   - start thread
+   - send prompt / stream turn
+   - interrupt
+   - rename
+   - fork if supported by product path
+   - permission response
+   - model listing
+
+   Unsupported operations should surface through backend capabilities and clear Rust errors rather than partial native hacks.
+
+9. Add minimal UniFFI exposure for OpenCode connect/config
+   Expose only the minimal connect path needed by platform discovery/manual connection flows, for example:
+   - server id
+   - display name
+   - base URL / host / port
+   - TLS flag if needed
+   - optional basic auth username/password
+   - one or more directory scopes
+
+   Keep the rest of the OpenCode behavior behind the existing `AppClient` and `AppStore` surfaces.
+
+10. Preserve platform parity
+    Because all of this lives in shared Rust, both iOS and Android should pick up the same OpenCode behavior in the same pass. Any platform-specific follow-up should be limited to connect/config UI affordances.
+
+#### Recommended Implementation Order
+
+1. add backend runtime abstraction
+2. migrate current Codex path behind it with no behavior change
+3. introduce backend-aware internal thread identity
+4. define backend-neutral store input/update entrypoints
+5. add OpenCode runtime warmup + event ingestion
+6. add OpenCode direct operation implementations
+7. add minimal UniFFI connect/config surface
+8. add store and integration tests
+
+#### Validation Targets For Phase 5
+
+Primary:
+
+- `cargo test -p codex-mobile-client`
+- `cargo test -p opencode-bridge`
+
+Focused:
+
+- store/reducer tests proving mapped OpenCode inputs produce expected snapshots
+- backend runtime tests proving Codex and OpenCode can coexist behind the same internal abstraction
+- reconnect/warmup tests for OpenCode directory-scoped sessions
+
+Manual:
+
+- start OpenCode with `litter-opencode-start`
+- connect through the mobile Rust facade, not the bridge directly
+- verify thread list, read/resume behavior, prompt streaming, interrupt, and approvals through `AppStore` snapshots and `AppClient`
+
+#### Deliverable At End Of Phase 5
+
+At the end of Phase 5, `codex-mobile-client` should be able to host an OpenCode backend end to end behind the existing mobile Rust facade, with backend-neutral store updates and minimal UniFFI changes, ready for the platform connection/config wiring and follow-up validation.
+
 ### Phase 6: Tests And Validation
 
 1. Unit-test all OpenCode deserialization and mapping functions with fixtures.
@@ -304,8 +483,48 @@ Expose unsupported operations through backend capabilities and clear Rust errors
 3. Unit-test directory-context injection for session create/list/message/prompt/abort/fork/permission/file calls.
 4. Add store/reducer tests proving OpenCode events update the same snapshots the UI already observes.
 5. Add a fake HTTP/SSE server test for connect, list sessions by directory, send prompt async, stream parts, permission response, and reconnect.
-6. Add an ignored/manual integration test against a real `opencode serve` instance with two directories.
+6. Add an ignored/manual integration test against a real `litter-opencode-start` server instance with two directories.
 7. Run `cargo test` for `opencode-bridge` and `codex-mobile-client`.
+
+#### Mobile Validation Follow-Up
+
+After the shared Rust bridge is in place, the native validation slice should cover both iOS and Android in the same pass:
+
+1. Extend saved server persistence with backend-aware OpenCode fields:
+   - backend kind
+   - OpenCode base URL
+   - optional basic auth username/password
+   - one or more remembered directory scopes
+2. Add a manual OpenCode connection form separate from the existing Codex WebSocket/manual server entry.
+3. Route the native connect action through `connect_opencode_server(...)` and only remember the server after a successful connect.
+4. Verify the minimum end-to-end app workflow:
+   - connect
+   - thread list
+   - read/resume thread
+   - start thread in selected directory
+   - async prompt streaming
+   - interrupt
+   - approval response
+   - model refresh
+5. Verify reconnect and persistence:
+   - app relaunch reconnects saved OpenCode servers
+   - saved credentials and directory scopes round-trip through native persistence plus Rust reconnect records
+   - disconnected/reconnected state remains coherent in UI
+6. Update native QA/docs with manual validation steps that explicitly use `litter-opencode-start` and `litter-opencode-creds`.
+
+#### Manual Mobile Validation
+
+Use this sequence for both iOS and Android once the native OpenCode connect form is wired:
+
+1. Start the helper-managed local server with `litter-opencode-start`.
+2. Confirm listener state with `litter-opencode-status`.
+3. Read the helper-managed basic auth credentials with `litter-opencode-creds`.
+4. In the mobile app, choose the OpenCode manual connection path and enter:
+   - base URL `http://127.0.0.1:4187`
+   - username/password from `litter-opencode-creds`
+   - target directory to use as the initial session scope
+5. After connect, verify thread list hydration, read/resume, new thread creation in the selected directory, async streaming, interrupt, approval response, and model refresh.
+6. Relaunch the app and verify the saved OpenCode record reconnects automatically with the same credentials and directory scope.
 
 ## Acceptance Criteria
 
@@ -337,7 +556,7 @@ Expose unsupported operations through backend capabilities and clear Rust errors
 
 Build the first slice around an already configured local OpenCode server:
 
-1. Manual connect to `http://host:4096`.
+1. Start the local server with `litter-opencode-start`, then verify credentials with `litter-opencode-creds`, then manual connect to `http://127.0.0.1:4187` using those helper-managed basic auth credentials.
 2. User selects or enters a directory scope for that server.
 3. Health plus `/event?directory=<cwd>` SSE connection.
 4. Session list and message hydration for that directory.

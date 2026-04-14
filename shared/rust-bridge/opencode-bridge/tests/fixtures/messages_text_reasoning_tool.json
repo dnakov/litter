@@ -1,0 +1,161 @@
+[
+  {
+    "info": {
+      "id": "msg_user_1",
+      "sessionID": "sess_created",
+      "role": "user",
+      "time": {
+        "created": 1730000410000
+      },
+      "agent": "codex",
+      "model": {
+        "providerID": "openai",
+        "modelID": "gpt-5.4"
+      },
+      "system": "Follow repository instructions"
+    },
+    "parts": [
+      {
+        "id": "part_user_text_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_user_1",
+        "type": "text",
+        "text": "Implement the OpenCode bridge contract crate.",
+        "time": {
+          "start": 1730000410000
+        },
+        "metadata": {
+          "source": "composer"
+        }
+      }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg_assistant_1",
+      "sessionID": "sess_created",
+      "role": "assistant",
+      "time": {
+        "created": 1730000411000,
+        "completed": 1730000420000
+      },
+      "parentID": "msg_user_1",
+      "providerID": "openai",
+      "modelID": "gpt-5.4",
+      "mode": "default",
+      "path": {
+        "cwd": "/Users/franklin/Development/OpenSource/litter",
+        "root": "/Users/franklin/Development/OpenSource/litter"
+      },
+      "cost": 0.12,
+      "tokens": {
+        "input": 320,
+        "output": 480,
+        "reasoning": 96,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "finish": "stop"
+    },
+    "parts": [
+      {
+        "id": "part_step_start_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "step-start",
+        "snapshot": "working tree clean"
+      },
+      {
+        "id": "part_reasoning_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "reasoning",
+        "text": "Lock the contract first, then transport.",
+        "time": {
+          "start": 1730000411200,
+          "end": 1730000412000
+        },
+        "metadata": {
+          "effort": "medium"
+        }
+      },
+      {
+        "id": "part_text_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "text",
+        "text": "Added the crate skeleton and tests.",
+        "time": {
+          "start": 1730000412000,
+          "end": 1730000413000
+        },
+        "metadata": {
+          "stream": true
+        }
+      },
+      {
+        "id": "part_tool_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "tool",
+        "callID": "tool_123",
+        "tool": "apply_patch",
+        "state": {
+          "status": "completed",
+          "input": {
+            "path": "shared/rust-bridge/opencode-bridge/src/types.rs"
+          },
+          "output": "patch applied",
+          "title": "Add type models",
+          "metadata": {
+            "linesChanged": 220
+          },
+          "time": {
+            "start": 1730000413000,
+            "end": 1730000415000
+          }
+        }
+      },
+      {
+        "id": "part_file_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "file",
+        "mime": "text/rust",
+        "filename": "types.rs",
+        "url": "file:///Users/franklin/Development/OpenSource/litter/shared/rust-bridge/opencode-bridge/src/types.rs"
+      },
+      {
+        "id": "part_patch_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "patch",
+        "hash": "deadbeef",
+        "files": [
+          "shared/rust-bridge/opencode-bridge/src/types.rs",
+          "shared/rust-bridge/opencode-bridge/src/events.rs"
+        ]
+      },
+      {
+        "id": "part_step_finish_1",
+        "sessionID": "sess_created",
+        "messageID": "msg_assistant_1",
+        "type": "step-finish",
+        "reason": "completed",
+        "snapshot": "tests added",
+        "cost": 0.12,
+        "tokens": {
+          "input": 320,
+          "output": 480,
+          "reasoning": 96,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        }
+      }
+    ]
+  }
+]

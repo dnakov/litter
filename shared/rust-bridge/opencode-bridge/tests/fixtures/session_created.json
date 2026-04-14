@@ -1,0 +1,12 @@
+{
+  "id": "sess_created",
+  "projectID": "project_litter",
+  "directory": "/Users/franklin/Development/OpenSource/litter",
+  "parentID": "sess_root",
+  "title": "Implement Phase 1",
+  "version": "0.1.0",
+  "time": {
+    "created": 1730000400000,
+    "updated": 1730000405000
+  }
+}

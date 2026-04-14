@@ -309,6 +309,26 @@ pub struct PendingUserInputAnswer {
     pub answers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct AppOpenCodeDirectoryScope {
+    pub directory: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct AppOpenCodeConnectRequest {
+    pub server_id: String,
+    pub display_name: String,
+    pub base_url: String,
+    #[uniffi(default = None)]
+    pub basic_auth_username: Option<String>,
+    #[uniffi(default = None)]
+    pub basic_auth_password: Option<String>,
+    #[serde(default)]
+    pub known_directories: Vec<AppOpenCodeDirectoryScope>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[derive(uniffi::Record)]

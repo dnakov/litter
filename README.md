@@ -35,6 +35,26 @@ make android-emulator-fast  # fast Android emulator build
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for prerequisites, full build options, TestFlight/App Store release, and SSH setup.
 
+## OpenCode Server Helper
+
+Use the repo-local helper when validating the OpenCode bridge:
+
+```bash
+./opencode-start
+```
+
+If you want the same flow available globally, install the `litter-start` symlink:
+
+```bash
+make install-litter-start
+```
+
+This uses the same auth behavior as `./opencode-start`:
+
+- username defaults to `opencode` unless `OPENCODE_SERVER_USERNAME` is set
+- password comes from `OPENCODE_SERVER_PASSWORD`, `.local/opencode-server.env`, or `.local/opencode-server-password`
+- `.local/opencode-server-password` is created automatically if it does not exist
+
 ## Repository Layout
 
 ```

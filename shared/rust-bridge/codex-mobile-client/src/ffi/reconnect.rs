@@ -190,10 +190,16 @@ impl ReconnectController {
                 continue;
             }
             let is_connected = connected_ids.contains(&server.id);
-            let credential = credential_provider.as_ref().and_then(|p| {
-                let ssh_port = crate::reconnect::resolved_ssh_port(server);
-                p.load_credential(server.hostname.clone(), ssh_port)
-            });
+            let credential = if server.backend_kind
+                == crate::reconnect::SavedServerBackendKindRecord::Codex
+            {
+                credential_provider.as_ref().and_then(|p| {
+                    let ssh_port = crate::reconnect::resolved_ssh_port(server);
+                    p.load_credential(server.hostname.clone(), ssh_port)
+                })
+            } else {
+                None
+            };
             if let Some(plan) = compute_reconnect_plan(server, credential.as_ref(), is_connected) {
                 plans.push(plan);
             }
@@ -282,10 +288,16 @@ impl ReconnectController {
 
         if let Some(server) = saved_server {
             let credential_provider = self.credential_provider.lock().await;
-            let credential = credential_provider.as_ref().and_then(|p| {
-                let ssh_port = crate::reconnect::resolved_ssh_port(&server);
-                p.load_credential(server.hostname.clone(), ssh_port)
-            });
+            let credential = if server.backend_kind
+                == crate::reconnect::SavedServerBackendKindRecord::Codex
+            {
+                credential_provider.as_ref().and_then(|p| {
+                    let ssh_port = crate::reconnect::resolved_ssh_port(&server);
+                    p.load_credential(server.hostname.clone(), ssh_port)
+                })
+            } else {
+                None
+            };
             drop(credential_provider);
 
             if let Some(plan) = compute_reconnect_plan(&server, credential.as_ref(), false) {
@@ -338,7 +350,11 @@ impl ReconnectController {
         let remote_connected: Vec<String> = snapshot
             .servers
             .values()
-            .filter(|s| !s.is_local && s.health == ServerHealthSnapshot::Connected)
+            .filter(|s| {
+                !s.is_local
+                    && s.health == ServerHealthSnapshot::Connected
+                    && !self.inner.has_opencode_server(&s.server_id)
+            })
             .map(|s| s.server_id.clone())
             .collect();
 
@@ -502,6 +518,11 @@ mod tests {
             ssh_port_forwarding_enabled: None,
             websocket_url: None,
             remembered_by_user: true,
+            backend_kind: crate::reconnect::SavedServerBackendKindRecord::Codex,
+            opencode_base_url: None,
+            opencode_basic_auth_username: None,
+            opencode_basic_auth_password: None,
+            opencode_known_directories: Vec::new(),
         };
 
         assert_eq!(
@@ -549,6 +570,11 @@ mod tests {
             ssh_port_forwarding_enabled: None,
             websocket_url: None,
             remembered_by_user: true,
+            backend_kind: crate::reconnect::SavedServerBackendKindRecord::Codex,
+            opencode_base_url: None,
+            opencode_basic_auth_username: None,
+            opencode_basic_auth_password: None,
+            opencode_known_directories: Vec::new(),
         };
 
         assert_eq!(

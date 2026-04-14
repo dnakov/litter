@@ -2,20 +2,26 @@ import SwiftUI
 import Network
 
 struct DiscoveryView: View {
-    var onServerSelected: ((DiscoveredServer) -> Void)?
+    var onServerSelected: ((String) -> Void)?
     @Environment(AppModel.self) private var appModel
     @State private var discovery: NetworkDiscovery
+    @State private var savedOpenCodeServers: [SavedServer] = SavedServerStore.openCodeServers()
     @State private var sshServer: DiscoveredServer?
     @State private var connectionChoiceServer: DiscoveredServer?
     @State private var pendingSSHServer: DiscoveredServer?
     @State private var showManualEntry = false
     @State private var manualConnectionMode: ManualConnectionMode = .ssh
     @State private var manualCodexURL = ""
+    @State private var manualOpenCodeBaseURL = ""
+    @State private var manualOpenCodeUsername = ""
+    @State private var manualOpenCodePassword = ""
+    @State private var manualOpenCodeDirectory = ""
     @State private var manualHost = ""
     @State private var manualSSHPort = "22"
     @State private var manualWakeMAC = ""
     @State private var autoSSHStarted = false
     @State private var connectingServer: DiscoveredServer?
+    @State private var connectingSavedServerId: String?
     @State private var wakingServer: DiscoveredServer?
     @State private var pendingAutoNavigateServerId: String?
     @State private var pendingAutoNavigateServer: DiscoveredServer?
@@ -27,7 +33,7 @@ struct DiscoveryView: View {
     private let initialServers: [DiscoveredServer]
 
     init(
-        onServerSelected: ((DiscoveredServer) -> Void)? = nil,
+        onServerSelected: ((String) -> Void)? = nil,
         discovery: NetworkDiscovery? = nil,
         autoStartDiscovery: Bool = true,
         initialServers: [DiscoveredServer] = []
@@ -61,6 +67,7 @@ struct DiscoveryView: View {
     }
 
     private func handleAppear() {
+        savedOpenCodeServers = SavedServerStore.openCodeServers()
         refreshDiscovery()
         guard autoStartDiscovery else { return }
         maybeStartSimulatorAutoSSH()
@@ -160,7 +167,7 @@ struct DiscoveryView: View {
                 if let server = pendingAutoNavigateServer
                     ?? discovery.servers.first(where: { $0.id == pendingAutoNavigateServerId }) {
                     self.pendingAutoNavigateServer = nil
-                    navigateAfterConnect(server)
+                    navigateAfterConnect(serverId: server.id)
                 }
             } else if serverSnapshot.health == .disconnected,
                       let message = serverSnapshot.connectionProgress?.terminalMessage {
@@ -274,7 +281,7 @@ struct DiscoveryView: View {
 
     private var serversSection: some View {
         Section {
-            if allServers.isEmpty {
+            if allServers.isEmpty && savedOpenCodeServers.isEmpty {
                 if discovery.isInitialLoad {
                     HStack {
                         ProgressView().tint(LitterTheme.textMuted).scaleEffect(0.7)
@@ -299,6 +306,9 @@ struct DiscoveryView: View {
             } else {
                 ForEach(allServers) { server in
                     serverRow(server)
+                }
+                ForEach(savedOpenCodeServers) { server in
+                    openCodeServerRow(server)
                 }
             }
 
@@ -407,7 +417,7 @@ struct DiscoveryView: View {
             }
         }
         .accessibilityIdentifier(rowIdentifier)
-        .disabled(connectingServer != nil || wakingServer != nil)
+        .disabled(connectingServer != nil || connectingSavedServerId != nil || wakingServer != nil)
         .contextMenu {
             if server.source != .local {
                 Button {
@@ -418,6 +428,42 @@ struct DiscoveryView: View {
                 }
             }
         }
+    }
+
+    private func openCodeServerRow(_ server: SavedServer) -> some View {
+        let serverSnapshot = appModel.snapshot?.servers.first(where: { $0.serverId == server.id })
+        return Button {
+            handleTap(server)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .foregroundColor(LitterTheme.accent)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(server.name)
+                        .litterFont(.subheadline)
+                        .foregroundColor(LitterTheme.textPrimary)
+                    Text(openCodeSubtitle(server, snapshot: serverSnapshot))
+                        .litterFont(.caption)
+                        .foregroundColor(LitterTheme.textSecondary)
+                }
+                Spacer()
+                if let progressTag = progressTag(for: serverSnapshot) {
+                    statusTag(label: progressTag.label, color: progressTag.color)
+                } else if let health = serverSnapshot?.health,
+                          health != .disconnected {
+                    statusTag(label: health.displayLabel.lowercased(), color: health.accentColor)
+                } else if connectingSavedServerId == server.id {
+                    ProgressView().controlSize(.small).tint(LitterTheme.accent)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(LitterTheme.textMuted)
+                        .font(.caption)
+                }
+            }
+        }
+        .accessibilityIdentifier("discovery.server.opencode.\(server.id)")
+        .disabled(connectingServer != nil || connectingSavedServerId != nil || wakingServer != nil)
     }
 
     private func serverRowAccessibilityIdentifier(for server: DiscoveredServer) -> String {
@@ -457,6 +503,22 @@ struct DiscoveryView: View {
         return parts.joined()
     }
 
+    private func openCodeSubtitle(_ server: SavedServer, snapshot: AppServerSnapshot?) -> String {
+        if let progressDetail = snapshot?.connectionProgressDetail,
+           !progressDetail.isEmpty {
+            return progressDetail
+        }
+
+        var parts = [server.openCodeBaseURL ?? server.hostname, "OpenCode"]
+        if let directory = server.openCodeKnownDirectories.first {
+            parts.append(directory)
+            if server.openCodeKnownDirectories.count > 1 {
+                parts.append("+\(server.openCodeKnownDirectories.count - 1) more")
+            }
+        }
+        return parts.joined(separator: " - ")
+    }
+
     @ViewBuilder
     private func statusTag(label: String, color: Color) -> some View {
         Text(label)
@@ -478,22 +540,22 @@ struct DiscoveryView: View {
         Task { await handleTapAsync(server) }
     }
 
-    private func navigateAfterConnect(_ server: DiscoveredServer) {
-        guard let snapshot = appModel.snapshot?.servers.first(where: { $0.serverId == server.id }) else {
-            onServerSelected?(server)
+    private func navigateAfterConnect(serverId: String) {
+        guard let snapshot = appModel.snapshot?.servers.first(where: { $0.serverId == serverId }) else {
+            onServerSelected?(serverId)
             return
         }
         if snapshot.isLocal, snapshot.account == nil {
             appState.showSettings = true
             return
         }
-        onServerSelected?(server)
+        onServerSelected?(serverId)
     }
 
     @MainActor
     private func handleTapAsync(_ server: DiscoveredServer) async {
         if appModel.snapshot?.servers.first(where: { $0.serverId == server.id })?.health == .connected {
-            navigateAfterConnect(server)
+            navigateAfterConnect(serverId: server.id)
             return
         }
 
@@ -507,6 +569,21 @@ struct DiscoveryView: View {
         } else {
             connectError = "Server did not respond after wake attempt. Enable Wake for network access on the Mac."
         }
+    }
+
+    @MainActor
+    private func handleTap(_ server: SavedServer) {
+        Task { await handleTapAsync(server) }
+    }
+
+    @MainActor
+    private func handleTapAsync(_ server: SavedServer) async {
+        if appModel.snapshot?.servers.first(where: { $0.serverId == server.id })?.health == .connected {
+            navigateAfterConnect(serverId: server.id)
+            return
+        }
+
+        await connectToSavedServer(server)
     }
 
     private func prepareServerForSelection(_ server: DiscoveredServer) async -> (server: DiscoveredServer, canAttemptSSH: Bool) {
@@ -805,7 +882,7 @@ struct DiscoveryView: View {
             return
         }
         if appModel.snapshot?.servers.first(where: { $0.serverId == connectedServerId })?.health == .connected {
-            navigateAfterConnect(server)
+            navigateAfterConnect(serverId: connectedServerId)
         } else {
             connectError = "Failed to connect"
         }
@@ -827,6 +904,50 @@ struct DiscoveryView: View {
             server.withConnectionPreference(.ssh)
         )
         return serverId
+    }
+
+    private func connectToSavedServer(_ server: SavedServer) async {
+        guard connectingSavedServerId == nil, connectingServer == nil else { return }
+        guard server.backendKind == .openCode else { return }
+
+        let baseURL = server.openCodeBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let directories = server.openCodeKnownDirectories
+        guard !baseURL.isEmpty else {
+            connectError = "OpenCode base URL is required."
+            return
+        }
+        guard !directories.isEmpty else {
+            connectError = "OpenCode directory is required."
+            return
+        }
+
+        connectingSavedServerId = server.id
+        connectError = nil
+
+        do {
+            let request = AppOpenCodeConnectRequest(
+                serverId: server.id,
+                displayName: server.name,
+                baseUrl: baseURL,
+                basicAuthUsername: server.openCodeBasicAuthUsername,
+                basicAuthPassword: server.openCodeBasicAuthPassword,
+                knownDirectories: directories.map { AppOpenCodeDirectoryScope(directory: $0) }
+            )
+            let connectedServerId = try await appModel.serverBridge.connectOpencodeServer(request: request)
+            SavedServerStore.remember(server.normalizedForPersistence())
+            savedOpenCodeServers = SavedServerStore.openCodeServers()
+            await appModel.refreshSnapshot()
+            connectingSavedServerId = nil
+
+            if appModel.snapshot?.servers.first(where: { $0.serverId == connectedServerId })?.health == .connected {
+                navigateAfterConnect(serverId: connectedServerId)
+            } else {
+                connectError = "Failed to connect"
+            }
+        } catch {
+            connectingSavedServerId = nil
+            connectError = error.localizedDescription
+        }
     }
 
     private func sshConnectAndConnectServer(
@@ -913,6 +1034,28 @@ struct DiscoveryView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
                                 .keyboardType(.URL)
+                        } else if manualConnectionMode == .openCode {
+                            TextField("http://host:4187", text: $manualOpenCodeBaseURL)
+                                .litterFont(.footnote)
+                                .foregroundColor(LitterTheme.textPrimary)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                                .keyboardType(.URL)
+                            TextField("username (optional)", text: $manualOpenCodeUsername)
+                                .litterFont(.footnote)
+                                .foregroundColor(LitterTheme.textPrimary)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                            SecureField("password (optional)", text: $manualOpenCodePassword)
+                                .litterFont(.footnote)
+                                .foregroundColor(LitterTheme.textPrimary)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                            TextField("directory", text: $manualOpenCodeDirectory)
+                                .litterFont(.footnote)
+                                .foregroundColor(LitterTheme.textPrimary)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
                         } else {
                             TextField("hostname or IP", text: $manualHost)
                                 .litterFont(.footnote)
@@ -935,6 +1078,10 @@ struct DiscoveryView: View {
                     } footer: {
                         if manualConnectionMode == .codex {
                             Text("Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.")
+                                .litterFont(.caption2)
+                                .foregroundColor(LitterTheme.textMuted)
+                        } else if manualConnectionMode == .openCode {
+                            Text("Run: litter-opencode-start\nUse litter-opencode-creds for helper-managed basic auth credentials.")
                                 .litterFont(.caption2)
                                 .foregroundColor(LitterTheme.textMuted)
                         }
@@ -1030,6 +1177,8 @@ struct DiscoveryView: View {
         switch manualConnectionMode {
         case .codex:
             submitManualCodexEntry()
+        case .openCode:
+            submitManualOpenCodeEntry()
         case .ssh:
             submitManualSSHEntry()
         }
@@ -1093,6 +1242,52 @@ struct DiscoveryView: View {
         )
         showManualEntry = false
         Task { await connectToServer(server) }
+    }
+
+    private func submitManualOpenCodeEntry() {
+        let rawBaseURL = manualOpenCodeBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let directory = manualOpenCodeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawBaseURL.isEmpty else {
+            connectError = "Enter an OpenCode base URL"
+            return
+        }
+        guard !directory.isEmpty else {
+            connectError = "Enter an OpenCode directory"
+            return
+        }
+        guard let url = URL(string: rawBaseURL),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = url.host, !host.isEmpty else {
+            connectError = "Enter an http:// or https:// URL"
+            return
+        }
+
+        let port = url.port.flatMap(UInt16.init)
+            ?? (scheme == "https" ? 443 : 80)
+        let server = SavedServer(
+            id: "manual-opencode-\(host):\(port)",
+            name: host,
+            hostname: host,
+            port: port,
+            codexPorts: [],
+            sshPort: nil,
+            source: .manual,
+            hasCodexServer: false,
+            wakeMAC: nil,
+            preferredConnectionMode: nil,
+            preferredCodexPort: nil,
+            sshPortForwardingEnabled: nil,
+            websocketURL: nil,
+            backendKind: .openCode,
+            openCodeBaseURL: rawBaseURL,
+            openCodeBasicAuthUsername: manualOpenCodeUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty,
+            openCodeBasicAuthPassword: manualOpenCodePassword.nilIfEmpty,
+            openCodeKnownDirectories: [directory]
+        )
+        showManualEntry = false
+        Task { await connectToSavedServer(server) }
     }
 
     private func submitManualSSHEntry() {
@@ -1199,6 +1394,7 @@ private final class WakeProbeResumeGate: @unchecked Sendable {
 
 private enum ManualConnectionMode: String, CaseIterable, Identifiable {
     case codex
+    case openCode
     case ssh
 
     var id: String { rawValue }
@@ -1207,6 +1403,8 @@ private enum ManualConnectionMode: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return "Codex"
+        case .openCode:
+            return "OpenCode"
         case .ssh:
             return "SSH"
         }
@@ -1216,6 +1414,8 @@ private enum ManualConnectionMode: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return "Codex Server"
+        case .openCode:
+            return "OpenCode Server"
         case .ssh:
             return "SSH Bootstrap"
         }
@@ -1225,9 +1425,18 @@ private enum ManualConnectionMode: String, CaseIterable, Identifiable {
         switch self {
         case .codex:
             return "Connect"
+        case .openCode:
+            return "Connect"
         case .ssh:
             return "Continue to SSH Login"
         }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

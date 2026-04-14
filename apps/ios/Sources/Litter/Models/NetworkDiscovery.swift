@@ -316,7 +316,7 @@ final class NetworkDiscovery {
 
     private func loadSavedNetworkServers() -> [DiscoveredServer] {
         SavedServerStore.load()
-            .map { $0.toDiscoveredServer() }
+            .compactMap { $0.toDiscoveredServer() }
             .filter { $0.source != .local }
     }
 

@@ -1,0 +1,21 @@
+{
+  "type": "permission.updated",
+  "properties": {
+    "id": "perm_1",
+    "type": "filesystem.write",
+    "pattern": [
+      "shared/rust-bridge/opencode-bridge/**"
+    ],
+    "sessionID": "sess_created",
+    "messageID": "msg_assistant_1",
+    "callID": "tool_123",
+    "title": "Write bridge files",
+    "state": "pending",
+    "metadata": {
+      "sandbox": "workspace-write"
+    },
+    "time": {
+      "created": 1730000412500
+    }
+  }
+}

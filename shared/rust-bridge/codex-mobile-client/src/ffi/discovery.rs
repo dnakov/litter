@@ -2,7 +2,9 @@ use crate::MobileClient;
 use crate::discovery_uniffi::{AppDiscoveredServer, AppMdnsSeed, AppProgressiveDiscoveryUpdate};
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
+use crate::mobile_client::opencode_connect_request_to_config;
 use crate::session::connection::{InProcessConfig, ServerConfig};
+use crate::types::AppOpenCodeConnectRequest;
 use std::sync::Arc;
 
 #[derive(uniffi::Object)]
@@ -159,6 +161,19 @@ impl ServerBridge {
         };
         blocking_async!(self.rt, self.inner, |c| {
             c.connect_remote(config)
+                .await
+                .map_err(|e| ClientError::Transport(e.to_string()))
+        })
+    }
+
+    pub async fn connect_opencode_server(
+        &self,
+        request: AppOpenCodeConnectRequest,
+    ) -> Result<String, ClientError> {
+        let config = opencode_connect_request_to_config(request)
+            .map_err(ClientError::InvalidParams)?;
+        blocking_async!(self.rt, self.inner, |c| {
+            c.connect_opencode(config)
                 .await
                 .map_err(|e| ClientError::Transport(e.to_string()))
         })

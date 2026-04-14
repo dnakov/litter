@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PASSWORD_FILE_DEFAULT="$ROOT_DIR/.local/opencode-server-password"
+ENV_FILE_DEFAULT="$ROOT_DIR/.local/opencode-server.env"
+PROGRAM_NAME="${OPENCODE_START_NAME:-$(basename "$0")}"
+
+load_env_file() {
+  local env_file="$1"
+  if [[ -f "$env_file" ]]; then
+    # shellcheck disable=SC1090
+    source "$env_file"
+  fi
+}
+
+generate_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 24 | tr -d '\n'
+    return
+  fi
+
+  uuidgen | tr -d '-\n'
+}
+
+ensure_password_file() {
+  local password_file="$1"
+  mkdir -p "$(dirname "$password_file")"
+  chmod 700 "$(dirname "$password_file")"
+
+  if [[ ! -f "$password_file" ]]; then
+    umask 077
+    generate_password >"$password_file"
+  fi
+
+  tr -d '\r\n' <"$password_file"
+}
+
+usage() {
+  printf 'Usage: %s [--hostname HOST] [--port PORT] [--pure|--no-pure] [--print-logs]\n\n' "$PROGRAM_NAME"
+
+  cat <<'EOF'
+Starts `opencode serve` with HTTP basic auth enabled through
+`OPENCODE_SERVER_PASSWORD` and optional `OPENCODE_SERVER_USERNAME`.
+
+Config sources, in precedence order:
+1. Existing exported env vars
+2. .local/opencode-server.env
+3. .local/opencode-server-password (auto-generated if missing)
+
+Optional env vars:
+- OPENCODE_SERVER_PASSWORD
+- OPENCODE_SERVER_USERNAME
+- OPENCODE_SERVER_PASSWORD_FILE
+- OPENCODE_SERVER_ENV_FILE
+- OPENCODE_HOSTNAME
+- OPENCODE_PORT
+- OPENCODE_PURE=0|1
+
+EOF
+}
+
+HOSTNAME="${OPENCODE_HOSTNAME:-127.0.0.1}"
+PORT="${OPENCODE_PORT:-4187}"
+PURE_FLAG="${OPENCODE_PURE:-1}"
+PRINT_LOGS=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --hostname)
+      HOSTNAME="$2"
+      shift 2
+      ;;
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    --pure)
+      PURE_FLAG=1
+      shift
+      ;;
+    --no-pure)
+      PURE_FLAG=0
+      shift
+      ;;
+    --print-logs)
+      PRINT_LOGS=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+ENV_FILE="${OPENCODE_SERVER_ENV_FILE:-$ENV_FILE_DEFAULT}"
+PASSWORD_FILE="${OPENCODE_SERVER_PASSWORD_FILE:-$PASSWORD_FILE_DEFAULT}"
+
+load_env_file "$ENV_FILE"
+
+if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
+  OPENCODE_SERVER_PASSWORD="$(ensure_password_file "$PASSWORD_FILE")"
+fi
+
+OPENCODE_SERVER_USERNAME="${OPENCODE_SERVER_USERNAME:-opencode}"
+
+export OPENCODE_SERVER_PASSWORD
+export OPENCODE_SERVER_USERNAME
+
+echo "Starting OpenCode server with HTTP basic auth enabled."
+echo "  URL: http://${HOSTNAME}:${PORT}"
+echo "  Username: ${OPENCODE_SERVER_USERNAME}"
+if [[ -f "$PASSWORD_FILE" ]]; then
+  echo "  Password file: ${PASSWORD_FILE}"
+else
+  echo "  Password source: OPENCODE_SERVER_PASSWORD"
+fi
+
+ARGS=(serve --hostname "$HOSTNAME" --port "$PORT")
+
+if [[ "$PURE_FLAG" == "1" ]]; then
+  ARGS+=(--pure)
+fi
+
+if [[ "$PRINT_LOGS" == "1" ]]; then
+  ARGS+=(--print-logs)
+fi
+
+exec opencode "${ARGS[@]}"

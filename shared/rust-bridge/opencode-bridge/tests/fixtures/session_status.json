@@ -1,0 +1,11 @@
+{
+  "sess_created": {
+    "type": "busy"
+  },
+  "sess_retry": {
+    "type": "retry",
+    "attempt": 2,
+    "message": "waiting for provider retry window",
+    "next": 1730000500000
+  }
+}

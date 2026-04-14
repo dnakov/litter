@@ -157,7 +157,7 @@ $(shell mkdir -p $(STAMPS))
 	test test-rust test-ios test-android \
 	testflight appstore-release play-upload play-release \
 	clean clean-rust clean-ios clean-android \
-	rebuild-bindings tui tui-run help
+	rebuild-bindings install-litter-start tui tui-run help
 
 all: ios android
 
@@ -247,6 +247,10 @@ android-release: rust-android
 	@echo "==> Building Android release..."
 	@cd $(ANDROID_DIR) && $(ANDROID_ENV) ./gradlew :app:assembleRelease
 
+install-litter-start:
+	@echo "==> Installing litter-start symlink..."
+	@cd $(ROOT) && ./tools/scripts/install-litter-start.sh
+
 rust-ios: rust-ios-package
 
 rust-ios-package: $(STAMP_SYNC)
@@ -294,6 +298,7 @@ help:
 		'make rust-ios-device-fast fast Rust iOS device lane (raw staticlib only)' \
 		'make android            fast Android dev build (default ABI/profile: arm64-v8a/android-dev)' \
 		'make android-emulator-fast fast Android dev build using emulator ABI ($(ANDROID_EMULATOR_ABIS))' \
+		'make install-litter-start install the global litter-start symlink into $$HOME/.local/bin' \
 		'make android-emulator-run  fast emulator build + install + launch on emulator' \
 		'make android-device-run    fast Android dev build + install + launch with attached logcat on connected device (override ANDROID_DEVICE_SERIAL; set ANDROID_REINSTALL_ON_SIGNATURE_MISMATCH=0 to keep installed app)' \
 		'make android-release    Android build using release Rust profile and multi-ABI output' \

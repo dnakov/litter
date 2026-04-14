@@ -1,0 +1,8 @@
+{
+  "id": "part_unknown_1",
+  "sessionID": "sess_created",
+  "messageID": "msg_assistant_1",
+  "type": "compaction",
+  "auto": true,
+  "notes": "bridge should keep raw payload"
+}

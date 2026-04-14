@@ -443,6 +443,11 @@ impl MobileClient {
     }
 
     pub(crate) fn get_session(&self, server_id: &str) -> Result<Arc<ServerSession>, RpcError> {
+        if self.has_opencode_server(server_id) {
+            return Err(RpcError::Deserialization(format!(
+                "server {server_id} uses the OpenCode backend and does not support Codex RPC transport"
+            )));
+        }
         self.sessions_read().get(server_id).cloned().ok_or_else(|| {
             self.mark_server_transport_disconnected(server_id);
             RpcError::Transport(TransportError::Disconnected)
@@ -465,10 +470,17 @@ impl MobileClient {
 
     /// Return the configs of all currently connected servers (public for tooling).
     pub fn connected_server_configs(&self) -> Vec<ServerConfig> {
-        self.sessions_read()
+        let mut configs = self
+            .sessions_read()
             .values()
             .map(|s| s.config().clone())
-            .collect()
+            .collect::<Vec<_>>();
+        configs.extend(
+            self.opencode_servers_read()
+                .values()
+                .map(|runtime| super::opencode::server_config_from_opencode(runtime.config())),
+        );
+        configs
     }
 
     pub(crate) fn snapshot_thread(&self, key: &ThreadKey) -> Result<ThreadSnapshot, RpcError> {

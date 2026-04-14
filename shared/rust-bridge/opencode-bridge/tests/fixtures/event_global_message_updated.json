@@ -1,0 +1,37 @@
+{
+  "directory": "/Users/franklin/Development/OpenSource/litter",
+  "project": "litter",
+  "workspace": "workspace-main",
+  "payload": {
+    "type": "message.updated",
+    "properties": {
+      "info": {
+        "id": "msg_assistant_1",
+        "sessionID": "sess_created",
+        "role": "assistant",
+        "time": {
+          "created": 1730000411000,
+          "completed": 1730000420000
+        },
+        "parentID": "msg_user_1",
+        "providerID": "openai",
+        "modelID": "gpt-5.4",
+        "mode": "default",
+        "path": {
+          "cwd": "/Users/franklin/Development/OpenSource/litter",
+          "root": "/Users/franklin/Development/OpenSource/litter"
+        },
+        "cost": 0.12,
+        "tokens": {
+          "input": 320,
+          "output": 480,
+          "reasoning": 96,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        }
+      }
+    }
+  }
+}

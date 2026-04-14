@@ -63,6 +63,8 @@ node_modules/
 # Local env (credentials)
 .env
 .envrc
+.local/opencode-server-password
+.local/opencode-server.env
 
 # Factory/Droid
 .factory/
