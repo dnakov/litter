@@ -242,7 +242,8 @@ private extension AppToolCallCard {
                 }
             }
 
-            if diffIndices.count == 1,
+            if kind == .fileChange,
+               diffIndices.count == 1,
                let diffIndex = normalized.enumerated().first(where: { _, section in
                    if case .diff = section { return true }
                    return false

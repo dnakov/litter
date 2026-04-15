@@ -7,6 +7,7 @@ struct ToolCallCardView: View {
     private let externalExpanded: Bool?
     private let onExpandedChange: ((Bool) -> Void)?
     @State private var expanded: Bool
+    @State private var collapsedDiffSections: Set<String> = []
     private let contentFontSize = LitterFont.conversationBodyPointSize
     private let terminalFontSize: CGFloat = 12
 
@@ -70,7 +71,7 @@ struct ToolCallCardView: View {
                         )
                     }
                     ForEach(identifiedSections) { section in
-                        sectionView(section.value)
+                        sectionView(section)
                     }
                 }
                 .padding(.top, 6)
@@ -151,8 +152,8 @@ struct ToolCallCardView: View {
     }
 
     @ViewBuilder
-    private func sectionView(_ section: ToolCallSection) -> some View {
-        switch section {
+    private func sectionView(_ section: IndexedValue<ToolCallSection>) -> some View {
+        switch section.value {
         case .kv(let label, let entries):
             if !entries.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -181,7 +182,7 @@ struct ToolCallCardView: View {
         case .json(let label, let content):
             codeLikeSection(label: label, language: "json", content: content)
         case .diff(let label, let content):
-            diffSection(label: label, content: content)
+            diffSection(id: section.id, label: label, content: content)
         case .text(let label, let content):
             inlineTextSection(label: label, content: content)
         case .list(let label, let items):
@@ -263,45 +264,54 @@ struct ToolCallCardView: View {
         }
     }
 
-    private func diffSection(label: String, content: String) -> some View {
-        let lines = content.components(separatedBy: .newlines)
+    private func diffSection(id: String, label: String, content: String) -> some View {
+        let isCollapsible = model.kind == .fileDiff && !label.isEmpty
+        let isExpanded = !collapsedDiffSections.contains(id)
 
         return VStack(alignment: .leading, spacing: 6) {
-            if !label.isEmpty {
+            if isCollapsible {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        toggleDiffSection(id)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        sectionLabel(label)
+                        Spacer(minLength: 0)
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .litterFont(size: 10, weight: .medium)
+                            .foregroundColor(LitterTheme.textMuted)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if !label.isEmpty {
                 sectionLabel(label)
             }
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(verbatim: line.isEmpty ? " " : line)
-                        .litterMonoFont(size: terminalFontSize)
-                        .foregroundStyle(diffLineColor(for: line))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 3)
-                        .background(diffLineBgColor(for: line))
+
+            if isExpanded {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    SyntaxHighlightedDiffText(
+                        diff: content,
+                        titleHint: label.isEmpty ? nil : label,
+                        fontSize: terminalFontSize
+                    )
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                 }
+                .background(LitterTheme.codeBackground.opacity(0.72))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .background(LitterTheme.codeBackground.opacity(0.72))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 
-    private func diffLineColor(for line: String) -> Color {
-        if line.hasPrefix("+"), !line.hasPrefix("+++") { return LitterTheme.success }
-        if line.hasPrefix("-"), !line.hasPrefix("---") { return LitterTheme.danger }
-        if line.hasPrefix("@@") { return LitterTheme.accentStrong }
-        return LitterTheme.textBody
+    private func toggleDiffSection(_ id: String) {
+        if collapsedDiffSections.contains(id) {
+            collapsedDiffSections.remove(id)
+        } else {
+            collapsedDiffSections.insert(id)
+        }
     }
-
-    private func diffLineBgColor(for line: String) -> Color {
-        if line.hasPrefix("+"), !line.hasPrefix("+++") { return LitterTheme.success.opacity(0.12) }
-        if line.hasPrefix("-"), !line.hasPrefix("---") { return LitterTheme.danger.opacity(0.12) }
-        if line.hasPrefix("@@") { return LitterTheme.accentStrong.opacity(0.12) }
-        return LitterTheme.codeBackground.opacity(0.72)
-    }
-
 
     private var identifiedSections: [IndexedValue<ToolCallSection>] {
         let visibleSections = model.sections.filter { section in

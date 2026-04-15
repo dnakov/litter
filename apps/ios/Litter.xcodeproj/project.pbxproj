@@ -218,6 +218,7 @@
 		DEA6917F19B51C79024C052F /* slack-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 5DF2C84DD77E7A8282AE9831 /* slack-dark.json */; };
 		DEB027917A158E5C5CF0CC8B /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF245554F39E59E68B72EB22 /* ConversationView.swift */; };
 		DEBE0B3B860D8BC5C72FE632 /* one-dark-pro-D.json in Resources */ = {isa = PBXBuildFile; fileRef = 289E852E220BF379FBFA6BCD /* one-dark-pro-D.json */; };
+		DECB9D0F729B54CDD4DF1DA8 /* DiffRendering.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0453F9A958E06582AE93013 /* DiffRendering.swift */; };
 		E010B8AEEBFF38A28018121D /* ConversationItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF5635331A74B2D510911B8E /* ConversationItem.swift */; };
 		E1EEBECB89F39C947D704B6F /* InlineHandoffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 832D667C7B0B93EFED3577EE /* InlineHandoffView.swift */; };
 		E3883F3709687E306044BC06 /* CodexTurnAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D887FC87082710CC7B75CC8A /* CodexTurnAttributes.swift */; };
@@ -529,6 +530,7 @@
 		CD02327C52F16587C973B70F /* ConversationWarmupCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationWarmupCoordinator.swift; sourceTree = "<group>"; };
 		CECEF29277C1DB1AD1EF304D /* text.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = text.xcframework; path = Frameworks/ios_system/text.xcframework; sourceTree = "<group>"; };
 		CFF9DBA865CCBB3308B5667D /* light-plus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "light-plus.json"; sourceTree = "<group>"; };
+		D0453F9A958E06582AE93013 /* DiffRendering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffRendering.swift; sourceTree = "<group>"; };
 		D0D72714D0B3E9209EF907B3 /* ConversationComposerContextBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerContextBarView.swift; sourceTree = "<group>"; };
 		D1E96C6677B2AA22A101A29C /* ContextBadgeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBadgeView.swift; sourceTree = "<group>"; };
 		D2608C1F271D28BFEFBA5EFB /* kanagawa-lotus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "kanagawa-lotus.json"; sourceTree = "<group>"; };
@@ -926,6 +928,7 @@
 				BF245554F39E59E68B72EB22 /* ConversationView.swift */,
 				E27C590AB2E27ACAAB6432EF /* ConversationWarmupView.swift */,
 				86A94747FCE745BAA2DBEBF4 /* CrossServerToolResultView.swift */,
+				D0453F9A958E06582AE93013 /* DiffRendering.swift */,
 				318F2F8563E91AB97950F5DA /* DirectoryPickerView.swift */,
 				034CE02FECF86AB9EC0842D0 /* DiscoveryView.swift */,
 				77D950991BD0F0199209EB68 /* ExperimentalFeaturesView.swift */,
@@ -1289,6 +1292,7 @@
 				5A66F52BBAB0439DB07A21C4 /* CrossServerToolResultView.swift in Sources */,
 				19B4F5707625A7336C99DC88 /* CrossServerTools.swift in Sources */,
 				ECDF3FB523E8728522E50B26 /* DebugSettings.swift in Sources */,
+				DECB9D0F729B54CDD4DF1DA8 /* DiffRendering.swift in Sources */,
 				CFA5E4B56537F480AFECC903 /* DirectoryPickerView.swift in Sources */,
 				8C573877188B1CF76579523A /* DiscoveredServer.swift in Sources */,
 				BEE15B569CF1A1D7F73F25F9 /* DiscoveryView.swift in Sources */,

@@ -1158,7 +1158,13 @@ private struct ConversationTurnDiffRow: View {
 
     var body: some View {
         Button {
-            presented = PresentedDiff(id: "turn-diff", title: "Turn Diff", diff: data.diff)
+            presented = PresentedDiff(
+                id: "turn-diff",
+                title: "Turn Diff",
+                diff: data.diff,
+                stats: DiffStats(additions: data.additions, deletions: data.deletions),
+                sections: presentedDiffSections(from: data.diff)
+            )
         } label: {
             DiffIndicatorLabel(additions: data.additions, deletions: data.deletions)
         }
@@ -1166,7 +1172,8 @@ private struct ConversationTurnDiffRow: View {
         .sheet(item: $presented) { sheet in
             ConversationDiffDetailSheet(
                 title: sheet.title,
-                diff: sheet.diff
+                diff: sheet.diff ?? "",
+                sections: sheet.sections
             )
         }
     }
@@ -1614,11 +1621,19 @@ struct ConversationPinnedContextStrip: View {
     let items: [ConversationItem]
     @State private var todoExpanded = false
     @State private var selectedDiff: PresentedDiff?
+    @State private var cachedCombinedPinnedDiff: PresentedDiff?
+
+    init(items: [ConversationItem]) {
+        self.items = items
+        _cachedCombinedPinnedDiff = State(
+            initialValue: Self.buildCombinedPinnedDiff(from: items)
+        )
+    }
 
     var body: some View {
-        if pinnedPlan != nil || combinedPinnedDiff != nil {
-            VStack(alignment: .leading, spacing: 8) {
-                if let plan = pinnedPlan, let diff = combinedPinnedDiff {
+        VStack(alignment: .leading, spacing: 8) {
+            if pinnedPlan != nil || cachedCombinedPinnedDiff != nil {
+                if let plan = pinnedPlan, let diff = cachedCombinedPinnedDiff {
                     HStack(alignment: .top, spacing: 10) {
                         compactTodoAccordion(for: plan)
                             .layoutPriority(1)
@@ -1629,19 +1644,23 @@ struct ConversationPinnedContextStrip: View {
                         compactTodoAccordion(for: plan)
                     }
 
-                    if let diff = combinedPinnedDiff {
+                    if let diff = cachedCombinedPinnedDiff {
                         diffIndicatorButton(for: diff)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .sheet(item: $selectedDiff) { presentedDiff in
-                ConversationDiffDetailSheet(
-                    title: presentedDiff.title,
-                    diff: presentedDiff.diff
-                )
-            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .sheet(item: $selectedDiff) { presentedDiff in
+            ConversationDiffDetailSheet(
+                title: presentedDiff.title,
+                diff: presentedDiff.diff ?? "",
+                sections: presentedDiff.sections
+            )
+        }
+        .onChange(of: pinnedDiffTaskKey, initial: false) { _, _ in
+            cachedCombinedPinnedDiff = Self.buildCombinedPinnedDiff(from: items)
         }
     }
 
@@ -1654,27 +1673,45 @@ struct ConversationPinnedContextStrip: View {
         })
     }
 
-    private var combinedPinnedDiff: PresentedDiff? {
-        let diffs = items.flatMap { item -> [String] in
+    private var pinnedDiffTaskKey: [Int] {
+        items.map(\.renderDigest)
+    }
+
+    private static func buildCombinedPinnedDiff(from items: [ConversationItem]) -> PresentedDiff? {
+        let rawSections = items.flatMap { item -> [PresentedDiffSection] in
             switch item.content {
             case .fileChange(let data):
-                return data.changes
-                    .map(\.diff)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
+                return data.changes.compactMap { change in
+                    let diff = change.diff.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !diff.isEmpty else { return nil }
+                    return PresentedDiffSection(
+                        title: workspaceTitle(for: change.path),
+                        diff: diff
+                    )
+                }
             case .turnDiff(let data):
                 let diff = data.diff.trimmingCharacters(in: .whitespacesAndNewlines)
-                return diff.isEmpty ? [] : [diff]
+                return diff.isEmpty ? [] : presentedDiffSections(from: diff)
             default:
                 return []
             }
         }
 
-        guard !diffs.isEmpty else { return nil }
+        let sections = mergePresentedDiffSections(rawSections)
+        guard !sections.isEmpty else { return nil }
+        let stats = sections.reduce(into: DiffStats(additions: 0, deletions: 0)) { partial, section in
+            let sectionStats = DiffStats(diff: section.diff)
+            partial = DiffStats(
+                additions: partial.additions + sectionStats.additions,
+                deletions: partial.deletions + sectionStats.deletions
+            )
+        }
         return PresentedDiff(
             id: "session-diff",
             title: "Session Diff",
-            diff: diffs.joined(separator: "\n\n")
+            diff: nil,
+            stats: stats,
+            sections: sections
         )
     }
 
@@ -1764,7 +1801,10 @@ struct ConversationPinnedContextStrip: View {
         Button {
             selectedDiff = presented
         } label: {
-            DiffIndicatorLabel(diff: presented.diff)
+            DiffIndicatorLabel(
+                additions: presented.stats.additions,
+                deletions: presented.stats.deletions
+            )
         }
         .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
@@ -1776,7 +1816,21 @@ struct ConversationPinnedContextStrip: View {
 private struct PresentedDiff: Identifiable {
     let id: String
     let title: String
+    let diff: String?
+    let stats: DiffStats
+    let sections: [PresentedDiffSection]
+}
+
+private struct PresentedDiffSection: Identifiable {
+    let id: String
+    let title: String
     let diff: String
+
+    init(title: String, diff: String) {
+        self.title = title
+        self.diff = diff
+        self.id = "\(title)|\(diff.hashValue)"
+    }
 }
 
 struct DiffStats: Equatable {
@@ -1802,58 +1856,6 @@ struct DiffStats: Equatable {
         }
         self.additions = adds
         self.deletions = dels
-    }
-}
-
-/// Builds a single styled `AttributedString` for the entire diff instead of
-/// one SwiftUI `Text` view per line — avoids the layout explosion that
-/// `.fixedSize` + horizontal `ScrollView` causes with hundreds of child views.
-struct DiffAttributedContent {
-    let attributedString: AttributedString
-    let stats: DiffStats
-
-    init(diff: String) {
-        var result = AttributedString()
-        var additions = 0
-        var deletions = 0
-        let monoFont = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-
-        for rawLine in diff.split(separator: "\n", omittingEmptySubsequences: false) {
-            let text = rawLine.last == "\r" ? String(rawLine.dropLast()) : String(rawLine)
-            let displayText = text.isEmpty ? " " : text
-
-            let fg: UIColor
-            let bg: UIColor
-            if text.hasPrefix("+"), !text.hasPrefix("+++") {
-                additions += 1
-                fg = UIColor(LitterTheme.success)
-                bg = UIColor(LitterTheme.success).withAlphaComponent(0.12)
-            } else if text.hasPrefix("-"), !text.hasPrefix("---") {
-                deletions += 1
-                fg = UIColor(LitterTheme.danger)
-                bg = UIColor(LitterTheme.danger).withAlphaComponent(0.12)
-            } else if text.hasPrefix("@@") {
-                fg = UIColor(LitterTheme.accentStrong)
-                bg = UIColor(LitterTheme.accentStrong).withAlphaComponent(0.12)
-            } else {
-                fg = UIColor(LitterTheme.textBody)
-                bg = UIColor(LitterTheme.codeBackground).withAlphaComponent(0.72)
-            }
-
-            var line = AttributedString(displayText + "\n")
-            line.font = monoFont
-            line.foregroundColor = Color(fg)
-            line.backgroundColor = Color(bg)
-            result.append(line)
-        }
-
-        self.attributedString = result
-        self.stats = DiffStats(additions: additions, deletions: deletions)
-    }
-
-    private init(additions: Int, deletions: Int) {
-        self.attributedString = AttributedString()
-        self.stats = DiffStats(additions: additions, deletions: deletions)
     }
 }
 
@@ -1936,25 +1938,31 @@ private struct DiffLine: Identifiable {
 private struct ConversationDiffDetailSheet: View {
     let title: String
     let stats: DiffStats
-    let lines: [DiffLine]
+    let sections: [PresentedDiffSectionModel]
     @Environment(ThemeManager.self) private var themeManager
     @Environment(\.dismiss) private var dismiss
+    @State private var collapsedSectionIDs: Set<String> = []
+    private let fullDiffFontSize = LitterFont.conversationBodyPointSize
+    private let maxStickyDiffSections = 8
+    private let maxStickyDiffCharacters = 20_000
 
-    init(title: String, diff: String) {
+    init(title: String, diff: String, sections: [PresentedDiffSection]) {
         self.title = title
-        var adds = 0, dels = 0
-        var parsed: [DiffLine] = []
-        for (i, raw) in diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            let text = raw.last == "\r" ? String(raw.dropLast()) : String(raw)
-            let kind: DiffLine.Kind
-            if text.hasPrefix("+"), !text.hasPrefix("+++") { kind = .addition; adds += 1 }
-            else if text.hasPrefix("-"), !text.hasPrefix("---") { kind = .deletion; dels += 1 }
-            else if text.hasPrefix("@@") { kind = .hunk }
-            else { kind = .context }
-            parsed.append(DiffLine(id: i, text: text, kind: kind))
-        }
-        self.stats = DiffStats(additions: adds, deletions: dels)
-        self.lines = parsed
+        let sectionModels = sections.isEmpty
+            ? [PresentedDiffSectionModel(PresentedDiffSection(title: "", diff: diff))]
+            : sections.map(PresentedDiffSectionModel.init)
+        self.stats = DiffStats(
+            additions: sectionModels.reduce(0) { $0 + $1.stats.additions },
+            deletions: sectionModels.reduce(0) { $0 + $1.stats.deletions }
+        )
+        self.sections = sectionModels
+        _collapsedSectionIDs = State(
+            initialValue: Set(
+                sectionModels
+                    .filter { !$0.title.isEmpty }
+                    .map(\.id)
+            )
+        )
     }
 
     var body: some View {
@@ -1973,26 +1981,26 @@ private struct ConversationDiffDetailSheet: View {
                 .padding(.bottom, 8)
 
                 ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(lines) { line in
-                            Text(verbatim: line.text.isEmpty ? " " : line.text)
-                                .litterMonoFont(size: 12)
-                                .foregroundStyle(line.kind.foregroundColor)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(line.kind.backgroundColor)
+                    LazyVStack(
+                        alignment: .leading,
+                        spacing: 8,
+                        pinnedViews: usesStickyHeaders ? [.sectionHeaders] : []
+                    ) {
+                        ForEach(sections) { section in
+                            if section.title.isEmpty {
+                                diffSectionBody(section)
+                            } else {
+                                Section {
+                                    diffSectionBody(section)
+                                } header: {
+                                    diffSectionHeader(section)
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
                 }
-                .background(LitterTheme.codeBackground.opacity(0.72))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
             }
             .background(LitterTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle(title)
@@ -2008,6 +2016,170 @@ private struct ConversationDiffDetailSheet: View {
         .presentationDetents([.medium, .large])
         .id(themeManager.themeVersion)
     }
+
+    private var usesStickyHeaders: Bool {
+        guard sections.count <= maxStickyDiffSections else { return false }
+        return sections.reduce(0) { $0 + $1.diff.count } <= maxStickyDiffCharacters
+    }
+
+    @ViewBuilder
+    private func diffSection(_ section: PresentedDiffSectionModel) -> some View {
+        let isExpanded = !collapsedSectionIDs.contains(section.id)
+
+        VStack(alignment: .leading, spacing: 6) {
+            if isExpanded {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    SyntaxHighlightedDiffText(
+                        diff: section.diff,
+                        titleHint: section.title.isEmpty ? nil : section.title,
+                        fontSize: fullDiffFontSize
+                    )
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                }
+                .background(LitterTheme.codeBackground.opacity(0.72))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+    }
+
+    private func diffSectionHeader(_ section: PresentedDiffSectionModel) -> some View {
+        let isExpanded = !collapsedSectionIDs.contains(section.id)
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toggleSection(section.id)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(section.title)
+                    .litterFont(.caption2, weight: .bold)
+                    .foregroundColor(LitterTheme.textSecondary)
+                    .textCase(.uppercase)
+                Spacer(minLength: 0)
+                Text("+\(section.stats.additions)")
+                    .litterFont(.caption2, weight: .semibold)
+                    .foregroundColor(LitterTheme.success)
+                Text("-\(section.stats.deletions)")
+                    .litterFont(.caption2, weight: .semibold)
+                    .foregroundColor(LitterTheme.danger)
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .litterFont(size: 10, weight: .medium)
+                    .foregroundColor(LitterTheme.textMuted)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .background(LitterTheme.backgroundGradient)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func diffSectionBody(_ section: PresentedDiffSectionModel) -> some View {
+        diffSection(section)
+    }
+
+    private func toggleSection(_ id: String) {
+        if collapsedSectionIDs.contains(id) {
+            collapsedSectionIDs.remove(id)
+        } else {
+            collapsedSectionIDs.insert(id)
+        }
+    }
+}
+
+private struct PresentedDiffSectionModel: Identifiable {
+    let id: String
+    let title: String
+    let diff: String
+    let stats: DiffStats
+
+    init(_ section: PresentedDiffSection) {
+        self.id = section.id
+        self.title = section.title
+        self.diff = section.diff
+        self.stats = DiffStats(diff: section.diff)
+    }
+}
+
+private func presentedDiffSections(from diff: String) -> [PresentedDiffSection] {
+    let normalized = diff.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return [] }
+
+    let lines = normalized.components(separatedBy: .newlines)
+    let splitIndices = lines.enumerated().compactMap { index, line -> Int? in
+        line.hasPrefix("diff --git ") ? index : nil
+    }
+
+    if !splitIndices.isEmpty {
+        return splitIndices.enumerated().compactMap { offset, start in
+            let end = offset + 1 < splitIndices.count ? splitIndices[offset + 1] : lines.count
+            let chunk = Array(lines[start..<end]).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !chunk.isEmpty else { return nil }
+            return PresentedDiffSection(title: diffSectionTitle(from: chunk), diff: chunk)
+        }
+    }
+
+    return [PresentedDiffSection(title: diffSectionTitle(from: normalized), diff: normalized)]
+}
+
+private func mergePresentedDiffSections(_ sections: [PresentedDiffSection]) -> [PresentedDiffSection] {
+    var orderedTitles: [String] = []
+    var mergedByTitle: [String: String] = [:]
+    var passthrough: [PresentedDiffSection] = []
+
+    for section in sections {
+        let normalizedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            passthrough.append(section)
+            continue
+        }
+
+        if let existing = mergedByTitle[normalizedTitle] {
+            mergedByTitle[normalizedTitle] = existing + "\n\n" + section.diff
+        } else {
+            orderedTitles.append(normalizedTitle)
+            mergedByTitle[normalizedTitle] = section.diff
+        }
+    }
+
+    let merged = orderedTitles.compactMap { title -> PresentedDiffSection? in
+        guard let diff = mergedByTitle[title] else { return nil }
+        return PresentedDiffSection(title: title, diff: diff)
+    }
+
+    return merged + passthrough
+}
+
+private func diffSectionTitle(from diff: String) -> String {
+    for line in diff.components(separatedBy: .newlines) {
+        if line.hasPrefix("diff --git ") {
+            let parts = line.split(separator: " ")
+            if let candidate = parts.last {
+                return stripDiffPathPrefix(String(candidate))
+            }
+        }
+        if line.hasPrefix("+++ ") {
+            let candidate = String(line.dropFirst(4))
+            if candidate != "/dev/null" {
+                return stripDiffPathPrefix(candidate)
+            }
+        }
+        if line.hasPrefix("--- ") {
+            let candidate = String(line.dropFirst(4))
+            if candidate != "/dev/null" {
+                return stripDiffPathPrefix(candidate)
+            }
+        }
+    }
+    return ""
+}
+
+private func stripDiffPathPrefix(_ path: String) -> String {
+    if path.hasPrefix("a/") || path.hasPrefix("b/") {
+        return String(path.dropFirst(2))
+    }
+    return path
 }
 
 private func formatDuration(_ durationMs: Int?) -> String? {
