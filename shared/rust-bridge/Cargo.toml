@@ -17,6 +17,7 @@ codex-app-server-protocol = { path = "../third_party/codex/codex-rs/app-server-p
 codex-protocol = { path = "../third_party/codex/codex-rs/protocol" }
 codex-utils-cli = { path = "../third_party/codex/codex-rs/utils/cli" }
 codex-core = { path = "../third_party/codex/codex-rs/core" }
+codex-shell-command = { path = "../third_party/codex/codex-rs/shell-command" }
 codex-apply-patch = { path = "../third_party/codex/codex-rs/apply-patch" }
 codex-arg0 = { path = "../third_party/codex/codex-rs/arg0" }
 codex-feedback = { path = "../third_party/codex/codex-rs/feedback" }
@@ -42,6 +43,7 @@ url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls"] }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
+shlex = "1"
 
 [profile.release]
 strip = true

@@ -4,12 +4,13 @@
 //! into `Vec<HydratedConversationItem>` — a flat, UI-ready model that both
 //! iOS and Android render directly via UniFFI.
 
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::conversation_uniffi::*;
 use crate::parser::{
-    CodeReviewCodeLocation, CodeReviewFinding, CodeReviewLineRange, CodeReviewPayload,
-    parse_code_review_message,
+    parse_code_review_message, CodeReviewCodeLocation, CodeReviewFinding, CodeReviewLineRange,
+    CodeReviewPayload,
 };
 use crate::types::{AppMessagePhase, AppOperationStatus, AppSubagentStatus};
 use codex_app_server_protocol::{
@@ -18,6 +19,7 @@ use codex_app_server_protocol::{
     FileUpdateChange, McpToolCallStatus, PatchApplyStatus, PatchChangeKind, ThreadItem, Turn,
     UserInput,
 };
+use codex_shell_command::parse_command::extract_shell_command;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +117,46 @@ fn hydrate_code_review_payload(review: &CodeReviewPayload) -> HydratedCodeReview
     }
 }
 
+fn display_command(command: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let Some(argv) = shlex::split(trimmed) else {
+        return trimmed.to_string();
+    };
+
+    if let Some((_, script)) = extract_shell_command(&argv) {
+        return script.trim().to_string();
+    }
+
+    if let Some(script) = extract_cmd_command(&argv) {
+        return script.trim().to_string();
+    }
+
+    trimmed.to_string()
+}
+
+fn extract_cmd_command(command: &[String]) -> Option<&str> {
+    let [shell, flag, script] = command else {
+        return None;
+    };
+
+    if !flag.eq_ignore_ascii_case("/c") || !is_cmd_shell(shell) {
+        return None;
+    }
+
+    Some(script.as_str())
+}
+
+fn is_cmd_shell(shell: &str) -> bool {
+    Path::new(shell)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"))
+}
+
 fn convert_thread_item(
     item: &ThreadItem,
     item_id: &str,
@@ -188,7 +230,7 @@ fn convert_thread_item(
             let actions = command_actions.iter().map(convert_command_action).collect();
             (
                 HydratedConversationItemContent::CommandExecution(HydratedCommandExecutionData {
-                    command: command.clone(),
+                    command: display_command(command),
                     cwd: cwd.display().to_string(),
                     status: convert_command_status(status),
                     output: aggregated_output.clone(),
@@ -929,6 +971,51 @@ diff --git a/parser.rs b/parser.rs\n\
                     data.actions[0].kind,
                     HydratedCommandActionKind::Read
                 ));
+            }
+            _ => panic!("expected CommandExecution content"),
+        }
+    }
+
+    #[test]
+    fn test_display_command_strips_known_shell_wrappers() {
+        assert_eq!(display_command("/bin/zsh -lc 'ls -la'"), "ls -la");
+        assert_eq!(display_command("/bin/bash -c 'echo hi'"), "echo hi");
+        assert_eq!(display_command("/bin/sh -lc 'pwd'"), "pwd");
+        assert_eq!(
+            display_command("pwsh -NoProfile -Command 'Get-ChildItem'"),
+            "Get-ChildItem"
+        );
+        assert_eq!(
+            display_command("powershell.exe -Command 'Write-Host hi'"),
+            "Write-Host hi"
+        );
+        assert_eq!(display_command("cmd.exe /c dir"), "dir");
+        assert_eq!(display_command("plain command"), "plain command");
+    }
+
+    #[test]
+    fn test_command_execution_strips_shell_wrapper_for_display() {
+        let turns = vec![make_turn(
+            "t1",
+            vec![ThreadItem::CommandExecution {
+                id: "c1".into(),
+                command: "/bin/zsh -lc 'npm test'".into(),
+                cwd: PathBuf::from("/tmp"),
+                process_id: None,
+                source: Default::default(),
+                status: CommandExecutionStatus::InProgress,
+                command_actions: vec![],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+            }],
+        )];
+
+        let items = hydrate_turns(&turns, &HydrationOptions::default());
+        assert_eq!(items.len(), 1);
+        match &items[0].content {
+            HydratedConversationItemContent::CommandExecution(data) => {
+                assert_eq!(data.command, "npm test");
             }
             _ => panic!("expected CommandExecution content"),
         }
