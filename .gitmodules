@@ -2,3 +2,4 @@
 	path = shared/third_party/codex
 	url = https://github.com/openai/codex
 	shallow = true
+	ignore = dirty
