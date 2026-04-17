@@ -373,12 +373,17 @@ fun HomeDashboardScreen(
                                 if (appModel.snapshot.value?.activeThread == action.session.key) {
                                     appModel.store.setActiveThread(null)
                                 }
-                                appModel.client.archiveThread(
-                                    action.session.key.serverId,
-                                    uniffi.codex_mobile_client.AppArchiveThreadRequest(
-                                        threadId = action.session.key.threadId,
-                                    ),
-                                )
+                                try {
+                                    appModel.client.archiveThread(
+                                        action.session.key.serverId,
+                                        uniffi.codex_mobile_client.AppArchiveThreadRequest(
+                                            threadId = action.session.key.threadId,
+                                        ),
+                                    )
+                                } catch (_: Exception) {}
+                                // Wait for the ThreadArchived broadcast to be processed by the
+                                // event loop before refreshing, otherwise the session still appears.
+                                kotlinx.coroutines.delay(400L)
                                 appModel.refreshSnapshot()
                             }
                             is ConfirmAction.DisconnectServer -> {
@@ -516,24 +521,24 @@ private fun SessionCard(
             }
 
             Spacer(Modifier.width(4.dp))
-            IconButton(
-                onClick = { showMenu = true },
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    Icons.Default.MoreVert,
-                    contentDescription = "Session actions",
-                    tint = LitterTheme.textSecondary,
-                )
+            Box {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Session actions",
+                        tint = LitterTheme.textSecondary,
+                    )
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        onClick = { showMenu = false; onDelete() },
+                    )
+                }
             }
-        }
-
-        // Context menu
-        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-            DropdownMenuItem(
-                text = { Text("Delete") },
-                onClick = { showMenu = false; onDelete() },
-            )
         }
     }
 }
@@ -608,43 +613,44 @@ private fun ServerCard(
                     fontSize = 11.sp,
                 )
                 Spacer(Modifier.width(4.dp))
-                IconButton(
-                    onClick = { showMenu = true },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "Server actions",
-                        tint = LitterTheme.textSecondary,
-                    )
+                Box {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "Server actions",
+                            tint = LitterTheme.textSecondary,
+                        )
+                    }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Reconnect") },
+                            onClick = {
+                                showMenu = false
+                                onReconnect()
+                            },
+                        )
+                        if (!server.isLocal && onRename != null) {
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                onClick = {
+                                    showMenu = false
+                                    onRename()
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Disconnect") },
+                            onClick = {
+                                showMenu = false
+                                onDisconnect()
+                            },
+                        )
+                    }
                 }
             }
-        }
-
-        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-            DropdownMenuItem(
-                text = { Text("Reconnect") },
-                onClick = {
-                    showMenu = false
-                    onReconnect()
-                },
-            )
-            if (!server.isLocal && onRename != null) {
-                DropdownMenuItem(
-                    text = { Text("Rename") },
-                    onClick = {
-                        showMenu = false
-                        onRename()
-                    },
-                )
-            }
-            DropdownMenuItem(
-                text = { Text("Disconnect") },
-                onClick = {
-                    showMenu = false
-                    onDisconnect()
-                },
-            )
         }
     }
 }
