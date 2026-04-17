@@ -1208,6 +1208,7 @@ printf 'path=%s\n' "${{PATH:-}}"
 printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
 printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
 printf 'npm_prefix=%s\n' "$_litter_npm_prefix"
+printf 'bun_global_bin=%s\n' "$_litter_bun_global_bin"
 printf 'pnpm_global_bin=%s\n' "$_litter_pnpm_global_bin"
 printf 'npm_global_bin=%s\n' "$_litter_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
@@ -1218,12 +1219,14 @@ printf '\n'
 for candidate in \
   "$HOME/.litter/bin/codex" \
   "$HOME/.litter/codex/node_modules/.bin/codex" \
+  "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex" \
   "$HOME/.volta/bin/codex" \
   "$HOME/.local/bin/codex" \
   "${{PNPM_HOME:-}}/codex" \
   "${{NVM_BIN:-}}/codex" \
   "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
   "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
+  "${{_litter_bun_global_bin:-}}/codex" \
   "${{_litter_npm_global_bin:-}}/codex" \
   "${{_litter_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
@@ -1839,11 +1842,12 @@ async fn proxy_connection(
 const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
 
 /// Shell snippet that probes npm/pnpm for their global binary directories.
-/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`, and
-/// `_litter_pnpm_global_bin`.
+/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`,
+/// `_litter_pnpm_global_bin`, and `_litter_bun_global_bin`.
 const PACKAGE_MANAGER_PROBE: &str = r#"_litter_npm_prefix=""
 _litter_npm_global_bin=""
 _litter_pnpm_global_bin=""
+_litter_bun_global_bin=""
 if command -v npm >/dev/null 2>&1; then
   _litter_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
   case "$_litter_npm_prefix" in
@@ -1857,6 +1861,9 @@ if command -v npm >/dev/null 2>&1; then
 fi
 if command -v pnpm >/dev/null 2>&1; then
   _litter_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+fi
+if command -v bun >/dev/null 2>&1; then
+  _litter_bun_global_bin="$(bun pm bin -g 2>/dev/null || true)"
 fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
@@ -1881,6 +1888,7 @@ _litter_emit_from_dir() {{
 _litter_emit_candidate codex "$HOME/.litter/bin/codex"
 _litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
 _litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_litter_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
 _litter_emit_candidate codex "$HOME/.volta/bin/codex"
 _litter_emit_candidate codex "$HOME/.local/bin/codex"
 _litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
@@ -1890,6 +1898,7 @@ _litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
 _litter_emit_candidate codex "/opt/homebrew/bin/codex"
 _litter_emit_candidate codex "/usr/local/bin/codex"
 {pkg_probe}
+_litter_emit_from_dir codex codex "$_litter_bun_global_bin"
 _litter_emit_from_dir codex codex "$_litter_npm_global_bin"
 _litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
@@ -2392,6 +2401,8 @@ mod tests {
         let script = resolve_codex_binary_script_posix();
         assert!(script.contains("npm config get prefix"));
         assert!(script.contains("pnpm bin -g"));
+        assert!(script.contains("bun pm bin -g"));
+        assert!(script.contains("${BUN_INSTALL:-$HOME/.bun}/bin/codex"));
         assert!(script.contains("PNPM_HOME"));
         assert!(script.contains("NVM_BIN"));
         assert!(script.contains("$HOME/.volta/bin/codex"));
