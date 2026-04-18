@@ -1,5 +1,6 @@
 package com.litter.android.ui.common
 
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -15,7 +16,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -56,8 +61,8 @@ fun StatusDot(
     ) {
         when (state) {
             StatusDotState.OK -> SolidDot(Green, size)
-            StatusDotState.ACTIVE -> PulsingDot(Green, size)
-            StatusDotState.PENDING -> PulsingDot(Orange, size)
+            StatusDotState.ACTIVE -> PulsingDot(Green, size, withShimmer = true)
+            StatusDotState.PENDING -> PulsingDot(Orange, size, withShimmer = false)
             StatusDotState.ERROR -> SolidDot(Red, size)
             StatusDotState.IDLE -> Box(
                 modifier = Modifier
@@ -80,7 +85,7 @@ private fun SolidDot(color: Color, size: Dp) {
 }
 
 @Composable
-private fun PulsingDot(color: Color, size: Dp) {
+private fun PulsingDot(color: Color, size: Dp, withShimmer: Boolean = false) {
     val transition = rememberInfiniteTransition(label = "status-dot-pulse")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -93,12 +98,52 @@ private fun PulsingDot(color: Color, size: Dp) {
     )
     val alpha = 1.0f - (0.65f * phase)
     val scale = 1.0f - (0.15f * phase)
+
+    val sweepPhase = if (withShimmer) {
+        val sweepTransition = rememberInfiniteTransition(label = "status-dot-sweep")
+        val sweep by sweepTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "status-dot-sweep-phase",
+        )
+        sweep
+    } else {
+        null
+    }
+
     Box(
         modifier = Modifier
             .size(size)
             .scale(scale)
             .alpha(alpha)
             .clip(CircleShape)
-            .background(color),
+            .background(color)
+            .then(
+                if (sweepPhase != null) {
+                    Modifier.drawWithContent {
+                        drawContent()
+                        val w = this.size.width
+                        val h = this.size.height
+                        // Sweep travels from fully-offscreen-left to fully-offscreen-right
+                        // so the gradient band reads as a moving highlight across the dot.
+                        val bandHalf = w * 0.3f
+                        val center = -bandHalf + sweepPhase * (w + 2f * bandHalf)
+                        val brush = Brush.linearGradient(
+                            colorStops = arrayOf(
+                                0f to Color.White.copy(alpha = 0f),
+                                0.5f to Color.White.copy(alpha = 0.3f),
+                                1f to Color.White.copy(alpha = 0f),
+                            ),
+                            start = Offset(center - bandHalf, 0f),
+                            end = Offset(center + bandHalf, h),
+                        )
+                        drawRect(brush = brush, blendMode = BlendMode.SrcAtop)
+                    }
+                } else Modifier,
+            ),
     )
 }

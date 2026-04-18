@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.litter
   deploymentTarget:
     iOS: "18.0"
+    watchOS: "11.0"
   xcodeVersion: "16.0"
   generateEmptyDirectories: true
   fileTypes:
@@ -52,6 +53,7 @@ targets:
           - Bridge/AecBridge.swift
           - "**/*.h"
       - path: Sources/LitterLiveActivity/CodexTurnLiveActivity.swift
+      - path: Sources/LitterWatch/Models/WatchModels.swift
     resources:
       - path: Sources/Litter/Resources/ios_system/commandDictionary.plist
       - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
@@ -89,6 +91,11 @@ targets:
         embed: true
       - target: LitterLiveActivity
         embed: true
+      # Watch app is gated for now — enable by re-adding the LitterWatch
+      # dependency below. The target still lives in this project.yml and
+      # builds via the standalone `LitterWatch` scheme.
+      # - target: LitterWatch
+      #   embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sigkitten.litter
@@ -146,6 +153,87 @@ targets:
           LIVE_ACTIVITY_CODE_SIGN_IDENTITY: ""
           PROVISIONING_PROFILE_SPECIFIER: "$(LIVE_ACTIVITY_PROVISIONING_PROFILE_SPECIFIER)"
           LIVE_ACTIVITY_PROVISIONING_PROFILE_SPECIFIER: ""
+  LitterWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "11.0"
+    entitlements:
+      path: Sources/LitterWatch/LitterWatch.entitlements
+      properties:
+        aps-environment: production
+        com.apple.security.application-groups:
+          - group.com.sigkitten.litter
+    sources:
+      - path: Sources/LitterWatch
+    resources:
+      - path: Sources/Litter/Resources/Fonts
+    dependencies:
+      - target: LitterWatchComplications
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sigkitten.litter.watchkitapp
+        INFOPLIST_FILE: Sources/LitterWatch/Info.plist
+        TARGETED_DEVICE_FAMILY: "4"
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        GENERATE_INFOPLIST_FILE: NO
+        SDKROOT: watchos
+        SUPPORTS_MACCATALYST: NO
+        OTHER_LDFLAGS: ""
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        HEADER_SEARCH_PATHS: "$(inherited)"
+        SWIFT_INCLUDE_PATHS: "$(inherited)"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: "$(WATCH_CODE_SIGN_STYLE)"
+          WATCH_CODE_SIGN_STYLE: Automatic
+          PROVISIONING_PROFILE_SPECIFIER: "$(WATCH_PROVISIONING_PROFILE_SPECIFIER)"
+          WATCH_PROVISIONING_PROFILE_SPECIFIER: ""
+        Release:
+          CODE_SIGN_STYLE: "$(WATCH_CODE_SIGN_STYLE)"
+          WATCH_CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(WATCH_CODE_SIGN_IDENTITY)"
+          WATCH_CODE_SIGN_IDENTITY: ""
+          PROVISIONING_PROFILE_SPECIFIER: "$(WATCH_PROVISIONING_PROFILE_SPECIFIER)"
+          WATCH_PROVISIONING_PROFILE_SPECIFIER: ""
+
+  LitterWatchComplications:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "11.0"
+    entitlements:
+      path: Sources/LitterWatchComplications/LitterWatchComplications.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.sigkitten.litter
+    sources:
+      - path: Sources/LitterWatchComplications
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sigkitten.litter.watchkitapp.complications
+        INFOPLIST_FILE: Sources/LitterWatchComplications/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "4"
+        WATCHOS_DEPLOYMENT_TARGET: "11.0"
+        SDKROOT: watchos
+        OTHER_LDFLAGS: ""
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        HEADER_SEARCH_PATHS: "$(inherited)"
+        SWIFT_INCLUDE_PATHS: "$(inherited)"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: "$(WATCH_COMP_CODE_SIGN_STYLE)"
+          WATCH_COMP_CODE_SIGN_STYLE: Automatic
+          PROVISIONING_PROFILE_SPECIFIER: "$(WATCH_COMP_PROVISIONING_PROFILE_SPECIFIER)"
+          WATCH_COMP_PROVISIONING_PROFILE_SPECIFIER: ""
+        Release:
+          CODE_SIGN_STYLE: "$(WATCH_COMP_CODE_SIGN_STYLE)"
+          WATCH_COMP_CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(WATCH_COMP_CODE_SIGN_IDENTITY)"
+          WATCH_COMP_CODE_SIGN_IDENTITY: ""
+          PROVISIONING_PROFILE_SPECIFIER: "$(WATCH_COMP_PROVISIONING_PROFILE_SPECIFIER)"
+          WATCH_COMP_PROVISIONING_PROFILE_SPECIFIER: ""
+
   LitterTests:
     type: bundle.unit-test
     platform: iOS
@@ -176,6 +264,22 @@ targets:
         CODE_SIGNING_REQUIRED: false
 
 schemes:
+  LitterWatch:
+    build:
+      targets:
+        LitterWatch: all
+        LitterWatchComplications: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+    management:
+      isShown: true
+      orderHint: 2
   Litter:
     build:
       targets:

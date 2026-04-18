@@ -50,6 +50,7 @@ fun StreamingMarkdownView(
     text: String,
     itemId: String,
     onRendered: (() -> Unit)? = null,
+    bodySize: Float = LitterTextStyle.body,
 ) {
     val appModel = LocalAppModel.current
 
@@ -80,6 +81,7 @@ fun StreamingMarkdownView(
             StreamingRenderBlocks(
                 blocks = streamState.stableBlocks,
                 alpha = 1f,
+                bodySize = bodySize,
             )
         }
 
@@ -88,6 +90,7 @@ fun StreamingMarkdownView(
             StreamingRenderBlocks(
                 blocks = streamState.frontierBlocks,
                 alpha = frontierAlpha.value,
+                bodySize = bodySize,
             )
         }
     }
@@ -97,6 +100,7 @@ fun StreamingMarkdownView(
 private fun StreamingRenderBlocks(
     blocks: List<AppMessageRenderBlock>,
     alpha: Float,
+    bodySize: Float,
 ) {
     blocks.forEachIndexed { index, block ->
         when (block) {
@@ -105,6 +109,7 @@ private fun StreamingRenderBlocks(
                     StreamingMarkdownText(
                         text = block.markdown,
                         modifier = Modifier.alpha(alpha),
+                        bodySize = bodySize,
                     )
                 }
             }
@@ -113,6 +118,7 @@ private fun StreamingRenderBlocks(
                     language = block.language,
                     code = block.code,
                     modifier = Modifier.alpha(alpha),
+                    bodySize = bodySize,
                 )
             }
             is AppMessageRenderBlock.InlineImage -> {
@@ -139,6 +145,7 @@ private fun StreamingRenderBlocks(
 private fun StreamingMarkdownText(
     text: String,
     modifier: Modifier = Modifier,
+    bodySize: Float = LitterTextStyle.body,
 ) {
     val context = LocalContext.current
     val textScale = LocalTextScale.current
@@ -157,14 +164,14 @@ private fun StreamingMarkdownText(
         factory = { ctx ->
             TextView(ctx).apply {
                 setTextColor(LitterTheme.textBody.toArgb())
-                textSize = LitterTextStyle.body * textScale
+                textSize = bodySize * textScale
                 movementMethod = LinkMovementMethod.getInstance()
                 setLinkTextColor(LitterTheme.accent.toArgb())
             }
         },
         update = { tv ->
             tv.setTextColor(LitterTheme.textBody.toArgb())
-            tv.textSize = LitterTextStyle.body * textScale
+            tv.textSize = bodySize * textScale
             markwon.setMarkdown(tv, text)
         },
         modifier = modifier.fillMaxWidth(),
@@ -176,6 +183,7 @@ private fun StreamingCodeBlock(
     language: String?,
     code: String,
     modifier: Modifier = Modifier,
+    bodySize: Float = LitterTextStyle.body,
 ) {
     Column(
         modifier = modifier,
@@ -199,7 +207,7 @@ private fun StreamingCodeBlock(
                 text = code,
                 color = LitterTheme.textBody,
                 fontFamily = LitterTheme.monoFont,
-                fontSize = LitterTextStyle.body.scaled,
+                fontSize = bodySize.scaled,
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
             )
         }

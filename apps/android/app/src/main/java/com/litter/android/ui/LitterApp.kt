@@ -62,6 +62,7 @@ fun LitterApp(appModel: AppModel) {
     LaunchedEffect(Unit) {
         TextSizePrefs.initialize(context)
         ConversationPrefs.initialize(context)
+        com.litter.android.ui.home.DashboardZoomPrefs.initialize(context)
         ExperimentalFeatures.initialize(context)
         com.litter.android.state.DebugSettings.initialize(context)
     }

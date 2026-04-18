@@ -132,7 +132,16 @@ val AppServerSnapshot.statusDotState: com.litter.android.ui.common.StatusDotStat
             com.litter.android.ui.common.StatusDotState.PENDING
         transportState == AppServerTransportState.CONNECTED && !isLocal && account == null ->
             com.litter.android.ui.common.StatusDotState.PENDING
-        transportState == AppServerTransportState.CONNECTED && ipcState == AppServerIpcState.DISCONNECTED ->
+        // Only treat IPC-disconnected as pending when the experimental IPC
+        // feature is actually enabled — mirrors iOS `AppServerSnapshot+UI.swift`
+        // gate on `ExperimentalFeatures.shared.isEnabled(.ipc)`. Without this,
+        // remote servers (which don't speak IPC) would blink orange even after
+        // they've fully connected.
+        transportState == AppServerTransportState.CONNECTED &&
+            ipcState == AppServerIpcState.DISCONNECTED &&
+            com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                com.litter.android.ui.LitterFeature.IPC,
+            ) ->
             com.litter.android.ui.common.StatusDotState.PENDING
         transportState == AppServerTransportState.CONNECTED ->
             com.litter.android.ui.common.StatusDotState.OK

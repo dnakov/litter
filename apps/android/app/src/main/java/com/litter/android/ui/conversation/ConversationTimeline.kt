@@ -249,68 +249,76 @@ private fun UserMessageRow(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    Box {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                .then(
-                    if (onEdit != null || onFork != null) {
-                        Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = { showMenu = true },
-                        )
-                    } else {
-                        Modifier
+    // Right-aligned user bubble, matching iOS `UserBubble`. The bubble caps at
+    // 85% of row width so long messages still wrap nicely without becoming a
+    // full-width block that reads as assistant text.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Box {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                    .then(
+                        if (onEdit != null || onFork != null) {
+                            Modifier.combinedClickable(
+                                onClick = {},
+                                onLongClick = { showMenu = true },
+                            )
+                        } else {
+                            Modifier
+                        }
+                    )
+                    .padding(10.dp),
+            ) {
+                com.litter.android.ui.common.FormattedText(
+                    text = data.text,
+                    color = LitterTheme.textPrimary,
+                    fontSize = LitterTextStyle.callout.scaled,
+                )
+                // Inline images from data URIs
+                for (uri in data.imageDataUris) {
+                    val bitmap = remember(uri) {
+                        try {
+                            val base64Part = uri.substringAfter("base64,", "")
+                            if (base64Part.isNotEmpty()) {
+                                val bytes = Base64.decode(base64Part, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            } else null
+                        } catch (_: Exception) { null }
                     }
-                )
-                .padding(10.dp),
-        ) {
-            com.litter.android.ui.common.FormattedText(
-                text = data.text,
-                color = LitterTheme.textPrimary,
-                fontSize = LitterTextStyle.callout.scaled,
-            )
-        // Inline images from data URIs
-        for (uri in data.imageDataUris) {
-            val bitmap = remember(uri) {
-                try {
-                    val base64Part = uri.substringAfter("base64,", "")
-                    if (base64Part.isNotEmpty()) {
-                        val bytes = Base64.decode(base64Part, Base64.DEFAULT)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    } else null
-                } catch (_: Exception) { null }
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .heightIn(max = 200.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                }
             }
-            bitmap?.let {
-                Image(
-                    bitmap = it.asImageBitmap(),
-                    contentDescription = "Attached image",
-                    modifier = Modifier
-                        .padding(top = 4.dp)
-                        .heightIn(max = 200.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                )
-            }
-        }
-        }
 
-        // Long-press context menu
-        androidx.compose.material3.DropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false },
-        ) {
-            if (onEdit != null) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("Edit Message") },
-                    onClick = { showMenu = false; onEdit(turnIndex) },
-                )
-            }
-            if (onFork != null) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("Fork From Here") },
-                    onClick = { showMenu = false; onFork(turnIndex) },
-                )
+            // Long-press context menu
+            androidx.compose.material3.DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                if (onEdit != null) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Edit Message") },
+                        onClick = { showMenu = false; onEdit(turnIndex) },
+                    )
+                }
+                if (onFork != null) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Fork From Here") },
+                        onClick = { showMenu = false; onFork(turnIndex) },
+                    )
+                }
             }
         }
     }

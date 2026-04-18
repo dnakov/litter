@@ -28,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
@@ -230,6 +232,27 @@ fun HeaderBar(
                                         RoundedCornerShape(999.dp),
                                     )
                                     .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        // Permission-preset chip: show a danger-tinted `lock.open`
+                        // when this thread is running at full-access (approval =
+                        // never + sandbox = danger-full-access). Mirrors iOS
+                        // HeaderView.swift:74-78 `headerPermissionPreset == .fullAccess`.
+                        val permissionPreset = thread?.let { t ->
+                            val approval = appModel.launchState.approvalPolicyValue(t.key)
+                                ?: t.effectiveApprovalPolicy
+                            val sandbox = appModel.launchState.turnSandboxPolicy(t.key)
+                                ?: t.effectiveSandboxPolicy
+                            uniffi.codex_mobile_client.threadPermissionPreset(approval, sandbox)
+                        }
+                        if (permissionPreset ==
+                            uniffi.codex_mobile_client.AppThreadPermissionPreset.FULL_ACCESS) {
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.LockOpen,
+                                contentDescription = "Full access permissions",
+                                tint = LitterTheme.danger,
+                                modifier = Modifier.size(10.dp),
                             )
                         }
                         if (server?.isIpcConnected == true) {
@@ -483,7 +506,7 @@ private fun ModelSelectorPanel(
             }
         }
 
-        // Plan + Fast mode toggles
+        // Plan + Full-access permission toggles + Fast mode
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -500,6 +523,56 @@ private fun ModelSelectorPanel(
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = LitterTheme.accent,
                     selectedLabelColor = Color.Black,
+                ),
+            )
+            // Full-access toggle (mirrors iOS HeaderView.swift:554-572). Flips
+            // approval/sandbox between on-request+workspace-write (supervised)
+            // and never+danger-full-access (full access).
+            val threadKey = thread?.key
+            val currentPreset = threadKey?.let { key ->
+                val approval = appModel.launchState.approvalPolicyValue(key)
+                    ?: thread.effectiveApprovalPolicy
+                val sandbox = appModel.launchState.turnSandboxPolicy(key)
+                    ?: thread.effectiveSandboxPolicy
+                uniffi.codex_mobile_client.threadPermissionPreset(approval, sandbox)
+            }
+            val isFullAccess =
+                currentPreset == uniffi.codex_mobile_client.AppThreadPermissionPreset.FULL_ACCESS
+            FilterChip(
+                selected = isFullAccess,
+                onClick = {
+                    if (threadKey == null) return@FilterChip
+                    if (isFullAccess) {
+                        appModel.launchState.updateThreadPermissions(
+                            threadKey,
+                            approvalPolicy = "on-request",
+                            sandboxMode = "workspace-write",
+                        )
+                    } else {
+                        appModel.launchState.updateThreadPermissions(
+                            threadKey,
+                            approvalPolicy = "never",
+                            sandboxMode = "danger-full-access",
+                        )
+                    }
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = if (isFullAccess) Icons.Default.LockOpen else Icons.Default.Lock,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                    )
+                },
+                label = {
+                    Text(
+                        if (isFullAccess) "Full Access" else "Supervised",
+                        fontSize = 10.sp,
+                    )
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = LitterTheme.danger,
+                    selectedLabelColor = Color.White,
+                    selectedLeadingIconColor = Color.White,
                 ),
             )
             Spacer(Modifier.weight(1f))

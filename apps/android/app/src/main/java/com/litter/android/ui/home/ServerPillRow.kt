@@ -91,13 +91,13 @@ private fun ServerPill(
             modifier = Modifier
                 .clip(RoundedCornerShape(20.dp))
                 .background(
-                    if (isSelected) LitterTheme.accent.copy(alpha = 0.14f)
-                    else LitterTheme.textPrimary.copy(alpha = 0.06f),
+                    if (isSelected) LitterTheme.accent.copy(alpha = 0.22f)
+                    else LitterTheme.surface.copy(alpha = 0.9f),
                 )
                 .border(
-                    width = if (isSelected) 1.2.dp else 0.6.dp,
-                    color = if (isSelected) LitterTheme.accent.copy(alpha = 0.75f)
-                    else LitterTheme.textPrimary.copy(alpha = 0.18f),
+                    width = if (isSelected) 1.2.dp else 0.8.dp,
+                    color = if (isSelected) LitterTheme.accent.copy(alpha = 0.9f)
+                    else LitterTheme.textPrimary.copy(alpha = 0.35f),
                     shape = RoundedCornerShape(20.dp),
                 )
                 .combinedClickable(

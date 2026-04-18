@@ -6,8 +6,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,10 +29,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.ViewAgenda
+import androidx.compose.material.icons.outlined.ViewList
+import androidx.compose.material.icons.outlined.ViewQuilt
+import androidx.compose.material.icons.outlined.ViewStream
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -41,6 +55,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,12 +64,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import com.litter.android.state.AppLifecycleController
 import com.litter.android.state.DebugSettings
 import com.litter.android.state.SavedProjectStore
@@ -136,8 +156,32 @@ fun HomeDashboardScreen(
     var searchQuery by remember { mutableStateOf("") }
     val requestedHydrationKeys = remember { mutableSetOf<String>() }
 
+    // Dashboard zoom state. `zoomLevel` observes DashboardZoomPrefs; the
+    // toolbar button cycles 1→2→3→4→3→2→1 via a direction flip at the
+    // bounds, mirroring iOS HomeDashboardView.swift:186-203. SessionCanvasRow
+    // (task #4) owns its own per-row `animateFloatAsState` off this value.
+    val zoomLevel by DashboardZoomPrefs.currentLevel.collectAsState()
+    var zoomDirection by remember { mutableIntStateOf(1) }
+    var pinchBaseZoom by remember { mutableStateOf<Int?>(null) }
+    var pinchAccumulator by remember { mutableStateOf(1f) }
+    val haptics = LocalHapticFeedback.current
+
+    fun zoomIconFor(level: Int): ImageVector = when (level) {
+        // Matches iOS semantics: 1 = most compact (scan), 4 = most detail (deep).
+        1 -> Icons.Outlined.ViewQuilt
+        2 -> Icons.Outlined.ViewList
+        3 -> Icons.Outlined.ViewAgenda
+        else -> Icons.Outlined.ViewStream
+    }
+
     // Auto-hydrate any visible session that doesn't have stats yet. Runs on
-    // first composition and whenever the visible set changes.
+    // first composition and whenever the visible set changes. We resume
+    // rather than read: `externalResumeThread` attaches a server-side
+    // conversation listener for this connection so the card receives live
+    // `TurnStarted` / `ItemStarted` / `MessageDelta` / `TurnCompleted` events
+    // without the user opening the thread. Mirrors iOS `hydrateThread` in
+    // `LitterApp.swift:990-1006` after commit 52ff299d. The store short-
+    // circuits when a listener is already attached, so warm paths stay cheap.
     val visibleIds = recentSessions.map { "${it.key.serverId}/${it.key.threadId}" }
     LaunchedEffect(visibleIds) {
         for (session in recentSessions) {
@@ -145,16 +189,8 @@ fun HomeDashboardScreen(
             val id = "${session.key.serverId}/${session.key.threadId}"
             if (!requestedHydrationKeys.add(id)) continue
             scope.launch {
-                runCatching {
-                    appModel.client.readThread(
-                        session.key.serverId,
-                        uniffi.codex_mobile_client.AppReadThreadRequest(
-                            threadId = session.key.threadId,
-                            includeTurns = true,
-                        ),
-                    )
-                    appModel.refreshSnapshot()
-                }
+                runCatching { appModel.externalResumeThread(session.key) }
+                appModel.refreshSnapshot()
             }
         }
     }
@@ -163,33 +199,89 @@ fun HomeDashboardScreen(
         // Sessions list fills the whole screen, with top/bottom content padding
         // so items don't sit under the floating chrome.
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    // Pinch-to-zoom. `detectTransformGestures(panZoomLock = true)`
+                    // lets single-finger vertical drags still reach the
+                    // LazyColumn scroll, and only begins consuming when a
+                    // true pinch is in progress. We accumulate the
+                    // multiplicative zoom factor across the gesture so a
+                    // slow pinch composes the same as a fast one, then
+                    // round to a discrete level delta (same 0.4 threshold
+                    // iOS uses at HomeDashboardView.swift:334-363). The
+                    // outer while-loop resets accumulator state when the
+                    // gesture ends and detectTransformGestures returns.
+                    while (true) {
+                        pinchBaseZoom = null
+                        pinchAccumulator = 1f
+                        detectTransformGestures(panZoomLock = true) { _, _, zoom, _ ->
+                            if (zoom == 1f) return@detectTransformGestures
+                            val base = pinchBaseZoom ?: zoomLevel.also { pinchBaseZoom = it }
+                            pinchAccumulator *= zoom
+                            val delta = ((pinchAccumulator - 1f) / 0.4f).roundToInt()
+                            val next = (base + delta).coerceIn(
+                                DashboardZoomPrefs.MIN_LEVEL,
+                                DashboardZoomPrefs.MAX_LEVEL,
+                            )
+                            if (next != zoomLevel) {
+                                DashboardZoomPrefs.setLevel(context, next)
+                                haptics.performHapticFeedback(
+                                    HapticFeedbackType.TextHandleMove,
+                                )
+                            }
+                        }
+                    }
+                },
             verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                top = 120.dp,
-                bottom = 140.dp,
-            ),
+            contentPadding = run {
+                // Respect system bars so list content can scroll under the
+                // translucent top/bottom chrome *and* past the status/nav bar
+                // insets (edge-to-edge). Extra fixed dp covers the chrome
+                // itself so the first/last items aren't hidden behind it.
+                val sysInsets = WindowInsets.systemBars.asPaddingValues()
+                androidx.compose.foundation.layout.PaddingValues(
+                    top = 120.dp + sysInsets.calculateTopPadding(),
+                    bottom = 120.dp + sysInsets.calculateBottomPadding(),
+                )
+            },
         ) {
             if (recentSessions.isNotEmpty()) {
                 items(recentSessions, key = { "${it.key.serverId}/${it.key.threadId}" }) { session ->
                     val id = "${session.key.serverId}/${session.key.threadId}"
                     val isHydrating = session.stats == null && id in requestedHydrationKeys
-                    SwipeToHideRow(
-                        onHide = {
-                            val key = PinnedThreadKey(
-                                serverId = session.key.serverId,
-                                threadId = session.key.threadId,
-                            )
-                            SavedThreadsStore.hide(context, key)
-                            hiddenKeys = SavedThreadsStore.hiddenKeys(context)
-                            pinnedKeys = SavedThreadsStore.pinnedKeys(context)
+                    // Row hosts both gestures through one swipe handler:
+                    // left-swipe (trailing) hides; right-swipe (leading) opens
+                    // QuickReplySheet. Nesting `SwipeToHideRow` inside
+                    // `SessionReplySwipe` would have the two pointer handlers
+                    // fighting over the same drag stream.
+                    SessionReplySwipe(
+                        session = session,
+                        appModel = appModel,
+                        trailingAction = com.litter.android.ui.common.SwipeAction(
+                            icon = Icons.Default.MoreVert,
+                            label = "hide",
+                            tint = LitterTheme.textMuted,
+                            onTrigger = {
+                                val key = PinnedThreadKey(
+                                    serverId = session.key.serverId,
+                                    threadId = session.key.threadId,
+                                )
+                                SavedThreadsStore.hide(context, key)
+                                hiddenKeys = SavedThreadsStore.hiddenKeys(context)
+                                pinnedKeys = SavedThreadsStore.pinnedKeys(context)
+                            },
+                        ),
+                        onError = { msg ->
+                            confirmAction = ConfirmAction.ReplyError(msg)
                         },
                         modifier = Modifier
                             .padding(horizontal = 16.dp)
                             .animateItem(),
                     ) {
-                        SessionCard(
+                        SessionCanvasRow(
                             session = session,
+                            zoomLevel = zoomLevel,
                             isHydrating = isHydrating,
                             onClick = {
                                 appModel.launchState.updateCurrentCwd(session.cwd)
@@ -230,7 +322,10 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Top chrome: header + server pill row, floating over the list with a scrim.
+        // Top chrome: header + server pill row, floating over the list with a
+        // gradient scrim (matches iOS translucent bar). Top edge is fully
+        // opaque so the status bar area stays legible, fading to transparent
+        // so list content is visibly scrolling behind the chrome.
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -238,12 +333,13 @@ fun HomeDashboardScreen(
                 .background(
                     androidx.compose.ui.graphics.Brush.verticalGradient(
                         colors = listOf(
-                            LitterTheme.background.copy(alpha = 0.7f),
-                            LitterTheme.background.copy(alpha = 0.7f),
+                            LitterTheme.background.copy(alpha = 0.55f),
+                            LitterTheme.background.copy(alpha = 0.4f),
                             androidx.compose.ui.graphics.Color.Transparent,
                         ),
                     ),
-                ),
+                )
+                .statusBarsPadding(),
         ) {
             Spacer(Modifier.height(16.dp))
             val tierIcons by com.litter.android.state.TipJarSupporterState.tierIcons
@@ -294,9 +390,29 @@ fun HomeDashboardScreen(
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                // Invisible spacer mirrors the settings button so the logo
-                // stays centered.
-                Spacer(Modifier.size(width = 32.dp, height = 32.dp))
+                // Zoom cycle button. Cycles 1→2→3→4→3→2→1 via direction flip at
+                // the bounds. Mirrors iOS HomeDashboardView.swift:186-203.
+                IconButton(
+                    onClick = {
+                        var next = zoomLevel + zoomDirection
+                        if (next > DashboardZoomPrefs.MAX_LEVEL) {
+                            zoomDirection = -1
+                            next = zoomLevel + zoomDirection
+                        } else if (next < DashboardZoomPrefs.MIN_LEVEL) {
+                            zoomDirection = 1
+                            next = zoomLevel + zoomDirection
+                        }
+                        DashboardZoomPrefs.setLevel(context, next)
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = zoomIconFor(zoomLevel),
+                        contentDescription = "Dashboard zoom",
+                        tint = LitterTheme.textSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
 
@@ -335,23 +451,54 @@ fun HomeDashboardScreen(
             )
         }
 
-        // Search results overlay appears while the search bar is expanded.
-        // Full-screen opaque background so the sessions list behind is hidden.
+        // Full-screen search overlay (mirrors iOS) — search bar pinned at top
+        // with a close affordance; results fill the rest of the screen on an
+        // opaque background. Replaces the prior inline-in-bottom-chrome layout.
         if (isSearchExpanded) {
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(LitterTheme.background),
+                    .background(LitterTheme.background)
+                    .statusBarsPadding()
+                    .imePadding(),
             ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        ThreadSearchBar(
+                            query = searchQuery,
+                            isExpanded = true,
+                            onQueryChange = { searchQuery = it },
+                            onExpandChange = { expanded ->
+                                isSearchExpanded = expanded
+                                if (!expanded) searchQuery = ""
+                            },
+                        )
+                    }
+                    androidx.compose.material3.IconButton(
+                        onClick = {
+                            isSearchExpanded = false
+                            searchQuery = ""
+                        },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                            contentDescription = "Close search",
+                            tint = LitterTheme.textSecondary,
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(
-                            top = 120.dp,
-                            bottom = 180.dp,
-                            start = 12.dp,
-                            end = 12.dp,
-                        ),
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 12.dp),
                 ) {
                     ThreadSearchResults(
                         sessions = allSessions,
@@ -378,22 +525,28 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Bottom chrome: search bar + project chip + composer, floating over
-        // the list with a scrim.
-        Column(
+        // Bottom chrome: collapsed by default into two icon buttons
+        // (`+` and search); each expands its corresponding row inline when
+        // tapped. Mirrors iOS `HomeBottomBar` collapsed/composer/search modes.
+        // Scrim fades from transparent to translucent background so the list
+        // visibly scrolls behind the chrome (matches iOS translucent bar).
+        // Hidden entirely while the full-screen search overlay is open.
+        if (!isSearchExpanded) Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding(),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(24.dp)
+                    .height(32.dp)
                     .background(
                         androidx.compose.ui.graphics.Brush.verticalGradient(
                             colors = listOf(
                                 androidx.compose.ui.graphics.Color.Transparent,
-                                LitterTheme.background.copy(alpha = 0.7f),
+                                LitterTheme.background.copy(alpha = 0.4f),
                             ),
                         ),
                     ),
@@ -401,50 +554,80 @@ fun HomeDashboardScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(LitterTheme.background.copy(alpha = 0.7f)),
+                    .background(LitterTheme.background.copy(alpha = 0.4f)),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ThreadSearchBar(
-                        query = searchQuery,
-                        isExpanded = isSearchExpanded,
-                        onQueryChange = { searchQuery = it },
-                        onExpandChange = { expanded ->
-                            isSearchExpanded = expanded
-                            if (!expanded) searchQuery = ""
-                        },
-                    )
-                }
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = isComposerActive && !isSearchExpanded,
-                    enter = androidx.compose.animation.fadeIn() +
-                        androidx.compose.animation.expandVertically(),
-                    exit = androidx.compose.animation.fadeOut() +
-                        androidx.compose.animation.shrinkVertically(),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        ProjectChip(
+                when {
+                    // Full-screen search overlay above handles the search UI;
+                    // suppress the bottom chrome entirely while it's open so
+                    // there isn't a duplicate search bar at the bottom.
+                    isSearchExpanded -> {}
+                    isComposerActive -> {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            ProjectChip(
+                                project = selectedProject,
+                                disabled = servers.isEmpty(),
+                                onTap = onOpenProjectPicker,
+                            )
+                        }
+                        HomeComposerBar(
                             project = selectedProject,
-                            disabled = servers.isEmpty(),
-                            onTap = onOpenProjectPicker,
+                            onThreadCreated = onThreadCreated,
+                            onActiveChange = { active -> isComposerActive = active },
                         )
                     }
+                    else -> {
+                        // Collapsed: two icon pills, search on left of plus.
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(
+                                10.dp,
+                                Alignment.End,
+                            ),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.IconButton(
+                                onClick = { isSearchExpanded = true },
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .background(
+                                        LitterTheme.surface.copy(alpha = 0.9f),
+                                        CircleShape,
+                                    ),
+                            ) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Outlined.Search,
+                                    contentDescription = "Search threads",
+                                    tint = LitterTheme.textSecondary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            androidx.compose.material3.IconButton(
+                                onClick = { isComposerActive = true },
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .background(
+                                        LitterTheme.surface.copy(alpha = 0.9f),
+                                        CircleShape,
+                                    ),
+                            ) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Default.Add,
+                                    contentDescription = "New message",
+                                    tint = LitterTheme.textPrimary,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
+                        }
+                    }
                 }
-                HomeComposerBar(
-                    project = selectedProject,
-                    onThreadCreated = onThreadCreated,
-                    onActiveChange = { active -> isComposerActive = active },
-                )
             }
         }
 
@@ -481,6 +664,9 @@ fun HomeDashboardScreen(
                                 appModel.sshSessionStore.close(action.server.serverId)
                                 appModel.serverBridge.disconnectServer(action.server.serverId)
                                 appModel.refreshSnapshot()
+                            }
+                            is ConfirmAction.ReplyError -> {
+                                // Informational dialog only — "Confirm" just dismisses.
                             }
                         }
                     }
@@ -539,100 +725,6 @@ fun HomeDashboardScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun SessionCard(
-    session: AppSessionSummary,
-    isHydrating: Boolean,
-    onClick: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    var showMenu by remember { mutableStateOf(false) }
-
-    val dotState = when {
-        session.hasActiveTurn -> com.litter.android.ui.common.StatusDotState.ACTIVE
-        isHydrating -> com.litter.android.ui.common.StatusDotState.PENDING
-        session.stats != null -> com.litter.android.ui.common.StatusDotState.OK
-        else -> com.litter.android.ui.common.StatusDotState.IDLE
-    }
-
-    Box {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(LitterTheme.surface, RoundedCornerShape(10.dp))
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = { showMenu = true },
-                )
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            com.litter.android.ui.common.StatusDot(state = dotState, size = 8.dp)
-            Spacer(Modifier.width(8.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                // First line: title only.
-                com.litter.android.ui.common.FormattedText(
-                    text = session.displayTitle,
-                    color = LitterTheme.textPrimary,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                )
-                // Second line: time · server · workspace.
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val relative = HomeDashboardSupport.relativeTime(session.updatedAt)
-                    if (relative.isNotEmpty()) {
-                        Text(
-                            text = relative,
-                            color = LitterTheme.textMuted,
-                            fontSize = 11.sp,
-                        )
-                    }
-                    Text(
-                        text = session.serverDisplayName,
-                        color = LitterTheme.textSecondary,
-                        fontSize = 11.sp,
-                    )
-                    session.cwd?.let { cwd ->
-                        Text(
-                            text = HomeDashboardSupport.workspaceLabel(cwd),
-                            color = LitterTheme.textMuted,
-                            fontSize = 11.sp,
-                        )
-                    }
-                    if (session.hasActiveTurn) {
-                        Text(
-                            text = "thinking",
-                            color = LitterTheme.accent,
-                            fontSize = 11.sp,
-                        )
-                    }
-                }
-            }
-
-            Box {
-                IconButton(
-                    onClick = { showMenu = true },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        Icons.Default.MoreVert,
-                        contentDescription = "Session actions",
-                        tint = LitterTheme.textSecondary,
-                    )
-                }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        onClick = { showMenu = false; onDelete() },
-                    )
-                }
-            }
-        }
-    }
-}
-
 /**
  * Merge rule: pinned threads first (preserving pin order — newest-pinned at
  * top), then fill from recent sessions (dedup) to reach 10 total. If the
@@ -676,5 +768,10 @@ private sealed class ConfirmAction {
     data class DisconnectServer(val server: AppServerSnapshot) : ConfirmAction() {
         override val title = "Disconnect Server"
         override val message = "Disconnect from ${server.displayName}?"
+    }
+
+    data class ReplyError(val reason: String) : ConfirmAction() {
+        override val title = "Reply Failed"
+        override val message = reason
     }
 }

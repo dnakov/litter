@@ -2576,25 +2576,31 @@ struct PendingUserInputPromptView: View {
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             if !question.options.isEmpty {
-                                HStack(spacing: 8) {
-                                    ForEach(question.options, id: \.label) { option in
-                                        let isSelected =
-                                            selectedAnswers[question.id] == option.label &&
-                                            trimmedOtherAnswer(for: question).isEmpty
-                                        Button {
-                                            selectedAnswers[question.id] = option.label
-                                            otherAnswers[question.id] = ""
-                                        } label: {
-                                            Text(option.label)
-                                                .litterFont(.caption2, weight: .semibold)
-                                                .foregroundColor(isSelected ? Color.black : LitterTheme.textPrimary)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(isSelected ? LitterTheme.accent : LitterTheme.surface.opacity(0.8))
-                                                .clipShape(Capsule())
-                                        }
-                                        .buttonStyle(.plain)
+                                // ViewThatFits + VStack fallback so long
+                                // option labels wrap to a new row instead
+                                // of squeezing a short option into a narrow
+                                // column with character-by-character wrapping.
+                                let optionButtons = ForEach(question.options, id: \.label) { option in
+                                    let isSelected =
+                                        selectedAnswers[question.id] == option.label &&
+                                        trimmedOtherAnswer(for: question).isEmpty
+                                    Button {
+                                        selectedAnswers[question.id] = option.label
+                                        otherAnswers[question.id] = ""
+                                    } label: {
+                                        Text(option.label)
+                                            .litterFont(.caption2, weight: .semibold)
+                                            .foregroundColor(isSelected ? Color.black : LitterTheme.textPrimary)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(isSelected ? LitterTheme.accent : LitterTheme.surface.opacity(0.8))
+                                            .clipShape(Capsule())
                                     }
+                                    .buttonStyle(.plain)
+                                }
+                                ViewThatFits(in: .horizontal) {
+                                    HStack(spacing: 8) { optionButtons }
+                                    VStack(alignment: .leading, spacing: 8) { optionButtons }
                                 }
                             }
 

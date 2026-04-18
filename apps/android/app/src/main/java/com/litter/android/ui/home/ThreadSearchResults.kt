@@ -164,7 +164,7 @@ private fun ThreadSearchRow(
         Icon(
             imageVector = if (isPinned) Icons.Default.CheckCircle else Icons.Default.Add,
             contentDescription = null,
-            tint = if (isPinned) LitterTheme.accent else LitterTheme.textSecondary.copy(alpha = 0.7f),
+            tint = if (isPinned) LitterTheme.accent else LitterTheme.textPrimary,
             modifier = Modifier.size(20.dp),
         )
     }

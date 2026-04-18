@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -99,11 +101,9 @@ private fun ApprovalCard(
         ApprovalKind.MCP_ELICITATION -> "Tool request"
     }
 
+    // Bare layout (no card background) to match iOS ConversationView prompt.
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
@@ -176,6 +176,7 @@ private fun ApprovalCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UserInputCard(
     request: PendingUserInputRequest,
@@ -183,11 +184,9 @@ private fun UserInputCard(
 ) {
     val answers = remember { mutableMapOf<String, String>() }
 
+    // Bare layout (no card background) to match iOS ConversationView prompt.
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // Requester badge
@@ -214,19 +213,27 @@ private fun UserInputCard(
             )
 
             if (question.options.isNotEmpty()) {
-                // Options as chips
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // FlowRow so long option labels wrap to a new line instead of
+                // crushing a short option into a narrow column with character-
+                // by-character text wrapping.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     for (option in question.options) {
                         val isSelected = answers[question.id] == option.label
-                        Button(
-                            onClick = { answers[question.id] = option.label },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) LitterTheme.accent else LitterTheme.codeBackground,
-                                contentColor = if (isSelected) Color.Black else LitterTheme.textPrimary,
-                            ),
-                        ) {
-                            Text(option.label, fontSize = 12.sp)
-                        }
+                        Text(
+                            text = option.label,
+                            color = if (isSelected) Color.Black else LitterTheme.textPrimary,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .background(
+                                    if (isSelected) LitterTheme.accent else LitterTheme.codeBackground,
+                                    RoundedCornerShape(999.dp),
+                                )
+                                .clickable { answers[question.id] = option.label }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
                     }
                 }
             } else {

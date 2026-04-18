@@ -154,6 +154,7 @@ $(shell mkdir -p $(STAMPS))
 	bindings bindings-swift bindings-kotlin \
 	sync patch unpatch xcgen ios-frameworks \
 	ios-build ios-build-sim ios-build-sim-fast ios-build-device ios-build-device-fast \
+	watch watch-sim watch-sim-run watch-device watch-typecheck \
 	test test-rust test-ios test-android \
 	testflight appstore-release play-upload play-release \
 	clean clean-rust clean-ios clean-android \
@@ -388,6 +389,63 @@ ios-build-device-fast: verify-ios-project
 		build
 
 ios-build: ios-build-sim
+
+# ─────────────────────────────────────────────────────────────────────────────
+# watchOS build lanes
+# The watch app (LitterWatch) and its complications (LitterWatchComplications)
+# are pure Swift/SwiftUI — they don't link the shared Rust library, so there
+# is no rust-watch step. The watch app is also embedded into the main iOS
+# app, so `make ios-sim-fast` will build it transitively when that ships.
+#
+# Variables you can override:
+#   WATCH_SIM_DEVICE    simulator name (default: Apple Watch Series 10 (46mm))
+#   WATCH_SCHEME        Xcode scheme (default: LitterWatch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+WATCH_SIM_DEVICE ?= Apple Watch Series 10 (46mm)
+WATCH_SCHEME ?= LitterWatch
+
+watch: watch-sim
+
+watch-typecheck:
+	@echo "==> Type-checking watchOS sources..."
+	@cd $(IOS_DIR) && xcrun -sdk watchsimulator swiftc -typecheck \
+		-target arm64-apple-watchos11.0-simulator \
+		$$(find Sources/LitterWatch Sources/LitterWatchComplications -name '*.swift')
+
+watch-sim: verify-ios-project
+	@echo "==> Building watchOS ($(XCODE_CONFIG), simulator: $(WATCH_SIM_DEVICE))..."
+	@xcodebuild -project $(IOS_DIR)/Litter.xcodeproj \
+		-scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'platform=watchOS Simulator,name=$(WATCH_SIM_DEVICE)' \
+		build
+
+watch-device: verify-ios-project
+	@echo "==> Building watchOS ($(XCODE_CONFIG), device)..."
+	@xcodebuild -project $(IOS_DIR)/Litter.xcodeproj \
+		-scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'generic/platform=watchOS' \
+		-allowProvisioningUpdates \
+		build
+
+# Boot the Series 10 46mm sim, build, install the .app and launch.
+watch-sim-run: watch-sim
+	@echo "==> Booting $(WATCH_SIM_DEVICE) and installing LitterWatch..."
+	@WATCH_UDID=$$(xcrun simctl list devices | awk '/$(WATCH_SIM_DEVICE)/ { \
+		match($$0, /\([0-9A-F-]+\)/); print substr($$0, RSTART+1, RLENGTH-2); exit \
+	}') ; \
+	if [ -z "$$WATCH_UDID" ]; then \
+		echo "ERROR: no simulator matching '$(WATCH_SIM_DEVICE)'. Run 'xcrun simctl list devices' to see what's installed."; exit 1; \
+	fi ; \
+	xcrun simctl boot $$WATCH_UDID 2>/dev/null || true ; \
+	APP_PATH=$$(xcodebuild -project $(IOS_DIR)/Litter.xcodeproj -scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) -destination "platform=watchOS Simulator,name=$(WATCH_SIM_DEVICE)" \
+		-showBuildSettings 2>/dev/null | awk -F' = ' '/ CODESIGNING_FOLDER_PATH /{print $$2; exit}') ; \
+	echo "==> Installing $$APP_PATH"; \
+	xcrun simctl install $$WATCH_UDID "$$APP_PATH" ; \
+	xcrun simctl launch $$WATCH_UDID com.sigkitten.litter.watchkitapp
 
 android-debug:
 	@echo "==> Building Android debug..."

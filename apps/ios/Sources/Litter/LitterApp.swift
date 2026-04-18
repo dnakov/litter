@@ -46,6 +46,14 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         OrientationResponder.shared.start()
         showSplashWindow()
         scheduleKeyboardWarmup()
+        // Start pushing state to the paired Apple Watch, gated behind the
+        // experimental feature flag. Flip the `appleWatch` feature in
+        // Settings → Experimental Features to enable. No-op when disabled.
+        DispatchQueue.main.async {
+            if ExperimentalFeatures.shared.isEnabled(.appleWatch) {
+                WatchCompanionBridge.shared.start()
+            }
+        }
         return true
     }
 

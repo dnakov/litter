@@ -42,6 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -81,6 +83,15 @@ fun HomeComposerBar(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isSubmitting by remember { mutableStateOf(false) }
     var isFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    // Auto-focus on first composition so the parent's `isComposerActive`
+    // flag stays true (it's derived from internal isFocused/text/etc.). Without
+    // this, expanding from a collapsed state would immediately collapse back
+    // on the next recomposition because nothing has focus yet.
+    LaunchedEffect(Unit) {
+        runCatching { focusRequester.requestFocus() }
+    }
 
     val transcriptionManager = remember { VoiceTranscriptionManager() }
     val isRecording by transcriptionManager.isRecording.collectAsState()
@@ -107,7 +118,19 @@ fun HomeComposerBar(
         attachedImage != null ||
         isRecording ||
         isTranscribing
-    LaunchedEffect(isActive) { onActiveChange?.invoke(isActive) }
+    // Only propagate `false` once the composer has actually become active
+    // at least once. Otherwise the very first composition (before focus
+    // lands) would emit `false` and the parent would collapse us back to
+    // the + button on the next frame.
+    var hasBeenActive by remember { mutableStateOf(false) }
+    LaunchedEffect(isActive) {
+        if (isActive) {
+            hasBeenActive = true
+            onActiveChange?.invoke(true)
+        } else if (hasBeenActive) {
+            onActiveChange?.invoke(false)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         if (errorMessage != null) {
@@ -223,6 +246,7 @@ fun HomeComposerBar(
                         cursorBrush = SolidColor(LitterTheme.accent),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .focusRequester(focusRequester)
                             .onFocusChanged { isFocused = it.isFocused },
                     )
                 }
