@@ -471,6 +471,38 @@ pub(crate) fn session_summaries_from_snapshot(snapshot: &AppSnapshot) -> Vec<App
     session_summaries
 }
 
+/// Minimal placeholder summary used only when a per-item event fires for a
+/// thread that has been removed between the mutation and the emit read.
+/// The ensuing `ThreadRemoved` event will make platform listeners drop
+/// this row anyway, so every other field is trivially defaulted.
+pub(crate) fn empty_session_summary(key: ThreadKey) -> AppSessionSummary {
+    AppSessionSummary {
+        server_display_name: key.server_id.clone(),
+        server_host: key.server_id.clone(),
+        key,
+        title: String::new(),
+        preview: String::new(),
+        cwd: String::new(),
+        model: String::new(),
+        model_provider: String::new(),
+        parent_thread_id: None,
+        agent_nickname: None,
+        agent_role: None,
+        agent_display_label: None,
+        agent_status: AppSubagentStatus::Unknown,
+        updated_at: None,
+        has_active_turn: false,
+        is_subagent: false,
+        is_fork: false,
+        last_response_preview: None,
+        last_user_message: None,
+        last_tool_label: None,
+        recent_tool_log: Vec::new(),
+        stats: None,
+        token_usage: None,
+    }
+}
+
 pub(crate) fn app_session_summary(
     thread: &ThreadSnapshot,
     server: Option<&ServerSnapshot>,

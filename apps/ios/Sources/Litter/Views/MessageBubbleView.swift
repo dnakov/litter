@@ -334,7 +334,7 @@ struct StreamingAssistantBubble: View {
     var label: String? = nil
     var themeVersion: Int = 0
     var onSnapshotRendered: (() -> Void)? = nil
-    private let contentFontSize = LitterFont.conversationBodyPointSize
+    private let contentFontSize: CGFloat
 
     /// Renderer is resolved once during init. For streaming items, this
     /// creates the renderer eagerly (before deltas arrive) so the `if let`
@@ -348,6 +348,7 @@ struct StreamingAssistantBubble: View {
         isStreaming: Bool = false,
         label: String? = nil,
         themeVersion: Int = 0,
+        bodySize: CGFloat = LitterFont.conversationBodyPointSize,
         onSnapshotRendered: (() -> Void)? = nil
     ) {
         self.itemId = itemId
@@ -355,6 +356,7 @@ struct StreamingAssistantBubble: View {
         self.isStreaming = isStreaming
         self.label = label
         self.themeVersion = themeVersion
+        self.contentFontSize = bodySize
         self.onSnapshotRendered = onSnapshotRendered
 
         let coord = StreamingRendererCoordinator.shared

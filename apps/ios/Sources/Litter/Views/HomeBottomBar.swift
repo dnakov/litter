@@ -33,28 +33,51 @@ struct HomeBottomBar: View {
     private let buttonSize: CGFloat = 44
 
     var body: some View {
-        GlassMorphContainer(spacing: 14) {
-            switch mode {
-            case .collapsed:
-                collapsedButtons
-            case .composer:
-                composerRow
-            case .search:
-                searchRow
+        // Two isolated glass pools so the + and search buttons don't blob
+        // into a single liquid-glass shape. Pool 1 handles plus ↔ composer,
+        // pool 2 handles search ↔ searchRow. Without this, `searchRow`
+        // expanding leftward from `searchIconButton` visually absorbs the +
+        // button's glass — reading as if the + is the one morphing.
+        ZStack {
+            // Pool 1: plus button ↔ composer row
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                GlassMorphContainer(spacing: 14) {
+                    switch mode {
+                    case .collapsed:
+                        plusButton
+                    case .composer:
+                        composerRow
+                    case .search:
+                        EmptyView()
+                    }
+                }
+                .frame(maxWidth: mode == .composer ? .infinity : nil)
+                if mode == .collapsed {
+                    // Reserve the search button's slot so the + stays put.
+                    Spacer().frame(width: buttonSize + 10 + 14)
+                }
             }
+            .padding(.horizontal, mode == .collapsed ? 14 : 0)
+
+            // Pool 2: search button ↔ search row
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                GlassMorphContainer(spacing: 14) {
+                    switch mode {
+                    case .collapsed:
+                        searchIconButton
+                    case .composer:
+                        EmptyView()
+                    case .search:
+                        searchRow
+                    }
+                }
+                .frame(maxWidth: mode == .search ? .infinity : nil)
+            }
+            .padding(.horizontal, mode == .collapsed ? 14 : 0)
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: mode)
-    }
-
-    // MARK: - Collapsed
-
-    private var collapsedButtons: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 0)
-            plusButton
-            searchIconButton
-        }
-        .padding(.horizontal, 14)
     }
 
     private var plusButton: some View {

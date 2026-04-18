@@ -17,7 +17,6 @@ struct HomeDashboardRecentSession: Identifiable, Hashable {
     let lastResponsePreview: String?
     let lastUserMessage: String?
     let lastToolLabel: String?
-    let recentToolLog: [AppToolLogEntry]
     let stats: AppConversationStats?
     let tokenUsage: AppTokenUsage?
 
@@ -94,7 +93,6 @@ enum HomeDashboardSupport {
                     lastResponsePreview: session.lastResponsePreview,
                     lastUserMessage: session.lastUserMessage,
                     lastToolLabel: session.lastToolLabel,
-                    recentToolLog: session.recentToolLog,
                     stats: session.stats,
                     tokenUsage: session.tokenUsage
                 )

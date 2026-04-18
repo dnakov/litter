@@ -21,8 +21,6 @@ struct StatusDot: View {
     let state: StatusDotState
     var size: CGFloat = 10
 
-    @State private var pulsing = false
-
     var body: some View {
         Group {
             switch state {
@@ -43,16 +41,22 @@ struct StatusDot: View {
         .frame(width: size + 2, height: size + 2)
     }
 
+    /// TimelineView-driven pulse. Unlike a `@State` + `.onAppear` +
+    /// `.repeatForever` setup (which can silently stop after List row
+    /// recycling), this ties the animation directly to the scene clock —
+    /// every frame SwiftUI re-evaluates with the current time and the
+    /// derived opacity/scale, so the pulse is always running as long as
+    /// the dot is visible.
     private func pulsingDot(color: Color) -> some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .opacity(pulsing ? 0.35 : 1.0)
-            .scaleEffect(pulsing ? 0.85 : 1.0)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                    pulsing = true
-                }
-            }
+        TimelineView(.animation) { context in
+            // Period ≈ 1.6s; opacity sweeps 0.35 → 1.0, scale 0.85 → 1.0.
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = (sin(t * .pi / 0.8) + 1) / 2  // 0 → 1
+            Circle()
+                .fill(color)
+                .frame(width: size, height: size)
+                .opacity(0.35 + phase * 0.65)
+                .scaleEffect(0.85 + phase * 0.15)
+        }
     }
 }

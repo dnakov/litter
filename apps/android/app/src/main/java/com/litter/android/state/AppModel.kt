@@ -250,6 +250,24 @@ class AppModel private constructor(context: android.content.Context) {
         }
     }
 
+    /// Patch a single `AppSessionSummary` in the snapshot. Called whenever
+    /// the reducer emits a per-item summary update on `threadItemChanged`,
+    /// so home-list derived fields track streaming items without waiting
+    /// for a full snapshot rebuild.
+    private fun applySessionSummary(summary: AppSessionSummary) {
+        val current = _snapshot.value ?: return
+        val adjusted = applySavedServerName(summary)
+        val existingIndex = current.sessionSummaries.indexOfFirst { it.key == adjusted.key }
+        val updatedSummaries = current.sessionSummaries.toMutableList().apply {
+            if (existingIndex >= 0) {
+                this[existingIndex] = adjusted
+            } else {
+                add(adjusted)
+            }
+        }
+        _snapshot.value = current.copy(sessionSummaries = updatedSummaries)
+    }
+
     suspend fun restartLocalServer() {
         val currentLocal = snapshot.value?.servers?.firstOrNull { it.isLocal }
         val serverId = currentLocal?.serverId ?: "local"
@@ -514,6 +532,12 @@ class AppModel private constructor(context: android.content.Context) {
                 if (!applyThreadItemChanged(update.key, update.item)) {
                     recoverThreadDeltaApplication(update.key)
                 }
+                // Reducer piggybacks the refreshed per-thread summary on
+                // every item change; patch our local session-summary cache
+                // so home-list derived fields (stats, last tool label, etc.)
+                // stay in sync with streaming items without waiting for a
+                // full snapshot rebuild.
+                applySessionSummary(update.sessionSummary)
             }
             is AppStoreUpdateRecord.ThreadStreamingDelta -> {
                 if (!applyThreadStreamingDelta(update.key, update.itemId, update.kind, update.text)) {

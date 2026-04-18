@@ -35,6 +35,12 @@ pub enum AppStoreUpdateRecord {
     ThreadItemChanged {
         key: ThreadKey,
         item: HydratedConversationItem,
+        /// Per-item derivation (`last_response_preview`, `last_tool_label`,
+        /// `stats`, etc.) computed at the point of the mutation. Lets
+        /// platform listeners patch their local `AppSessionSummary` without
+        /// another FFI roundtrip or a full snapshot rebuild, so the home
+        /// dashboard's zoom-2 meta line stays in sync with streaming items.
+        session_summary: AppSessionSummary,
     },
     ThreadStreamingDelta {
         key: ThreadKey,

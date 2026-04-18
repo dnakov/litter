@@ -28,7 +28,8 @@ use super::actions::{
     thread_info_from_upstream_status_change,
 };
 use super::boundary::{
-    current_agent_directory_version, project_thread_state_update, project_thread_update,
+    app_session_summary, current_agent_directory_version, empty_session_summary,
+    project_thread_state_update, project_thread_update, AppSessionSummary,
 };
 use super::snapshot::{
     AppConnectionProgressSnapshot, AppLifecyclePhaseSnapshot, AppQueuedFollowUpPreview,
@@ -2039,10 +2040,27 @@ impl AppStoreReducer {
             }
             cache.insert(cache_key, item.clone());
         }
+        let session_summary = self.compute_session_summary(key);
         self.emit(AppStoreUpdateRecord::ThreadItemChanged {
             key: key.clone(),
             item: HydratedConversationItem::from(item),
+            session_summary,
         });
+    }
+
+    /// Snapshot a single thread's `AppSessionSummary` for piggybacking on
+    /// per-item events. Falls back to a minimal summary if the thread is
+    /// gone by the time this runs (shouldn't happen in practice — emit
+    /// sites hold the snapshot lock while deciding to emit).
+    fn compute_session_summary(&self, key: &ThreadKey) -> AppSessionSummary {
+        let snapshot = self.snapshot.read().expect("app store lock poisoned");
+        let Some(thread) = snapshot.threads.get(key) else {
+            // Placeholder empty summary — the matching thread has been
+            // removed between the mutation and this read. Platform side
+            // will get a ThreadRemoved event next and discard anyway.
+            return empty_session_summary(key.clone());
+        };
+        app_session_summary(thread, snapshot.servers.get(&key.server_id))
     }
 
     pub(crate) fn emit_thread_item_changed_by_id(&self, key: &ThreadKey, item_id: &str) {
@@ -2113,9 +2131,11 @@ impl AppStoreReducer {
                     if queued_changed {
                         self.emit_thread_metadata_changed(key);
                     }
+                    let session_summary = self.compute_session_summary(key);
                     self.emit(AppStoreUpdateRecord::ThreadItemChanged {
                         key: key.clone(),
                         item,
+                        session_summary,
                     });
                 }
             }
@@ -2187,7 +2207,7 @@ impl AppStoreReducer {
                     "emit ThreadMetadataChanged"
                 )
             }
-            AppStoreUpdateRecord::ThreadItemChanged { key, item } => {
+            AppStoreUpdateRecord::ThreadItemChanged { key, item, .. } => {
                 tracing::debug!(
                     target: "store",
                     server_id = key.server_id,
@@ -3256,7 +3276,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "reasoning-1"
         )));
         assert!(
@@ -3315,7 +3335,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "call-1"
         )));
         assert!(
@@ -3366,7 +3386,7 @@ mod tests {
         let updates = drain_updates(&mut receiver);
         assert!(updates.iter().any(|update| matches!(
             update,
-            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item }
+            AppStoreUpdateRecord::ThreadItemChanged { key: update_key, item, .. }
                 if update_key == &key && item.id == "mcp-1"
         )));
         assert!(
@@ -4182,6 +4202,7 @@ mod tests {
                     AppStoreUpdateRecord::ThreadItemChanged {
                         key: update_key,
                         item,
+                        ..
                     } if update_key == &key && item.id == "call-1"
                 )
             })

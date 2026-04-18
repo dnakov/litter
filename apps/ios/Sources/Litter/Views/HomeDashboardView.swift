@@ -460,6 +460,37 @@ private enum SessionCanvasLayout {
     static let markerSpacing: CGFloat = 8
 }
 
+/// One row in the home zoom-4 tool log. `exploration` collapses multiple
+/// consecutive read/search/listFiles commands into a single summary line
+/// (matching the conversation view's grouping behavior); `tool` is a
+/// single-line entry for any other kind of tool call.
+private enum HomeToolRow: Identifiable {
+    case exploration(id: String, summary: String)
+    case tool(id: String, icon: String, detail: String)
+
+    var id: String {
+        switch self {
+        case .exploration(let id, _): return id
+        case .tool(let id, _, _): return id
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .exploration: return "⌕"
+        case .tool(_, let icon, _): return icon
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .exploration(_, let summary): return summary
+        case .tool(_, _, let detail): return detail
+        }
+    }
+}
+
+
 // MARK: - Session Canvas Line
 
 private struct SessionCanvasLine: View {
@@ -469,12 +500,81 @@ private struct SessionCanvasLine: View {
     let isCancelling: Bool
     let zoomLevel: Int
 
+    @Environment(AppModel.self) private var appModel
+
     private var isActive: Bool { session.hasTurnActive }
     private var isHydrated: Bool { session.stats != nil }
     private var timeAgo: String { relativeDate(Int64(session.updatedAt.timeIntervalSince1970)) }
     private var s: AppConversationStats? { session.stats }
     private var toolCallCount: UInt32 { s?.toolCallCount ?? 0 }
     private var turnCount: UInt32 { s?.turnCount ?? 0 }
+
+    /// Full hydrated item list for this thread (empty if the thread hasn't
+    /// been hydrated yet). Used for richer zoom-4 displays that need to see
+    /// item types directly — e.g. grouping exploration commands.
+    private var hydratedItems: [ConversationItem] {
+        appModel.snapshot?.threadSnapshot(for: session.key)?
+            .hydratedConversationItems.map(\.conversationItem) ?? []
+    }
+
+    /// Last *non-empty* assistant message on this thread. When a new turn
+    /// starts the latest assistant item is created with empty text and
+    /// fills in as deltas arrive — returning it directly would blank the
+    /// row mid-turn. Walking back to the last non-empty block keeps the
+    /// previous response visible until the new one actually has content,
+    /// at which point `id` changes and the render layer can crossfade.
+    private var displayedAssistantMessage: (id: String, text: String)? {
+        for item in hydratedItems.reversed() {
+            if item.isAssistantItem {
+                let text = (item.assistantText ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return (id: item.id, text: item.assistantText ?? "")
+                }
+            }
+        }
+        return nil
+    }
+
+    /// True only when the most recent tool-capable item is actually
+    /// in-progress. Used to gate the zoom-2 tool-activity label + pulsing
+    /// dots so they appear only during real tool execution, not every
+    /// time the assistant is thinking/streaming.
+    private var isToolCallRunning: Bool {
+        for item in hydratedItems.reversed() {
+            switch item.content {
+            case .commandExecution(let data):
+                return data.isInProgress
+            case .mcpToolCall(let data):
+                return data.isInProgress
+            case .dynamicToolCall(let data):
+                return data.isInProgress
+            case .fileChange(let data):
+                return data.status == .pending || data.status == .inProgress
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// Start/end of the most recent turn, derived from item timestamps.
+    /// `end == nil` signals an in-progress turn — the chip drives a live
+    /// ticker. When the turn completes, `end` is the max item timestamp
+    /// in that turn (which the server updates as items finalize), so the
+    /// displayed duration is always calculated from data rather than
+    /// captured in view state.
+    private var lastTurnBounds: (start: Date, end: Date?)? {
+        let items = hydratedItems
+        guard let lastTurnId = items.reversed().compactMap(\.sourceTurnId).first else {
+            return nil
+        }
+        let turnItems = items.filter { $0.sourceTurnId == lastTurnId }
+        guard let start = turnItems.map(\.timestamp).min() else { return nil }
+        if isActive { return (start: start, end: nil) }
+        let end = turnItems.map(\.timestamp).max() ?? start
+        return (start: start, end: end)
+    }
 
     // ────────────────────────────────────────────────────
     // Zoom levels — each must feel distinct:
@@ -523,9 +623,6 @@ private struct SessionCanvasLine: View {
                             .transition(Self.drawerTransition)
                     }
                     if zoomLevel >= 3 {
-                        activityLine
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .transition(Self.drawerTransition)
                         modelBadgeLine
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .transition(Self.drawerTransition)
@@ -535,8 +632,8 @@ private struct SessionCanvasLine: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .transition(Self.drawerTransition)
                     }
-                    if zoomLevel == 4 {
-                        toolLog(maxEntries: 3)
+                    if zoomLevel >= 3 {
+                        toolLog(maxEntries: zoomLevel >= 4 ? 3 : 1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .transition(Self.drawerTransition)
                     }
@@ -569,6 +666,7 @@ private struct SessionCanvasLine: View {
         }
         .background(isActive ? LitterTheme.accent.opacity(0.02) : Color.clear)
         .contentShape(Rectangle())
+        .clipped()
         .animation(HomeDashboardView.zoomSpring, value: zoomLevel)
         .animation(.easeInOut(duration: 0.25), value: isActive)
         .accessibilityIdentifier("home.recentSessionCard")
@@ -591,7 +689,11 @@ private struct SessionCanvasLine: View {
         HStack(spacing: 4) {
             Text(timeAgo)
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
-            if isActive {
+            // Only show the tool label + pulsing dots when a tool call
+            // is actually executing. During pure LLM thinking/streaming
+            // we fall through to the server + workspace metadata, same
+            // as when the turn is idle.
+            if isActive && isToolCallRunning {
                 Text("\u{00b7}")
                     .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
                 toolActivityLabel
@@ -625,14 +727,14 @@ private struct SessionCanvasLine: View {
         }
         if toolCallCount > 0 {
             Image(systemName: "chevron.left.forwardslash.chevron.right")
-                .font(.system(size: 8))
+                .litterFont(size: 8)
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
             Text("\(toolCallCount)")
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
         }
         if turnCount > 0 {
             Image(systemName: "arrow.turn.down.right")
-                .font(.system(size: 8))
+                .litterFont(size: 8)
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
             Text("\(turnCount)")
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
@@ -646,30 +748,18 @@ private struct SessionCanvasLine: View {
         }
     }
 
-    // MARK: - Zoom 3+: activity status
-
-    @ViewBuilder
-    private var activityLine: some View {
-        if isActive {
-            HStack(spacing: 4) {
-                toolActivityLabel
-                SessionPulsingDots()
-            }
-            .litterMonoFont(size: 10, weight: .regular)
-            .lineLimit(1)
-            .padding(.top, 2)
-        }
-    }
-
     @ViewBuilder
     private var toolActivityLabel: some View {
         if let toolLabel = session.lastToolLabel {
             let parts = toolLabel.split(separator: " ", maxSplits: 1)
-            Text(String(parts.first ?? ""))
+            let name = String(parts.first ?? "")
+            Text(toolIconForName(name))
                 .foregroundStyle(LitterTheme.accent)
             if parts.count > 1 {
                 Text(String(parts.last ?? ""))
                     .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         } else {
             Text("thinking")
@@ -681,37 +771,46 @@ private struct SessionCanvasLine: View {
 
     private var modelBadgeLine: some View {
         HStack(spacing: 4) {
-            Text(timeAgo)
-                .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
-            Text("\u{00b7}")
-                .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
-            Image(systemName: "server.rack")
-                .font(.system(size: 8))
-                .foregroundStyle(LitterTheme.accent.opacity(0.5))
-            Text(session.serverDisplayName)
-                .foregroundStyle(LitterTheme.accent.opacity(0.6))
-            let m = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !m.isEmpty {
-                Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
-                Text(m)
-                    .foregroundStyle(LitterTheme.textSecondary.opacity(0.7))
-            }
-            if session.isFork {
-                Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
-                Text("fork")
-                    .foregroundStyle(LitterTheme.warning.opacity(0.8))
-            }
-            if session.isSubagent, let agent = session.agentLabel {
-                Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
-                Text(agent)
+            // Left group — the only text that might need to truncate when
+            // the row is tight. Keeping `.lineLimit(1)` scoped to this
+            // group prevents it from propagating into the chip HStacks on
+            // the right and chopping short numerics to ellipses.
+            HStack(spacing: 4) {
+                Text(timeAgo)
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
+                Text("\u{00b7}")
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                Image(systemName: "server.rack")
+                    .litterFont(size: 8)
+                    .foregroundStyle(LitterTheme.accent.opacity(0.5))
+                Text(session.serverDisplayName)
                     .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                let m = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !m.isEmpty {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text(m)
+                        .foregroundStyle(LitterTheme.textSecondary.opacity(0.7))
+                }
+                if session.isFork {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text("fork")
+                        .foregroundStyle(LitterTheme.warning.opacity(0.8))
+                }
+                if session.isSubagent, let agent = session.agentLabel {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text(agent)
+                        .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                }
             }
+            .lineLimit(1)
+            .truncationMode(.tail)
 
             Spacer(minLength: 6)
             inlineStats
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
         }
         .litterMonoFont(size: 10, weight: .regular)
-        .lineLimit(1)
         .padding(.top, 1)
     }
 
@@ -723,7 +822,7 @@ private struct SessionCanvasLine: View {
             if turnCount > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 8))
+                        .litterFont(size: 8)
                     Text("\(turnCount)")
                 }
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
@@ -731,7 +830,7 @@ private struct SessionCanvasLine: View {
             if toolCallCount > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .font(.system(size: 8))
+                        .litterFont(size: 8)
                     Text("\(toolCallCount)")
                 }
                 .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
@@ -744,9 +843,8 @@ private struct SessionCanvasLine: View {
                         .foregroundStyle(LitterTheme.danger.opacity(0.6))
                 }
             }
-            if let stats = s, stats.totalCommandDurationMs > 0 {
-                Text(formatDuration(stats.totalCommandDurationMs))
-                    .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+            if let bounds = lastTurnBounds {
+                TurnStopwatchChip(start: bounds.start, end: bounds.end)
             }
             if let tu = session.tokenUsage, let window = tu.contextWindow, window > 0 {
                 let pct = Int((Double(tu.totalTokens) / Double(window)) * 100)
@@ -769,7 +867,10 @@ private struct SessionCanvasLine: View {
                 FormattedText(text: message, lineLimit: 1)
                     .foregroundStyle(LitterTheme.textSecondary.opacity(0.9))
             }
-            .litterMonoFont(size: 11, weight: .regular)
+            // Match the conversation view's user-message size
+            // (`UserBubble` uses `.litterFont(size: conversationBodyPointSize)`).
+            // Same regular (non-mono) font too, for visual parity.
+            .litterFont(size: LitterFont.conversationBodyPointSize)
             .padding(.top, 3)
         }
     }
@@ -778,19 +879,16 @@ private struct SessionCanvasLine: View {
 
     @ViewBuilder
     private func toolLog(maxEntries: Int) -> some View {
-        if !session.recentToolLog.isEmpty {
-            let visible = session.recentToolLog.suffix(maxEntries)
+        // Groups consecutive exploration commands (reads/searches/listings)
+        // into one summary line, same as the conversation view, but always
+        // single-line (no expand/collapse). The Rust-side `recentToolLog`
+        // is derived from the exact same hydrated items, so we don't need
+        // a separate fallback.
+        let rows = hydratedToolRows(limit: maxEntries)
+        if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(visible.enumerated()), id: \.offset) { _, entry in
-                    HStack(spacing: 8) {
-                        Text(entry.tool)
-                            .foregroundStyle(LitterTheme.accent.opacity(0.6))
-                            .frame(minWidth: 32, alignment: .leading)
-                        Text(entry.detail)
-                            .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
-                            .lineLimit(zoomLevel >= 4 ? 3 : 1)
-                    }
-                    .litterMonoFont(size: 10, weight: .regular)
+                ForEach(rows) { row in
+                    toolRowView(row)
                 }
             }
             .padding(.top, 6)
@@ -798,70 +896,228 @@ private struct SessionCanvasLine: View {
         }
     }
 
+    @ViewBuilder
+    private func toolRowView(_ row: HomeToolRow) -> some View {
+        HStack(spacing: 8) {
+            toolIconView(row.icon)
+                .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                .frame(minWidth: 20, alignment: .leading)
+            Text(row.detail)
+                .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        // Match the conversation view's tool-call summary size —
+        // `ToolCallCardView` uses `.litterFont(size: contentFontSize)` =
+        // `LitterFont.conversationBodyPointSize` — and a regular (non-mono)
+        // font so titles/messages/tools all read at the same scale.
+        .litterFont(size: LitterFont.conversationBodyPointSize)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A couple of tool icons read better as SF Symbols (a "computer" glyph
+    /// for MCP / external tool calls) than as a text abbreviation. Text
+    /// glyphs (`$`, `✎`, `·`, `⌕`) render directly. The 12pt semibold
+    /// matches `ToolCallCardView`'s icon in the conversation view.
+    @ViewBuilder
+    private func toolIconView(_ icon: String) -> some View {
+        switch icon {
+        case "mcp":
+            Image(systemName: "desktopcomputer")
+                .litterFont(size: 12, weight: .semibold)
+        case "tool":
+            Image(systemName: "wrench.and.screwdriver")
+                .litterFont(size: 12, weight: .semibold)
+        default:
+            Text(icon)
+                .litterFont(size: 12, weight: .semibold)
+        }
+    }
+
+    /// Derive a grouped tool log from `hydratedItems`. Consecutive
+    /// exploration command items collapse into a single summary row
+    /// (e.g. `⌕ Explored 3 files, 2 searches`); everything else becomes a
+    /// standalone single-line row. Returns the *last* `limit` rows.
+    private func hydratedToolRows(limit: Int) -> [HomeToolRow] {
+        let items = hydratedItems
+        guard !items.isEmpty else { return [] }
+        var rows: [HomeToolRow] = []
+        var buffer: [ConversationItem] = []
+
+        func flushExploration() {
+            guard !buffer.isEmpty else { return }
+            let anyInProgress = buffer.contains { item in
+                if case .commandExecution(let data) = item.content {
+                    return data.isInProgress
+                }
+                return false
+            }
+            let prefix = anyInProgress ? "Exploring" : "Explored"
+            let summary = explorationSummary(for: buffer, prefix: prefix)
+            let seed = buffer.first?.id ?? UUID().uuidString
+            rows.append(.exploration(id: "exploration-\(seed)", summary: summary))
+            buffer.removeAll(keepingCapacity: true)
+        }
+
+        for item in items {
+            if item.isExplorationCommandItem {
+                buffer.append(item)
+                continue
+            }
+            flushExploration()
+            if let row = toolRow(for: item) {
+                rows.append(row)
+            }
+        }
+        flushExploration()
+
+        if rows.count <= limit { return rows }
+        return Array(rows.suffix(limit))
+    }
+
+    private func toolRow(for item: ConversationItem) -> HomeToolRow? {
+        switch item.content {
+        case .commandExecution(let data):
+            let cmd = data.command.split(separator: "\n").first.map(String.init) ?? data.command
+            return .tool(id: "cmd-\(item.id)", icon: "$", detail: cmd.trimmingCharacters(in: .whitespaces))
+        case .fileChange(let data):
+            let paths = data.changes.prefix(3).map { ($0.path as NSString).lastPathComponent }
+            let tail = data.changes.count > 3 ? " +\(data.changes.count - 3)" : ""
+            return .tool(id: "edit-\(item.id)", icon: "✎", detail: paths.joined(separator: ", ") + tail)
+        case .mcpToolCall(let data):
+            return .tool(id: "mcp-\(item.id)", icon: "mcp", detail: data.tool)
+        case .dynamicToolCall(let data):
+            return .tool(id: "dyn-\(item.id)", icon: "tool", detail: data.tool)
+        case .webSearch(let data):
+            return .tool(id: "web-\(item.id)", icon: "⌕", detail: data.query ?? "search")
+        default:
+            return nil
+        }
+    }
+
+    private func explorationSummary(for items: [ConversationItem], prefix: String) -> String {
+        var readCount = 0, searchCount = 0, listingCount = 0, fallbackCount = 0
+        for item in items {
+            guard case .commandExecution(let data) = item.content else { continue }
+            if data.actions.isEmpty {
+                fallbackCount += 1
+                continue
+            }
+            for action in data.actions {
+                switch action.kind {
+                case .read: readCount += 1
+                case .search: searchCount += 1
+                case .listFiles: listingCount += 1
+                case .unknown: fallbackCount += 1
+                }
+            }
+        }
+        var parts: [String] = []
+        if readCount > 0 { parts.append("\(readCount) \(readCount == 1 ? "file" : "files")") }
+        if searchCount > 0 { parts.append("\(searchCount) \(searchCount == 1 ? "search" : "searches")") }
+        if listingCount > 0 { parts.append("\(listingCount) \(listingCount == 1 ? "listing" : "listings")") }
+        if fallbackCount > 0 { parts.append("\(fallbackCount) \(fallbackCount == 1 ? "step" : "steps")") }
+        if parts.isEmpty {
+            return "\(prefix) \(items.count) step\(items.count == 1 ? "" : "s")"
+        }
+        return "\(prefix) \(parts.joined(separator: ", "))"
+    }
+
+    /// Map the Rust-derived tool name (`"Bash"`, `"Edit"`, etc.) to the
+    /// short single-character/phrase display used in the home list.
+    private func toolIconForName(_ name: String) -> String {
+        switch name {
+        case "Bash": return "$"
+        case "Edit": return "✎"
+        case "MCP": return "mcp"
+        case "Tool": return "tool"
+        default: return name
+        }
+    }
+
     // MARK: - Zoom 4: last response preview
 
     @ViewBuilder
     private var responsePreview: some View {
-        let response = (session.lastResponsePreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if response.count > 20 {
-            let markdown = LitterMarkdownView(
-                markdown: response,
-                bodySize: 12,
-                codeSize: 11,
+        // Plain markdown — no streaming token-reveal bubble. The reducer
+        // piggybacks a fresh session summary on every item change, so the
+        // markdown already grows in place as deltas land. We pick the last
+        // *non-empty* assistant item so a new turn's empty assistant block
+        // doesn't blank the row mid-stream, then crossfade via `.id(blockId)`
+        // when a genuinely new block takes over.
+        let live = displayedAssistantMessage
+        let fallback = (session.lastResponsePreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let liveText = (live?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let markdown = !liveText.isEmpty ? (live?.text ?? "") : fallback
+        let blockId = live?.id ?? "fallback"
+        if markdown.count > 20 {
+            // ViewThatFits picks the first child whose natural size fits
+            // the proposed container. The container is capped at
+            // `responsePreviewMaxHeight`, so:
+            //   - Short markdown (natural ≤ cap): the fixed-size rendering
+            //     wins, frame shrinks to natural height → no blank space.
+            //   - Long markdown (natural > cap): the first child is too
+            //     tall, so ViewThatFits falls through to the scroll-based
+            //     fallback — scroll is disabled but `defaultScrollAnchor(.bottom)`
+            //     keeps the tail visible, and the frame stays at cap.
+            // This pattern is the clean SwiftUI answer for "shrink to
+            // content OR cap-with-tail-visible"; the earlier
+            // `fixedSize + frame(maxHeight:, alignment: .bottom)` combo
+            // composed unpredictably with Textual's MarkdownView intrinsic
+            // sizing and inflated every row to cap height.
+            // Match the conversation view's defaults —
+            // `LitterFont.conversationBodyPointSize` × `textScale` — so
+            // markdown in the home preview renders at the same size as in
+            // the actual conversation.
+            let previewMarkdown = LitterMarkdownView(
+                markdown: markdown,
                 selectionEnabled: false
             )
-            // Branching on zoomLevel drives a real view swap so both halves
-            // get `.transition` opacity fades on the crossover.
-            if zoomLevel >= 4 {
-                markdown
-                    .padding(.top, 4)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            } else {
-                // Zoom 3: cap at roughly half the screen and pin to the
-                // bottom so the tail of the response shows through while
-                // the head scrolls off the top. `.mask` applies only to the
-                // markdown's alpha, so the fade dims the cut-off text
-                // without tinting the row background behind it.
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    markdown
+            ViewThatFits(in: .vertical) {
+                previewMarkdown
+                    .fixedSize(horizontal: false, vertical: true)
+                ScrollView(.vertical, showsIndicators: false) {
+                    previewMarkdown
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: responsePreviewMaxHeight, alignment: .bottom)
-                .clipped()
-                .mask(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: .black.opacity(0.35), location: 0.08),
-                            .init(color: .black, location: 0.22)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .padding(.top, 4)
-                .transition(.opacity)
+                .defaultScrollAnchor(.bottom)
+                .scrollDisabled(true)
             }
+            .id(blockId)
+            // Bundle the animation into the transition itself so the
+            // crossfade fires on every `.id` change without relying on an
+            // external `.animation(value:)` context — that combo can miss
+            // animations when SwiftUI doesn't see a clear state-change
+            // trigger across the id swap.
+            .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+            .frame(maxHeight: responsePreviewMaxHeight)
+            .clipped()
+            .mask(
+                LinearGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: .black.opacity(0.55), location: 0),
+                        .init(color: .black.opacity(0.85), location: 0.10),
+                        .init(color: .black, location: 0.22)
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .padding(.top, 4)
         }
     }
 
-    /// ~50% of the current scene's screen height. Computed at render time so
-    /// it adapts to device size + orientation.
+    /// Screen-height-relative cap on the response preview. Zoom 3 gets a
+    /// tight 25% so the row stays scan-able in a dense list; zoom 4 gets
+    /// 50% for a fuller read. Computed at render time so it adapts to
+    /// device size + orientation.
     private var responsePreviewMaxHeight: CGFloat {
         let screenHeight = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first?.screen.bounds.height ?? 800
-        return screenHeight * 0.5
+        return screenHeight * (zoomLevel >= 4 ? 0.5 : 0.25)
     }
 
-    private func formatDuration(_ ms: Int64) -> String {
-        if ms < 1000 { return "\(ms)ms" }
-        let secs = Double(ms) / 1000.0
-        if secs < 60 { return String(format: "%.1fs", secs) }
-        let mins = Int(secs / 60)
-        let remainSecs = Int(secs) % 60
-        return "\(mins)m \(remainSecs)s"
-    }
 
     // MARK: - Status Indicator
 
@@ -879,6 +1135,43 @@ private struct SessionCanvasLine: View {
 }
 
 // MARK: - Canvas Animation Components
+
+/// Stopwatch chip rendered at the right of the modelBadgeLine. When
+/// `end` is nil the turn is live and a `TimelineView` drives a 1 Hz
+/// re-eval. When `end` is provided, the chip is static and shows the
+/// calculated turn duration (`end - start`) — no in-memory freeze.
+private struct TurnStopwatchChip: View {
+    let start: Date
+    let end: Date?
+
+    var body: some View {
+        if let end {
+            chip(seconds: max(0, end.timeIntervalSince(start)))
+        } else {
+            TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                chip(seconds: max(0, context.date.timeIntervalSince(start)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chip(seconds: TimeInterval) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "stopwatch")
+                .litterFont(size: 8)
+            Text(Self.format(seconds))
+        }
+        .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return "\(total)s" }
+        let mins = total / 60
+        let secs = total % 60
+        return secs == 0 ? "\(mins)m" : "\(mins)m\(secs)s"
+    }
+}
 
 private struct SessionPulsingDots: View {
     @State private var phase = 0
@@ -902,14 +1195,19 @@ private struct SessionPulsingDots: View {
     }
 }
 
-/// Renders text in the same font the assistant markdown body uses at
-/// bodySize 12 (see `litterContentTheme`) so the task title matches visually
-/// — same font family, same size, just bold.
+/// Renders the task title at the same size the conversation view uses for
+/// message bodies (`LitterFont.conversationBodyPointSize × textScale`) so
+/// titles and user/assistant messages in the home list match the sizes you
+/// see inside a conversation. Kept medium-weight (rather than bold) so the
+/// title reads as a row heading without visually dominating the response.
 private struct MarkdownMatchedTitleFont: ViewModifier {
     @Environment(\.textScale) private var textScale
     func body(content: Content) -> some View {
         content
-            .font(.custom(LitterFont.markdownFontName, size: 12 * textScale))
+            .font(.custom(
+                LitterFont.markdownFontName,
+                size: LitterFont.conversationBodyPointSize * textScale
+            ))
             .fontWeight(.medium)
     }
 }

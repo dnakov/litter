@@ -990,10 +990,21 @@ private struct HomeNavigationView: View {
     }
 
     private func hydrateThread(_ key: ThreadKey) async {
-        _ = try? await appModel.client.readThread(
-            serverId: key.serverId,
-            params: AppReadThreadRequest(threadId: key.threadId, includeTurns: true)
-        )
+        // Resume rather than just read: `external_resume_thread` loads the
+        // thread's items AND attaches a server-side conversation listener
+        // for this connection, so we get live `TurnStarted` / `ItemStarted`
+        // / `MessageDelta` / `TurnCompleted` events. Without it the server
+        // would only push `ThreadStatusChanged` — the active-turn dot would
+        // flip but the streaming bubble, tool log, and session-summary
+        // updates would stay frozen until the user opened the thread.
+        //
+        // For a 10-row home list the listener cost is trivial, and
+        // resuming preemptively avoids the "first half-second of a stream
+        // is missed while we set up a subscription" latency window that an
+        // active-only subscription strategy would have. `externalResume`
+        // short-circuits to a no-op when IPC is live and the thread's
+        // items are already populated, so warm/IPC paths are cheap.
+        try? await appModel.store.externalResumeThread(key: key, hostId: nil)
         await appModel.refreshSnapshot()
     }
 
@@ -1032,18 +1043,35 @@ private struct HomeNavigationView: View {
     private func sendQuickReply(_ threadKey: ThreadKey, text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        _ = await appModel.hydrateThreadPermissions(for: threadKey, appState: appState)
+        // The server needs the thread resumed before `startTurn` can find
+        // it — same path `openRecentSession` takes. On a cold launch the
+        // thread is in hydrated snapshot state but not yet registered with
+        // the upstream session, so a quick-reply without resume would fail
+        // with "thread cannot be found".
+        let resumeKey = await appModel.hydrateThreadPermissions(for: threadKey, appState: appState)
+            ?? threadKey
+        let activeKey: ThreadKey
+        do {
+            activeKey = try await appModel.resumeThread(
+                key: resumeKey,
+                launchConfig: launchConfig(for: resumeKey),
+                cwdOverride: nil
+            )
+        } catch {
+            actionErrorMessage = error.localizedDescription
+            return
+        }
         let payload = AppComposerPayload(
             text: trimmed,
             additionalInputs: [],
-            approvalPolicy: appState.launchApprovalPolicy(for: threadKey),
-            sandboxPolicy: appState.turnSandboxPolicy(for: threadKey),
+            approvalPolicy: appState.launchApprovalPolicy(for: activeKey),
+            sandboxPolicy: appState.turnSandboxPolicy(for: activeKey),
             model: nil,
             effort: nil,
             serviceTier: nil
         )
         do {
-            try await appModel.startTurn(key: threadKey, payload: payload)
+            try await appModel.startTurn(key: activeKey, payload: payload)
             await appModel.refreshSnapshot()
         } catch {
             actionErrorMessage = error.localizedDescription

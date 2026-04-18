@@ -430,13 +430,18 @@ final class AppModel {
                     agentDirectoryVersion: agentDirectoryVersion
                 )
             }
-        case .threadItemChanged(let key, let item):
+        case .threadItemChanged(let key, let item, let sessionSummary):
             let isBatched = shouldBatchCommandRowMutation(for: key, item: item)
             if isBatched {
                 enqueueCommandRowUpsert(key: key, item: item)
             } else if !applyThreadItemUpsert(key: key, item: item) {
                 scheduleThreadSnapshotRefresh(for: key)
             }
+            // Reducer piggybacks the refreshed per-thread summary on every
+            // item change, so the home dashboard's session-summary driven
+            // fields (stats, last tool label, etc.) stay in sync with the
+            // stream without waiting for a full snapshot rebuild.
+            applySessionSummary(sessionSummary)
         case .threadStreamingDelta(let key, let itemId, let kind, let text):
             if kind == .assistantText {
                 StreamingRendererCoordinator.shared.appendDelta(text, for: itemId)
@@ -1003,6 +1008,21 @@ final class AppModel {
         cacheThreadSnapshot(thread)
         lastError = nil
         return true
+    }
+
+    /// Patch the matching `AppSessionSummary` in `snapshot.sessionSummaries`
+    /// when the reducer hands us a freshly-derived one (via `threadItemChanged`,
+    /// which now carries it as a field). Ensures home-list fields like
+    /// `lastResponsePreview`, `lastToolLabel`, and `stats` track streaming
+    /// items without needing a full snapshot rebuild.
+    private func applySessionSummary(_ summary: AppSessionSummary) {
+        guard var snapshot else { return }
+        if let idx = snapshot.sessionSummaries.firstIndex(where: { $0.key == summary.key }) {
+            snapshot.sessionSummaries[idx] = summary
+        } else {
+            snapshot.sessionSummaries.append(summary)
+        }
+        self.snapshot = snapshot
     }
 
     private func applyThreadCommandExecutionUpdated(

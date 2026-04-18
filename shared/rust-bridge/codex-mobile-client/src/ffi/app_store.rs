@@ -528,13 +528,19 @@ fn merge_app_update(
             Ok(())
         }
         (
-            AppStoreUpdateRecord::ThreadItemChanged { key, item },
+            AppStoreUpdateRecord::ThreadItemChanged {
+                key,
+                item,
+                session_summary,
+            },
             AppStoreUpdateRecord::ThreadItemChanged {
                 key: next_key,
                 item: next_item,
+                session_summary: next_summary,
             },
         ) if *key == next_key && item.id == next_item.id => {
             *item = next_item;
+            *session_summary = next_summary;
             Ok(())
         }
         (
