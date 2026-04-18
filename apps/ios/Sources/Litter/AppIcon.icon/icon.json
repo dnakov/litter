@@ -1,17 +1,18 @@
 {
   "color-space-for-untagged-svg-colors" : "display-p3",
-  "fill" : "system-light",
+  "fill" : {
+    "solid" : "display-p3:0.04723,0.05822,0.07563,1.00000"
+  },
   "groups" : [
     {
       "layers" : [
         {
           "blend-mode" : "normal",
-          "glass" : false,
+          "glass" : true,
           "image-name" : "litter-icon-layer-cats.svg",
           "name" : "litter-icon-layer-cats"
         },
         {
-          "glass" : false,
           "image-name" : "litter-icon-layer-box.svg",
           "name" : "litter-icon-layer-box"
         }
