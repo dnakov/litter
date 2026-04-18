@@ -99,8 +99,30 @@ android {
 play {
     defaultToAppBundles.set(true)
     track.set(projectPropOrEnv("LITTER_PLAY_TRACK") ?: "internal")
-    releaseStatus.set(com.github.triplet.gradle.androidpublisher.ReleaseStatus.COMPLETED)
     projectPropOrEnv("LITTER_PLAY_PROMOTE_TRACK")?.let { promoteTrack.set(it) }
+
+    // Release status:
+    //   completed   → 100% rollout (default, matches historical behavior)
+    //   inProgress  → staged rollout, requires userFraction
+    //   draft       → upload only, no release
+    //   halted      → pause current rollout
+    val statusName = (projectPropOrEnv("LITTER_PLAY_RELEASE_STATUS") ?: "completed").lowercase()
+    releaseStatus.set(
+        when (statusName) {
+            "inprogress", "in_progress" -> com.github.triplet.gradle.androidpublisher.ReleaseStatus.IN_PROGRESS
+            "draft" -> com.github.triplet.gradle.androidpublisher.ReleaseStatus.DRAFT
+            "halted" -> com.github.triplet.gradle.androidpublisher.ReleaseStatus.HALTED
+            else -> com.github.triplet.gradle.androidpublisher.ReleaseStatus.COMPLETED
+        }
+    )
+
+    // Staged rollout percentage (0.0–1.0). Only honored when releaseStatus is
+    // IN_PROGRESS or HALTED. Ignored otherwise so we never accidentally stage
+    // a COMPLETED release.
+    projectPropOrEnv("LITTER_PLAY_USER_FRACTION")?.toDoubleOrNull()?.let { fraction ->
+        userFraction.set(fraction.coerceIn(0.0, 1.0))
+    }
+
     val serviceAccountPath = projectPropOrEnv("LITTER_PLAY_SERVICE_ACCOUNT_JSON")
     if (!serviceAccountPath.isNullOrBlank()) {
         serviceAccountCredentials.set(file(serviceAccountPath))

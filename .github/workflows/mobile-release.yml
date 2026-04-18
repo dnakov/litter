@@ -359,7 +359,7 @@ jobs:
             -PLITTER_UPLOAD_KEY_ALIAS="$LITTER_UPLOAD_KEY_ALIAS" \
             -PLITTER_UPLOAD_KEY_PASSWORD="$LITTER_UPLOAD_KEY_PASSWORD"
 
-      - name: Publish Android bundle to Google Play
+      - name: Publish and promote Android bundle to Google Play
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
@@ -372,7 +372,12 @@ jobs:
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
           LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.LITTER_PLAY_SERVICE_ACCOUNT_JSON }}
+          # Upload to internal first (keeps a testable copy there), then
+          # auto-promote to beta (open testing) at full 100% rollout.
+          # Manual promotion to production still happens in Play Console.
           LITTER_PLAY_TRACK: internal
+          LITTER_PLAY_PROMOTE_TRACK: beta
+          LITTER_PLAY_RELEASE_STATUS: completed
         run: |
           set -euo pipefail
           heartbeat() {
