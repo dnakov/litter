@@ -57,7 +57,6 @@ internal fun SelectableMarkdownText(
                 textSizeSp = bodySize * textScale,
             )
             markwon.setMarkdown(tv, text)
-            onTextViewReady?.invoke(tv)
         },
         modifier = modifier,
     )

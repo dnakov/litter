@@ -38,10 +38,14 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -255,18 +259,46 @@ private fun UserMessageRow(
                 modifier = Modifier
                     .fillMaxWidth(0.85f)
                     .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                    .then(
-                        if (onEdit != null || onFork != null) {
-                            Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = { showMenu = true },
-                            )
-                        } else {
-                            Modifier
-                        }
-                    )
                     .padding(10.dp),
             ) {
+                if (onEdit != null || onFork != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Message actions",
+                                    tint = LitterTheme.textSecondary,
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                            ) {
+                                if (onEdit != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Edit Message") },
+                                        onClick = { showMenu = false; onEdit(turnIndex) },
+                                    )
+                                }
+                                if (onFork != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Fork From Here") },
+                                        onClick = { showMenu = false; onFork(turnIndex) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 SelectableConversationText {
                     com.litter.android.ui.common.FormattedText(
                         text = data.text,
@@ -295,25 +327,6 @@ private fun UserMessageRow(
                                 .clip(RoundedCornerShape(8.dp)),
                         )
                     }
-                }
-            }
-
-            // Long-press context menu
-            androidx.compose.material3.DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-            ) {
-                if (onEdit != null) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Edit Message") },
-                        onClick = { showMenu = false; onEdit(turnIndex) },
-                    )
-                }
-                if (onFork != null) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Fork From Here") },
-                        onClick = { showMenu = false; onFork(turnIndex) },
-                    )
                 }
             }
         }
