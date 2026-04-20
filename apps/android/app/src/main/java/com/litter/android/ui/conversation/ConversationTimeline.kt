@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import com.sigkitten.litter.android.R
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
@@ -256,14 +255,17 @@ private fun UserMessageRow(
     ) {
         Box {
             Column(
+                horizontalAlignment = Alignment.End,
                 modifier = Modifier
-                    .fillMaxWidth(0.85f)
-                    .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                    .padding(10.dp),
+                    .padding(start = 60.dp)
+                    .background(
+                        LitterTheme.accent.copy(alpha = 0.3f),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
                 if (onEdit != null || onFork != null) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                     ) {
                         Box {
