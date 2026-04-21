@@ -5,6 +5,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let onPasteImage: (UIImage) -> Void
+    let onSubmit: (() -> Void)? = nil
+    var submitsOnReturn: Bool = false
     /// When true, the view returns no preferred size from `sizeThatFits`, letting
     /// SwiftUI fill the parent frame. Scrolling kicks in against the actual
     /// bounds instead of the 5-line clamp.
@@ -32,6 +34,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
         textView.alwaysBounceVertical = false
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.onPasteImage = onPasteImage
+        textView.onSubmit = onSubmit
+        textView.submitsOnReturn = submitsOnReturn
         textView.text = text
         context.coordinator.applyStyling(to: textView)
         context.coordinator.updateScrollState(for: textView)
@@ -41,6 +45,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteAwareComposerUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.onPasteImage = onPasteImage
+        uiView.onSubmit = onSubmit
+        uiView.submitsOnReturn = submitsOnReturn
         context.coordinator.applyStyling(to: uiView)
 
         if uiView.text != text, uiView.markedTextRange == nil {
@@ -171,6 +177,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
 
 final class PasteAwareComposerUITextView: UITextView {
     var onPasteImage: ((UIImage) -> Void)?
+    var onSubmit: (() -> Void)?
+    var submitsOnReturn: Bool = false
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
@@ -185,5 +193,25 @@ final class PasteAwareComposerUITextView: UITextView {
             return
         }
         super.paste(sender)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard submitsOnReturn,
+              let press = presses.first,
+              let key = press.key,
+              key.keyCode == .keyboardReturnOrEnter,
+              let onSubmit else {
+            super.pressesEnded(presses, with: event)
+            return
+        }
+
+        let effectiveFlags = press.modifierFlags.subtracting(.alphaShift)
+        // Submit on plain Return or Cmd+Return; let Shift+Return insert a newline
+        if effectiveFlags.isEmpty || effectiveFlags == .command {
+            onSubmit()
+            return
+        }
+
+        super.pressesEnded(presses, with: event)
     }
 }
