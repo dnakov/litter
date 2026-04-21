@@ -70,3 +70,5 @@ node_modules/
 shared/third_party/codex/
 .wrangler/
 artifacts/
+tools/app-store-screenshots/
+.xcodebuildmcp/

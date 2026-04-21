@@ -24,6 +24,7 @@ extension AppServerSnapshot {
 
     var connectionModeLabel: String {
         guard !isLocal else { return "local" }
+        guard ExperimentalFeatures.shared.isEnabled(.ipc) else { return "remote" }
         switch ipcState {
         case .ready:
             return "remote · ipc"
@@ -78,7 +79,8 @@ extension AppServerSnapshot {
         if transportState == .connected, !isLocal, account == nil, backendKind != .piMono {
             return "Sign in required"
         }
-        if transportState == .connected, ipcState == .disconnected {
+        if transportState == .connected, ipcState == .disconnected,
+           ExperimentalFeatures.shared.isEnabled(.ipc) {
             return "Connected, IPC unavailable"
         }
         return transportState.displayLabel
@@ -97,9 +99,39 @@ extension AppServerSnapshot {
         if transportState == .connected, !isLocal, account == nil {
             return .orange
         }
-        if transportState == .connected, ipcState == .disconnected {
+        if transportState == .connected, ipcState == .disconnected,
+           ExperimentalFeatures.shared.isEnabled(.ipc) {
             return .orange
         }
         return transportState.accentColor
+    }
+
+    /// Stable mapping to the shared dot palette (green/orange/red). Used by
+    /// the home server pills so connection state reads the same across themes.
+    var statusDotState: StatusDotState {
+        if currentConnectionStep?.state == .failed {
+            return .error
+        }
+        if currentConnectionStep?.state == .awaitingUserInput {
+            return .pending
+        }
+        if connectionProgressLabel != nil {
+            return .pending
+        }
+        if transportState == .connected, !isLocal, account == nil {
+            return .pending
+        }
+        if transportState == .connected, ipcState == .disconnected,
+           ExperimentalFeatures.shared.isEnabled(.ipc) {
+            return .pending
+        }
+        switch transportState {
+        case .connected:
+            return .ok
+        case .connecting, .unresponsive:
+            return .pending
+        case .disconnected, .unknown:
+            return .idle
+        }
     }
 }

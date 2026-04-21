@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,7 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.OutlinedTextField
 import com.litter.android.ui.BerkeleyMono
+import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.scaled
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppStore
 import uniffi.codex_mobile_client.ApprovalDecisionValue
@@ -99,17 +103,15 @@ private fun ApprovalCard(
         ApprovalKind.MCP_ELICITATION -> "Tool request"
     }
 
+    // Bare layout (no card background) to match iOS ConversationView prompt.
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
             text = title,
             color = LitterTheme.textPrimary,
-            fontSize = 16.sp,
+            fontSize = 16f.scaled,
         )
 
         // Command text
@@ -118,7 +120,7 @@ private fun ApprovalCard(
                 text = cmd,
                 color = LitterTheme.accent,
                 fontFamily = LitterTheme.monoFont,
-                fontSize = 13.sp,
+                fontSize = LitterTextStyle.code.scaled,
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(LitterTheme.codeBackground, RoundedCornerShape(6.dp))
@@ -131,7 +133,7 @@ private fun ApprovalCard(
             Text(
                 text = "in $cwd",
                 color = LitterTheme.textSecondary,
-                fontSize = 12.sp,
+                fontSize = LitterTextStyle.caption.scaled,
             )
         }
 
@@ -141,7 +143,7 @@ private fun ApprovalCard(
                 text = path,
                 color = LitterTheme.textSecondary,
                 fontFamily = LitterTheme.monoFont,
-                fontSize = 12.sp,
+                fontSize = LitterTextStyle.caption.scaled,
             )
         }
 
@@ -176,6 +178,7 @@ private fun ApprovalCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UserInputCard(
     request: PendingUserInputRequest,
@@ -183,11 +186,9 @@ private fun UserInputCard(
 ) {
     val answers = remember { mutableMapOf<String, String>() }
 
+    // Bare layout (no card background) to match iOS ConversationView prompt.
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // Requester badge
@@ -202,7 +203,7 @@ private fun UserInputCard(
             Text(
                 text = requester,
                 color = LitterTheme.accent,
-                fontSize = 11.sp,
+                fontSize = LitterTextStyle.caption2.scaled,
             )
         }
 
@@ -210,23 +211,31 @@ private fun UserInputCard(
             Text(
                 text = question.question,
                 color = LitterTheme.textPrimary,
-                fontSize = 14.sp,
+                fontSize = LitterTextStyle.body.scaled,
             )
 
             if (question.options.isNotEmpty()) {
-                // Options as chips
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // FlowRow so long option labels wrap to a new line instead of
+                // crushing a short option into a narrow column with character-
+                // by-character text wrapping.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     for (option in question.options) {
                         val isSelected = answers[question.id] == option.label
-                        Button(
-                            onClick = { answers[question.id] = option.label },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) LitterTheme.accent else LitterTheme.codeBackground,
-                                contentColor = if (isSelected) Color.Black else LitterTheme.textPrimary,
-                            ),
-                        ) {
-                            Text(option.label, fontSize = 12.sp)
-                        }
+                        Text(
+                            text = option.label,
+                            color = if (isSelected) Color.Black else LitterTheme.textPrimary,
+                            fontSize = LitterTextStyle.caption.scaled,
+                            modifier = Modifier
+                                .background(
+                                    if (isSelected) LitterTheme.accent else LitterTheme.codeBackground,
+                                    RoundedCornerShape(999.dp),
+                                )
+                                .clickable { answers[question.id] = option.label }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
                     }
                 }
             } else {

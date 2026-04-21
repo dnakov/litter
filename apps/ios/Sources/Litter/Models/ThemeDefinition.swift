@@ -11,7 +11,7 @@ struct ThemeDefinition: Codable {
         case light, dark
     }
 
-    // tokenColors are ignored — syntax highlighting is handled by Textual
+    // tokenColors are ignored — syntax highlighting is handled by Hairball
 }
 
 // MARK: - Lightweight index entry for picker UI

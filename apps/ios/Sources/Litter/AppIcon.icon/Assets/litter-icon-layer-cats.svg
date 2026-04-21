@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50.0 37.5 400 400" width="1024" height="1024">
+  <defs>
+    <clipPath id="above-rim">
+      <rect x="50.0" y="37.5" width="400" height="202.5"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#above-rim)">
+<g id="kitten-left">
+    <!-- Ears -->
+    <polygon points="125,200 120,150 150,180" fill="#E5E7EB" />
+    <polygon points="199,200 204,150 174,180" fill="#E5E7EB" />
+    <!-- Body -->
+    <rect x="120" y="170" width="84" height="100" rx="42" fill="#E5E7EB" />
+    <!-- Eyes -->
+    <circle cx="145" cy="210" r="4" fill="#1F2937" />
+    <circle cx="179" cy="210" r="4" fill="#1F2937" />
+    <!-- Nose -->
+    <polygon points="158,220 166,220 162,225" fill="#1F2937" />
+  </g>
+<g id="kitten-right">
+    <!-- Ears -->
+    <polygon points="301,200 296,150 326,180" fill="#374151" />
+    <polygon points="375,200 380,150 350,180" fill="#374151" />
+    <!-- Body -->
+    <rect x="296" y="170" width="84" height="100" rx="42" fill="#374151" />
+    <!-- Eyes -->
+    <circle cx="321" cy="210" r="4" fill="#F9FAFB" />
+    <circle cx="355" cy="210" r="4" fill="#F9FAFB" />
+    <!-- Nose -->
+    <polygon points="334,220 342,220 338,225" fill="#F9FAFB" />
+  </g>
+<g id="kitten-center">
+    <!-- Ears -->
+    <polygon points="205,160 200,105 240,140" fill="#F59E0B" />
+    <polygon points="295,160 300,105 260,140" fill="#F59E0B" />
+    <!-- Body -->
+    <rect x="195" y="130" width="110" height="150" rx="55" fill="#F59E0B" />
+    <!-- Eyes (Happy/Closed) -->
+    <path d="M 222 185 Q 230 176 238 185" stroke="#1F2937" stroke-width="3" fill="none" stroke-linecap="round" />
+    <path d="M 262 185 Q 270 176 278 185" stroke="#1F2937" stroke-width="3" fill="none" stroke-linecap="round" />
+    <!-- Nose -->
+    <polygon points="246,198 254,198 250,204" fill="#1F2937" />
+  </g>
+  </g>
+<g id="whiskers-left" stroke="#C0C4CA" stroke-width="1.2" stroke-linecap="round">
+    <line x1="120" y1="216" x2="144" y2="220" />
+    <line x1="118" y1="222" x2="143" y2="223" />
+    <line x1="180" y1="220" x2="204" y2="216" />
+    <line x1="181" y1="223" x2="206" y2="222" />
+  </g>
+<g id="whiskers-right" stroke="#4B5563" stroke-width="1.2" stroke-linecap="round">
+    <line x1="296" y1="216" x2="320" y2="220" />
+    <line x1="294" y1="222" x2="319" y2="223" />
+    <line x1="356" y1="220" x2="380" y2="216" />
+    <line x1="357" y1="223" x2="382" y2="222" />
+  </g>
+<g id="whiskers-center" stroke="#C88638" stroke-width="1.2" stroke-linecap="round">
+    <line x1="195" y1="195" x2="228" y2="200" />
+    <line x1="193" y1="203" x2="227" y2="204" />
+    <line x1="272" y1="200" x2="305" y2="195" />
+    <line x1="273" y1="204" x2="307" y2="203" />
+  </g>
+<g id="paws">
+    <!-- Left Kitten Paws -->
+    <rect x="135" y="234" width="18" height="28" rx="9" fill="#FFFFFF" />
+    <rect x="165" y="234" width="18" height="28" rx="9" fill="#FFFFFF" />
+    
+    <!-- Center Kitten Paws -->
+    <rect x="225" y="230" width="20" height="30" rx="10" fill="#FFFFFF" />
+    <rect x="255" y="230" width="20" height="30" rx="10" fill="#FFFFFF" />
+    
+    <!-- Right Kitten Paws -->
+    <rect x="317" y="234" width="18" height="28" rx="9" fill="#4B5563" />
+    <rect x="347" y="234" width="18" height="28" rx="9" fill="#4B5563" />
+  </g>
+</svg>

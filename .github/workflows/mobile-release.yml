@@ -359,7 +359,7 @@ jobs:
             -PLITTER_UPLOAD_KEY_ALIAS="$LITTER_UPLOAD_KEY_ALIAS" \
             -PLITTER_UPLOAD_KEY_PASSWORD="$LITTER_UPLOAD_KEY_PASSWORD"
 
-      - name: Publish Android bundle to Google Play
+      - name: Publish and promote Android bundle to Google Play
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
@@ -372,7 +372,15 @@ jobs:
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
           LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.LITTER_PLAY_SERVICE_ACCOUNT_JSON }}
+          # Upload to internal first (keeps a testable copy there), then
+          # auto-promote to BOTH alpha (closed testing) and beta (open
+          # testing) at full 100% rollout. Google Play treats each track
+          # as an independent release, so the same artifact has to be
+          # promoted to each destination explicitly.
+          # Manual promotion to production still happens in Play Console.
           LITTER_PLAY_TRACK: internal
+          LITTER_PLAY_PROMOTE_TRACK: "alpha,beta"
+          LITTER_PLAY_RELEASE_STATUS: completed
         run: |
           set -euo pipefail
           heartbeat() {
@@ -557,7 +565,8 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          brew install xcodegen jq asc
+          brew install xcodegen jq
+          HOMEBREW_NO_AUTO_UPDATE=0 brew install asc
           xcodebuild -version
           asc --version
 

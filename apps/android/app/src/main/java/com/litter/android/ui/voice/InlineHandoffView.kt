@@ -123,6 +123,15 @@ fun InlineHandoffView(
                     )
                 }
 
+                is HydratedConversationItemContent.ImageView -> {
+                    Text(
+                        text = "Viewed image: ${content.v1.path.substringAfterLast('/')}",
+                        color = LitterTheme.textMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(vertical = 1.dp),
+                    )
+                }
+
                 is HydratedConversationItemContent.Note -> {
                     Text(
                         text = content.v1.body,

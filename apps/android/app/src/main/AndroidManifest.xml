@@ -17,7 +17,7 @@
         android:label="Litter"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
+        android:theme="@style/Theme.App.Starting">
         <meta-data
             android:name="com.litter.android.runtime.STARTUP_MODE"
             android:value="${runtimeStartupMode}" />
@@ -66,6 +66,16 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+        <receiver
+            android:name="com.litter.android.ui.widget.ActiveTurnWidgetReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/active_turn_widget_info" />
+        </receiver>
     </application>
 
 </manifest>

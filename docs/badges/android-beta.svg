@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="175" height="44" viewBox="0 0 175 44">
+  <rect width="175" height="44" rx="10" fill="#F59E0B"/>
+  <svg x="16" y="12" width="18" height="18" viewBox="0 0 24 24" fill="#0C0B0A">
+    <path d="M3.609 1.814L13.792 12 3.61 22.186a.996.996 0 0 1-.61-.92V2.734a1 1 0 0 1 .609-.92zm10.89 10.893l2.302 2.302-10.937 6.333 8.635-8.635zm3.199-1.4l2.458 1.42c.594.344.594 1.202 0 1.546l-2.458 1.42-2.534-2.534 2.534-2.852zM5.864 2.658L16.8 8.99l-2.302 2.302-8.635-8.635z"/>
+  </svg>
+  <text x="44" y="28" font-family="SF Mono,Menlo,monospace" font-size="13" font-weight="700" fill="#0C0B0A" letter-spacing="0.02em">Android Beta</text>
+</svg>

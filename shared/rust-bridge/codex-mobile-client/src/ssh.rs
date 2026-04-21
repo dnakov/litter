@@ -130,6 +130,19 @@ impl RemotePlatform {
     }
 }
 
+/// Outcome of running the Codex install/update flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexInstallOutcome {
+    /// A new tag/version was downloaded or `npm install` ran.
+    Installed,
+    /// The tarball install saw `$HOME/.litter/codex/$tag/codex` already present;
+    /// we just refreshed the symlink.
+    AlreadyAtLatestTag,
+}
+
+/// Seconds before we re-check GitHub for a newer Codex release.
+const CODEX_UPDATE_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
 /// Outcome of running a remote command.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ExecResult {
@@ -900,8 +913,12 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                 RemoteShell::PowerShell => {
                     let (file_path, argument_list) =
                         windows_start_process_spec(codex_binary, &format!("ws://{listen_addr}"));
+                    // Use -WindowStyle Hidden instead of -NoNewWindow because
+                    // Windows OpenSSH sessions have no parent console to inherit.
+                    // -NoNewWindow causes -RedirectStandardOutput/-Error to
+                    // silently fail in console-less environments.
                     format!(
-                        r#"{cd_prefix}$logFile = {log}; $errFile = {log_err}; $proc = Start-Process -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError $errFile -FilePath {file_path} -ArgumentList {argument_list}; Write-Host $proc.Id"#,
+                        r#"{cd_prefix}$logFile = {log}; $errFile = {log_err}; $proc = Start-Process -WindowStyle Hidden -PassThru -RedirectStandardOutput $logFile -RedirectStandardError $errFile -FilePath {file_path} -ArgumentList {argument_list}; Write-Host $proc.Id"#,
                         cd_prefix = cd_prefix,
                         log = log_path,
                         log_err = stderr_log_path.as_deref().expect("windows stderr log path"),
@@ -956,6 +973,62 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                             );
                             break; // try next port
                         }
+                        // If logs are empty, try running the command
+                        // synchronously to capture the actual error output.
+                        // Run through cmd.exe with 2>&1 to merge stderr, and
+                        // also check node availability.
+                        let tail = if tail.is_empty() && shell == RemoteShell::PowerShell {
+                            warn!(
+                                "ssh bootstrap logs empty, running sync probe shell={} port={}",
+                                remote_shell_name(shell),
+                                port
+                            );
+                            let diag_cmd = format!(
+                                r#"$nodeVer = & $env:ComSpec /d /c 'node --version' 2>&1 | Out-String; Write-Output "node_version:$($nodeVer.Trim())"; $out = & $env:ComSpec /d /c '"{bin}" {sub_args}--listen ws://{listen_addr}' 2>&1 | Out-String; Write-Output "server_output:$($out.Trim())""#,
+                                bin = cmd_quote(codex_binary.path()),
+                                sub_args = match codex_binary {
+                                    RemoteCodexBinary::Codex(_) => "app-server ",
+                                },
+                                listen_addr = listen_addr,
+                            );
+                            match tokio::time::timeout(
+                                Duration::from_secs(8),
+                                self.exec_shell(&diag_cmd, shell),
+                            )
+                            .await
+                            {
+                                Ok(Ok(r)) => {
+                                    let combined = format!(
+                                        "exit_code={}\nstdout:\n{}\nstderr:\n{}",
+                                        r.exit_code,
+                                        r.stdout.trim(),
+                                        r.stderr.trim()
+                                    );
+                                    info!(
+                                        "ssh bootstrap sync probe result shell={} port={} output={}",
+                                        remote_shell_name(shell),
+                                        port,
+                                        combined
+                                    );
+                                    if r.stdout.trim().is_empty() && r.stderr.trim().is_empty() {
+                                        format!(
+                                            "server process exited immediately (exit code {})",
+                                            r.exit_code
+                                        )
+                                    } else {
+                                        combined
+                                    }
+                                }
+                                Ok(Err(e)) => format!("sync probe failed: {e}"),
+                                Err(_) => {
+                                    // 8s timeout — the server probably started
+                                    // fine but we can't tell from this path.
+                                    "server process exited immediately".into()
+                                }
+                            }
+                        } else {
+                            tail
+                        };
                         warn!(
                             "ssh bootstrap process exited before listen shell={} port={} pid={:?} tail={}",
                             remote_shell_name(shell),
@@ -965,11 +1038,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                         );
                         return Err(SshError::ExecFailed {
                             exit_code: 1,
-                            stderr: if tail.is_empty() {
-                                "server process exited immediately".into()
-                            } else {
-                                tail
-                            },
+                            stderr: tail,
                         });
                     }
                 }
@@ -1106,7 +1175,7 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
     // Private helpers
     // --------------------------------------------------------------------
 
-    /// Locate the `codex` (or `codex-app-server`) binary on the remote host.
+    /// Locate the `codex` binary on the remote host.
     pub(crate) async fn resolve_codex_binary_optional(
         &self,
     ) -> Result<Option<RemoteCodexBinary>, SshError> {
@@ -1148,14 +1217,6 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
             );
             return Ok(Some(RemoteCodexBinary::Codex(path.to_string())));
         }
-        if let Some(path) = raw.strip_prefix("app-server:") {
-            info!(
-                "ssh resolve codex binary found selector=app-server shell={} path={}",
-                remote_shell_name(shell),
-                path
-            );
-            return Ok(Some(RemoteCodexBinary::AppServer(path.to_string())));
-        }
         warn!(
             "ssh resolve codex binary unexpected selector shell={} raw={}",
             remote_shell_name(shell),
@@ -1175,10 +1236,10 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
                 Err(SshError::ExecFailed {
                     exit_code: 1,
                     stderr: if diagnostics.is_empty() {
-                        "codex/codex-app-server not found on remote host".into()
+                        "codex not found on remote host".into()
                     } else {
                         format!(
-                            "codex/codex-app-server not found on remote host\nresolver diagnostics:\n{}",
+                            "codex not found on remote host\nresolver diagnostics:\n{}",
                             diagnostics
                         )
                     },
@@ -1190,26 +1251,35 @@ printf '%s/codex-ipc/ipc-%s.sock' "$tmp" "$uid""#;
     async fn fetch_codex_resolver_diagnostics(&self) -> String {
         let script = format!(
             r#"{profile_init}
+{pkg_probe}
 printf 'shell=%s\n' "${{SHELL:-}}"
 printf 'path=%s\n' "${{PATH:-}}"
+printf 'pnpm_home=%s\n' "${{PNPM_HOME:-}}"
+printf 'nvm_bin=%s\n' "${{NVM_BIN:-}}"
+printf 'npm_prefix=%s\n' "$_litter_npm_prefix"
+printf 'bun_global_bin=%s\n' "$_litter_bun_global_bin"
+printf 'pnpm_global_bin=%s\n' "$_litter_pnpm_global_bin"
+printf 'npm_global_bin=%s\n' "$_litter_npm_global_bin"
 printf 'whoami='; whoami 2>/dev/null || true
 printf 'pwd='; pwd 2>/dev/null || true
 printf 'command -v codex='
 command -v codex 2>/dev/null || printf '<missing>'
 printf '\n'
-printf 'command -v codex-app-server='
-command -v codex-app-server 2>/dev/null || printf '<missing>'
-printf '\n'
 for candidate in \
   "$HOME/.litter/bin/codex" \
+  "$HOME/.litter/codex/node_modules/.bin/codex" \
+  "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex" \
   "$HOME/.volta/bin/codex" \
-  "$HOME/.cargo/bin/codex" \
   "$HOME/.local/bin/codex" \
+  "${{PNPM_HOME:-}}/codex" \
+  "${{NVM_BIN:-}}/codex" \
+  "${{VOLTA_HOME:+$VOLTA_HOME/bin/codex}}" \
+  "${{CARGO_HOME:-$HOME/.cargo}}/bin/codex" \
+  "${{_litter_bun_global_bin:-}}/codex" \
+  "${{_litter_npm_global_bin:-}}/codex" \
+  "${{_litter_pnpm_global_bin:-}}/codex" \
   "/opt/homebrew/bin/codex" \
-  "/usr/local/bin/codex" \
-  "$HOME/.cargo/bin/codex-app-server" \
-  "/opt/homebrew/bin/codex-app-server" \
-  "/usr/local/bin/codex-app-server"
+  "/usr/local/bin/codex" 
 do
   if [ -e "$candidate" ]; then
     if [ -x "$candidate" ]; then
@@ -1219,7 +1289,8 @@ do
     fi
   fi
 done"#,
-            profile_init = PROFILE_INIT
+            profile_init = PROFILE_INIT,
+            pkg_probe = PACKAGE_MANAGER_PROBE
         );
 
         match self.exec_posix(&script).await {
@@ -1535,7 +1606,7 @@ fi"#
     pub(crate) async fn install_latest_stable_codex(
         &self,
         platform: RemotePlatform,
-    ) -> Result<RemoteCodexBinary, SshError> {
+    ) -> Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> {
         info!(
             "ssh install codex start platform={}",
             remote_platform_name(platform)
@@ -1569,7 +1640,9 @@ cleanup() {{
 }}
 trap cleanup EXIT
 mkdir -p "$dest_dir" "$HOME/.litter/bin"
+status="up-to-date"
 if [ ! -x "$dest_bin" ]; then
+  status="installed"
   archive_path="$tmpdir/$asset_name"
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$download_url" -o "$archive_path"
@@ -1593,7 +1666,7 @@ if [ ! -x "$dest_bin" ]; then
   fi
 fi
 ln -sf "$dest_bin" "$stable_bin"
-printf '%s' "$stable_bin""#,
+printf 'STATUS:%s\nPATH:%s\n' "$status" "$stable_bin""#,
             tag = shell_quote(&release.tag_name),
             asset_name = shell_quote(&release.asset_name),
             binary_name = shell_quote(&release.binary_name),
@@ -1610,21 +1683,19 @@ printf '%s' "$stable_bin""#,
                 },
             });
         }
-        let installed_path = result.stdout.trim();
+        let (status, installed_path) = parse_install_status_and_path(&result.stdout);
+        let outcome = match status.as_deref() {
+            Some("up-to-date") => CodexInstallOutcome::AlreadyAtLatestTag,
+            _ => CodexInstallOutcome::Installed,
+        };
+        let path = installed_path.unwrap_or_else(|| "$HOME/.litter/bin/codex".to_string());
         info!(
-            "ssh install codex completed platform={} path={}",
+            "ssh install codex completed platform={} path={} outcome={:?}",
             remote_platform_name(platform),
-            if installed_path.is_empty() {
-                "$HOME/.litter/bin/codex"
-            } else {
-                installed_path
-            }
+            path,
+            outcome
         );
-        Ok(RemoteCodexBinary::Codex(if installed_path.is_empty() {
-            "$HOME/.litter/bin/codex".to_string()
-        } else {
-            installed_path.to_string()
-        }))
+        Ok((RemoteCodexBinary::Codex(path), outcome))
     }
 
     /// Install Codex via npm into `~/.litter/codex/` (works on Windows and
@@ -1632,19 +1703,22 @@ printf '%s' "$stable_bin""#,
     pub(crate) async fn install_codex_via_npm(
         &self,
         shell: RemoteShell,
-    ) -> Result<RemoteCodexBinary, SshError> {
+    ) -> Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> {
         info!(
             "ssh npm install codex start shell={}",
             remote_shell_name(shell)
         );
         let script = match shell {
             RemoteShell::PowerShell => {
+                // `@openai/codex@latest` forces npm past any semver range left
+                // in package.json from a previous install, so re-running this
+                // script reliably bumps to the newest published version.
                 r#"$ErrorActionPreference = 'Stop'
 $litterDir = Join-Path $env:USERPROFILE '.litter\codex'
 if (-not (Test-Path $litterDir)) { New-Item -ItemType Directory -Path $litterDir -Force | Out-Null }
 Set-Location $litterDir
 if (-not (Test-Path 'package.json')) { npm init -y 2>$null | Out-Null }
-npm install @openai/codex 2>$null | Out-Null
+npm install @openai/codex@latest 2>$null | Out-Null
 $bin = Join-Path $litterDir 'node_modules\.bin\codex.cmd'
 if (Test-Path $bin) { Write-Output "CODEX_PATH:$bin" } else { Write-Error 'codex.cmd not found after install'; exit 1 }"#.to_string()
             }
@@ -1656,7 +1730,7 @@ litter_dir="$HOME/.litter/codex"
 mkdir -p "$litter_dir"
 cd "$litter_dir"
 [ -f package.json ] || npm init -y >/dev/null 2>&1
-npm install @openai/codex >/dev/null 2>&1
+npm install @openai/codex@latest >/dev/null 2>&1
 bin="$litter_dir/node_modules/.bin/codex"
 if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found after install" >&2; exit 1; fi"#,
                     profile_init = PROFILE_INIT
@@ -1693,7 +1767,10 @@ if [ -x "$bin" ]; then printf 'CODEX_PATH:%s' "$bin"; else echo "codex not found
                     remote_shell_name(shell),
                     path
                 );
-                Ok(RemoteCodexBinary::Codex(path))
+                Ok((
+                    RemoteCodexBinary::Codex(path),
+                    CodexInstallOutcome::Installed,
+                ))
             }
             _ => {
                 append_bridge_info_log(&format!(
@@ -1837,6 +1914,152 @@ if (Test-Path $bin) { Write-Output $bin } else { Write-Error 'pi not found after
             pi_version,
         })
     }
+
+    /// Best-effort: if `binary` was installed by us under `~/.litter/` and
+    /// the update sentinel is older than 24h, check for a newer release and
+    /// install it. Any failure along the way is swallowed and logged — the
+    /// caller continues to use the previously-resolved binary.
+    pub(crate) async fn maybe_update_managed_codex(
+        &self,
+        binary: &RemoteCodexBinary,
+        shell: RemoteShell,
+    ) -> Option<(RemoteCodexBinary, CodexInstallOutcome)> {
+        let path = binary.path();
+        let is_managed = path.contains("/.litter/") || path.contains(r"\.litter\");
+        if !is_managed {
+            trace!("ssh codex update check: skipping non-managed path={}", path);
+            return None;
+        }
+
+        match self.is_codex_update_check_due(shell).await {
+            Ok(true) => {}
+            Ok(false) => {
+                trace!("ssh codex update check: sentinel fresh, skipping");
+                return None;
+            }
+            Err(err) => {
+                warn!("ssh codex update check: sentinel check failed: {err}");
+                return None;
+            }
+        }
+
+        info!(
+            "ssh codex update check: probing for newer release path={} shell={}",
+            path,
+            remote_shell_name(shell)
+        );
+
+        let is_windows_shell = matches!(shell, RemoteShell::PowerShell);
+        let looks_like_npm =
+            path.contains("node_modules/.bin/codex") || path.contains(r"node_modules\.bin\codex");
+
+        let result: Result<(RemoteCodexBinary, CodexInstallOutcome), SshError> =
+            if looks_like_npm || is_windows_shell {
+                self.install_codex_via_npm(shell).await
+            } else {
+                match self.detect_remote_platform_with_shell(Some(shell)).await {
+                    Ok(platform) => self.install_latest_stable_codex(platform).await,
+                    Err(err) => Err(err),
+                }
+            };
+
+        // Always touch the sentinel — success, "up to date", or failure —
+        // so we don't re-hit GitHub/npm on every reconnect within 24h.
+        if let Err(err) = self.touch_codex_update_sentinel(shell).await {
+            warn!("ssh codex update check: sentinel touch failed: {err}");
+        }
+
+        match result {
+            Ok((new_binary, outcome)) => {
+                info!(
+                    "ssh codex update check: completed outcome={:?} path={}",
+                    outcome,
+                    new_binary.path()
+                );
+                Some((new_binary, outcome))
+            }
+            Err(err) => {
+                warn!(
+                    "ssh codex update check: update attempt failed, continuing with existing binary: {err}"
+                );
+                None
+            }
+        }
+    }
+
+    async fn is_codex_update_check_due(&self, shell: RemoteShell) -> Result<bool, SshError> {
+        let script = match shell {
+            RemoteShell::Posix => format!(
+                r#"sentinel="$HOME/.litter/codex/.last-update-check"
+if [ -f "$sentinel" ]; then
+  now=$(date +%s 2>/dev/null || echo 0)
+  last=$(stat -c %Y "$sentinel" 2>/dev/null || stat -f %m "$sentinel" 2>/dev/null || echo 0)
+  if [ "$last" -gt 0 ] && [ "$now" -gt 0 ]; then
+    age=$((now - last))
+    if [ "$age" -lt {interval} ]; then
+      printf 'FRESH'
+      exit 0
+    fi
+  fi
+fi
+printf 'STALE'"#,
+                interval = CODEX_UPDATE_CHECK_INTERVAL_SECS
+            ),
+            RemoteShell::PowerShell => format!(
+                r#"$sentinel = Join-Path $env:USERPROFILE '.litter\codex\.last-update-check'
+if (Test-Path $sentinel) {{
+  $age = (Get-Date) - (Get-Item $sentinel).LastWriteTime
+  if ($age.TotalSeconds -lt {interval}) {{ Write-Output 'FRESH'; exit 0 }}
+}}
+Write-Output 'STALE'"#,
+                interval = CODEX_UPDATE_CHECK_INTERVAL_SECS
+            ),
+        };
+        let result = self.exec_shell(&script, shell).await?;
+        Ok(!result.stdout.trim().eq_ignore_ascii_case("FRESH"))
+    }
+
+    async fn touch_codex_update_sentinel(&self, shell: RemoteShell) -> Result<(), SshError> {
+        let script = match shell {
+            RemoteShell::Posix => r#"mkdir -p "$HOME/.litter/codex" 2>/dev/null || true
+ touch "$HOME/.litter/codex/.last-update-check" 2>/dev/null || true"#
+                .to_string(),
+            RemoteShell::PowerShell => {
+                r#"$dir = Join-Path $env:USERPROFILE '.litter\codex'
+if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+$sentinel = Join-Path $dir '.last-update-check'
+if (Test-Path $sentinel) { (Get-Item $sentinel).LastWriteTime = Get-Date } else { Set-Content -Path $sentinel -Value '' }"#
+                    .to_string()
+            }
+        };
+        self.exec_shell(&script, shell).await?;
+        Ok(())
+    }
+}
+
+/// Parse the `STATUS:...` / `PATH:...` lines emitted by the tarball install
+/// script. Either may be missing (older script output / truncation) —
+/// callers must handle `None` gracefully.
+fn parse_install_status_and_path(stdout: &str) -> (Option<String>, Option<String>) {
+    let mut status = None;
+    let mut path = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("STATUS:") {
+            status = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("PATH:") {
+            path = Some(rest.trim().to_string());
+        }
+    }
+    // Backcompat: if neither prefix was emitted, treat entire trimmed stdout
+    // as the path (matches pre-STATUS format).
+    if status.is_none() && path.is_none() {
+        let trimmed = stdout.trim();
+        if !trimmed.is_empty() {
+            path = Some(trimmed.to_string());
+        }
+    }
+    (status, path)
 }
 
 // ---------------------------------------------------------------------------
@@ -1941,47 +2164,73 @@ async fn proxy_connection(
 // ---------------------------------------------------------------------------
 
 /// Shell snippet that sources common profile files to pick up PATH additions.
-/// Runs each file in a subshell so zsh-specific syntax (plugins, eval
-/// `starship init zsh`, etc.) cannot crash the parent `/bin/sh` process.
-/// The subshell exports PATH changes via a temp file.
+/// Runs each file in a subshell so shell-specific syntax cannot crash the
+/// parent `/bin/sh` process, then imports the resulting PATH into the current
+/// shell via a temp file.
 pub(crate) const PROFILE_INIT: &str = r#"_litter_pf="/tmp/.litter_path_$$"; for f in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do [ -f "$f" ] && (. "$f" 2>/dev/null; echo "$PATH") > "$_litter_pf" 2>/dev/null && PATH="$(cat "$_litter_pf")" ; done; rm -f "$_litter_pf" 2>/dev/null;"#;
+
+/// Shell snippet that probes npm/pnpm for their global binary directories.
+/// Sets `_litter_npm_prefix`, `_litter_npm_global_bin`,
+/// `_litter_pnpm_global_bin`, and `_litter_bun_global_bin`.
+const PACKAGE_MANAGER_PROBE: &str = r#"_litter_npm_prefix=""
+_litter_npm_global_bin=""
+_litter_pnpm_global_bin=""
+_litter_bun_global_bin=""
+if command -v npm >/dev/null 2>&1; then
+  _litter_npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+  case "$_litter_npm_prefix" in
+    "" | "undefined" | "null")
+      _litter_npm_prefix=""
+      ;;
+    *)
+      _litter_npm_global_bin="$_litter_npm_prefix/bin"
+      ;;
+  esac
+fi
+if command -v pnpm >/dev/null 2>&1; then
+  _litter_pnpm_global_bin="$(pnpm bin -g 2>/dev/null || true)"
+fi
+if command -v bun >/dev/null 2>&1; then
+  _litter_bun_global_bin="$(bun pm bin -g 2>/dev/null || true)"
+fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
     format!(
         r#"{profile_init}
-if [ -x "$HOME/.litter/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.litter/bin/codex"
-  exit 0
-fi
-litter_npm="$HOME/.litter/codex/node_modules/.bin/codex"
-if [ -x "$litter_npm" ]; then
-  printf 'codex:%s' "$litter_npm"
-  exit 0
-fi
-codex_path="$(command -v codex 2>/dev/null || true)"
-if [ -n "$codex_path" ] && [ -f "$codex_path" ] && [ -x "$codex_path" ]; then
-  printf 'codex:%s' "$codex_path"
-elif [ -x "$HOME/.volta/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.volta/bin/codex"
-elif [ -x "$HOME/.cargo/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.cargo/bin/codex"
-elif [ -x "$HOME/.local/bin/codex" ]; then
-  printf 'codex:%s' "$HOME/.local/bin/codex"
-elif [ -x "/opt/homebrew/bin/codex" ]; then
-  printf 'codex:%s' "/opt/homebrew/bin/codex"
-elif [ -x "/usr/local/bin/codex" ]; then
-  printf 'codex:%s' "/usr/local/bin/codex"
-else
-  app_server_path="$(command -v codex-app-server 2>/dev/null || true)"
-  if [ -n "$app_server_path" ] && [ -f "$app_server_path" ] && [ -x "$app_server_path" ]; then
-    printf 'app-server:%s' "$app_server_path"
-  elif [ -x "/opt/homebrew/bin/codex-app-server" ]; then
-    printf 'app-server:%s' "/opt/homebrew/bin/codex-app-server"
-  elif [ -x "$HOME/.cargo/bin/codex-app-server" ]; then
-    printf 'app-server:%s' "$HOME/.cargo/bin/codex-app-server"
+_litter_emit_candidate() {{
+  _litter_selector="$1"
+  _litter_path="$2"
+  if [ -n "$_litter_path" ] && [ -f "$_litter_path" ] && [ -x "$_litter_path" ]; then
+    printf '%s:%s' "$_litter_selector" "$_litter_path"
+    exit 0
   fi
-fi"#,
-        profile_init = PROFILE_INIT
+}}
+_litter_emit_from_dir() {{
+  _litter_selector="$1"
+  _litter_name="$2"
+  _litter_dir="$3"
+  if [ -n "$_litter_dir" ]; then
+    _litter_emit_candidate "$_litter_selector" "$_litter_dir/$_litter_name"
+  fi
+}}
+_litter_emit_candidate codex "$HOME/.litter/bin/codex"
+_litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
+_litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
+_litter_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
+_litter_emit_candidate codex "$HOME/.volta/bin/codex"
+_litter_emit_candidate codex "$HOME/.local/bin/codex"
+_litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
+_litter_emit_from_dir codex codex "${{NVM_BIN:-}}"
+_litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
+_litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
+_litter_emit_candidate codex "/opt/homebrew/bin/codex"
+_litter_emit_candidate codex "/usr/local/bin/codex"
+{pkg_probe}
+_litter_emit_from_dir codex codex "$_litter_bun_global_bin"
+_litter_emit_from_dir codex codex "$_litter_npm_global_bin"
+_litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
+        profile_init = PROFILE_INIT,
+        pkg_probe = PACKAGE_MANAGER_PROBE
     )
 }
 
@@ -2016,22 +2265,19 @@ if (Test-Path $litterBin) { Write-Output "codex:$litterBin"; exit 0 }
 $litterNpm = Join-Path $env:USERPROFILE '.litter\codex\node_modules\.bin\codex.cmd'
 if (Test-Path $litterNpm) { Write-Output "codex:$litterNpm"; exit 0 }
 $found = Get-Command codex -ErrorAction SilentlyContinue
-if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }
-$found = Get-Command codex-app-server -ErrorAction SilentlyContinue
-if ($found) { Write-Output "app-server:$($found.Source)"; exit 0 }"#
+if ($found) { Write-Output "codex:$($found.Source)"; exit 0 }"#
         .to_string()
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum RemoteCodexBinary {
     Codex(String),
-    AppServer(String),
 }
 
 impl RemoteCodexBinary {
     pub(crate) fn path(&self) -> &str {
         match self {
-            Self::Codex(path) | Self::AppServer(path) => path,
+            Self::Codex(path) => path,
         }
     }
 }
@@ -2043,7 +2289,6 @@ fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (
             ps_quote("--listen"),
             ps_quote(listen_url),
         ],
-        RemoteCodexBinary::AppServer(_) => vec![ps_quote("--listen"), ps_quote(listen_url)],
     };
 
     if is_windows_cmd_script(binary.path()) {
@@ -2054,9 +2299,6 @@ fn windows_start_process_spec(binary: &RemoteCodexBinary, listen_url: &str) -> (
                     cmd_quote(path),
                     listen_url
                 )
-            }
-            RemoteCodexBinary::AppServer(path) => {
-                format!(r#""{}" --listen {}"#, cmd_quote(path), listen_url)
             }
         };
         (
@@ -2080,9 +2322,6 @@ fn server_launch_command(
                 shell_quote(path),
                 shell_quote(listen_url)
             ),
-            RemoteCodexBinary::AppServer(path) => {
-                format!("{} --listen {}", shell_quote(path), shell_quote(listen_url))
-            }
         },
         RemoteShell::PowerShell => match binary {
             RemoteCodexBinary::Codex(path) => format!(
@@ -2090,9 +2329,6 @@ fn server_launch_command(
                 ps_quote(path),
                 ps_quote(listen_url)
             ),
-            RemoteCodexBinary::AppServer(path) => {
-                format!("{} --listen {}", ps_quote(path), ps_quote(listen_url))
-            }
         },
     }
 }
@@ -2121,18 +2357,84 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-/// Strip PowerShell CLIXML noise from SSH output.
-/// PowerShell over SSH emits `#< CLIXML` headers and `<Objs ...>...</Objs>`
-/// XML blocks (often as one long line) for progress and error streams.
+/// Process PowerShell CLIXML in SSH output.
+///
+/// PowerShell over SSH wraps error/progress streams in CLIXML format:
+/// ```text
+/// #< CLIXML
+/// <Objs Version="1.1.0.1" xmlns="..."><S S="Error">'node' is not recognized…</S></Objs>
+/// ```
+///
+/// Instead of discarding these lines, we extract the text content from
+/// `<S>` tags so error messages are preserved.
 fn strip_clixml(output: &str) -> String {
-    output
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.starts_with("#< CLIXML") && !trimmed.starts_with("<Objs ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut result_lines: Vec<&str> = Vec::new();
+    let mut extracted: Vec<String> = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#< CLIXML") {
+            continue;
+        }
+        if trimmed.starts_with("<Objs ") || trimmed.starts_with("<Objs>") {
+            let text = extract_clixml_text(trimmed);
+            if !text.is_empty() {
+                extracted.push(text);
+            }
+            continue;
+        }
+        result_lines.push(line);
+    }
+
+    let mut out = result_lines.join("\n");
+    if !extracted.is_empty() {
+        let joined = extracted.join("\n");
+        if out.is_empty() {
+            out = joined;
+        } else {
+            out.push('\n');
+            out.push_str(&joined);
+        }
+    }
+    out
+}
+
+/// Extract human-readable text from a CLIXML `<Objs>` line.
+///
+/// Parses `<S S="...">text</S>` tags and decodes CLIXML escape sequences
+/// like `_x000D__x000A_` (CRLF).
+fn extract_clixml_text(clixml: &str) -> String {
+    let mut texts = Vec::new();
+    let mut remaining = clixml;
+    while let Some(s_start) = remaining.find("<S ") {
+        let after = &remaining[s_start..];
+        // Find the end of the opening tag `>`
+        let Some(tag_end) = after.find('>') else {
+            break;
+        };
+        let content_start = &after[tag_end + 1..];
+        // Find the closing `</S>`
+        let Some(close) = content_start.find("</S>") else {
+            break;
+        };
+        let raw = &content_start[..close];
+        // Decode CLIXML entities
+        let decoded = raw
+            .replace("_x000D__x000A_", "\n")
+            .replace("_x000A_", "\n")
+            .replace("_x000D_", "")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'");
+        let trimmed = decoded.trim();
+        if !trimmed.is_empty() {
+            texts.push(trimmed.to_string());
+        }
+        remaining = &content_start[close + 4..];
+    }
+    texts.join("\n")
 }
 
 /// Quote a string for PowerShell (single-quoted, no variable expansion).
@@ -2296,25 +2598,12 @@ mod tests {
     fn test_server_launch_command_for_codex() {
         let command = server_launch_command(
             &RemoteCodexBinary::Codex("/usr/local/bin/codex".into()),
-            "ws://0.0.0.0:8390",
+            "ws://127.0.0.1:8390",
             RemoteShell::Posix,
         );
         assert_eq!(
             command,
-            "'/usr/local/bin/codex' app-server --listen 'ws://0.0.0.0:8390'"
-        );
-    }
-
-    #[test]
-    fn test_server_launch_command_for_codex_app_server() {
-        let command = server_launch_command(
-            &RemoteCodexBinary::AppServer("/usr/local/bin/codex-app-server".into()),
-            "ws://[::]:8390",
-            RemoteShell::Posix,
-        );
-        assert_eq!(
-            command,
-            "'/usr/local/bin/codex-app-server' --listen 'ws://[::]:8390'"
+            "'/usr/local/bin/codex' app-server --listen 'ws://127.0.0.1:8390'"
         );
     }
 
@@ -2334,14 +2623,14 @@ mod tests {
     #[test]
     fn test_windows_start_process_spec_for_exe() {
         let (file_path, argument_list) = windows_start_process_spec(
-            &RemoteCodexBinary::AppServer(r#"C:\Program Files\Codex\codex-app-server.exe"#.into()),
+            &RemoteCodexBinary::Codex(r#"C:\Program Files\Codex\codex.exe"#.into()),
             "ws://127.0.0.1:8390",
         );
+        assert_eq!(file_path, r#"'C:\Program Files\Codex\codex.exe'"#);
         assert_eq!(
-            file_path,
-            r#"'C:\Program Files\Codex\codex-app-server.exe'"#
+            argument_list,
+            "@('app-server', '--listen', 'ws://127.0.0.1:8390')"
         );
-        assert_eq!(argument_list, "@('--listen', 'ws://127.0.0.1:8390')");
     }
 
     #[test]
@@ -2457,6 +2746,24 @@ mod tests {
         assert!(PROFILE_INIT.contains(".bashrc"));
         assert!(PROFILE_INIT.contains(".zprofile"));
         assert!(PROFILE_INIT.contains(".zshrc"));
+        assert!(!PROFILE_INIT.contains("-ic 'printf %s \"$PATH\"'"));
+    }
+
+    #[test]
+    fn test_posix_resolver_probes_package_manager_bins() {
+        let script = resolve_codex_binary_script_posix();
+        assert!(script.contains("npm config get prefix"));
+        assert!(script.contains("pnpm bin -g"));
+        assert!(script.contains("bun pm bin -g"));
+        assert!(script.contains("${BUN_INSTALL:-$HOME/.bun}/bin/codex"));
+        assert!(script.contains("PNPM_HOME"));
+        assert!(script.contains("NVM_BIN"));
+        assert!(script.contains("$HOME/.volta/bin/codex"));
+        assert!(script.contains("$HOME/.local/bin/codex"));
+        assert!(script.contains("/opt/homebrew/bin/codex"));
+        assert!(script.contains("/usr/local/bin/codex"));
+        assert!(script.find("command -v codex 2>/dev/null || true") < script.find("pnpm bin -g"));
+        assert!(!script.contains("codex-app-server"));
     }
 
     #[test]

@@ -1,8 +1,6 @@
 package com.litter.android.state
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import org.json.JSONObject
 
 enum class SshAuthMethod {
@@ -40,15 +38,7 @@ data class SavedSshCredential(
 }
 
 class SshCredentialStore(context: Context) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        PREFS_NAME,
-        MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val prefs = openEncryptedPrefsOrReset(context, PREFS_NAME)
 
     fun load(host: String, port: Int): SavedSshCredential? {
         val raw = prefs.getString(key(host, port), null) ?: return null

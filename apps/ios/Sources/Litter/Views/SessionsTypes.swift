@@ -5,14 +5,14 @@ extension AppSessionSummary: Identifiable {
     var serverId: String { key.serverId }
     var threadId: String { key.threadId }
     var displayTitle: String {
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedTitle.isEmpty {
-            return trimmedTitle
-        }
-
         let trimmedPreview = preview.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedPreview.isEmpty {
             return trimmedPreview
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            return trimmedTitle
         }
 
         return "Untitled session"
@@ -59,7 +59,7 @@ enum WorkspaceSortMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct WorkspaceSessionGroup: Identifiable {
+struct WorkspaceSessionGroup: Identifiable, Equatable {
     let id: String
     let serverId: String
     let serverName: String
@@ -71,20 +71,20 @@ struct WorkspaceSessionGroup: Identifiable {
     let treeRoots: [SessionTreeNode]
 }
 
-struct WorkspaceGroupSection: Identifiable {
+struct WorkspaceGroupSection: Identifiable, Equatable {
     let id: String
     let title: String?
     let groups: [WorkspaceSessionGroup]
 }
 
-struct SessionTreeNode: Identifiable {
+struct SessionTreeNode: Identifiable, Equatable {
     let thread: AppSessionSummary
     let children: [SessionTreeNode]
 
     var id: ThreadKey { thread.key }
 }
 
-struct SessionsDerivedData {
+struct SessionsDerivedData: Equatable {
     static let empty = SessionsDerivedData(
         allThreads: [],
         allThreadKeys: [],

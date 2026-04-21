@@ -2,9 +2,12 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.textScale) private var textScale
     @AppStorage("fontFamily") private var fontFamily = FontFamilyOption.mono.rawValue
     @AppStorage("collapseTurns") private var collapseTurns = false
+    @State private var showAddServer = false
 
     private var currentServer: AppServerSnapshot? {
         if let activeServerId = appModel.snapshot?.activeThread?.serverId,
@@ -46,6 +49,15 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                         .foregroundColor(LitterTheme.accent)
                 }
+            }
+            .sheet(isPresented: $showAddServer) {
+                NavigationStack {
+                    DiscoveryView(onServerSelected: { _ in
+                        showAddServer = false
+                    })
+                }
+                .environment(appState)
+                .environment(\.textScale, textScale)
             }
         }
     }
@@ -227,6 +239,21 @@ struct SettingsView: View {
                     .listRowBackground(LitterTheme.surface.opacity(0.6))
                 }
             }
+
+            Button {
+                showAddServer = true
+            } label: {
+                HStack {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundColor(LitterTheme.accent)
+                        .frame(width: 20)
+                    Text("Add Server")
+                        .litterFont(.footnote)
+                        .foregroundColor(LitterTheme.accent)
+                    Spacer()
+                }
+            }
+            .listRowBackground(LitterTheme.surface.opacity(0.6))
         } header: {
             Text("Servers")
                 .foregroundColor(LitterTheme.textSecondary)

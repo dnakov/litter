@@ -40,12 +40,22 @@ struct ConversationComposerEntryRowView: View {
         self.onInterrupt = onInterrupt
     }
 
+    @State private var showExpanded: Bool = false
+
     private var hasText: Bool {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private var canSend: Bool {
         hasText || hasAttachment
+    }
+
+    /// Show the expand affordance once the composer is multi-line or starts to
+    /// wrap, matching ChatGPT's behaviour. Short prompts stay clutter-free.
+    private var shouldShowExpand: Bool {
+        !voiceManager.isRecording
+            && !voiceManager.isTranscribing
+            && (inputText.contains("\n") || inputText.count > 60)
     }
 
     var body: some View {
@@ -55,7 +65,7 @@ struct ConversationComposerEntryRowView: View {
                     showAttachMenu = true
                 } label: {
                     Image(systemName: "plus")
-                        .litterFont(.body, weight: .semibold)
+                        .font(LitterFont.styled(size: 17, weight: .semibold))
                         .foregroundColor(LitterTheme.textPrimary)
                         .frame(width: 36, height: 36)
                         .modifier(GlassCircleModifier())
@@ -73,7 +83,7 @@ struct ConversationComposerEntryRowView: View {
 
                     if inputText.isEmpty {
                         Text("Message litter...")
-                            .litterFont(.body)
+                            .font(LitterFont.styled(size: 17))
                             .foregroundColor(LitterTheme.textMuted)
                             .padding(.leading, 16)
                             .padding(.top, 10)
@@ -84,7 +94,7 @@ struct ConversationComposerEntryRowView: View {
                 if canSend {
                     Button(action: onSendText) {
                         Image(systemName: "arrow.up.circle.fill")
-                            .litterFont(.title2)
+                            .font(LitterFont.styled(size: 22))
                             .foregroundColor(LitterTheme.accent)
                             .frame(width: 36, height: 36)
                             .contentShape(Rectangle())
@@ -96,7 +106,7 @@ struct ConversationComposerEntryRowView: View {
 
                     Button(action: onStopRecording) {
                         Image(systemName: "stop.circle.fill")
-                            .litterFont(.title2)
+                            .font(LitterFont.styled(size: 22))
                             .foregroundColor(LitterTheme.accentStrong)
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
@@ -109,7 +119,7 @@ struct ConversationComposerEntryRowView: View {
                 } else {
                     Button(action: onStartRecording) {
                         Image(systemName: "mic.fill")
-                            .litterFont(.subheadline)
+                            .font(LitterFont.styled(size: 15))
                             .foregroundColor(LitterTheme.textSecondary)
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
@@ -119,11 +129,29 @@ struct ConversationComposerEntryRowView: View {
             }
             .frame(minHeight: 36)
             .modifier(GlassRoundedRectModifier(cornerRadius: 20))
+            .overlay(alignment: .topTrailing) {
+                if shouldShowExpand {
+                    Button {
+                        showExpanded = true
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(LitterFont.styled(size: 12, weight: .semibold))
+                            .foregroundColor(LitterTheme.textSecondary)
+                            .padding(6)
+                            .contentShape(Rectangle())
+                    }
+                    .padding(.top, 2)
+                    .padding(.trailing, 6)
+                    .accessibilityLabel("Expand composer")
+                    .transition(.opacity.combined(with: .scale))
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: shouldShowExpand)
 
             if isTurnActive {
                 Button(action: onInterrupt) {
                     Text("Cancel")
-                        .litterFont(.subheadline, weight: .medium)
+                        .font(LitterFont.styled(size: 15, weight: .medium))
                         .foregroundColor(LitterTheme.textPrimary)
                         .padding(.horizontal, 14)
                         .frame(height: 36)
@@ -137,5 +165,14 @@ struct ConversationComposerEntryRowView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 6)
+        .fullScreenCover(isPresented: $showExpanded) {
+            ConversationComposerExpandedView(
+                inputText: $inputText,
+                isPresented: $showExpanded,
+                onPasteImage: onPasteImage,
+                onSend: onSendText,
+                hasAttachment: hasAttachment
+            )
+        }
     }
 }

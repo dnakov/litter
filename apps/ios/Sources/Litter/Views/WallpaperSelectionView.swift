@@ -1,6 +1,8 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import Hairball
+import HairballUI
 
 private struct VideoTransferable: Transferable {
     let url: URL
@@ -41,19 +43,51 @@ struct WallpaperSelectionView: View {
     @State private var videoURLText: String = ""
     @State private var videoFileURL: URL?
     @State private var videoErrorMessage: String?
+    @State private var activeTab: WallpaperTab = .background
+    @State private var typingEffectConfig: TypingEffectConfig = .default
+    @State private var sheetOffset: CGFloat = 0
+    @GestureState private var dragOffset: CGFloat = 0
+
+    private var typingEffectScope: WallpaperScope? {
+        if let threadKey { return .thread(threadKey) }
+        if let resolvedServerId { return .server(resolvedServerId) }
+        return nil
+    }
 
     var body: some View {
         ZStack {
             // Sample bubbles overlay
             sampleBubbles
                 .padding(.top, 80)
-                .padding(.bottom, 300)
+                .padding(.bottom, max(300 - sheetOffset - dragOffset, 80))
 
             // Bottom card
             VStack {
                 Spacer()
                 bottomCard
             }
+            .offset(y: max(sheetOffset + dragOffset, 0))
+            .gesture(
+                DragGesture()
+                    .updating($dragOffset) { value, state, _ in
+                        state = value.translation.height
+                    }
+                    .onEnded { value in
+                        withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) {
+                            let projected = value.predictedEndTranslation.height
+                            if projected > 120 {
+                                // Snap down (collapsed)
+                                sheetOffset = 280
+                            } else if projected < -80 {
+                                // Snap up (expanded)
+                                sheetOffset = 0
+                            } else {
+                                // Stay at nearest snap point
+                                sheetOffset = sheetOffset + value.translation.height > 140 ? 280 : 0
+                            }
+                        }
+                    }
+            )
 
             // Close button (top-left)
             VStack {
@@ -87,6 +121,13 @@ struct WallpaperSelectionView: View {
             Button("OK") { videoErrorMessage = nil }
         } message: {
             Text(videoErrorMessage ?? "")
+        }
+        .onAppear {
+            if let threadKey {
+                typingEffectConfig = wallpaperManager.resolveTypingEffect(for: threadKey)
+            } else if let resolvedServerId {
+                typingEffectConfig = wallpaperManager.resolveTypingEffectForServer(resolvedServerId)
+            }
         }
     }
 
@@ -150,11 +191,10 @@ struct WallpaperSelectionView: View {
             }
             .padding(.horizontal, 16)
 
-            // Assistant bubble
+            // Streaming assistant bubble
             HStack {
-                Text("I'll look at the profile page login flow and fix the issue.")
-                    .litterFont(size: 14)
-                    .foregroundStyle(LitterTheme.textPrimary)
+                StreamingEffectPreview(config: typingEffectConfig)
+                    .id(typingEffectConfig)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(GlassRectModifier(cornerRadius: 14))
@@ -175,113 +215,136 @@ struct WallpaperSelectionView: View {
                 .fill(LitterTheme.textMuted.opacity(0.4))
                 .frame(width: 36, height: 4)
                 .padding(.top, 12)
-                .padding(.bottom, 12)
+                .padding(.bottom, 8)
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 16) {
-                    Text("Select Theme")
-                        .litterFont(size: 16, weight: .semibold)
-                        .foregroundStyle(LitterTheme.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-
-                    // Theme thumbnails
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            noWallpaperThumbnail
-                            ForEach(themeManager.themeIndex) { entry in
-                                themeThumbnail(for: entry)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-
-                    Divider().overlay(LitterTheme.separator)
-
-                    // Photos picker
-                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "photo.on.rectangle")
-                                .font(.system(size: 16))
-                                .foregroundStyle(LitterTheme.accent)
-                            Text("Choose Wallpaper from Photos")
-                                .litterFont(size: 14)
-                                .foregroundStyle(LitterTheme.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12))
-                                .foregroundStyle(LitterTheme.textMuted)
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                    .onChange(of: selectedPhoto) { _, newItem in
-                        Task { await loadPhoto(newItem) }
-                    }
-
-                    // Video picker
-                    PhotosPicker(selection: $selectedVideoItem, matching: .videos) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "video.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(LitterTheme.accent)
-                            Text("Choose Video from Photos")
-                                .litterFont(size: 14)
-                                .foregroundStyle(LitterTheme.textPrimary)
-                            Spacer()
-                            if isProcessingVideo {
-                                ProgressView()
-                                    .tint(LitterTheme.accent)
-                            } else {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(LitterTheme.textMuted)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                    .disabled(isProcessingVideo)
-                    .onChange(of: selectedVideoItem) { _, newItem in
-                        Task { await loadVideo(newItem) }
-                    }
-
-                    // Video URL input
-                    HStack(spacing: 10) {
-                        Image(systemName: "link")
-                            .font(.system(size: 16))
-                            .foregroundStyle(LitterTheme.accent)
-                        TextField("Paste video URL", text: $videoURLText)
-                            .litterFont(size: 14)
-                            .foregroundStyle(LitterTheme.textPrimary)
-                            .textContentType(.URL)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .submitLabel(.go)
-                            .onSubmit { Task { await loadVideoFromURL() } }
-                        if !videoURLText.isEmpty {
-                            Button {
-                                Task { await loadVideoFromURL() }
-                            } label: {
-                                Text("Go")
-                                    .litterFont(size: 13, weight: .semibold)
-                                    .foregroundStyle(LitterTheme.accent)
-                            }
-                            .disabled(isProcessingVideo)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-
-                    // Color picker
-                    colorRow
-
-                    Spacer().frame(height: 16)
+            // Tab picker
+            Picker("", selection: $activeTab) {
+                ForEach(WallpaperTab.allCases) { tab in
+                    Text(tab.label).tag(tab)
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+
+            // Tab content
+            switch activeTab {
+            case .background:
+                backgroundTabContent
+            case .typingEffect:
+                typingEffectTabContent
+            }
         }
         .background(
             UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20)
                 .fill(LitterTheme.surface.opacity(0.95))
         )
+    }
+
+    private var backgroundTabContent: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 16) {
+                // Theme thumbnails
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        noWallpaperThumbnail
+                        ForEach(themeManager.themeIndex) { entry in
+                            themeThumbnail(for: entry)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                Divider().overlay(LitterTheme.separator)
+
+                // Photos picker
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(LitterTheme.accent)
+                        Text("Choose Wallpaper from Photos")
+                            .litterFont(size: 14)
+                            .foregroundStyle(LitterTheme.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12))
+                            .foregroundStyle(LitterTheme.textMuted)
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .onChange(of: selectedPhoto) { _, newItem in
+                    Task { await loadPhoto(newItem) }
+                }
+
+                // Video picker
+                PhotosPicker(selection: $selectedVideoItem, matching: .videos) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(LitterTheme.accent)
+                        Text("Choose Video from Photos")
+                            .litterFont(size: 14)
+                            .foregroundStyle(LitterTheme.textPrimary)
+                        Spacer()
+                        if isProcessingVideo {
+                            ProgressView()
+                                .tint(LitterTheme.accent)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12))
+                                .foregroundStyle(LitterTheme.textMuted)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .disabled(isProcessingVideo)
+                .onChange(of: selectedVideoItem) { _, newItem in
+                    Task { await loadVideo(newItem) }
+                }
+
+                // Video URL input
+                HStack(spacing: 10) {
+                    Image(systemName: "link")
+                        .font(.system(size: 16))
+                        .foregroundStyle(LitterTheme.accent)
+                    TextField("Paste video URL", text: $videoURLText)
+                        .litterFont(size: 14)
+                        .foregroundStyle(LitterTheme.textPrimary)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.go)
+                        .onSubmit { Task { await loadVideoFromURL() } }
+                    if !videoURLText.isEmpty {
+                        Button {
+                            Task { await loadVideoFromURL() }
+                        } label: {
+                            Text("Go")
+                                .litterFont(size: 13, weight: .semibold)
+                                .foregroundStyle(LitterTheme.accent)
+                        }
+                        .disabled(isProcessingVideo)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                // Color picker
+                colorRow
+
+                Spacer().frame(height: 16)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var typingEffectTabContent: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            typingEffectSection
+                .padding(.top, 4)
+                .padding(.bottom, 16)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Thumbnails
@@ -378,6 +441,137 @@ struct WallpaperSelectionView: View {
             .frame(width: 30, height: 30)
         }
         .padding(.horizontal, 16)
+    }
+
+    // MARK: - Typing Effect
+
+    private var selectedGranularity: GranularityKind {
+        GranularityKind(rawValue: typingEffectConfig.granularity) ?? .block
+    }
+
+    private var selectedEffect: StreamingEffectKind? {
+        typingEffectConfig.effects.first.flatMap { StreamingEffectKind(rawValue: $0) }
+    }
+
+    private func selectEffect(_ kind: StreamingEffectKind?) {
+        typingEffectConfig.effects = kind.map { [$0.rawValue] } ?? []
+        persistTypingEffect()
+    }
+
+    private func persistTypingEffect() {
+        if let scope = typingEffectScope {
+            wallpaperManager.setTypingEffect(typingEffectConfig, scope: scope)
+        }
+    }
+
+    private var typingEffectSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Typing Effect")
+                .litterFont(size: 16, weight: .semibold)
+                .foregroundStyle(LitterTheme.textPrimary)
+                .padding(.horizontal, 16)
+
+            // Effect picker
+            HStack {
+                Text("Effect")
+                    .litterFont(size: 13, weight: .medium)
+                    .foregroundStyle(LitterTheme.textSecondary)
+                Spacer()
+                Picker("Effect", selection: Binding(
+                    get: { selectedEffect?.rawValue ?? "" },
+                    set: { newValue in
+                        if newValue.isEmpty {
+                            selectEffect(nil)
+                        } else if let kind = StreamingEffectKind(rawValue: newValue) {
+                            selectEffect(kind)
+                        }
+                    }
+                )) {
+                    Text("None").tag("")
+                    ForEach(StreamingEffectKind.allCases) { kind in
+                        Text(kind.rawValue).tag(kind.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(LitterTheme.accent)
+            }
+            .padding(.horizontal, 16)
+
+            // Speed slider
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Reveal Speed")
+                    .litterFont(size: 13, weight: .medium)
+                    .foregroundStyle(LitterTheme.textSecondary)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "hare")
+                        .font(.system(size: 11))
+                        .foregroundStyle(LitterTheme.textMuted)
+
+                    Slider(
+                        value: Binding(
+                            get: { typingEffectConfig.revealDuration },
+                            set: {
+                                typingEffectConfig.revealDuration = $0
+                                persistTypingEffect()
+                            }
+                        ),
+                        in: 0.03...1.2,
+                        step: 0.01
+                    )
+                    .tint(LitterTheme.accent)
+
+                    Image(systemName: "tortoise")
+                        .font(.system(size: 11))
+                        .foregroundStyle(LitterTheme.textMuted)
+                }
+            }
+            .padding(.horizontal, 16)
+
+            // Granularity
+            HStack(spacing: 0) {
+                ForEach(GranularityKind.allCases) { kind in
+                    Button {
+                        typingEffectConfig.granularity = kind.rawValue
+                        persistTypingEffect()
+                    } label: {
+                        Text(kind.shortLabel)
+                            .litterFont(size: 12, weight: selectedGranularity == kind ? .semibold : .regular)
+                            .foregroundStyle(selectedGranularity == kind ? LitterTheme.textOnAccent : LitterTheme.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(selectedGranularity == kind ? LitterTheme.accent : .clear)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(LitterTheme.surfaceLight.opacity(0.8))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(LitterTheme.border.opacity(0.6), lineWidth: 1))
+            .padding(.horizontal, 16)
+
+            // Reveal mode
+            HStack(spacing: 0) {
+                ForEach(["Linear", "Continuous"], id: \.self) { mode in
+                    Button {
+                        typingEffectConfig.revealMode = mode
+                        persistTypingEffect()
+                    } label: {
+                        Text(mode)
+                            .litterFont(size: 12, weight: typingEffectConfig.revealMode == mode ? .semibold : .regular)
+                            .foregroundStyle(typingEffectConfig.revealMode == mode ? LitterTheme.textOnAccent : LitterTheme.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(typingEffectConfig.revealMode == mode ? LitterTheme.accent : .clear)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(LitterTheme.surfaceLight.opacity(0.8))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(LitterTheme.border.opacity(0.6), lineWidth: 1))
+            .padding(.horizontal, 16)
+        }
     }
 
     // MARK: - Helpers
@@ -487,3 +681,91 @@ struct WallpaperSelectionView: View {
         return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
     }
 }
+
+// MARK: - Tab Enum
+
+private enum WallpaperTab: String, CaseIterable, Identifiable {
+    case background
+    case typingEffect
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .background: "Background"
+        case .typingEffect: "Typing Effect"
+        }
+    }
+}
+
+// MARK: - Streaming Effect Preview
+
+private struct StreamingEffectPreview: View {
+    var config: TypingEffectConfig
+    @State private var renderer: StreamingMarkdownRenderer
+    @State private var feedTask: Task<Void, Never>?
+
+    private static let sampleText = """
+    Found the issue — the `SessionManager` was **dropping the refresh token** on every cold start because `loadCredentials()` ran before the keychain unlock callback.
+
+    I moved the credential load into the `didBecomeActive` handler and added a retry with exponential backoff:
+
+    ```swift
+    func restoreSession() async throws {
+        let creds = try await keychain.load(.session)
+        try await client.resume(with: creds)
+    }
+    ```
+
+    This also fixes the **"phantom logout"** bug users reported on iOS 18. The token was valid but got discarded before the refresh exchange could complete.
+    """
+
+    init(config: TypingEffectConfig) {
+        self.config = config
+        self._renderer = State(initialValue: StreamingMarkdownRenderer(
+            processors: [LatexTransformer()],
+            throttleInterval: 0.016
+        ))
+    }
+
+    var body: some View {
+        StreamingMarkdownContentView(renderer: renderer)
+            .tokenReveal(TokenRevealConfig(
+                duration: max(config.revealDuration, 0.01),
+                mode: config.effectiveRevealMode
+            ))
+            .applyStreamingEffect(config.resolvedEffect)
+            .revealGranularity(config.effectiveGranularity)
+            .litterContentMarkdown(
+                bodySize: 14,
+                codeSize: 14,
+                selectionEnabled: false
+            )
+            .onAppear { startFeed() }
+            .onDisappear { feedTask?.cancel() }
+    }
+
+    private func startFeed() {
+        let text = Self.sampleText
+        feedTask = Task {
+            while !Task.isCancelled {
+                renderer.reset()
+                // Simulate realistic token arrival: 3-8 chars per chunk
+                // with variable inter-token delays.
+                var index = text.startIndex
+                while index < text.endIndex && !Task.isCancelled {
+                    let chunkSize = Int.random(in: 3...8)
+                    let batchEnd = text.index(index, offsetBy: chunkSize, limitedBy: text.endIndex) ?? text.endIndex
+                    let chunk = String(text[index..<batchEnd])
+                    await MainActor.run { renderer.append(chunk) }
+                    index = batchEnd
+                    let delay = Int.random(in: 20...60)
+                    try? await Task.sleep(for: .milliseconds(delay))
+                }
+                await MainActor.run { renderer.finish() }
+                try? await Task.sleep(for: .seconds(1.0))
+            }
+        }
+    }
+}
+

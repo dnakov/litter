@@ -266,15 +266,7 @@ object ChatGPTOAuth {
 }
 
 class ChatGPTOAuthTokenStore(context: Context) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        PREFS_NAME,
-        MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val prefs = openEncryptedPrefsOrReset(context, PREFS_NAME)
 
     fun load(): ChatGPTOAuthTokenBundle? {
         val raw = prefs.getString(KEY_TOKENS, null) ?: return null

@@ -58,18 +58,6 @@ pub fn copy_thread_runtime_fields(source: &ThreadSnapshot, target: &mut ThreadSn
         target.pending_plan_implementation_turn_id =
             source.pending_plan_implementation_turn_id.clone();
     }
-    // Preserve the active turn and status from the existing thread when the
-    // incoming snapshot would downgrade an active session to idle.  This
-    // prevents stale IPC snapshots (captured at turn boundaries) from briefly
-    // clearing the streaming state and causing UI flicker.
-    if source.info.status == ThreadSummaryStatus::Active
-        && target.info.status != ThreadSummaryStatus::Active
-    {
-        target.info.status = source.info.status.clone();
-        if target.active_turn_id.is_none() {
-            target.active_turn_id = source.active_turn_id.clone();
-        }
-    }
 }
 
 #[cfg(test)]
@@ -780,11 +768,12 @@ pub(super) fn session_is_current(
 pub(super) async fn read_thread_response_from_app_server(
     session: Arc<ServerSession>,
     thread_id: &str,
+    include_turns: bool,
 ) -> Result<upstream::ThreadReadResponse, RpcError> {
     let response = session
         .request(
             "thread/read",
-            serde_json::json!({ "threadId": thread_id, "includeTurns": true }),
+            serde_json::json!({ "threadId": thread_id, "includeTurns": include_turns }),
         )
         .await?;
     serde_json::from_value::<upstream::ThreadReadResponse>(response).map_err(|error| {
@@ -797,6 +786,7 @@ pub(super) fn upsert_thread_snapshot_from_app_server_read_response(
     server_id: &str,
     response: upstream::ThreadReadResponse,
 ) -> Result<(), RpcError> {
+    let turns = response.thread.turns.clone();
     let thread_id = response.thread.id.clone();
     let existing = app_store
         .snapshot()
@@ -818,6 +808,7 @@ pub(super) fn upsert_thread_snapshot_from_app_server_read_response(
     if let Some(existing) = existing.as_ref() {
         copy_thread_runtime_fields(existing, &mut snapshot);
     }
+    reconcile_active_turn(existing.as_ref(), &mut snapshot, &turns);
     app_store.upsert_thread_snapshot(snapshot);
     Ok(())
 }
@@ -850,7 +841,7 @@ pub(super) async fn recover_ipc_stream_cache_from_app_server(
         .collect::<Vec<_>>();
     drop(app_snapshot);
 
-    let response = read_thread_response_from_app_server(session, thread_id).await?;
+    let response = read_thread_response_from_app_server(session, thread_id, true).await?;
     let thread = response.thread.clone();
     upsert_thread_snapshot_from_app_server_read_response(&app_store, server_id, response)?;
 
@@ -911,6 +902,44 @@ pub(super) fn active_turn_id_from_turns(turns: &[upstream::Turn]) -> Option<Stri
         .rev()
         .find(|turn| matches!(turn.status, upstream::TurnStatus::InProgress))
         .map(|turn| turn.id.clone())
+}
+
+/// Decide active-turn state for a freshly-rebuilt thread snapshot, given the
+/// caller's existing snapshot (if any) and the upstream turn list the rebuild
+/// was derived from.
+///
+/// Rules:
+/// - If `target` already shows an InProgress turn, trust it.
+/// - Otherwise, if existing has an active turn:
+///   - With no turn list available (e.g. include_turns=false), preserve local
+///     state — we have no evidence the turn ended.
+///   - With a turn list, preserve only if our local id appears as InProgress
+///     (defensive); otherwise honor the rebuild and clear.
+/// - `info.status` is derived from the resolved `active_turn_id`: Active iff
+///   Some, otherwise the upstream-supplied value is left untouched.
+pub fn reconcile_active_turn(
+    existing: Option<&ThreadSnapshot>,
+    target: &mut ThreadSnapshot,
+    upstream_turns: &[upstream::Turn],
+) {
+    if target.active_turn_id.is_some() {
+        target.info.status = ThreadSummaryStatus::Active;
+        return;
+    }
+    let Some(local_id) = existing.and_then(|t| t.active_turn_id.clone()) else {
+        return;
+    };
+    let preserve = if upstream_turns.is_empty() {
+        true
+    } else {
+        upstream_turns
+            .iter()
+            .any(|t| t.id == local_id && matches!(t.status, upstream::TurnStatus::InProgress))
+    };
+    if preserve {
+        target.active_turn_id = Some(local_id);
+        target.info.status = ThreadSummaryStatus::Active;
+    }
 }
 
 pub(super) struct ThreadProjection {
@@ -1255,9 +1284,7 @@ pub(super) fn queue_ipc_thread_stream_recovery(
     recovery_tx: &mpsc::UnboundedSender<PendingIpcStreamRecovery>,
 ) {
     let thread_id = params.conversation_id.clone();
-    let queue = pending_thread_events
-        .entry(thread_id.clone())
-        .or_default();
+    let queue = pending_thread_events.entry(thread_id.clone()).or_default();
     queue.push_back(params);
     let queued_events = queue.len();
 

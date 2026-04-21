@@ -417,9 +417,15 @@ struct GlassRoundedRectModifier: ViewModifier {
 }
 
 struct GlassCapsuleModifier: ViewModifier {
+    var interactive: Bool = false
+
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: .capsule)
+            if interactive {
+                content.glassEffect(.regular.interactive(), in: .capsule)
+            } else {
+                content.glassEffect(.regular, in: .capsule)
+            }
         } else {
             content
                 .background(LitterTheme.surfaceLight)
@@ -436,6 +442,36 @@ struct GlassCircleModifier: ViewModifier {
             content
                 .background(LitterTheme.surfaceLight)
                 .clipShape(Circle())
+        }
+    }
+}
+
+/// Wraps its children in iOS 26's `GlassEffectContainer` when available so
+/// views with matching `glassMorphID`s blob between each other with a real
+/// liquid-glass transition. On older iOS it's a pass-through.
+struct GlassMorphContainer<Content: View>: View {
+    var spacing: CGFloat = 10
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) { content() }
+        } else {
+            content()
+        }
+    }
+}
+
+extension View {
+    /// Applies iOS 26's `glassEffectID` — which morphs glass between matched
+    /// views inside a `GlassEffectContainer` — or falls back to
+    /// `matchedGeometryEffect` so the frame still tweens on older iOS.
+    @ViewBuilder
+    func glassMorphID(_ id: String, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffectID(id, in: namespace)
+        } else {
+            self.matchedGeometryEffect(id: id, in: namespace)
         }
     }
 }

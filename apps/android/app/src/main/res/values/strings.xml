@@ -24,4 +24,6 @@
     <string name="directory_picker_clear">Clear</string>
     <string name="directory_picker_no_subdirectories">No subdirectories</string>
     <string name="directory_picker_no_matches">No matches for &quot;%1$s&quot;</string>
+    <string name="widget_description">Shows active Codex turn progress</string>
+    <string name="widget_label">Codex Turn</string>
 </resources>

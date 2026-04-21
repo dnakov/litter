@@ -1,24 +1,43 @@
 import SwiftUI
-import Textual
+import Hairball
+import HairballUI
 import UIKit
+
+extension View {
+    @ViewBuilder
+    func applyStreamingEffect(_ effect: (any StreamingTextEffect)?) -> some View {
+        if let effect {
+            self.streamingTextEffect(effect)
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - Active Thread Key Environment
+
+private struct ActiveThreadKeyKey: EnvironmentKey {
+    static let defaultValue: ThreadKey? = nil
+}
+
+extension EnvironmentValues {
+    var activeThreadKey: ThreadKey? {
+        get { self[ActiveThreadKeyKey.self] }
+        set { self[ActiveThreadKeyKey.self] = newValue }
+    }
+}
+
+extension View {
+    func activeThreadKey(_ key: ThreadKey?) -> some View {
+        environment(\.activeThreadKey, key)
+    }
+}
 
 // MARK: - Reusable bubble components
 
 enum LitterMarkdownStyleVariant {
     case content
     case system
-}
-
-private extension VerticalAlignment {
-    private enum LitterFirstTextCenterAlignment: AlignmentID {
-        static func defaultValue(in context: ViewDimensions) -> CGFloat {
-            let firstLineHeight =
-                context.height - (context[.lastTextBaseline] - context[.firstTextBaseline])
-            return firstLineHeight / 2
-        }
-    }
-
-    static let litterFirstTextCenter = Self(LitterFirstTextCenterAlignment.self)
 }
 
 struct LitterMarkdownView: View {
@@ -28,27 +47,33 @@ struct LitterMarkdownView: View {
     var codeSize: CGFloat = LitterFont.conversationBodyPointSize
     var selectionEnabled = true
 
+    @State private var debugSettings = DebugSettings.shared
+
     var body: some View {
-        renderedMarkdown(selectionEnabled: selectionEnabled)
+        if debugSettings.enabled && debugSettings.disableMarkdown {
+            Text(markdown)
+                .font(.system(size: bodySize, design: .monospaced))
+                .foregroundColor(style == .system ? LitterTheme.textSecondary : LitterTheme.textPrimary)
+                .textSelection(.enabled)
+        } else {
+            renderedMarkdown(selectionEnabled: selectionEnabled)
+        }
     }
 
     @ViewBuilder
     private func renderedMarkdown(selectionEnabled: Bool) -> some View {
+        let view = MarkdownView(markdown, processors: [LatexTransformer()])
         switch style {
         case .content:
-            StructuredText(markdown: markdown, syntaxExtensions: [.math])
-                .litterContentMarkdown(
-                    bodySize: bodySize,
-                    codeSize: codeSize,
-                    selectionEnabled: selectionEnabled
-                )
+            view.litterContentMarkdown(
+                bodySize: bodySize, codeSize: codeSize,
+                selectionEnabled: selectionEnabled
+            )
         case .system:
-            StructuredText(markdown: markdown, syntaxExtensions: [.math])
-                .litterSystemMarkdown(
-                    bodySize: bodySize,
-                    codeSize: codeSize,
-                    selectionEnabled: selectionEnabled
-                )
+            view.litterSystemMarkdown(
+                bodySize: bodySize, codeSize: codeSize,
+                selectionEnabled: selectionEnabled
+            )
         }
     }
 }
@@ -96,7 +121,7 @@ struct UserBubble: View {
                     }
                 }
                 if !text.isEmpty {
-                    Text(text)
+                    FormattedText(text: text)
                         .litterFont(size: contentFontSize)
                         .foregroundColor(LitterTheme.textPrimary)
                         .textSelection(.enabled)
@@ -301,74 +326,85 @@ struct AssistantBlocksBubble: View {
 }
 
 struct StreamingAssistantBubble: View {
-    private let renderCache = StreamingAssistantRenderCache.shared
+    @Environment(WallpaperManager.self) private var wallpaperManager
+    @Environment(\.activeThreadKey) private var threadKey
     let itemId: String
     let text: String
+    var isStreaming: Bool = false
     var label: String? = nil
     var themeVersion: Int = 0
     var onSnapshotRendered: (() -> Void)? = nil
-    @State private var renderedSegments: [MessageRenderCache.AssistantSegment] = []
-    @State private var pendingText: String?
-    @State private var flushWorkItem: DispatchWorkItem?
-    @State private var animating = false
+    private let contentFontSize: CGFloat
 
-    private let flushInterval: TimeInterval = 1.0
+    /// Renderer is resolved once during init. For streaming items, this
+    /// creates the renderer eagerly (before deltas arrive) so the `if let`
+    /// branch is taken on the very first body evaluation. The coordinator
+    /// returns the same renderer when deltas later call `appendDelta`.
+    private let resolvedRenderer: StreamingMarkdownRenderer?
+
+    init(
+        itemId: String,
+        text: String,
+        isStreaming: Bool = false,
+        label: String? = nil,
+        themeVersion: Int = 0,
+        bodySize: CGFloat = LitterFont.conversationBodyPointSize,
+        onSnapshotRendered: (() -> Void)? = nil
+    ) {
+        self.itemId = itemId
+        self.text = text
+        self.isStreaming = isStreaming
+        self.label = label
+        self.themeVersion = themeVersion
+        self.contentFontSize = bodySize
+        self.onSnapshotRendered = onSnapshotRendered
+
+        let coord = StreamingRendererCoordinator.shared
+        if isStreaming {
+            self.resolvedRenderer = coord.renderer(for: itemId, currentText: text)
+        } else {
+            self.resolvedRenderer = nil
+        }
+    }
+
+    private var typingConfig: TypingEffectConfig {
+        wallpaperManager.resolveTypingEffect(for: threadKey)
+    }
 
     var body: some View {
-        AssistantBlocksBubble(
-            segments: renderedSegments,
-            label: label,
-            compact: false
-        )
-            .onAppear {
-                renderedSegments = renderCache.segments(itemId: itemId, text: text)
-                onSnapshotRendered?()
-            }
-            .onChange(of: text) {
-                pendingText = text
-                guard flushWorkItem == nil, !animating else { return }
-                scheduleFlush()
-            }
-            .onDisappear {
-                flushWorkItem?.cancel()
-                flushWorkItem = nil
-                pendingText = nil
-                animating = false
-            }
-    }
-
-    private func scheduleFlush() {
-        let work = DispatchWorkItem {
-            flushWorkItem = nil
-            flush()
-        }
-        flushWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + flushInterval, execute: work)
-    }
-
-    private func flush() {
-        guard let next = pendingText else { return }
-        pendingText = nil
-
-        let nextSegments = renderCache.segments(itemId: itemId, text: next)
-
-        if nextSegments.count > renderedSegments.count {
-            animating = true
-            withAnimation(.easeOut(duration: 0.25)) {
-                renderedSegments = nextSegments
-            } completion: {
-                animating = false
-                onSnapshotRendered?()
-                if pendingText != nil {
-                    flush()
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                if let label {
+                    Text(label)
+                        .litterFont(.caption2, weight: .semibold)
+                        .foregroundColor(LitterTheme.textSecondary)
+                }
+                if let resolvedRenderer {
+                    StreamingMarkdownContentView(renderer: resolvedRenderer)
+                        .tokenReveal(TokenRevealConfig(duration: max(typingConfig.revealDuration, 0.01), mode: typingConfig.effectiveRevealMode))
+                        .applyStreamingEffect(typingConfig.resolvedEffect)
+                        .revealGranularity(typingConfig.effectiveGranularity)
+                        .litterContentMarkdown(
+                            bodySize: contentFontSize,
+                            codeSize: contentFontSize,
+                            selectionEnabled: !isStreaming
+                        )
+                } else {
+                    LitterMarkdownView(
+                        markdown: text,
+                        style: .content,
+                        bodySize: contentFontSize,
+                        codeSize: contentFontSize
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                    .tokenReveal(.disabled)
                 }
             }
-        } else {
-            renderedSegments = nextSegments
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 20)
+        }
+        .onChange(of: text) {
             onSnapshotRendered?()
-            if pendingText != nil {
-                flush()
-            }
         }
     }
 }
@@ -478,6 +514,7 @@ struct MessageBubbleView: View {
             StreamingAssistantBubble(
                 itemId: message.id.uuidString,
                 text: message.text,
+                isStreaming: true,
                 label: assistantAgentLabel,
                 onSnapshotRendered: onStreamingSnapshotRendered
             )
@@ -517,7 +554,7 @@ struct MessageBubbleView: View {
             let parsed = systemParseResultForRendering
             switch parsed {
             case .recognized(let model):
-                ToolCallCardView(model: model)
+                ToolCallCardView(model: model, serverId: serverId)
             case .unrecognized:
                 genericSystemBubble
             }
@@ -618,195 +655,258 @@ struct MessageBubbleView: View {
     }
 }
 
-// MARK: - Litter Textual Styles
+// MARK: - Litter Markdown Themes
 
-struct LitterHeadingStyle: StructuredText.HeadingStyle {
-    let fontScales: [CGFloat]
-    let topMargins: [CGFloat]
-    let bottomMargins: [CGFloat]
+private func litterContentTheme(bodySize: CGFloat, codeSize: CGFloat) -> MarkdownTheme {
+    var theme = MarkdownTheme.default
+    theme.bodyFont = .custom(LitterFont.markdownFontName, size: bodySize)
+    theme.bodyFontSize = bodySize
+    theme.foregroundColor = LitterTheme.textBody
+    theme.paragraphSpacing = 8
+    theme.blockSpacing = 8
 
-    func makeBody(configuration: Configuration) -> some View {
-        let level = min(configuration.headingLevel, 3) - 1
-        let scale = level < fontScales.count ? fontScales[level] : 1.0
-        let top = level < topMargins.count ? topMargins[level] : 8
-        let bottom = level < bottomMargins.count ? bottomMargins[level] : 4
+    theme.headingStyleSet = HeadingStyleSet(
+        h1: HeadingStyle(fontSize: bodySize * 1.43, weight: .bold,
+                         topSpacing: 16, bottomSpacing: 8, color: LitterTheme.textPrimary),
+        h2: HeadingStyle(fontSize: bodySize * 1.21, weight: .semibold,
+                         topSpacing: 12, bottomSpacing: 6, color: LitterTheme.textPrimary),
+        h3: HeadingStyle(fontSize: bodySize * 1.07, weight: .semibold,
+                         topSpacing: 10, bottomSpacing: 4, color: LitterTheme.textPrimary),
+        h4: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary),
+        h5: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary),
+        h6: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary)
+    )
 
-        configuration.label
-            .textual.fontScale(scale)
-            .fontWeight(level == 0 ? .bold : .semibold)
-            .foregroundStyle(LitterTheme.textPrimary)
-            .textual.blockSpacing(.init(top: top, bottom: bottom))
+    theme.inlineCode = InlineCodeStyle(
+        backgroundColor: LitterTheme.surfaceLight,
+        textColor: LitterTheme.textPrimary,
+        font: .custom(LitterFont.markdownFontName, size: codeSize),
+        fontSize: codeSize
+    )
+
+    theme.codeBlock = CodeBlockStyle(
+        backgroundColor: LitterTheme.codeBackground.opacity(0.8),
+        textColor: LitterTheme.textPrimary,
+        font: .custom(LitterFont.markdownFontName, size: codeSize),
+        fontSize: codeSize,
+        cornerRadius: 8,
+        showLanguageLabel: false,
+        showCopyButton: false
+    )
+
+    theme.blockquote = BlockquoteStyle(
+        borderColor: LitterTheme.border,
+        borderWidth: 3,
+        textColor: LitterTheme.textSecondary,
+        padding: EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 4)
+    )
+
+    theme.table = TableStyle(
+        borderStyle: .solid(color: LitterTheme.border, width: 0.5),
+        headerBackground: LitterTheme.surfaceLight,
+        headerFontWeight: .semibold,
+        backgroundStyle: .alternatingRows(
+            even: LitterTheme.surface.opacity(0.5),
+            odd: .clear
+        ),
+        cornerRadius: 8
+    )
+
+    theme.list = ListStyleConfiguration(
+        bulletMarker: .bullet,
+        itemSpacing: 4,
+        tightItemSpacing: 4
+    )
+
+    theme.link = LinkStyle(color: LitterTheme.accent, underline: false)
+
+    theme.thematicBreak = ThematicBreakStyle(
+        color: LitterTheme.border,
+        verticalPadding: 12
+    )
+
+    return theme
+}
+
+private func litterSystemTheme(bodySize: CGFloat, codeSize: CGFloat) -> MarkdownTheme {
+    var theme = MarkdownTheme.default
+    theme.bodyFont = .custom(LitterFont.markdownFontName, size: bodySize)
+    theme.bodyFontSize = bodySize
+    theme.foregroundColor = LitterTheme.textSystem
+    theme.paragraphSpacing = 6
+    theme.blockSpacing = 6
+
+    theme.headingStyleSet = HeadingStyleSet(
+        h1: HeadingStyle(fontSize: bodySize * 1.31, weight: .bold,
+                         topSpacing: 12, bottomSpacing: 6, color: LitterTheme.textPrimary),
+        h2: HeadingStyle(fontSize: bodySize * 1.15, weight: .semibold,
+                         topSpacing: 10, bottomSpacing: 4, color: LitterTheme.textPrimary),
+        h3: HeadingStyle(fontSize: bodySize * 1.08, weight: .semibold,
+                         topSpacing: 8, bottomSpacing: 4, color: LitterTheme.textPrimary),
+        h4: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary),
+        h5: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary),
+        h6: HeadingStyle(fontSize: bodySize, weight: .semibold, color: LitterTheme.textPrimary)
+    )
+
+    theme.inlineCode = InlineCodeStyle(
+        backgroundColor: LitterTheme.surfaceLight,
+        textColor: LitterTheme.textPrimary,
+        font: .custom(LitterFont.markdownFontName, size: codeSize),
+        fontSize: codeSize
+    )
+
+    theme.codeBlock = CodeBlockStyle(
+        backgroundColor: LitterTheme.codeBackground.opacity(0.8),
+        textColor: LitterTheme.textPrimary,
+        font: .custom(LitterFont.markdownFontName, size: codeSize),
+        fontSize: codeSize,
+        cornerRadius: 8,
+        showLanguageLabel: false,
+        showCopyButton: false
+    )
+
+    theme.blockquote = BlockquoteStyle(
+        borderColor: LitterTheme.border,
+        borderWidth: 3,
+        textColor: LitterTheme.textSecondary,
+        padding: EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 4)
+    )
+
+    theme.table = TableStyle(
+        borderStyle: .solid(color: LitterTheme.border, width: 0.5),
+        headerBackground: LitterTheme.surfaceLight,
+        headerFontWeight: .semibold,
+        backgroundStyle: .alternatingRows(
+            even: LitterTheme.surface.opacity(0.5),
+            odd: .clear
+        ),
+        cornerRadius: 8
+    )
+
+    theme.list = ListStyleConfiguration(
+        bulletMarker: .bullet,
+        itemSpacing: 3,
+        tightItemSpacing: 3
+    )
+
+    theme.link = LinkStyle(color: LitterTheme.accent, underline: false)
+
+    theme.thematicBreak = ThematicBreakStyle(
+        color: LitterTheme.border,
+        verticalPadding: 8
+    )
+
+    return theme
+}
+
+struct LitterCodeBlockRenderer: CodeBlockRenderer {
+    func makeBody(configuration: CodeBlockConfiguration) -> some View {
+        DefaultCodeBlockRenderer().makeBody(configuration: configuration)
+            .modifier(GlassRectModifier(cornerRadius: 8))
     }
 }
 
-struct LitterBlockQuoteStyle: StructuredText.BlockQuoteStyle {
-    let topBottom: CGFloat
+// MARK: - Syntax Highlighting Theme Mapping
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(LitterTheme.textSecondary)
-            .italic()
-            .padding(.leading, 12)
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(LitterTheme.border)
-                    .frame(width: 3)
-            }
-            .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
-    }
-}
+/// Shared highlighter instance — theme is switched at runtime via `setTheme(_:)`.
+private let sharedHighlighter = HighlightrCodeSyntaxHighlighter(theme: "atom-one-dark")
 
-struct LitterCodeBlockStyle: StructuredText.CodeBlockStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            configuration.label
-                .monospaced()
-                .textual.textSelection(.enabled)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+/// Maps a Litter theme slug to the closest Highlightr theme name.
+/// Direct matches are checked first, then known family prefixes, then light/dark fallback.
+private let highlightrDirectMap: [String: String] = [
+    "codex-dark": "atom-one-dark",
+    "codex-light": "atom-one-light",
+    "dark-plus-B1yOZ-Hy": "vs2015",
+    "light-plus": "vs",
+    "one-dark-pro-D": "atom-one-dark",
+    "material-theme": "material",
+    "material-theme-darker-D": "material-darker",
+    "material-theme-lighter": "material-lighter",
+    "material-theme-ocean": "ocean",
+    "material-theme-palenight": "material-palenight",
+    "catppuccin-mocha-Ry8aD-5u": "mocha",
+    "catppuccin-latte-Bd1wq-gC": "one-light",
+    "catppuccin-frappe": "atom-one-dark",
+    "catppuccin-macchiato": "atom-one-dark",
+    "tokyo-night": "tokyo-night-dark",
+    "kanagawa-wave": "atom-one-dark",
+    "kanagawa-dragon-VscOyZL-": "atom-one-dark",
+    "kanagawa-lotus": "atom-one-light",
+    "houston": "atom-one-dark",
+    "poimandres": "panda-syntax-dark",
+    "vitesse-black": "atom-one-dark",
+    "vitesse-dark": "atom-one-dark",
+    "vitesse-light": "atom-one-light",
+    "linear-dark": "atom-one-dark",
+    "linear-light": "atom-one-light",
+    "sentry-dark": "atom-one-dark",
+    "notion-dark-BTRKJ-yg": "atom-one-dark",
+    "notion-light": "atom-one-light",
+    "temple-dark": "atom-one-dark",
+    "lobster-dark-dxSKfHK-": "atom-one-dark",
+    "matrix-dark": "green-screen",
+    "absolutely-dark": "atom-one-dark",
+    "absolutely-light": "atom-one-light",
+    "proof-light": "atom-one-light",
+    "pierre-dark": "atom-one-dark",
+    "pierre-light": "atom-one-light",
+    "slack-dark": "atom-one-dark",
+    "slack-ochin-CRg": "atom-one-light",
+    "oscurange-C": "atom-one-dark",
+    "ayu-dark": "atom-one-dark",
+    "laserwave": "shades-of-purple",
+    "vesper": "atom-one-dark",
+    "min-dark-": "atom-one-dark",
+    "min-light": "atom-one-light",
+    "snazzy-light": "snazzy",
+    "rose-pine-x": "rose-pine",
+]
+
+private let highlightrFamilyPrefixes = [
+    "dracula", "monokai", "nord", "solarized-dark", "solarized-light",
+    "night-owl", "one-light", "github-dark", "github-light",
+    "gruvbox-dark-hard", "gruvbox-dark-medium", "gruvbox-dark-soft",
+    "gruvbox-light-hard", "gruvbox-light-medium", "gruvbox-light-soft",
+    "everforest-dark", "everforest-light",
+    "rose-pine-dawn", "rose-pine-moon",
+]
+
+private func highlightrThemeName(for slug: String, type: ThemeDefinition.ThemeType) -> String {
+    if let mapped = highlightrDirectMap[slug] { return mapped }
+
+    for prefix in highlightrFamilyPrefixes {
+        if slug.hasPrefix(prefix) {
+            // Highlightr uses the same names for these (ros-pine vs rose-pine handled)
+            let hlName = slug
+                .replacingOccurrences(of: "github-dark-default", with: "github-dark")
+                .replacingOccurrences(of: "github-dark-dimmed", with: "github-dark-dimmed")
+                .replacingOccurrences(of: "github-dark-high-contrast", with: "github-dark")
+                .replacingOccurrences(of: "github-light-default", with: "github")
+                .replacingOccurrences(of: "github-light-high-contrast", with: "github")
+                .replacingOccurrences(of: "everforest-dark", with: "atom-one-dark")
+                .replacingOccurrences(of: "everforest-light", with: "atom-one-light")
+                .replacingOccurrences(of: "rose-pine-dawn", with: "ros-pine-dawn")
+                .replacingOccurrences(of: "rose-pine-moon", with: "ros-pine-moon")
+            if hlName != slug { return hlName }
+            return prefix
         }
-        .background(LitterTheme.codeBackground.opacity(0.8))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .modifier(GlassRectModifier(cornerRadius: 8))
-        .textual.blockSpacing(.init(top: 8, bottom: 8))
     }
+
+    // Fallback: generic dark/light
+    return type == .dark ? "atom-one-dark" : "atom-one-light"
 }
 
-struct LitterSystemCodeBlockStyle: StructuredText.CodeBlockStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            configuration.label
-                .monospaced()
-                .textual.textSelection(.enabled)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(LitterTheme.codeBackground.opacity(0.8))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .modifier(GlassRectModifier(cornerRadius: 8))
-        .textual.blockSpacing(.init(top: 6, bottom: 6))
-    }
+/// Returns the current Highlightr theme name based on the active Litter theme.
+private func currentHighlightrTheme(for colorScheme: ColorScheme) -> String {
+    let resolved = colorScheme == .dark ? ThemeStore.shared.dark : ThemeStore.shared.light
+    return highlightrThemeName(for: resolved.slug, type: resolved.type)
 }
 
-struct LitterThematicBreakStyle: StructuredText.ThematicBreakStyle {
-    let topBottom: CGFloat
-
-    func makeBody(configuration: Configuration) -> some View {
-        Divider()
-            .overlay(LitterTheme.border)
-            .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
-    }
-}
-
-struct LitterListItemStyle: StructuredText.ListItemStyle {
-    let topBottom: CGFloat
-    @ScaledMetric(relativeTo: .body) private var markerColumnWidth: CGFloat = 16
-
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .litterFirstTextCenter, spacing: 8) {
-            configuration.marker
-                .frame(width: markerColumnWidth, alignment: .center)
-            configuration.block
-        }
-        .textual.blockSpacing(.init(top: topBottom, bottom: topBottom))
-    }
-}
-
-struct LitterStructuredStyle: StructuredText.Style {
-    let bodySize: CGFloat
-    let codeSize: CGFloat
-
-    var inlineStyle: InlineStyle {
-        InlineStyle()
-            .code(
-                .monospaced,
-                .fontScale(codeSize / bodySize),
-                .foregroundColor(LitterTheme.textPrimary),
-                .backgroundColor(LitterTheme.surfaceLight)
-            )
-            .strong(.fontWeight(.semibold), .foregroundColor(LitterTheme.textPrimary))
-            .emphasis(.italic)
-            .link(.foregroundColor(LitterTheme.accent))
-    }
-
-    var headingStyle: LitterHeadingStyle {
-        LitterHeadingStyle(
-            fontScales: [1.43, 1.21, 1.07],
-            topMargins: [16, 12, 10],
-            bottomMargins: [8, 6, 4]
-        )
-    }
-
-    var paragraphStyle: StructuredText.DefaultParagraphStyle { .default }
-
-    var blockQuoteStyle: LitterBlockQuoteStyle {
-        LitterBlockQuoteStyle(topBottom: 8)
-    }
-
-    var codeBlockStyle: LitterCodeBlockStyle {
-        LitterCodeBlockStyle()
-    }
-
-    var listItemStyle: LitterListItemStyle {
-        LitterListItemStyle(topBottom: 4)
-    }
-
-    var unorderedListMarker: StructuredText.SymbolListMarker { .disc }
-    var orderedListMarker: StructuredText.DecimalListMarker { .decimal }
-    var tableStyle: StructuredText.DefaultTableStyle { .default }
-    var tableCellStyle: StructuredText.DefaultTableCellStyle { .default }
-
-    var thematicBreakStyle: LitterThematicBreakStyle {
-        LitterThematicBreakStyle(topBottom: 12)
-    }
-}
-
-struct LitterSystemStructuredStyle: StructuredText.Style {
-    let bodySize: CGFloat
-    let codeSize: CGFloat
-
-    var inlineStyle: InlineStyle {
-        InlineStyle()
-            .code(
-                .monospaced,
-                .fontScale(codeSize / bodySize),
-                .foregroundColor(LitterTheme.textPrimary),
-                .backgroundColor(LitterTheme.surfaceLight)
-            )
-            .strong(.fontWeight(.semibold), .foregroundColor(LitterTheme.textPrimary))
-            .emphasis(.italic)
-            .link(.foregroundColor(LitterTheme.accent))
-    }
-
-    var headingStyle: LitterHeadingStyle {
-        LitterHeadingStyle(
-            fontScales: [1.31, 1.15, 1.08],
-            topMargins: [12, 10, 8],
-            bottomMargins: [6, 4, 4]
-        )
-    }
-
-    var paragraphStyle: StructuredText.DefaultParagraphStyle { .default }
-
-    var blockQuoteStyle: LitterBlockQuoteStyle {
-        LitterBlockQuoteStyle(topBottom: 6)
-    }
-
-    var codeBlockStyle: LitterSystemCodeBlockStyle {
-        LitterSystemCodeBlockStyle()
-    }
-
-    var listItemStyle: LitterListItemStyle {
-        LitterListItemStyle(topBottom: 3)
-    }
-
-    var unorderedListMarker: StructuredText.SymbolListMarker { .disc }
-    var orderedListMarker: StructuredText.DecimalListMarker { .decimal }
-    var tableStyle: StructuredText.DefaultTableStyle { .default }
-    var tableCellStyle: StructuredText.DefaultTableCellStyle { .default }
-
-    var thematicBreakStyle: LitterThematicBreakStyle {
-        LitterThematicBreakStyle(topBottom: 8)
+/// Syncs the shared highlighter to match the current Litter theme.
+private func syncHighlighterTheme(for colorScheme: ColorScheme) {
+    let desired = currentHighlightrTheme(for: colorScheme)
+    if sharedHighlighter.themeName != desired {
+        sharedHighlighter.setTheme(desired)
     }
 }
 
@@ -814,6 +914,7 @@ struct LitterSystemStructuredStyle: StructuredText.Style {
 
 private struct ScaledContentMarkdownModifier: ViewModifier {
     @Environment(\.textScale) private var textScale
+    @Environment(\.colorScheme) private var colorScheme
     let baseBodySize: CGFloat
     let baseCodeSize: CGFloat
     let selectionEnabled: Bool
@@ -821,28 +922,22 @@ private struct ScaledContentMarkdownModifier: ViewModifier {
     func body(content: Content) -> some View {
         let scaledBody = baseBodySize * textScale
         let scaledCode = baseCodeSize * textScale
-        let styledContent = content
-            .font(.custom(LitterFont.markdownFontName, size: scaledBody))
-            .foregroundStyle(LitterTheme.textBody)
-            .textual.mathProperties(
-                MathProperties(
-                    fontName: .latinModern,
-                    fontScale: 1.0,
-                    textAlignment: .leading
-                )
-            )
-            .textual.structuredTextStyle(LitterStructuredStyle(bodySize: scaledBody, codeSize: scaledCode))
-
+        let _ = syncHighlighterTheme(for: colorScheme)
+        let themed = content
+            .markdownTheme(litterContentTheme(bodySize: scaledBody, codeSize: scaledCode))
+            .codeSyntaxHighlighter(sharedHighlighter)
+            .codeBlockRenderer(LitterCodeBlockRenderer())
         if selectionEnabled {
-            styledContent.textual.textSelection(.enabled)
+            themed.textSelection(.enabled)
         } else {
-            styledContent
+            themed
         }
     }
 }
 
 private struct ScaledSystemMarkdownModifier: ViewModifier {
     @Environment(\.textScale) private var textScale
+    @Environment(\.colorScheme) private var colorScheme
     let baseBodySize: CGFloat
     let baseCodeSize: CGFloat
     let selectionEnabled: Bool
@@ -850,22 +945,15 @@ private struct ScaledSystemMarkdownModifier: ViewModifier {
     func body(content: Content) -> some View {
         let scaledBody = baseBodySize * textScale
         let scaledCode = baseCodeSize * textScale
-        let styledContent = content
-            .font(.custom(LitterFont.markdownFontName, size: scaledBody))
-            .foregroundStyle(LitterTheme.textSystem)
-            .textual.mathProperties(
-                MathProperties(
-                    fontName: .latinModern,
-                    fontScale: 1.0,
-                    textAlignment: .leading
-                )
-            )
-            .textual.structuredTextStyle(LitterSystemStructuredStyle(bodySize: scaledBody, codeSize: scaledCode))
-
+        let _ = syncHighlighterTheme(for: colorScheme)
+        let themed = content
+            .markdownTheme(litterSystemTheme(bodySize: scaledBody, codeSize: scaledCode))
+            .codeSyntaxHighlighter(sharedHighlighter)
+            .codeBlockRenderer(LitterCodeBlockRenderer())
         if selectionEnabled {
-            styledContent.textual.textSelection(.enabled)
+            themed.textSelection(.enabled)
         } else {
-            styledContent
+            themed
         }
     }
 }

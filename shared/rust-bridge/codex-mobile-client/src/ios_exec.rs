@@ -49,12 +49,38 @@ pub(crate) fn run_command(
             .nth(1);
         if let Some(patch) = patch_arg {
             eprintln!("[ios-exec] apply_patch in-process (cwd={})", cwd.display());
-            let old_cwd = std::env::current_dir().ok();
-            let _ = std::env::set_current_dir(cwd);
+            let cwd_abs = match codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(cwd)
+            {
+                Ok(abs) => abs,
+                Err(err) => {
+                    let msg = format!("invalid cwd for apply_patch: {err}\n");
+                    eprintln!("[ios-exec] apply_patch setup error: {err}");
+                    return (1, msg.into_bytes());
+                }
+            };
             let mut stdout_buf = Vec::new();
             let mut stderr_buf = Vec::new();
-            let code = match codex_apply_patch::apply_patch(patch, &mut stdout_buf, &mut stderr_buf)
+            let fs = codex_exec_server::LOCAL_FS.clone();
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
             {
+                Ok(rt) => rt,
+                Err(err) => {
+                    let msg = format!("build tokio runtime for apply_patch: {err}\n");
+                    eprintln!("[ios-exec] apply_patch runtime error: {err}");
+                    return (1, msg.into_bytes());
+                }
+            };
+            let result = runtime.block_on(codex_apply_patch::apply_patch(
+                patch,
+                &cwd_abs,
+                &mut stdout_buf,
+                &mut stderr_buf,
+                fs.as_ref(),
+                None,
+            ));
+            let code = match result {
                 Ok(()) => 0,
                 Err(err) => {
                     eprintln!("[ios-exec] apply_patch error: {err}");
@@ -64,9 +90,6 @@ pub(crate) fn run_command(
                     1
                 }
             };
-            if let Some(old) = old_cwd {
-                let _ = std::env::set_current_dir(old);
-            }
             let mut output = stdout_buf;
             output.extend_from_slice(&stderr_buf);
             eprintln!(

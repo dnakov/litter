@@ -130,6 +130,7 @@ struct ConversationMcpToolCallData: Equatable {
     var rawOutputJSON: String?
     var errorMessage: String?
     var progressMessages: [String]
+    var computerUse: ComputerUseView?
 
     var isInProgress: Bool {
         status == .pending || status == .inProgress
@@ -175,6 +176,21 @@ struct ConversationWebSearchData: Equatable {
     var query: String
     var actionJSON: String?
     var isInProgress: Bool
+}
+
+struct ConversationImageViewData: Equatable {
+    var path: String
+}
+
+struct ConversationImageGenerationData: Equatable {
+    var status: AppOperationStatus
+    var revisedPrompt: String?
+    var imagePNG: Data?
+    var savedPath: String?
+
+    var isInProgress: Bool {
+        status == .pending || status == .inProgress
+    }
 }
 
 struct ConversationWidgetData: Equatable {
@@ -233,6 +249,8 @@ enum ConversationItemContent: Equatable {
     case dynamicToolCall(ConversationDynamicToolCallData)
     case multiAgentAction(ConversationMultiAgentActionData)
     case webSearch(ConversationWebSearchData)
+    case imageView(ConversationImageViewData)
+    case imageGeneration(ConversationImageGenerationData)
     case widget(ConversationWidgetData)
     case userInputResponse(ConversationUserInputResponseData)
     case divider(ConversationDividerKind)
@@ -495,6 +513,15 @@ struct ConversationItem: Identifiable, Equatable {
             hasher.combine(data.query)
             hasher.combine(data.actionJSON)
             hasher.combine(data.isInProgress)
+        case .imageView(let data):
+            hasher.combine("imageView")
+            hasher.combine(data.path)
+        case .imageGeneration(let data):
+            hasher.combine("imageGeneration")
+            hasher.combine(String(describing: data.status))
+            hasher.combine(data.revisedPrompt)
+            hasher.combine(data.imagePNG?.count)
+            hasher.combine(data.savedPath)
         case .widget(let data):
             hasher.combine("widget")
             hasher.combine(data.status)
@@ -679,7 +706,8 @@ private extension HydratedConversationItemContent {
                     structuredContentJSON: data.structuredContentJson,
                     rawOutputJSON: data.rawOutputJson,
                     errorMessage: data.errorMessage,
-                    progressMessages: data.progressMessages
+                    progressMessages: data.progressMessages,
+                    computerUse: data.computerUse
                 )
             )
         case .dynamicToolCall(let data):
@@ -716,6 +744,21 @@ private extension HydratedConversationItemContent {
                     query: data.query,
                     actionJSON: data.actionJson,
                     isInProgress: data.isInProgress
+                )
+            )
+        case .imageView(let data):
+            return .imageView(
+                ConversationImageViewData(
+                    path: data.path
+                )
+            )
+        case .imageGeneration(let data):
+            return .imageGeneration(
+                ConversationImageGenerationData(
+                    status: data.status,
+                    revisedPrompt: data.revisedPrompt,
+                    imagePNG: data.imagePng,
+                    savedPath: data.savedPath
                 )
             )
         case .widget(let data):

@@ -4,6 +4,7 @@ import { Env, RegisterRequest } from "./types"
 interface StoredRegistration {
   platform: "ios" | "android"
   pushToken: string
+  apnsEnvironment: "production" | "sandbox"
   intervalSeconds: number
   ttlSeconds: number
   pushCount: number
@@ -27,6 +28,7 @@ export class PushRegistration implements DurableObject {
       const reg: StoredRegistration = {
         platform: body.platform,
         pushToken: body.pushToken,
+        apnsEnvironment: body.apnsEnvironment ?? "production",
         intervalSeconds: body.intervalSeconds ?? 30,
         ttlSeconds: body.ttlSeconds ?? 7200,
         pushCount: 0,
@@ -59,7 +61,7 @@ export class PushRegistration implements DurableObject {
     reg.pushCount++
 
     if (reg.platform === "ios") {
-      const result = await sendSilentPush(this.env, reg.pushToken)
+      const result = await sendSilentPush(this.env, reg.pushToken, reg.apnsEnvironment)
       if (result.gone) {
         await this.state.storage.deleteAll()
         return

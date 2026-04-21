@@ -33,22 +33,20 @@ async function generateAPNsJWT(env: Env): Promise<string> {
   return token
 }
 
+function apnsHost(environment: "production" | "sandbox"): string {
+  return environment === "production"
+    ? "https://api.push.apple.com"
+    : "https://api.sandbox.push.apple.com"
+}
+
 export async function sendSilentPush(
   env: Env,
-  pushToken: string
+  pushToken: string,
+  apnsEnvironment: "production" | "sandbox" = "production"
 ): Promise<{ ok: boolean; gone: boolean }> {
   const jwt = await generateAPNsJWT(env)
 
-  const host =
-    env.APNS_ENVIRONMENT === "production"
-      ? "https://api.push.apple.com"
-      : "https://api.sandbox.push.apple.com"
-
-  const payload = {
-    aps: { "content-available": 1 },
-  }
-
-  const resp = await fetch(`${host}/3/device/${pushToken}`, {
+  const resp = await fetch(`${apnsHost(apnsEnvironment)}/3/device/${pushToken}`, {
     method: "POST",
     headers: {
       authorization: `bearer ${jwt}`,
@@ -56,14 +54,14 @@ export async function sendSilentPush(
       "apns-topic": "com.sigkitten.litter",
       "apns-priority": "5",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ aps: { "content-available": 1 } }),
   })
 
   if (resp.status !== 200) {
     const body = await resp.text()
-    console.log(`APNs → ${resp.status}: ${body} (token=${pushToken.slice(0, 8)}...)`)
+    console.log(`APNs ${apnsEnvironment} → ${resp.status}: ${body} (token=${pushToken.slice(0, 8)}...)`)
   } else {
-    console.log(`APNs → 200 OK`)
+    console.log(`APNs ${apnsEnvironment} → 200 OK`)
   }
 
   return { ok: resp.status === 200, gone: resp.status === 410 }

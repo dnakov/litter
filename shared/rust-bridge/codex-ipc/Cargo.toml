@@ -10,6 +10,7 @@ name = "codex_ipc"
 [dependencies]
 codex-app-server-protocol = { workspace = true }
 codex-protocol = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

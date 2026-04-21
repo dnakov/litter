@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.litter.android.state.AppModel
 import com.litter.android.state.NetworkDiscovery
+import com.litter.android.state.SavedThreadsStore
 import com.litter.android.state.VoiceRuntimeController
 import com.litter.android.state.connectionModeLabel
 import kotlinx.coroutines.launch
@@ -30,13 +31,19 @@ import com.litter.android.ui.conversation.ConversationScreen
 import com.litter.android.ui.discovery.DiscoveryScreen
 import com.litter.android.ui.home.HomeDashboardScreen
 import com.litter.android.ui.home.HomeDashboardSupport
+import com.litter.android.ui.home.ProjectPickerSheet
+import com.litter.android.state.SavedProjectStore
 import com.litter.android.ui.settings.AccountSheet
 import com.litter.android.ui.settings.SettingsSheet
 import com.litter.android.ui.sessions.DirectoryPickerServerOption
 import com.litter.android.ui.sessions.DirectoryPickerSheet
 import com.litter.android.ui.sessions.SessionLaunchSupport
 import com.litter.android.ui.sessions.SessionsUiState
+import uniffi.codex_mobile_client.AppProject
+import uniffi.codex_mobile_client.PinnedThreadKey
 import uniffi.codex_mobile_client.ThreadKey
+import uniffi.codex_mobile_client.deriveProjects
+import uniffi.codex_mobile_client.projectIdFor
 
 /**
  * CompositionLocal for accessing [AppModel] from any composable.
@@ -57,7 +64,9 @@ fun LitterApp(appModel: AppModel) {
     LaunchedEffect(Unit) {
         TextSizePrefs.initialize(context)
         ConversationPrefs.initialize(context)
+        com.litter.android.ui.home.DashboardZoomPrefs.initialize(context)
         ExperimentalFeatures.initialize(context)
+        com.litter.android.state.DebugSettings.initialize(context)
     }
 
     // Read currentStep so Compose tracks it as a dependency and recomposes on change.
@@ -79,6 +88,59 @@ fun LitterApp(appModel: AppModel) {
         var showSettings by remember { mutableStateOf(false) }
         var showAccountForServer by remember { mutableStateOf<String?>(null) }
         var directoryPickerServerId by remember { mutableStateOf<String?>(null) }
+        var directoryPickerForProject by remember { mutableStateOf(false) }
+        var showProjectPicker by remember { mutableStateOf(false) }
+
+        // Home selection state
+        var selectedServerId by remember {
+            mutableStateOf(SavedProjectStore.selectedServerId(context))
+        }
+        var selectedProject by remember { mutableStateOf<AppProject?>(null) }
+
+        // Persist selections
+        LaunchedEffect(selectedServerId) {
+            SavedProjectStore.setSelectedServerId(context, selectedServerId)
+        }
+        LaunchedEffect(selectedProject?.id) {
+            SavedProjectStore.setSelectedProjectId(context, selectedProject?.id)
+        }
+
+        // Derive projects from current sessions
+        val projects = remember(snapshot) {
+            snapshot?.let { deriveProjects(it.sessionSummaries) } ?: emptyList()
+        }
+
+        // Keep selectedServerId valid against connected servers. Default is
+        // no filter — if the persisted/pinned server isn't connected, clear.
+        LaunchedEffect(snapshot) {
+            val connected = snapshot?.let { snap ->
+                HomeDashboardSupport.sortedConnectedServers(snap).map { it.serverId }
+            } ?: emptyList()
+            if (selectedServerId != null && selectedServerId !in connected) {
+                selectedServerId = null
+            }
+        }
+
+        // Reconcile selectedProject against selectedServerId + projects
+        LaunchedEffect(selectedServerId, projects) {
+            val currentServerId = selectedServerId ?: run {
+                selectedProject = null
+                return@LaunchedEffect
+            }
+            val serverProjects = projects.filter { it.serverId == currentServerId }
+            val current = selectedProject
+            if (current != null && current.serverId == currentServerId) {
+                val refreshed = serverProjects.firstOrNull { it.id == current.id }
+                if (refreshed != null) {
+                    selectedProject = refreshed
+                }
+                return@LaunchedEffect
+            }
+            val persistedId = SavedProjectStore.selectedProjectId(context)
+            val match = serverProjects.firstOrNull { it.id == persistedId }
+                ?: serverProjects.firstOrNull()
+            selectedProject = match
+        }
 
         // Network discovery
         val networkDiscovery = remember { NetworkDiscovery(appModel.discovery) }
@@ -112,6 +174,10 @@ fun LitterApp(appModel: AppModel) {
                 appModel.launchState.threadStartRequest(cwd),
             )
             RecentDirectoryStore(context).record(serverId, cwd)
+            SavedThreadsStore.add(
+                context,
+                PinnedThreadKey(serverId = startedKey.serverId, threadId = startedKey.threadId),
+            )
             appModel.store.setActiveThread(startedKey)
             appModel.refreshSnapshot()
             val resolvedKey = appModel.ensureThreadLoaded(startedKey)
@@ -138,12 +204,14 @@ fun LitterApp(appModel: AppModel) {
                 showSettings ||
                 showAccountForServer != null ||
                 directoryPickerServerId != null ||
+                showProjectPicker ||
                 navStack.size > 1
 
         BackHandler(enabled = interceptSystemBack) {
             when {
                 showAccountForServer != null -> showAccountForServer = null
                 directoryPickerServerId != null -> directoryPickerServerId = null
+                showProjectPicker -> showProjectPicker = false
                 showSettings -> showSettings = false
                 showDiscovery -> {
                     showDiscovery = false
@@ -153,7 +221,9 @@ fun LitterApp(appModel: AppModel) {
             }
         }
 
-        // Auto-navigate to active thread when it changes
+        // Auto-navigate to active thread when it changes.
+        // Home-composer sends don't call setActiveThread, so this only triggers
+        // for real "open a thread" actions (e.g. voice session handoff).
         LaunchedEffect(snapshot?.activeThread) {
             val activeKey = snapshot?.activeThread ?: return@LaunchedEffect
             val alreadyShowing = when (val route = currentRoute) {
@@ -182,12 +252,26 @@ fun LitterApp(appModel: AppModel) {
                 is Route.Home -> {
                     HomeDashboardScreen(
                         onOpenConversation = navigateToConversation,
-                        onOpenSessions = { serverId, title ->
-                            navigate(Route.Sessions(serverId, title))
-                        },
-                        onNewSession = { openDirectoryPicker() },
                         onShowDiscovery = { showDiscovery = true },
                         onShowSettings = { showSettings = true },
+                        onOpenProjectPicker = { showProjectPicker = true },
+                        selectedProject = selectedProject,
+                        selectedServerId = selectedServerId,
+                        onSelectServer = { server ->
+                            // Tap again to clear the filter and show all.
+                            if (selectedServerId == server.serverId) {
+                                selectedServerId = null
+                                selectedProject = null
+                            } else {
+                                selectedServerId = server.serverId
+                            }
+                        },
+                        onThreadCreated = { key ->
+                            SavedThreadsStore.add(
+                                context,
+                                PinnedThreadKey(serverId = key.serverId, threadId = key.threadId),
+                            )
+                        },
                         onStartVoice = {
                             scope.launch {
                                 val launchState = appModel.launchState.snapshot.value
@@ -377,7 +461,10 @@ fun LitterApp(appModel: AppModel) {
 
         if (directoryPickerServerId != null) {
             ModalBottomSheet(
-                onDismissRequest = { directoryPickerServerId = null },
+                onDismissRequest = {
+                    directoryPickerServerId = null
+                    directoryPickerForProject = false
+                },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
                 containerColor = LitterTheme.background,
             ) {
@@ -386,11 +473,65 @@ fun LitterApp(appModel: AppModel) {
                     initialServerId = directoryPickerServerId!!,
                     onSelect = { serverId, cwd ->
                         directoryPickerServerId = null
-                        scope.launch {
-                            runCatching { startNewSession(serverId, cwd) }
+                        val forProject = directoryPickerForProject
+                        directoryPickerForProject = false
+                        if (forProject) {
+                            selectedServerId = serverId
+                            val id = projectIdFor(serverId, cwd)
+                            val match = projects.firstOrNull { it.id == id }
+                            selectedProject = match ?: AppProject(
+                                id = id,
+                                serverId = serverId,
+                                cwd = cwd,
+                                lastUsedAtMs = null,
+                            )
+                            RecentDirectoryStore(context).record(serverId, cwd)
+                        } else {
+                            scope.launch {
+                                runCatching { startNewSession(serverId, cwd) }
+                            }
                         }
                     },
-                    onDismiss = { directoryPickerServerId = null },
+                    onDismiss = {
+                        directoryPickerServerId = null
+                        directoryPickerForProject = false
+                    },
+                )
+            }
+        }
+
+        if (showProjectPicker) {
+            ModalBottomSheet(
+                onDismissRequest = { showProjectPicker = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                val serverNames = remember(snapshot) {
+                    snapshot?.servers?.associate { it.serverId to it.displayName } ?: emptyMap()
+                }
+                ProjectPickerSheet(
+                    projects = projects,
+                    serverNamesById = serverNames,
+                    onSelect = { project ->
+                        selectedServerId = project.serverId
+                        selectedProject = project
+                    },
+                    onCreateNew = {
+                        showProjectPicker = false
+                        val targetServerId = selectedServerId
+                            ?: SessionLaunchSupport.defaultConnectedServerId(
+                                connectedServerIds = connectedServerOptions.map { it.id },
+                                activeThreadKey = snapshot?.activeThread,
+                                preferredServerId = null,
+                            )
+                        if (targetServerId != null) {
+                            directoryPickerForProject = true
+                            directoryPickerServerId = targetServerId
+                        } else {
+                            showDiscovery = true
+                        }
+                    },
+                    onDismiss = { showProjectPicker = false },
                 )
             }
         }

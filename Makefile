@@ -24,7 +24,7 @@ IOS_FW_DIR := $(IOS_DIR)/Frameworks
 IOS_GENERATED := $(IOS_DIR)/GeneratedRust
 IOS_SOURCES := $(IOS_DIR)/Sources
 IOS_RUN_ARTIFACTS_DIR ?= $(ROOT)/artifacts/ios-device-run
-IOS_DEVICE_PROFILE ?= 1
+IOS_DEVICE_PROFILE ?= 0
 IOS_DEVICE_PROFILE_TEMPLATE ?= Time Profiler
 IOS_DEVICE_PROFILE_TIME_LIMIT ?=
 IOS_SIM_RUN_ARTIFACTS_DIR ?= $(ROOT)/artifacts/ios-sim-run
@@ -148,12 +148,13 @@ ANDROID_RUST_SOURCES := $(shell find $(RUST_DIR) \
 
 $(shell mkdir -p $(STAMPS))
 
-.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-run verify-ios-project \
+.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project \
 	android android-fast android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
 	rust-ios rust-ios-package rust-ios-device-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
 	sync patch unpatch xcgen ios-frameworks \
 	ios-build ios-build-sim ios-build-sim-fast ios-build-device ios-build-device-fast \
+	watch watch-sim watch-sim-run watch-device watch-typecheck \
 	test test-rust test-ios test-android \
 	testflight appstore-release play-upload play-release \
 	clean clean-rust clean-ios clean-android \
@@ -190,8 +191,31 @@ ios-device-run: ios-device-fast
 	IOS_DEVICE_PROFILE='$(IOS_DEVICE_PROFILE)' \
 	IOS_DEVICE_PROFILE_TEMPLATE='$(IOS_DEVICE_PROFILE_TEMPLATE)' \
 	IOS_DEVICE_PROFILE_TIME_LIMIT='$(IOS_DEVICE_PROFILE_TIME_LIMIT)' \
+	IOS_DEVICE_PROFILE_LAUNCH='$(IOS_DEVICE_PROFILE_LAUNCH)' \
+	IOS_DEVICE_PROFILE_DETACH='$(IOS_DEVICE_PROFILE_DETACH)' \
 	IOS_RUN_ARTIFACTS_DIR='$(IOS_RUN_ARTIFACTS_DIR)' \
 	$(IOS_SCRIPTS)/run-device.sh
+
+# Gracefully stop the most-recent detached xctrace recording. Sends
+# SIGINT (the same signal Ctrl+C would send) so xctrace finalizes the
+# .trace file instead of truncating it. Use after `make ios-device-run`
+# with `IOS_DEVICE_PROFILE_DETACH=1`.
+ios-device-stop:
+	@latest_pid_file=$$(ls -1t $(IOS_RUN_ARTIFACTS_DIR)/*/profile.pid 2>/dev/null | head -1); \
+	if [[ -z "$$latest_pid_file" ]]; then \
+		echo "==> No detached xctrace run found under $(IOS_RUN_ARTIFACTS_DIR)"; \
+		exit 1; \
+	fi; \
+	pid=$$(cat "$$latest_pid_file"); \
+	run_dir=$$(dirname "$$latest_pid_file"); \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
+		echo "==> No xctrace process at pid $$pid (stale pid file: $$latest_pid_file)"; \
+		exit 1; \
+	fi; \
+	echo "==> Stopping xctrace pid $$pid and finalizing trace..."; \
+	kill -INT "$$pid"; \
+	while kill -0 "$$pid" 2>/dev/null; do sleep 0.5; done; \
+	echo "==> Finalized: $$run_dir/profile.trace"
 
 ios-run: ios
 	@open $(IOS_DIR)/Litter.xcodeproj
@@ -388,6 +412,63 @@ ios-build-device-fast: verify-ios-project
 		build
 
 ios-build: ios-build-sim
+
+# ─────────────────────────────────────────────────────────────────────────────
+# watchOS build lanes
+# The watch app (LitterWatch) and its complications (LitterWatchComplications)
+# are pure Swift/SwiftUI — they don't link the shared Rust library, so there
+# is no rust-watch step. The watch app is also embedded into the main iOS
+# app, so `make ios-sim-fast` will build it transitively when that ships.
+#
+# Variables you can override:
+#   WATCH_SIM_DEVICE    simulator name (default: Apple Watch Series 10 (46mm))
+#   WATCH_SCHEME        Xcode scheme (default: LitterWatch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+WATCH_SIM_DEVICE ?= Apple Watch Series 10 (46mm)
+WATCH_SCHEME ?= LitterWatch
+
+watch: watch-sim
+
+watch-typecheck:
+	@echo "==> Type-checking watchOS sources..."
+	@cd $(IOS_DIR) && xcrun -sdk watchsimulator swiftc -typecheck \
+		-target arm64-apple-watchos11.0-simulator \
+		$$(find Sources/LitterWatch Sources/LitterWatchComplications -name '*.swift')
+
+watch-sim: verify-ios-project
+	@echo "==> Building watchOS ($(XCODE_CONFIG), simulator: $(WATCH_SIM_DEVICE))..."
+	@xcodebuild -project $(IOS_DIR)/Litter.xcodeproj \
+		-scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'platform=watchOS Simulator,name=$(WATCH_SIM_DEVICE)' \
+		build
+
+watch-device: verify-ios-project
+	@echo "==> Building watchOS ($(XCODE_CONFIG), device)..."
+	@xcodebuild -project $(IOS_DIR)/Litter.xcodeproj \
+		-scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'generic/platform=watchOS' \
+		-allowProvisioningUpdates \
+		build
+
+# Boot the Series 10 46mm sim, build, install the .app and launch.
+watch-sim-run: watch-sim
+	@echo "==> Booting $(WATCH_SIM_DEVICE) and installing LitterWatch..."
+	@WATCH_UDID=$$(xcrun simctl list devices | awk '/$(WATCH_SIM_DEVICE)/ { \
+		match($$0, /\([0-9A-F-]+\)/); print substr($$0, RSTART+1, RLENGTH-2); exit \
+	}') ; \
+	if [ -z "$$WATCH_UDID" ]; then \
+		echo "ERROR: no simulator matching '$(WATCH_SIM_DEVICE)'. Run 'xcrun simctl list devices' to see what's installed."; exit 1; \
+	fi ; \
+	xcrun simctl boot $$WATCH_UDID 2>/dev/null || true ; \
+	APP_PATH=$$(xcodebuild -project $(IOS_DIR)/Litter.xcodeproj -scheme $(WATCH_SCHEME) \
+		-configuration $(XCODE_CONFIG) -destination "platform=watchOS Simulator,name=$(WATCH_SIM_DEVICE)" \
+		-showBuildSettings 2>/dev/null | awk -F' = ' '/ CODESIGNING_FOLDER_PATH /{print $$2; exit}') ; \
+	echo "==> Installing $$APP_PATH"; \
+	xcrun simctl install $$WATCH_UDID "$$APP_PATH" ; \
+	xcrun simctl launch $$WATCH_UDID com.sigkitten.litter.watchkitapp
 
 android-debug:
 	@echo "==> Building Android debug..."

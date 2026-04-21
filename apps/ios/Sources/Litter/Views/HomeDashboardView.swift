@@ -1,316 +1,1041 @@
 import SwiftUI
+import UIKit
 
 struct HomeDashboardView: View {
     let recentSessions: [HomeDashboardRecentSession]
+    let allSessions: [HomeDashboardRecentSession]
+    let pinnedThreadKeys: [SavedThreadsStore.PinnedKey]
     let connectedServers: [HomeDashboardServer]
+    let projects: [AppProject]
+    let selectedServerId: String?
+    let selectedProject: AppProject?
     let openingRecentSessionKey: ThreadKey?
-    let isStartingNewSession: Bool
     let onOpenRecentSession: @MainActor (HomeDashboardRecentSession) async -> Void
-    let onOpenServerSessions: (HomeDashboardServer) -> Void
-    let onNewSession: () -> Void
-    let onConnectServer: () -> Void
+    let onSelectServer: (HomeDashboardServer) -> Void
+    let onAddServer: () -> Void
+    let onOpenProjectPicker: () -> Void
+    let onThreadCreated: (ThreadKey) -> Void
     let onShowSettings: () -> Void
+    let onPinThread: (ThreadKey) -> Void
+    let onUnpinThread: (ThreadKey) -> Void
+    let onHideThread: (ThreadKey) -> Void
+    /// Hydrate a single thread (load full conversation items). Dashboard
+    /// orchestrates the parallel calls and tracks per-row state so the left
+    /// indicator can reflect it.
+    var onHydrateThread: ((ThreadKey) async -> Void)? = nil
     var onDeleteThread: ((ThreadKey) async -> Void)? = nil
     var onReconnectServer: ((HomeDashboardServer) -> Void)? = nil
     var onDisconnectServer: ((String) -> Void)? = nil
     var onRenameServer: ((String, String) -> Void)? = nil
-    @State private var deleteTargetThread: HomeDashboardRecentSession?
-    @State private var disconnectTargetServer: HomeDashboardServer?
-    @State private var renameTargetServer: HomeDashboardServer?
-    @State private var renameText = ""
+    var onOpenRecording: ((URL) -> Void)? = nil
+    /// Fires when the user commits a quick reply from the swipe action.
+    /// Caller should call `appModel.startTurn` against the thread.
+    var onSendReply: (@MainActor (ThreadKey, String) async -> Void)? = nil
+    /// Cancels the active turn on the given thread. Caller looks up the
+    /// thread's `activeTurnId` and calls `appModel.client.interruptTurn`.
+    var onCancelThread: (@MainActor (ThreadKey) async -> Void)? = nil
+    var onInputModeChange: ((HomeInputMode) -> Void)? = nil
 
-    private var appVersionLabel: String {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
-        switch (version, build) {
-        case let (version?, build?) where !version.isEmpty && !build.isEmpty:
-            return "v\(version) (\(build))"
-        case let (version?, _ ) where !version.isEmpty:
-            return "v\(version)"
-        case let (_, build?) where !build.isEmpty:
-            return "build \(build)"
-        default:
-            return ""
+    @State private var deleteTargetThread: HomeDashboardRecentSession?
+    @State private var replyTargetThread: HomeDashboardRecentSession?
+    /// Tracks threads the user just cancelled so their status dot can show
+    /// red until the snapshot confirms the turn is no longer active.
+    @State private var cancellingKeys: Set<String> = []
+    @AppStorage("homeZoomLevel") private var zoomLevel = 2
+
+    /// Bounded ease for zoom level transitions. `.easeInOut` completes
+    /// deterministically in `duration` (unlike `.smooth` which is a
+    /// spring that can overshoot its nominal time). Short enough to
+    /// feel responsive, long enough to see the height change.
+    static let zoomAnimation: Animation = .easeInOut(duration: 0.22)
+
+    /// Direction of the toolbar zoom toggle: +1 walks up, -1 walks down.
+    /// Flips at the 1/4 boundaries so the button bounces 1→2→3→4→3→2→1.
+    @State private var zoomDirection: Int = 1
+    @State private var renameServerTarget: HomeDashboardServer?
+    @State private var renameServerText = ""
+    @State private var inputMode: HomeInputMode = .collapsed
+    @State private var searchQuery = ""
+    @State private var hydratingKeys: Set<String> = []
+    @State private var hasLoadedThreadListing = false
+    @State private var isLoadingThreadListing = false
+
+    var onLoadAllThreads: (() async -> Void)? = nil
+
+    private var isSearchExpanded: Bool { inputMode == .search }
+
+    private func hydrationId(_ key: ThreadKey) -> String {
+        "\(key.serverId)/\(key.threadId)"
+    }
+
+    private func autoHydrateIfNeeded() {
+        guard let onHydrateThread else { return }
+        // Gate on an in-flight request (hydratingKeys), not a persistent
+        // "ever requested" set. After a server disconnect, remove_server
+        // wipes thread items and session.stats drops back to nil; a
+        // persistent set would suppress re-hydration on reconnect until
+        // the user navigated to a conversation and back.
+        for session in visibleSessions where session.stats == nil {
+            let id = hydrationId(session.key)
+            guard !hydratingKeys.contains(id) else { continue }
+            hydratingKeys.insert(id)
+            Task {
+                await onHydrateThread(session.key)
+                await MainActor.run {
+                    hydratingKeys.remove(id)
+                }
+            }
+        }
+    }
+
+    private var visibleSessions: [HomeDashboardRecentSession] {
+        let serverId = selectedProject?.serverId ?? selectedServerId
+        guard let serverId, !serverId.isEmpty else { return recentSessions }
+        return recentSessions.filter { $0.serverId == serverId }
+    }
+
+    private var zoomIcon: String {
+        switch zoomLevel {
+        case 1: return "list.bullet"
+        case 2: return "list.dash"
+        default: return "list.bullet.rectangle.fill"
         }
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let recentLimit = max(3, Int((geo.size.height - 300) / 82))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    recentSessionsSection(limit: recentLimit)
-                    connectedServersSection
+        canvas
+            .onAppear { onInputModeChange?(inputMode) }
+            .onChange(of: inputMode) { _, nextMode in
+                onInputModeChange?(nextMode)
+            }
+            .task { await TipJarStore.shared.loadProducts() }
+            .onAppear { autoHydrateIfNeeded() }
+            .onChange(of: visibleSessions.map { hydrationId($0.key) }) { _, _ in
+                autoHydrateIfNeeded()
+            }
+            // Clear a cancelled key once the snapshot says the turn is
+            // actually gone. Gives the dot a brief red period while the
+            // cancel is in flight, then reverts to normal indicator logic.
+            .onChange(of: visibleSessions.map { "\(hydrationId($0.key)):\($0.hasTurnActive)" }) { _, _ in
+                let stillActive = Set(
+                    visibleSessions
+                        .filter { $0.hasTurnActive }
+                        .map { hydrationId($0.key) }
+                )
+                cancellingKeys.formIntersection(stillActive)
+            }
+            .task(id: isSearchExpanded) {
+                guard isSearchExpanded, !hasLoadedThreadListing, let onLoadAllThreads else { return }
+                isLoadingThreadListing = true
+                await onLoadAllThreads()
+                hasLoadedThreadListing = true
+                isLoadingThreadListing = false
+            }
+            .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+            .alert("Delete Session?", isPresented: Binding(
+                get: { deleteTargetThread != nil },
+                set: { if !$0 { deleteTargetThread = nil } }
+            )) {
+                Button("Cancel", role: .cancel) { deleteTargetThread = nil }
+                Button("Delete", role: .destructive) {
+                    if let thread = deleteTargetThread {
+                        Task { await onDeleteThread?(thread.key) }
+                    }
+                    deleteTargetThread = nil
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 20)
-                .padding(.bottom, 144)
+            } message: {
+                Text("This will permanently delete \"\(deleteTargetThread?.sessionTitle ?? "this session")\".")
+            }
+            .alert("Rename server", isPresented: Binding(
+                get: { renameServerTarget != nil },
+                set: { if !$0 { renameServerTarget = nil } }
+            )) {
+                TextField("Server name", text: $renameServerText)
+                Button("Cancel", role: .cancel) { renameServerTarget = nil }
+                Button("Save") {
+                    if let server = renameServerTarget {
+                        let trimmed = renameServerText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            onRenameServer?(server.id, trimmed)
+                        }
+                    }
+                    renameServerTarget = nil
+                }
+            }
+            .sheet(item: $replyTargetThread) { thread in
+                QuickReplySheet(
+                    thread: thread,
+                    onSend: { key, text in
+                        await onSendReply?(key, text)
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onShowSettings) {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+                }
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 4) {
+                        SupporterKittyBadges(tierIndices: 0..<2)
+                        AnimatedLogo(size: 64)
+                        SupporterKittyBadges(tierIndices: 2..<4)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        // Three levels: 1, 2, 4 (level 3 intentionally
+                        // skipped). Bounce through them: 1→2→4→2→1.
+                        let ladder = [1, 2, 4]
+                        let currentIdx = ladder.firstIndex(of: zoomLevel) ?? 0
+                        var nextIdx = currentIdx + zoomDirection
+                        if nextIdx >= ladder.count {
+                            zoomDirection = -1
+                            nextIdx = currentIdx + zoomDirection
+                        } else if nextIdx < 0 {
+                            zoomDirection = 1
+                            nextIdx = currentIdx + zoomDirection
+                        }
+                        withAnimation(Self.zoomAnimation) {
+                            zoomLevel = ladder[max(0, min(ladder.count - 1, nextIdx))]
+                        }
+                    } label: {
+                        Image(systemName: zoomIcon)
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+                }
+            }
+    }
+
+    private var canvas: some View {
+        ZStack {
+            // When search is open, replace the list entirely so we're not
+            // fighting two scroll containers. When it's closed, the overlay
+            // branch returns nothing and can't intercept scroll gestures.
+            if isSearchExpanded {
+                ZStack(alignment: .top) {
+                    LitterTheme.backgroundGradient.ignoresSafeArea()
+                    ThreadSearchResultsView(
+                        sessions: allSessions,
+                        pinnedThreadKeys: Set(pinnedThreadKeys),
+                        query: searchQuery,
+                        isLoading: isLoadingThreadListing && allSessions.isEmpty,
+                        onAdd: { session in
+                            onPinThread(session.key)
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                                inputMode = .collapsed
+                            }
+                            searchQuery = ""
+                        },
+                        onRemove: { session in
+                            onUnpinThread(session.key)
+                        },
+                        contentInsets: EdgeInsets(top: 48, leading: 0, bottom: 140, trailing: 0)
+                    )
+                }
+                .transition(.opacity)
+            } else {
+                sessionsList
+            }
+        }
+        .overlay(alignment: .top) { topChrome }
+        .overlay(alignment: .bottom) { bottomChrome }
+    }
+
+    // Search results are rendered directly in `canvas` as an inline
+    // replacement for the sessions list when `isSearchExpanded` is true.
+
+    private var topChrome: some View {
+        ServerPillRow(
+            servers: connectedServers,
+            selectedServerId: selectedProject?.serverId ?? selectedServerId,
+            onTap: onSelectServer,
+            onReconnect: { server in onReconnectServer?(server) },
+            onRename: { server in
+                renameServerText = server.displayName
+                renameServerTarget = server
+            },
+            onRemove: { server in onDisconnectServer?(server.id) },
+            onAdd: onAddServer
+        )
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(
+                colors: LitterTheme.headerScrim,
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .padding(.bottom, -30)
+            .ignoresSafeArea(.container, edges: .top)
+            .allowsHitTesting(false)
+        )
+    }
+
+    private var bottomChrome: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if inputMode == .composer {
+                HStack(spacing: 8) {
+                    Spacer()
+                    HomeModelChip(
+                        serverId: selectedProject?.serverId ?? selectedServerId,
+                        disabled: (selectedProject?.serverId ?? selectedServerId) == nil
+                    )
+                    ProjectChip(
+                        project: selectedProject,
+                        disabled: connectedServers.isEmpty,
+                        onTap: onOpenProjectPicker
+                    )
+                }
+                .padding(.horizontal, 14)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            HomeBottomBar(
+                mode: $inputMode,
+                searchQuery: $searchQuery,
+                project: selectedProject,
+                onThreadCreated: onThreadCreated
+            )
+        }
+        .padding(.bottom, 4)
+        .background(
+            LinearGradient(
+                colors: Array(LitterTheme.headerScrim.reversed()),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .padding(.top, -30)
+            .ignoresSafeArea(.container, edges: .bottom)
+            .allowsHitTesting(false)
+        )
+    }
+
+    private var sessionsList: some View {
+        // UIKit-backed scroll view owns pinch, pan, and row swipes
+        // directly. Previously SwiftUI's `ScrollView` + `MagnifyGesture`
+        // both consumed the same pan deltas, producing vertical jitter
+        // during a pinch even with `.scrollDisabled(isPinching)`. The
+        // UIKit host uses the Clear.app pattern: pinch anchored on the
+        // finger midpoint in content coordinates + frame-only height
+        // animation per row (SwiftUI does zero per-tick work during a
+        // pinch).
+        ZStack {
+            if visibleSessions.isEmpty {
+                ScrollView { emptyState.padding(.top, 48).padding(.bottom, 140) }
+                    .scrollContentBackground(.hidden)
+            } else {
+                HomeSessionsScrollView(
+                    sessions: visibleSessions,
+                    pinnedThreadKeys: Set(pinnedThreadKeys),
+                    hydratingKeys: hydratingKeys,
+                    cancellingKeys: cancellingKeys,
+                    openingKey: openingRecentSessionKey,
+                    zoomLevel: $zoomLevel,
+                    topInset: 48,
+                    bottomInset: 140,
+                    callbacks: HomeSessionsScrollView.Callbacks(
+                        onOpen: { session in
+                            guard openingRecentSessionKey == nil else { return }
+                            Task { await onOpenRecentSession(session) }
+                        },
+                        onReply: { session in replyTargetThread = session },
+                        onHide: { key in onHideThread(key) },
+                        onPin: { key in onPinThread(key) },
+                        onUnpin: { key in onUnpinThread(key) },
+                        onCancelTurn: { session in
+                            cancellingKeys.insert(hydrationId(session.key))
+                            Task { await onCancelThread?(session.key) }
+                        },
+                        onDelete: { session in deleteTargetThread = session }
+                    )
+                )
+                // Extend the scroll view edge-to-edge so content can
+                // scroll under the semi-transparent top/bottom chrome.
+                // The `topInset`/`bottomInset` we pass already carve
+                // out safe resting space for the rows.
+                .ignoresSafeArea()
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Text("No sessions yet")
+                .litterFont(.subheadline, weight: .medium)
+                .foregroundStyle(LitterTheme.textSecondary)
+            Text(connectedServers.isEmpty
+                 ? "Connect a server to start your first session."
+                 : "Pick a project and send a message to start one.")
+                .litterFont(.caption)
+                .foregroundStyle(LitterTheme.textMuted)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 40)
+    }
+}
+
+// MARK: - Session Canvas Layout
+
+private enum SessionCanvasLayout {
+    static let horizontalPadding: CGFloat = 14
+    static let markerWidth: CGFloat = 14
+    static let markerSpacing: CGFloat = 8
+}
+
+
+// MARK: - Session Canvas Line
+
+struct SessionCanvasLine: View {
+    let session: HomeDashboardRecentSession
+    let isOpening: Bool
+    let isHydrating: Bool
+    let isCancelling: Bool
+    /// Committed integer zoom level — drives which zoom-gated layers
+    /// are visible and the preview cap. UIKit controls the visible
+    /// *container* height during a pinch; this view is purely a
+    /// function of the integer display zoom.
+    let zoomLevel: Int
+
+    // No `@Environment(AppModel.self)` — the card is purely prop-driven.
+    // That was the core of the streaming AttributeGraph hotspot: reading
+    // `appModel.snapshot` from 20 cards created 20 subscription edges, each
+    // invalidated per streaming-delta bump. `session` reaches us through
+    // `HomeDashboardModel.refreshState`'s debounced observation path, so
+    // propagation fans out to one observer (the parent), not twenty.
+
+    /// Vertical padding around the card content. Matches the iOS zoom
+    /// anchors `[3, 6, 10, 12]` for levels 1–4.
+    fileprivate static func verticalPadding(for zoom: Int) -> CGFloat {
+        let anchors: [CGFloat] = [3, 6, 10, 12]
+        let idx = max(0, min(anchors.count - 1, zoom - 1))
+        return anchors[idx]
+    }
+
+    private var isActive: Bool { session.hasTurnActive }
+    private var isHydrated: Bool { session.stats != nil }
+    private var timeAgo: String { relativeDate(Int64(session.updatedAt.timeIntervalSince1970)) }
+    private var s: AppConversationStats? { session.stats }
+    private var toolCallCount: UInt32 { s?.toolCallCount ?? 0 }
+    private var turnCount: UInt32 { s?.turnCount ?? 0 }
+
+    /// True when the most recent tool-capable item is still running.
+    /// Derived from the Rust-side `recent_tool_log`, which records tool
+    /// entries in chronological order — the last entry's status reflects
+    /// the most recent tool. Tool-call activity is only updated on item
+    /// upserts (not streaming deltas), so the log is always fresh for this
+    /// check.
+    private var isToolCallRunning: Bool {
+        guard let last = session.recentToolLog.last else { return false }
+        let s = last.status.lowercased()
+        return s == "pending" || s == "inprogress"
+    }
+
+    /// Keep home-screen tool activity subordinate to assistant/user text.
+    /// The home card's response preview uses conversation-body sizing, so
+    /// the tool log should step down a tier rather than compete with it.
+    private var toolLogFontSize: CGFloat {
+        max(12, LitterFont.conversationBodyPointSize - 3)
+    }
+
+    // ────────────────────────────────────────────────────
+    // Zoom levels — each must feel distinct:
+    //
+    //  1  SCAN     title only. Max density for scanning.
+    //  2  GLANCE   title + meta line (activity or summary). Identify sessions.
+    //  3  READ     title + activity + server/model + tool log. Understand what happened.
+    //  4  DEEP     multi-line title + full response preview + tool log expanded + cwd.
+    //
+    // Active sessions always show activity status. Time only shows where it adds info
+    // (zoom 2 summary, zoom 3+ right column). Never duplicated.
+    // ────────────────────────────────────────────────────
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Group {
+                if isOpening {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(LitterTheme.accent)
+                } else {
+                    statusIndicator
+                }
+            }
+            .frame(width: SessionCanvasLayout.markerWidth, height: 16)
+            .padding(.trailing, SessionCanvasLayout.markerSpacing)
+            .padding(.top, zoomLevel == 1 ? 0 : 2)
+
+            VStack(alignment: .leading, spacing: 0) {
+                // Title — always solo on its own line at every zoom level.
+                FormattedText(text: session.sessionTitle, lineLimit: zoomLevel >= 4 ? 4 : 1)
+                    .modifier(MarkdownMatchedTitleFont())
+                    .foregroundStyle(isActive ? LitterTheme.accent : LitterTheme.textPrimary)
+                    .modifier(SessionShimmerEffect(active: isActive))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Detail below — gets full width. As zoom grows, additional
+                // rows are revealed by the container's layout animation.
+                // Inner VStack is pinned to full width so removals collapse
+                // vertically only — otherwise the container sizes to the
+                // widest child and short rows visually shrink to the left.
+                // Every zoom-gated layer is *always* in the view tree;
+                // per-zoom visibility is controlled via
+                // `.visibleWhen(...)` which squashes the view to zero
+                // height + zero opacity when hidden. SwiftUI still runs
+                // layout for these views at every zoom (cost paid on
+                // scroll, not on zoom change), but zoom transitions no
+                // longer materialize new subtrees — they just animate
+                // frame heights. Simpler, smoother zoom; uniform scroll
+                // cost across zoom levels.
+                VStack(alignment: .leading, spacing: 0) {
+                    // Zoom-gated visibility — binary on committed
+                    // `zoomLevel`. The UIKit host (HomeSessionsScrollView)
+                    // sets zoomLevel=4 during a pinch so every layer is
+                    // present and the UIKit frame clip reveals it
+                    // progressively.
+                    modelBadgeLine
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .visibleWhen(zoomLevel >= 2)
+                    userMessageLine
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .visibleWhen(zoomLevel >= 3)
+                    toolLog(maxEntries: zoomLevel >= 4 ? 3 : 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .visibleWhen(zoomLevel >= 3)
+                    responsePreview
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .visibleWhen(zoomLevel >= 3)
+                    Text(session.cwd)
+                        .litterMonoFont(size: 10, weight: .regular)
+                        .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+                        .lineLimit(2)
+                        .padding(.top, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .visibleWhen(zoomLevel == 4 && !session.cwd.isEmpty)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(LitterTheme.backgroundGradient.ignoresSafeArea())
-        .alert("Delete Session?", isPresented: Binding(
-            get: { deleteTargetThread != nil },
-            set: { if !$0 { deleteTargetThread = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { deleteTargetThread = nil }
-            Button("Delete", role: .destructive) {
-                if let thread = deleteTargetThread {
-                    Task { await onDeleteThread?(thread.key) }
-                }
-                deleteTargetThread = nil
-            }
-        } message: {
-            Text("This will permanently delete \"\(deleteTargetThread?.sessionTitle ?? "this session")\".")
-        }
-        .alert("Disconnect Server?", isPresented: Binding(
-            get: { disconnectTargetServer != nil },
-            set: { if !$0 { disconnectTargetServer = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { disconnectTargetServer = nil }
-            Button("Disconnect", role: .destructive) {
-                if let server = disconnectTargetServer {
-                    onDisconnectServer?(server.id)
-                }
-                disconnectTargetServer = nil
-            }
-        } message: {
-            Text("Disconnect from \"\(disconnectTargetServer?.displayName ?? "this server")\"?")
-        }
-        .alert("Rename Server", isPresented: Binding(
-            get: { renameTargetServer != nil },
-            set: { if !$0 { renameTargetServer = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) { renameTargetServer = nil }
-            Button("Save") {
-                if let server = renameTargetServer {
-                    let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        onRenameServer?(server.id, trimmed)
-                    }
-                }
-                renameTargetServer = nil
-            }
-        } message: {
-            Text("Enter a new name for this server.")
-        }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(action: onShowSettings) {
-                    Image(systemName: "gearshape")
-                        .foregroundColor(LitterTheme.textSecondary)
-                }
-            }
-            ToolbarItem(placement: .principal) {
-                AnimatedLogo(size: 64)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                SupporterBadge()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, SessionCanvasLayout.horizontalPadding)
+        .padding(.bottom, Self.verticalPadding(for: zoomLevel))
+        .background(alignment: .leading) {
+            if isActive {
+                LitterTheme.accent.opacity(0.3).frame(width: 2)
             }
         }
-        .overlay(alignment: .bottom) {
-            if !appVersionLabel.isEmpty {
-                Text(appVersionLabel)
-                    .litterFont(.caption)
-                    .foregroundColor(LitterTheme.textMuted.opacity(0.8))
-                    .padding(.bottom, 2)
-                    .ignoresSafeArea(.container, edges: .bottom)
-            }
-        }
-    }
-
-    private func recentSessionsSection(limit: Int) -> some View {
-        let displayed = Array(recentSessions.prefix(limit))
-        return VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(
-                title: "Recent Sessions",
-                buttonTitle: "New Session",
-                systemImage: "plus",
-                showsLoading: isStartingNewSession,
-                action: onNewSession
-            )
-
-            if displayed.isEmpty {
-                emptyStateCard(
-                    title: "No recent sessions",
-                    message: connectedServers.isEmpty
-                        ? "Connect a server to start your first session."
-                        : "Start a new session on one of your connected servers."
-                )
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(displayed) { thread in
-                        Button {
-                            Task { await onOpenRecentSession(thread) }
-                        } label: {
-                            recentSessionCard(thread)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(openingRecentSessionKey != nil || isStartingNewSession)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                deleteTargetThread = thread
-                            } label: {
-                                Label("Delete Session", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var connectedServersSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionHeader(title: "Servers", buttonTitle: "Connect Server", systemImage: "bolt.horizontal.circle", action: onConnectServer)
-
-            if connectedServers.isEmpty {
-                emptyStateCard(
-                    title: "No connected servers",
-                    message: "Use Connect Server to add a server and its sessions will appear here."
-                )
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(connectedServers) { server in
-                        Button {
-                            onOpenServerSessions(server)
-                        } label: {
-                            connectedServerRow(server)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button {
-                                onReconnectServer?(server)
-                            } label: {
-                                Label("Reconnect", systemImage: "arrow.clockwise")
-                            }
-                            if !server.isLocal {
-                                Button {
-                                    renameText = server.displayName
-                                    renameTargetServer = server
-                                } label: {
-                                    Label("Rename", systemImage: "pencil")
-                                }
-                            }
-                            Button(role: .destructive) {
-                                disconnectTargetServer = server
-                            } label: {
-                                Label("Disconnect Server", systemImage: "bolt.slash")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func sectionHeader(
-        title: String,
-        buttonTitle: String,
-        systemImage: String,
-        showsLoading: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .litterFont(.headline)
-                .foregroundColor(LitterTheme.textPrimary)
-
-            Spacer(minLength: 0)
-
-            Button(action: action) {
-                Group {
-                    if showsLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(LitterTheme.accent)
-                            .frame(width: 74)
-                    } else {
-                        Label(buttonTitle, systemImage: systemImage)
-                            .litterFont(.caption)
-                            .foregroundColor(LitterTheme.accent)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(LitterTheme.surface.opacity(0.72))
-                .overlay(
-                    Capsule()
-                        .stroke(LitterTheme.border.opacity(0.7), lineWidth: 1)
-                )
-                .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(showsLoading)
-        }
-    }
-
-    private func recentSessionCard(_ thread: HomeDashboardRecentSession) -> some View {
-        let subtitle: String = {
-            var parts = [thread.serverDisplayName]
-            if let workspace = HomeDashboardSupport.workspaceLabel(for: thread.cwd) {
-                parts.append(workspace)
-            }
-            parts.append(relativeDate(Int64(thread.updatedAt.timeIntervalSince1970)))
-            return parts.joined(separator: " · ")
-        }()
-
-        let trailing: SessionServerCardRow.Trailing = {
-            if openingRecentSessionKey == thread.key { return .none }
-            if thread.hasTurnActive { return .badge("Thinking") }
-            return .chevron
-        }()
-
-        return ZStack {
-            SessionServerCardRow(
-                icon: thread.hasTurnActive ? "sparkles" : "text.bubble",
-                title: thread.sessionTitle,
-                subtitle: subtitle,
-                trailing: trailing
-            )
-            if openingRecentSessionKey == thread.key {
-                HStack {
-                    Spacer()
-                    ProgressView().controlSize(.small).tint(LitterTheme.accent)
-                }
-                .padding(.trailing, 14)
-            }
-        }
+        .background(isActive ? LitterTheme.accent.opacity(0.02) : Color.clear)
+        .contentShape(Rectangle())
+        .clipped()
+        // Zoom transitions animate when triggered via `withAnimation`
+        // (zoom button, pinch-end snap). Live pinch updates bypass
+        // this — they set state directly so the card tracks the
+        // finger without overshooting. We deliberately don't attach
+        // `.animation(_:value: zoomLevel)` here because that would
+        // wrap every zoomLevel change (including mid-pinch threshold
+        // crossings) in an implicit animation and fight the live
+        // tracking.
+        .animation(.easeInOut(duration: 0.25), value: isActive)
         .accessibilityIdentifier("home.recentSessionCard")
     }
 
-    private func connectedServerRow(_ server: HomeDashboardServer) -> some View {
-        SessionServerCardRow(
-            icon: server.isLocal ? "iphone" : "server.rack",
-            title: server.displayName,
-            subtitle: HomeDashboardSupport.serverSubtitle(for: server),
-            trailing: .statusLabel(server.statusLabel, server.statusColor)
-        )
-        .accessibilityIdentifier("home.connectedServerRow")
+    // MARK: - Zoom 2: meta line
+
+    private var metaLine: some View {
+        HStack(spacing: 4) {
+            Text(timeAgo)
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
+            // Only show the tool label + pulsing dots when a tool call
+            // is actually executing. During pure LLM thinking/streaming
+            // we fall through to the server + workspace metadata, same
+            // as when the turn is idle.
+            if isActive && isToolCallRunning {
+                Text("\u{00b7}")
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                toolActivityLabel
+                SessionPulsingDots()
+                statChips
+            } else {
+                Text("\u{00b7}")
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                Text(session.serverDisplayName)
+                    .foregroundStyle(LitterTheme.textSecondary.opacity(0.7))
+                if let workspace = HomeDashboardSupport.workspaceLabel(for: session.cwd) {
+                    Text("\u{00b7}")
+                        .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text(workspace)
+                        .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
+                }
+                statChips
+            }
+        }
+        .litterMonoFont(size: 10, weight: .regular)
+        .lineLimit(1)
+        .padding(.top, 2)
     }
 
-    private func emptyStateCard(title: String, message: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .litterFont(.subheadline)
-                .foregroundColor(LitterTheme.textPrimary)
-
-            Text(message)
-                .litterFont(.caption)
-                .foregroundColor(LitterTheme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
+    /// Inline stat chips: tool calls, turns, context %
+    @ViewBuilder
+    private var statChips: some View {
+        if toolCallCount > 0 || turnCount > 0 {
+            Text("\u{00b7}")
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
         }
+        if toolCallCount > 0 {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .litterFont(size: 8)
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+            Text("\(toolCallCount)")
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
+        }
+        if turnCount > 0 {
+            Image(systemName: "arrow.turn.down.right")
+                .litterFont(size: 8)
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+            Text("\(turnCount)")
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
+        }
+        if let tu = session.tokenUsage, let window = tu.contextWindow, window > 0 {
+            let pct = Int((Double(tu.totalTokens) / Double(window)) * 100)
+            Text("\u{00b7}")
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+            Text("\(pct)%")
+                .foregroundStyle(pct > 80 ? LitterTheme.warning.opacity(0.8) : LitterTheme.textMuted.opacity(0.8))
+        }
+    }
+
+    @ViewBuilder
+    private var toolActivityLabel: some View {
+        if let toolLabel = session.lastToolLabel {
+            let parts = toolLabel.split(separator: " ", maxSplits: 1)
+            let name = String(parts.first ?? "")
+            toolIconView(for: name)
+                .foregroundStyle(LitterTheme.accent)
+            if parts.count > 1 {
+                Text(String(parts.last ?? ""))
+                    .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        } else {
+            Text("thinking")
+                .foregroundStyle(LitterTheme.accent)
+        }
+    }
+
+    // MARK: - Zoom 3+: model + badges (no workspace — already shown)
+
+    private var modelBadgeLine: some View {
+        HStack(spacing: 4) {
+            // Left group — the only text that might need to truncate when
+            // the row is tight. Keeping `.lineLimit(1)` scoped to this
+            // group prevents it from propagating into the chip HStacks on
+            // the right and chopping short numerics to ellipses.
+            HStack(spacing: 4) {
+                Text(timeAgo)
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.8))
+                Text("\u{00b7}")
+                    .foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                Image(systemName: "server.rack")
+                    .litterFont(size: 8)
+                    .foregroundStyle(LitterTheme.accent.opacity(0.5))
+                Text(session.serverDisplayName)
+                    .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                let m = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !m.isEmpty {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text(m)
+                        .foregroundStyle(LitterTheme.textSecondary.opacity(0.7))
+                }
+                if session.isFork {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text("fork")
+                        .foregroundStyle(LitterTheme.warning.opacity(0.8))
+                }
+                if session.isSubagent, let agent = session.agentLabel {
+                    Text("\u{00b7}").foregroundStyle(LitterTheme.textMuted.opacity(0.5))
+                    Text(agent)
+                        .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                }
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+
+            Spacer(minLength: 6)
+            inlineStats
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+        }
+        .litterMonoFont(size: 10, weight: .regular)
+        .padding(.top, 1)
+    }
+
+    /// Compact stat chips appended to the right end of `modelBadgeLine` so
+    /// they share a line instead of adding new rows to the row height.
+    @ViewBuilder
+    private var inlineStats: some View {
+        HStack(spacing: 6) {
+            if turnCount > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .litterFont(size: 8)
+                    Text("\(turnCount)")
+                }
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+            }
+            if toolCallCount > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .litterFont(size: 8)
+                    Text("\(toolCallCount)")
+                }
+                .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+            }
+            if let stats = s, stats.diffAdditions > 0 || stats.diffDeletions > 0 {
+                HStack(spacing: 2) {
+                    Text("+\(stats.diffAdditions)")
+                        .foregroundStyle(LitterTheme.accent.opacity(0.7))
+                    Text("-\(stats.diffDeletions)")
+                        .foregroundStyle(LitterTheme.danger.opacity(0.6))
+                }
+            }
+            // Turn stopwatch reads pre-derived bounds from the Rust reducer,
+            // so the chip stays prop-driven (no `appModel.snapshot` access).
+            if let start = session.lastTurnStart {
+                TurnStopwatchChip(start: start, end: session.lastTurnEnd)
+            }
+            if let tu = session.tokenUsage, let window = tu.contextWindow, window > 0 {
+                let pct = Int((Double(tu.totalTokens) / Double(window)) * 100)
+                Text("\(pct)%")
+                    .foregroundStyle(pct > 80 ? LitterTheme.warning.opacity(0.8) : LitterTheme.textMuted.opacity(0.7))
+            }
+        }
+    }
+
+    // MARK: - Zoom 3+: last user message (quoted, single line)
+
+    @ViewBuilder
+    private var userMessageLine: some View {
+        let message = (session.lastUserMessage ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = session.sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !message.isEmpty && message != title {
+            HStack(alignment: .top, spacing: 6) {
+                Text(">")
+                    .foregroundStyle(LitterTheme.accent.opacity(0.7))
+                FormattedText(text: message, lineLimit: 1)
+                    .foregroundStyle(LitterTheme.textSecondary.opacity(0.9))
+            }
+            // Match the conversation view's user-message size
+            // (`UserBubble` uses `.litterFont(size: conversationBodyPointSize)`).
+            // Same regular (non-mono) font too, for visual parity.
+            .litterFont(size: LitterFont.conversationBodyPointSize)
+            .padding(.top, 3)
+        }
+    }
+
+    // MARK: - Zoom 3+: tool call log
+
+    @ViewBuilder
+    private func toolLog(maxEntries: Int) -> some View {
+        // Rust-side `recent_tool_log` (see `extract_conversation_activity`
+        // in shared/rust-bridge/.../boundary.rs) already derives this; the
+        // iOS copy that used to live here was the dominant AttributeGraph
+        // subscription during streaming. Entries come through newest-last;
+        // take the tail to show the most recent `maxEntries`.
+        let entries = Array(session.recentToolLog.suffix(maxEntries))
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                    toolRowView(entry)
+                }
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func toolRowView(_ entry: AppToolLogEntry) -> some View {
+        HStack(spacing: 8) {
+            toolIconView(for: entry.tool)
+                .foregroundStyle(LitterTheme.accent.opacity(0.6))
+                .frame(minWidth: 20, alignment: .leading)
+            Text(entry.detail)
+                .foregroundStyle(LitterTheme.textSecondary.opacity(0.8))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        // Keep tool activity smaller than the assistant response preview so
+        // the response remains the primary content on the card.
+        .litterFont(size: toolLogFontSize)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(LitterTheme.surface.opacity(0.5))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(LitterTheme.border.opacity(0.65), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    /// Pick the display glyph/icon for a Rust tool-log entry. `AppToolLogEntry.tool`
+    /// is a short category name the reducer emits (`"Bash"`, `"Edit"`, `"MCP"`,
+    /// `"Tool"`, `"Explore"`, `"WebSearch"`). MCP and generic tools read better
+    /// as SF Symbols than as abbreviated text; the rest render as a single
+    /// character.
+    @ViewBuilder
+    private func toolIconView(for tool: String) -> some View {
+        switch tool {
+        case "MCP":
+            Image(systemName: "desktopcomputer")
+                .litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        case "Tool":
+            Image(systemName: "wrench.and.screwdriver")
+                .litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        case "Bash":
+            Text("$").litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        case "Edit":
+            Text("✎").litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        case "Explore", "WebSearch":
+            // Use an SF Symbol to match the size/weight of the other
+            // Image-based icons (MCP/Tool); the "⌕" glyph renders
+            // larger than `$` / `✎` at the same point size because
+            // Unicode metrics for that character put the visual mass
+            // over a bigger box.
+            Image(systemName: "magnifyingglass")
+                .litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        default:
+            Text(tool.prefix(1).uppercased())
+                .litterFont(size: toolLogFontSize - 1, weight: .semibold)
+        }
+    }
+
+    // MARK: - Zoom 4: last response preview
+
+    @ViewBuilder
+    private var responsePreview: some View {
+        // Source the preview from `session.lastResponsePreview` rather than
+        // walking `hydratedConversationItems` live. The Rust reducer
+        // refreshes the session summary on every item delta, but the home
+        // dashboard's observation path is debounced at 120ms in
+        // `HomeDashboardModel.scheduleObservedRefresh` — so the preview
+        // naturally updates at ~8Hz instead of forcing `LitterMarkdownView`
+        // to re-parse markdown on every streaming token (30–60Hz). The old
+        // live-walk path made the streaming card the dominant frame-time
+        // cost after all the other scroll fixes landed.
+        //
+        // Crossfade key is the `source_turn_id` of the assistant message
+        // that produced `lastResponsePreview`. Keying on `stats.turnCount`
+        // would flip the id the moment the user submits a new prompt —
+        // before any new assistant text exists — so the preview would
+        // fade out (and back in with the same previous text) on every
+        // send. Using the assistant's turn id keeps the old answer
+        // visible until a new assistant reply actually arrives.
+        let markdown = (session.lastResponsePreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let blockId = session.lastResponseTurnId ?? "empty"
+        if markdown.count > 20 {
+            // ViewThatFits picks the first child whose natural size fits
+            // the proposed container. The container is capped at
+            // `responsePreviewMaxHeight`, so:
+            //   - Short markdown (natural ≤ cap): the fixed-size rendering
+            //     wins, frame shrinks to natural height → no blank space.
+            //   - Long markdown (natural > cap): the first child is too
+            //     tall, so ViewThatFits falls through to the scroll-based
+            //     fallback — scroll is disabled but `defaultScrollAnchor(.bottom)`
+            //     keeps the tail visible, and the frame stays at cap.
+            // This pattern is the clean SwiftUI answer for "shrink to
+            // content OR cap-with-tail-visible"; the earlier
+            // `fixedSize + frame(maxHeight:, alignment: .bottom)` combo
+            LitterMarkdownView(
+                markdown: markdown,
+                selectionEnabled: false
+            )
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(blockId)
+            // Top-alignment so long markdown clips at the bottom
+            // (where the fade mask hides the cut) rather than
+            // center-clipping and revealing the middle. Replaces the
+            // prior `ViewThatFits` + disabled-ScrollView pair.
+            .frame(maxHeight: responsePreviewMaxHeight, alignment: .top)
+            .clipped()
+            .mask(
+                LinearGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: .black.opacity(0.55), location: 0),
+                        .init(color: .black.opacity(0.85), location: 0.10),
+                        .init(color: .black, location: 0.22)
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .padding(.top, 4)
+        }
+    }
+
+    /// Height cap for the response preview. Zoom 3 keeps it tight
+    /// (25% of screen) so rows stay scan-able in a dense list. Zoom 4
+    /// is uncapped — the full assistant reply renders at its natural
+    /// height so the user can actually read it.
+    private var responsePreviewMaxHeight: CGFloat {
+        if zoomLevel >= 4 { return .infinity }
+        let screenHeight = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen.bounds.height ?? 800
+        return screenHeight * 0.25
+    }
+
+
+    // MARK: - Status Indicator
+
+    private var dotState: StatusDotState {
+        if isCancelling { return .error }
+        if isActive { return .active }
+        if isHydrating { return .pending }
+        if isHydrated { return .ok }
+        return .idle
+    }
+
+    private var statusIndicator: some View {
+        StatusDot(state: dotState)
+    }
+}
+
+// MARK: - Canvas Animation Components
+
+/// Stopwatch chip rendered at the right of the modelBadgeLine. When
+/// `end` is nil the turn is live and a `TimelineView` drives a 1 Hz
+/// re-eval. When `end` is provided, the chip is static and shows the
+/// calculated turn duration (`end - start`) — no in-memory freeze.
+private struct TurnStopwatchChip: View {
+    let start: Date
+    let end: Date?
+
+    var body: some View {
+        if let end {
+            chip(seconds: max(0, end.timeIntervalSince(start)))
+        } else {
+            TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                chip(seconds: max(0, context.date.timeIntervalSince(start)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chip(seconds: TimeInterval) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "stopwatch")
+                .litterFont(size: 8)
+            // Monospaced digits so "14s" and "15s" have the same width.
+            // Without this, each tick changes the chip's intrinsic size,
+            // which cascades into list row re-measure → RootGeometry
+            // invalidation on every active card every second. Mono
+            // digits freeze that width so the chip can update in-place.
+            Text(Self.format(seconds))
+                .monospacedDigit()
+        }
+        .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return "\(total)s" }
+        let mins = total / 60
+        let secs = total % 60
+        return secs == 0 ? "\(mins)m" : "\(mins)m\(secs)s"
+    }
+}
+
+private struct SessionPulsingDots: View {
+    @State private var phase = 0
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(LitterTheme.accent)
+                    .frame(width: 3, height: 3)
+                    .opacity(phase == i ? 1.0 : 0.25)
+            }
+        }
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    phase = (phase + 1) % 3
+                }
+            }
+        }
+    }
+}
+
+/// Renders the task title at the same size the conversation view uses for
+/// message bodies (`LitterFont.conversationBodyPointSize × textScale`) so
+/// titles and user/assistant messages in the home list match the sizes you
+/// see inside a conversation. Kept medium-weight (rather than bold) so the
+/// title reads as a row heading without visually dominating the response.
+private struct MarkdownMatchedTitleFont: ViewModifier {
+    @Environment(\.textScale) private var textScale
+    func body(content: Content) -> some View {
+        content
+            .font(.custom(
+                LitterFont.markdownFontName,
+                size: LitterFont.conversationBodyPointSize * textScale
+            ))
+            .fontWeight(.medium)
+    }
+}
+
+private struct SessionShimmerEffect: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            // `TimelineView(.animation)` drives a time-based phase.
+            // Every tick rebuilds the gradient stops — fine here
+            // because the overlay is a single SwiftUI.LinearGradient
+            // (cheap) and its body eval doesn't cascade upward thanks
+            // to `compositingGroup` isolating the blend scope.
+            //
+            // `.blendMode(.sourceAtop)` + `.compositingGroup()`
+            // constrains the white highlight to paint only on the
+            // underlying glyphs' opaque pixels — so the shimmer
+            // tracks the text shape without needing a mask.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let phase = CGFloat(t.truncatingRemainder(dividingBy: 2.0) / 2.0)
+
+                content
+                    .overlay {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .white.opacity(0), location: max(0, phase - 0.2)),
+                                .init(color: .white.opacity(0.7), location: phase),
+                                .init(color: .white.opacity(0), location: min(1, phase + 0.2))
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .blendMode(.sourceAtop)
+                    }
+                    .compositingGroup()
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Collapses a view to zero size + zero opacity when hidden, keeping
+/// it in the tree (layout still runs). Used on zoom-gated card layers
+/// so zoom transitions animate a frame-height interpolation rather
+/// than materializing a new subtree.
+extension View {
+    func visibleWhen(_ visible: Bool) -> some View {
+        self
+            .frame(maxHeight: visible ? .infinity : 0, alignment: .top)
+            .opacity(visible ? 1 : 0)
+            .clipped()
+            .allowsHitTesting(visible)
     }
 }

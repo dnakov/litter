@@ -12,6 +12,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Close
@@ -54,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -140,6 +145,8 @@ fun ComposerBar(
     var text by remember { mutableStateOf("") }
     var attachedImage by remember { mutableStateOf<ComposerImageAttachment?>(null) }
     var showAttachMenu by remember { mutableStateOf(false) }
+    var showExpanded by remember { mutableStateOf(false) }
+    val inlineFocusRequester = remember { FocusRequester() }
     val transcriptionManager = remember { VoiceTranscriptionManager() }
     val isRecording by transcriptionManager.isRecording.collectAsState()
     val isTranscribing by transcriptionManager.isTranscribing.collectAsState()
@@ -259,6 +266,46 @@ fun ComposerBar(
         return true
     }
 
+    // Single send path used by both the inline send button and the expanded
+    // dialog. Keep this in sync if you change slash-command dispatch or
+    // payload shape.
+    val sendCurrent: () -> Unit = {
+        val handledAsSlash = parseSlashCommandInvocation(text)?.let { invocation ->
+            if (dispatchSlashCommand(invocation.command.name, invocation.args)) {
+                text = ""
+                attachedImage = null
+                true
+            } else false
+        } ?: false
+        if (!handledAsSlash && (text.isNotBlank() || attachedImage != null)) {
+            val launchState = appModel.launchState.snapshot.value
+            val pendingModel = launchState.selectedModel.trim().ifEmpty { null }
+            val effort = launchState.reasoningEffort.trim().ifEmpty { null }
+                ?.let(::reasoningEffortFromServerValue)
+            val tier = if (HeaderOverrides.pendingFastMode) ServiceTier.FAST else null
+            val attachmentToSend = attachedImage
+            val payload = AppComposerPayload(
+                text = text.trim(),
+                additionalInputs = listOfNotNull(attachmentToSend?.toUserInput()),
+                approvalPolicy = appModel.launchState.approvalPolicyValue(threadKey),
+                sandboxPolicy = appModel.launchState.turnSandboxPolicy(threadKey),
+                model = pendingModel,
+                reasoningEffort = effort,
+                serviceTier = tier,
+            )
+            text = ""
+            attachedImage = null
+            scope.launch {
+                try {
+                    appModel.startTurn(threadKey, payload)
+                } catch (e: Exception) {
+                    text = payload.text
+                    attachedImage = attachmentToSend
+                }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -369,7 +416,14 @@ fun ComposerBar(
                 for (question in pendingUserInput.questions) {
                     Text(question.question, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.footnote.scaled)
                     if (question.options.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // FlowRow so long option labels wrap to a new line
+                        // instead of crushing a short option into a narrow
+                        // column with character-by-character text wrapping.
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             for (option in question.options) {
                                 val selected = userInputAnswers[question.id] == option.label
                                 Text(
@@ -407,7 +461,7 @@ fun ComposerBar(
                 Text(
                     text = "Submit",
                     color = Color.Black,
-                    fontSize = 13.sp,
+                    fontSize = LitterTextStyle.code.scaled,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .background(LitterTheme.accent, RoundedCornerShape(8.dp))
@@ -494,8 +548,33 @@ fun ComposerBar(
                             fontFamily = LitterTheme.monoFont,
                         ),
                         cursorBrush = SolidColor(LitterTheme.accent),
-                        modifier = Modifier.fillMaxWidth(),
+                        // Always reserve trailing space for the expand icon so
+                        // wrapped lines don't slide under it when the icon
+                        // appears (and it doesn't cause a layout jump when it
+                        // toggles on/off at the 60-char threshold).
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 24.dp)
+                            .focusRequester(inlineFocusRequester),
                     )
+
+                    val shouldShowExpand = (text.contains('\n') || text.length > 60) &&
+                        !isRecording && !isTranscribing
+                    if (shouldShowExpand) {
+                        IconButton(
+                            onClick = { showExpanded = true },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(20.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.OpenInFull,
+                                contentDescription = "Expand composer",
+                                tint = LitterTheme.textSecondary,
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
+                    }
 
                     // Slash command popup
                     DropdownMenu(
@@ -508,7 +587,7 @@ fun ComposerBar(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text("/${cmd.name}", color = LitterTheme.accent, fontSize = LitterTextStyle.footnote.scaled, fontWeight = FontWeight.Medium)
                                         Spacer(Modifier.width(8.dp))
-                                        Text(cmd.description, color = LitterTheme.textMuted, fontSize = 11.sp)
+                                        Text(cmd.description, color = LitterTheme.textMuted, fontSize = LitterTextStyle.caption2.scaled)
                                     }
                                 },
                                 onClick = {
@@ -529,7 +608,7 @@ fun ComposerBar(
                     ) {
                         for (path in fileSearchResults) {
                             DropdownMenuItem(
-                                text = { Text(path, color = LitterTheme.textPrimary, fontSize = 12.sp, fontFamily = LitterTheme.monoFont) },
+                                text = { Text(path, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.caption.scaled, fontFamily = LitterTheme.monoFont) },
                                 onClick = {
                                     showFileMenu = false
                                     val atIdx = text.lastIndexOf('@')
@@ -547,39 +626,7 @@ fun ComposerBar(
                     canSend -> {
                         Spacer(Modifier.width(8.dp))
                         IconButton(
-                            onClick = {
-                                parseSlashCommandInvocation(text)?.let { invocation ->
-                                    if (dispatchSlashCommand(invocation.command.name, invocation.args)) {
-                                        text = ""
-                                        attachedImage = null
-                                        return@IconButton
-                                    }
-                                }
-                                val launchState = appModel.launchState.snapshot.value
-                                val pendingModel = launchState.selectedModel.trim().ifEmpty { null }
-                                val effort = launchState.reasoningEffort.trim().ifEmpty { null }?.let(::reasoningEffortFromServerValue)
-                                val tier = if (HeaderOverrides.pendingFastMode) ServiceTier.FAST else null
-                                val attachmentToSend = attachedImage
-                                val payload = AppComposerPayload(
-                                    text = text.trim(),
-                                    additionalInputs = listOfNotNull(attachmentToSend?.toUserInput()),
-                                    approvalPolicy = appModel.launchState.approvalPolicyValue(threadKey),
-                                    sandboxPolicy = appModel.launchState.turnSandboxPolicy(threadKey),
-                                    model = pendingModel,
-                                    reasoningEffort = effort,
-                                    serviceTier = tier,
-                                )
-                                text = ""
-                                attachedImage = null
-                                scope.launch {
-                                    try {
-                                        appModel.startTurn(threadKey, payload)
-                                    } catch (e: Exception) {
-                                        text = payload.text
-                                        attachedImage = attachmentToSend
-                                    }
-                                }
-                            },
+                            onClick = sendCurrent,
                             modifier = Modifier
                                 .size(32.dp)
                                 .clip(CircleShape)
@@ -635,22 +682,53 @@ fun ComposerBar(
                     }
 
                     else -> {
-                        Spacer(Modifier.width(8.dp))
-                        IconButton(
-                            onClick = {
-                                if (transcriptionManager.hasMicPermission(context)) {
-                                    transcriptionManager.startRecording(context)
-                                } else {
-                                    micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            modifier = Modifier.size(32.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.Mic,
-                                contentDescription = "Voice",
-                                tint = LitterTheme.textSecondary,
+                        val realtimeAvailable = remember {
+                            com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                                com.litter.android.ui.LitterFeature.REALTIME_VOICE,
                             )
+                        }
+                        val voiceController = remember { com.litter.android.state.VoiceRuntimeController.shared }
+                        val voiceSession by voiceController.activeVoiceSession.collectAsState()
+                        val voiceSnapshot by appModel.snapshot.collectAsState()
+                        val voicePhase = voiceSnapshot?.voiceSession?.phase
+                        val voiceInputLevel = voiceSession?.inputLevel ?: 0f
+
+                        if (realtimeAvailable && text.isEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            com.litter.android.ui.voice.InlineVoiceButton(
+                                phase = voicePhase,
+                                inputLevel = voiceInputLevel,
+                                isAvailable = true,
+                                onStart = {
+                                    scope.launch {
+                                        voiceController.startVoiceOnThread(appModel, threadKey)
+                                    }
+                                },
+                                onStop = {
+                                    scope.launch {
+                                        voiceController.stopActiveVoiceSession(appModel)
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp),
+                            )
+                        } else {
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick = {
+                                    if (transcriptionManager.hasMicPermission(context)) {
+                                        transcriptionManager.startRecording(context)
+                                    } else {
+                                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = "Voice",
+                                    tint = LitterTheme.textSecondary,
+                                )
+                            }
                         }
                     }
                 }
@@ -683,6 +761,24 @@ fun ComposerBar(
             }
         }
 
+        if (showExpanded) {
+            ComposerExpandedDialog(
+                text = text,
+                onTextChange = { text = it },
+                onSend = sendCurrent,
+                onDismiss = {
+                    showExpanded = false
+                    // Restore inline focus after the dialog animates away, so
+                    // the user can keep typing without tapping again.
+                    scope.launch {
+                        kotlinx.coroutines.delay(80)
+                        runCatching { inlineFocusRequester.requestFocus() }
+                    }
+                },
+                canSend = text.isNotBlank() || attachedImage != null,
+            )
+        }
+
         val hasIndicators = contextPercent != null || rateLimits?.primary != null || rateLimits?.secondary != null
         if (hasIndicators) {
             Row(
@@ -706,6 +802,19 @@ fun ComposerBar(
     }
 
     if (showAttachMenu) {
+        val clipboardManager = remember { context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager }
+        val clipboardHasImage = remember(showAttachMenu) {
+            val clip = clipboardManager.primaryClip ?: return@remember false
+            if (clip.itemCount == 0) return@remember false
+            val desc = clip.description
+            for (i in 0 until desc.mimeTypeCount) {
+                if (desc.getMimeType(i).startsWith("image/")) return@remember true
+            }
+            clip.getItemAt(0)?.uri?.let { uri ->
+                context.contentResolver.getType(uri)?.startsWith("image/") == true
+            } ?: false
+        }
+
         ModalBottomSheet(
             onDismissRequest = { showAttachMenu = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -723,6 +832,20 @@ fun ComposerBar(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
+
+                if (clipboardHasImage) {
+                    AttachmentActionRow(
+                        title = "Paste Image",
+                        onClick = {
+                            showAttachMenu = false
+                            val clip = clipboardManager.primaryClip
+                            val uri = clip?.getItemAt(0)?.uri
+                            if (uri != null) {
+                                attachedImage = readAttachmentFromUri(context, uri)
+                            }
+                        },
+                    )
+                }
 
                 AttachmentActionRow(
                     title = "Photo Library",
@@ -783,7 +906,7 @@ private fun QueuedFollowUpsPreviewPanel(
             Text(
                 text = previews.size.toString(),
                 color = LitterTheme.textSecondary,
-                fontSize = 11.sp,
+                fontSize = LitterTextStyle.caption2.scaled,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
                     .background(LitterTheme.surface.copy(alpha = 0.9f), RoundedCornerShape(999.dp))
@@ -837,7 +960,7 @@ private fun QueuedFollowUpCard(
                 Text(
                     text = style.title,
                     color = style.tint,
-                    fontSize = 11.sp,
+                    fontSize = LitterTextStyle.caption2.scaled,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -1052,7 +1175,7 @@ private fun AttachmentActionRow(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, color = LitterTheme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(title, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.body.scaled, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -1117,7 +1240,7 @@ private fun RateLimitBadge(window: uniffi.codex_mobile_client.RateLimitWindow) {
         Text(
             text = label,
             color = LitterTheme.textSecondary,
-            fontSize = 10.sp,
+            fontSize = 10f.scaled,
             fontWeight = FontWeight.SemiBold,
             fontFamily = LitterTheme.monoFont,
         )
@@ -1156,7 +1279,7 @@ private fun ContextBadge(
         Text(
             text = "$normalizedPercent",
             color = tint,
-            fontSize = 9.sp,
+            fontSize = 9f.scaled,
             fontWeight = FontWeight.ExtraBold,
             fontFamily = LitterTheme.monoFont,
             modifier = Modifier.align(Alignment.Center),

@@ -117,8 +117,51 @@ val AppServerSnapshot.statusColor: Color
         currentConnectionStep?.state == AppConnectionStepState.AWAITING_USER_INPUT -> WarningOrange
         connectionProgressLabel != null -> AccentGreen
         transportState == AppServerTransportState.CONNECTED && !isLocal && account == null -> WarningOrange
-        transportState == AppServerTransportState.CONNECTED && ipcState == AppServerIpcState.DISCONNECTED -> WarningOrange
+        // Only surface IPC-disconnected as "warning orange" when the
+        // experimental IPC feature is enabled — mirrors iOS
+        // `AppServerSnapshot+UI.swift` + the same gate in
+        // `statusDotState` above. Without this, the conversation header
+        // dot stays orange on every remote server that doesn't speak IPC.
+        transportState == AppServerTransportState.CONNECTED &&
+            ipcState == AppServerIpcState.DISCONNECTED &&
+            com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                com.litter.android.ui.LitterFeature.IPC,
+            ) -> WarningOrange
         else -> transportState.accentColor
+    }
+
+/**
+ * Stable mapping to the shared `StatusDotState` palette (green/orange/red) so
+ * the server dot renders the same colors as the task indicator across themes.
+ */
+val AppServerSnapshot.statusDotState: com.litter.android.ui.common.StatusDotState
+    get() = when {
+        currentConnectionStep?.state == AppConnectionStepState.FAILED ->
+            com.litter.android.ui.common.StatusDotState.ERROR
+        currentConnectionStep?.state == AppConnectionStepState.AWAITING_USER_INPUT ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        connectionProgressLabel != null ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.CONNECTED && !isLocal && account == null ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        // Only treat IPC-disconnected as pending when the experimental IPC
+        // feature is actually enabled — mirrors iOS `AppServerSnapshot+UI.swift`
+        // gate on `ExperimentalFeatures.shared.isEnabled(.ipc)`. Without this,
+        // remote servers (which don't speak IPC) would blink orange even after
+        // they've fully connected.
+        transportState == AppServerTransportState.CONNECTED &&
+            ipcState == AppServerIpcState.DISCONNECTED &&
+            com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                com.litter.android.ui.LitterFeature.IPC,
+            ) ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.CONNECTED ->
+            com.litter.android.ui.common.StatusDotState.OK
+        transportState == AppServerTransportState.CONNECTING ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        transportState == AppServerTransportState.UNRESPONSIVE ->
+            com.litter.android.ui.common.StatusDotState.PENDING
+        else -> com.litter.android.ui.common.StatusDotState.IDLE
     }
 
 // --- AppThreadSnapshot extensions --------------------------------------------
@@ -133,16 +176,16 @@ val AppThreadSnapshot.resolvedModel: String
     get() = model ?: info.model ?: ""
 
 val AppThreadSnapshot.displayTitle: String
-    get() = info.title?.takeIf { it.isNotBlank() }
-        ?: info.preview?.takeIf { it.isNotBlank() }
+    get() = info.preview?.takeIf { it.isNotBlank() }
+        ?: info.title?.takeIf { it.isNotBlank() }
         ?: "Untitled session"
 
 val AppThreadSnapshot.resolvedPreview: String
     get() = displayTitle
 
 val AppSessionSummary.displayTitle: String
-    get() = title?.takeIf { it.isNotBlank() }
-        ?: preview?.takeIf { it.isNotBlank() }
+    get() = preview?.takeIf { it.isNotBlank() }
+        ?: title?.takeIf { it.isNotBlank() }
         ?: "Untitled session"
 
 val AppThreadSnapshot.contextPercent: Int

@@ -1,8 +1,8 @@
 diff --git a/codex-rs/code-mode/Cargo.toml b/codex-rs/code-mode/Cargo.toml
-index e821ca0e4..3019a550d 100644
+index 23b2ce2306..9c18050292 100644
 --- a/codex-rs/code-mode/Cargo.toml
 +++ b/codex-rs/code-mode/Cargo.toml
-@@ -19,6 +19,8 @@ serde_json = { workspace = true }
+@@ -22,6 +22,8 @@ serde_json = { workspace = true }
  tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
  tokio-util = { workspace = true, features = ["rt"] }
  tracing = { workspace = true }
@@ -12,7 +12,7 @@ index e821ca0e4..3019a550d 100644
  
  [dev-dependencies]
 diff --git a/codex-rs/code-mode/src/lib.rs b/codex-rs/code-mode/src/lib.rs
-index 841e568be..3a555ff5b 100644
+index bb27d99960..0240e2aa4a 100644
 --- a/codex-rs/code-mode/src/lib.rs
 +++ b/codex-rs/code-mode/src/lib.rs
 @@ -1,6 +1,14 @@
@@ -32,7 +32,7 @@ index 841e568be..3a555ff5b 100644
  pub use description::CODE_MODE_PRAGMA_PREFIX;
 diff --git a/codex-rs/code-mode/src/runtime_stub.rs b/codex-rs/code-mode/src/runtime_stub.rs
 new file mode 100644
-index 000000000..556f5b9f9
+index 0000000000..556f5b9f9f
 --- /dev/null
 +++ b/codex-rs/code-mode/src/runtime_stub.rs
 @@ -0,0 +1,44 @@
@@ -82,14 +82,15 @@ index 000000000..556f5b9f9
 +}
 diff --git a/codex-rs/code-mode/src/service_stub.rs b/codex-rs/code-mode/src/service_stub.rs
 new file mode 100644
-index 000000000..bbcdd629e
+index 0000000000..a30b82a2da
 --- /dev/null
 +++ b/codex-rs/code-mode/src/service_stub.rs
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,83 @@
 +use std::collections::HashMap;
 +use std::sync::Arc;
 +
 +use async_trait::async_trait;
++use codex_protocol::ToolName;
 +use serde_json::Value as JsonValue;
 +use tokio::sync::Mutex;
 +use tokio_util::sync::CancellationToken;
@@ -104,7 +105,7 @@ index 000000000..bbcdd629e
 +pub trait CodeModeTurnHost: Send + Sync {
 +    async fn invoke_tool(
 +        &self,
-+        tool_name: String,
++        tool_name: ToolName,
 +        input: Option<JsonValue>,
 +        cancellation_token: CancellationToken,
 +    ) -> Result<JsonValue, String>;

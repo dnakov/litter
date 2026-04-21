@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.sp
 import com.litter.android.auth.ChatGPTOAuthActivity
 import com.litter.android.state.ChatGPTOAuth
 import com.litter.android.state.ChatGPTOAuthTokenStore
+import com.litter.android.state.DebugSettings
+import com.litter.android.state.MessageRecorder
 import com.litter.android.state.OpenAIApiKeyStore
 import com.litter.android.state.SavedServerStore
 import com.litter.android.state.connectionModeLabel
@@ -122,17 +124,19 @@ fun SettingsSheet(
         SettingsSubScreen.Appearance -> AppearanceScreen(onBack = { subScreen = null })
         SettingsSubScreen.Experimental -> ExperimentalScreen(onBack = { subScreen = null })
         SettingsSubScreen.TipJar -> TipJarScreen(onBack = { subScreen = null })
+        SettingsSubScreen.Debug -> DebugScreen(onBack = { subScreen = null })
         null -> SettingsTopLevel(
             onDismiss = onDismiss,
             onOpenAppearance = { subScreen = SettingsSubScreen.Appearance },
             onOpenExperimental = { subScreen = SettingsSubScreen.Experimental },
             onOpenTipJar = { subScreen = SettingsSubScreen.TipJar },
+            onOpenDebug = { subScreen = SettingsSubScreen.Debug },
             onOpenAccount = onOpenAccount,
         )
     }
 }
 
-private enum class SettingsSubScreen { Appearance, Experimental, TipJar }
+private enum class SettingsSubScreen { Appearance, Experimental, TipJar, Debug }
 
 @Composable
 private fun SettingsTopLevel(
@@ -140,6 +144,7 @@ private fun SettingsTopLevel(
     onOpenAppearance: () -> Unit,
     onOpenExperimental: () -> Unit,
     onOpenTipJar: () -> Unit,
+    onOpenDebug: () -> Unit,
     onOpenAccount: (serverId: String) -> Unit,
 ) {
     val appModel = LocalAppModel.current
@@ -166,11 +171,11 @@ private fun SettingsTopLevel(
     ) {
         // Title
         item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Spacer(Modifier.weight(1f))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text("Settings", color = LitterTheme.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("Done", color = LitterTheme.accent) }
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Text("Done", color = LitterTheme.accent)
+                }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -213,6 +218,14 @@ private fun SettingsTopLevel(
         item { SectionHeader("Experimental") }
         item {
             NavRow(icon = Icons.Default.Science, label = "Experimental Features", onClick = onOpenExperimental)
+        }
+
+        // ── Debug ──
+        if (DebugSettings.enabled) {
+            item { SectionHeader("Debug") }
+            item {
+                NavRow(icon = Icons.Default.Science, label = "Debug Settings", onClick = onOpenDebug)
+            }
         }
 
         // ── Support ──
@@ -856,6 +869,143 @@ private fun ExperimentalScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         Text("Experimental features may be unstable or change without notice.", color = LitterTheme.textMuted, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Debug Sub-Screen
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun DebugScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(16.dp),
+    ) {
+        // Nav bar
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = LitterTheme.accent)
+            }
+            Spacer(Modifier.weight(1f))
+            Text("Debug", color = LitterTheme.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(48.dp))
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        SectionHeader("Rendering")
+        Column(
+            Modifier.fillMaxWidth().background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Disable Markdown", color = LitterTheme.textPrimary, fontSize = 14.sp)
+                    Text("Show raw monospace text instead of rendered markdown", color = LitterTheme.textSecondary, fontSize = 11.sp)
+                }
+                Switch(
+                    checked = DebugSettings.disableMarkdown,
+                    onCheckedChange = { DebugSettings.setDisableMarkdown(context, it) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = LitterTheme.accentStrong),
+                )
+            }
+            HorizontalDivider(color = LitterTheme.divider)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Show Turn Metrics", color = LitterTheme.textPrimary, fontSize = 14.sp)
+                    Text("Display elapsed time and token count on turn items", color = LitterTheme.textSecondary, fontSize = 11.sp)
+                }
+                Switch(
+                    checked = DebugSettings.showTurnMetrics,
+                    onCheckedChange = { DebugSettings.setShowTurnMetrics(context, it) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = LitterTheme.accentStrong),
+                )
+            }
+        }
+
+        // ── Recording ──
+        Spacer(Modifier.height(12.dp))
+        SectionHeader("Recording")
+
+        val appModel = LocalAppModel.current
+        val scope = rememberCoroutineScope()
+        var isRecording by remember { mutableStateOf(MessageRecorder.isRecording(appModel.store)) }
+        var recordings by remember { mutableStateOf(MessageRecorder.listRecordings(context)) }
+
+        Column(
+            Modifier.fillMaxWidth().background(LitterTheme.surface.copy(alpha = 0.6f), RoundedCornerShape(10.dp)).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (isRecording) "Recording..." else "Message Recording",
+                        color = if (isRecording) LitterTheme.danger else LitterTheme.textPrimary,
+                        fontSize = 14.sp,
+                    )
+                    Text("Record server messages for replay", color = LitterTheme.textSecondary, fontSize = 11.sp)
+                }
+                TextButton(onClick = {
+                    if (isRecording) {
+                        MessageRecorder.stopRecording(context, appModel.store)
+                        isRecording = false
+                        recordings = MessageRecorder.listRecordings(context)
+                    } else {
+                        MessageRecorder.startRecording(appModel.store)
+                        isRecording = true
+                    }
+                }) {
+                    Text(
+                        if (isRecording) "Stop" else "Start",
+                        color = if (isRecording) LitterTheme.danger else LitterTheme.accent,
+                    )
+                }
+            }
+
+            if (recordings.isNotEmpty()) {
+                HorizontalDivider(color = LitterTheme.divider)
+                Text("Saved Recordings", color = LitterTheme.textSecondary, fontSize = 11.sp)
+                recordings.forEach { file ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    ) {
+                        Text(
+                            file.name,
+                            color = LitterTheme.textPrimary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        val sizeKb = file.length() / 1024
+                        Text("${sizeKb}KB", color = LitterTheme.textMuted, fontSize = 10.sp)
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = {
+                            MessageRecorder.deleteRecording(file)
+                            recordings = MessageRecorder.listRecordings(context)
+                        }) {
+                            Text("Delete", color = LitterTheme.danger, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Debug features are for development and testing.", color = LitterTheme.textMuted, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
     }
 }
 

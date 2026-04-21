@@ -31,7 +31,7 @@ class HomeDashboardSupportTests {
 
     @Test
     fun `relativeTime formats correctly`() {
-        val now = System.currentTimeMillis() / 1000.0
+        val now = System.currentTimeMillis() / 1000L
 
         assertEquals("just now", HomeDashboardSupport.relativeTime(now - 30))
         assertEquals("5m ago", HomeDashboardSupport.relativeTime(now - 300))
@@ -42,6 +42,6 @@ class HomeDashboardSupportTests {
     @Test
     fun `relativeTime returns empty for null or zero`() {
         assertEquals("", HomeDashboardSupport.relativeTime(null))
-        assertEquals("", HomeDashboardSupport.relativeTime(0.0))
+        assertEquals("", HomeDashboardSupport.relativeTime(0L))
     }
 }

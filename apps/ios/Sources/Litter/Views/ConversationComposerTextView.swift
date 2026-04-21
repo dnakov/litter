@@ -5,8 +5,10 @@ struct ConversationComposerTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let onPasteImage: (UIImage) -> Void
-
-    @Environment(\.textScale) private var textScale
+    /// When true, the view returns no preferred size from `sizeThatFits`, letting
+    /// SwiftUI fill the parent frame. Scrolling kicks in against the actual
+    /// bounds instead of the 5-line clamp.
+    var unboundedHeight: Bool = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -19,16 +21,19 @@ struct ConversationComposerTextView: UIViewRepresentable {
         textView.tintColor = UIColor(LitterTheme.accent)
         textView.textContainerInset = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 12)
         textView.textContainer.lineFragmentPadding = 0
-        textView.autocorrectionType = .no
-        textView.autocapitalizationType = .none
-        textView.spellCheckingType = .no
+        textView.autocorrectionType = .default
+        textView.autocapitalizationType = .sentences
+        textView.spellCheckingType = .default
+        textView.smartQuotesType = .default
+        textView.smartDashesType = .default
+        textView.smartInsertDeleteType = .default
         textView.keyboardDismissMode = .interactive
         textView.showsVerticalScrollIndicator = false
         textView.alwaysBounceVertical = false
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.onPasteImage = onPasteImage
         textView.text = text
-        context.coordinator.applyStyling(to: textView, textScale: textScale)
+        context.coordinator.applyStyling(to: textView)
         context.coordinator.updateScrollState(for: textView)
         return textView
     }
@@ -36,7 +41,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteAwareComposerUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.onPasteImage = onPasteImage
-        context.coordinator.applyStyling(to: uiView, textScale: textScale)
+        context.coordinator.applyStyling(to: uiView)
 
         if uiView.text != text, uiView.markedTextRange == nil {
             context.coordinator.isSynchronizingText = true
@@ -49,6 +54,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PasteAwareComposerUITextView, context: Context) -> CGSize? {
+        if unboundedHeight { return nil }
         let width = proposal.width ?? uiView.bounds.width
         guard width > 0 else { return nil }
 
@@ -116,8 +122,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
             DispatchQueue.main.async(execute: work)
         }
 
-        func applyStyling(to textView: UITextView, textScale: CGFloat) {
-            textView.font = composerFont(textScale: textScale)
+        func applyStyling(to textView: UITextView) {
+            textView.font = composerFont()
             textView.textColor = UIColor(LitterTheme.textPrimary)
         }
 
@@ -126,7 +132,10 @@ struct ConversationComposerTextView: UIViewRepresentable {
             let fittingHeight = textView.sizeThatFits(
                 CGSize(width: availableWidth, height: .greatestFiniteMagnitude)
             ).height
-            let shouldScroll = fittingHeight > maximumHeight(for: textView) + 0.5
+            let threshold = parent.unboundedHeight
+                ? textView.bounds.height
+                : maximumHeight(for: textView)
+            let shouldScroll = fittingHeight > threshold + 0.5
             if textView.isScrollEnabled != shouldScroll {
                 textView.isScrollEnabled = shouldScroll
             }
@@ -142,8 +151,8 @@ struct ConversationComposerTextView: UIViewRepresentable {
             return ceil((lineHeight * 5) + textView.textContainerInset.top + textView.textContainerInset.bottom)
         }
 
-        private func composerFont(textScale: CGFloat) -> UIFont {
-            let pointSize = UIFont.preferredFont(forTextStyle: .body).pointSize * textScale
+        private func composerFont() -> UIFont {
+            let pointSize = UIFont.preferredFont(forTextStyle: .body).pointSize
             if LitterFont.storedFamily.isMono {
                 return LitterFont.uiMonoFont(size: pointSize)
             }

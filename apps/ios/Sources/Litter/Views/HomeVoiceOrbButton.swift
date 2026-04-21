@@ -1,43 +1,23 @@
 import SwiftUI
 
+/// Capsule voice button matching the `+` and search buttons in
+/// `HomeBottomBar`. Size and glass treatment are identical; only the icon
+/// and its tint change to reflect realtime voice state.
 struct HomeVoiceOrbButton: View {
     let session: VoiceSessionState?
     let isAvailable: Bool
     let isStarting: Bool
     let action: () -> Void
 
+    private let buttonSize: CGFloat = 44
+
     private var phase: VoiceSessionPhase? {
-        if isStarting {
-            return .connecting
-        }
+        if isStarting { return .connecting }
         return session?.phase
     }
 
     private var isActive: Bool {
         phase != nil && phase != .error
-    }
-
-    private var pulseLevel: CGFloat {
-        if isStarting {
-            return 0.35
-        }
-        return CGFloat(session?.activeLevel ?? 0)
-    }
-
-    private var orbColor: Color {
-        guard let phase else { return LitterTheme.accentStrong }
-        switch phase {
-        case .connecting, .listening:
-            return LitterTheme.accentStrong
-        case .speaking, .thinking, .handoff:
-            return LitterTheme.warning
-        case .error:
-            return LitterTheme.danger
-        }
-    }
-
-    private var buttonDiameter: CGFloat {
-        isActive ? 68 : 60
     }
 
     private var hasRecoverableError: Bool {
@@ -49,92 +29,60 @@ struct HomeVoiceOrbButton: View {
     }
 
     private var accessibilityLabel: String {
-        if !isAvailable {
-            return "Realtime voice unavailable"
-        }
-        if isStarting {
-            return "Connecting realtime voice"
-        }
-        if hasRecoverableError {
-            return "Retry realtime voice"
-        }
+        if !isAvailable { return "Realtime voice unavailable" }
+        if isStarting { return "Connecting realtime voice" }
+        if hasRecoverableError { return "Retry realtime voice" }
         return "Start realtime voice"
     }
 
-    private var glassTint: Color {
-        orbColor.opacity(isActive ? 0.3 : 0.18)
+    /// Tint for the mic glyph. When the session is live we use a warmer
+    /// accent; error falls back to the danger color. Idle matches the
+    /// muted glyph color used by the search button.
+    private var iconColor: Color {
+        guard let phase else { return LitterTheme.textSecondary }
+        switch phase {
+        case .connecting, .listening:
+            return LitterTheme.accent
+        case .speaking, .thinking, .handoff:
+            return LitterTheme.warning
+        case .error:
+            return LitterTheme.danger
+        }
+    }
+
+    private var strokeColor: Color {
+        isActive ? iconColor.opacity(0.5) : LitterTheme.textMuted.opacity(0.3)
+    }
+
+    private var strokeWidth: CGFloat {
+        isActive ? 0.8 : 0.6
     }
 
     var body: some View {
-        orbButton
-            .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder
-    private var orbButton: some View {
-        if #available(iOS 26.0, *), isAvailable, !hasRecoverableError {
-            Button(action: action) {
-                ZStack {
-                    Color.white
-                        .opacity(0.001)
-                        .frame(width: buttonDiameter, height: buttonDiameter)
-                        .glassEffect(.regular.tint(glassTint), in: .circle)
-                        .overlay {
-                            Circle()
-                                .stroke(.white.opacity(isActive ? 0.34 : 0.18), lineWidth: 0.9)
-                        }
-
-                    orbGlyph
+        Button(action: action) {
+            Group {
+                if isStarting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(iconColor)
+                } else {
+                    Image(systemName: "waveform.and.mic")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(iconColor)
                 }
-                .contentShape(Circle())
             }
-            .buttonStyle(.plain)
-            .disabled(isDisabled)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint("Starts a local realtime voice conversation.")
-        } else {
-            Button(action: action) {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    orbColor.opacity(isDisabled ? 0.45 : 0.96),
-                                    orbColor.opacity(isDisabled ? 0.24 : 0.58),
-                                    LitterTheme.surface.opacity(0.92)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .overlay {
-                            Circle()
-                                .stroke(.white.opacity(isActive ? 0.24 : 0.14), lineWidth: 1)
-                        }
-                        .shadow(color: orbColor.opacity(isDisabled ? 0.12 : 0.3), radius: 22, y: 10)
-                        .frame(width: buttonDiameter, height: buttonDiameter)
-
-                    orbGlyph
-                }
-                .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isDisabled)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityHint("Starts a local realtime voice conversation.")
+            .frame(width: buttonSize, height: buttonSize)
+            .contentShape(Capsule())
         }
-    }
-
-    @ViewBuilder
-    private var orbGlyph: some View {
-        if isStarting {
-            ProgressView()
-                .tint(.white)
-                .scaleEffect(1.15)
-        } else {
-            Image(systemName: "waveform.and.mic")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(isDisabled ? .white.opacity(0.72) : .white)
-        }
+        .buttonStyle(.plain)
+        .modifier(GlassCapsuleModifier(interactive: true))
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(strokeColor, lineWidth: strokeWidth)
+                .allowsHitTesting(false)
+        )
+        .disabled(isDisabled)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Starts a local realtime voice conversation.")
     }
 }

@@ -357,7 +357,11 @@ mod mobile_client_tests {
                 server_id: "srv".to_string(),
                 thread_id: "thread-1".to_string(),
             },
-            info: make_thread_info("thread-1"),
+            info: {
+                let mut info = make_thread_info("thread-1");
+                info.status = ThreadSummaryStatus::Active;
+                info
+            },
             collaboration_mode: AppModeKind::Plan,
             model: Some("gpt-5".to_string()),
             reasoning_effort: Some("high".to_string()),
@@ -399,6 +403,7 @@ mod mobile_client_tests {
         assert_eq!(target.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(target.queued_follow_ups, source.queued_follow_ups);
         assert_eq!(target.active_turn_id, None);
+        assert_eq!(target.info.status, ThreadSummaryStatus::Idle);
         assert_eq!(target.context_tokens_used, Some(12_345));
         assert_eq!(target.model_context_window, Some(200_000));
         assert_eq!(
@@ -500,6 +505,65 @@ mod mobile_client_tests {
             snapshot.effective_sandbox_policy,
             Some(crate::types::AppSandboxPolicy::DangerFullAccess)
         );
+    }
+
+    #[test]
+    fn upsert_thread_snapshot_from_thread_read_response_clears_completed_active_turn() {
+        let reducer = AppStoreReducer::new();
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread-1".to_string(),
+        };
+        let mut existing = ThreadSnapshot::from_info("srv", make_thread_info("thread-1"));
+        existing.active_turn_id = Some("turn-1".to_string());
+        existing.info.status = ThreadSummaryStatus::Active;
+        reducer.upsert_thread_snapshot(existing);
+
+        let response: upstream::ThreadReadResponse = serde_json::from_value(serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "preview": "hi",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "status": { "type": "idle" },
+                "path": "/tmp/thread",
+                "cwd": "/tmp/thread",
+                "cliVersion": "1.0.0",
+                "source": "cli",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": "thread",
+                "turns": [
+                    {
+                        "turnId": "turn-1",
+                        "status": "completed",
+                        "items": [],
+                        "params": { "input": [] }
+                    }
+                ]
+            },
+            "approvalPolicy": "never",
+            "sandbox": {
+                "type": "dangerFullAccess"
+            }
+        }))
+        .expect("thread/read response should deserialize");
+
+        upsert_thread_snapshot_from_app_server_read_response(&reducer, "srv", response)
+            .expect("upsert should succeed");
+
+        let snapshot = reducer
+            .snapshot()
+            .threads
+            .get(&key)
+            .cloned()
+            .expect("thread snapshot should exist");
+
+        assert_eq!(snapshot.active_turn_id, None);
+        assert_eq!(snapshot.info.status, ThreadSummaryStatus::Idle);
     }
 
     #[test]
@@ -1106,9 +1170,11 @@ mod mobile_client_tests {
         // The overlay is created before the IPC attempt and stays after
         // the fallback direct turn/start succeeds and binds it.
         assert_eq!(thread.local_overlay_items.len(), 1);
-        assert!(thread.local_overlay_items[0]
-            .id
-            .starts_with("local-user-message:"));
+        assert!(
+            thread.local_overlay_items[0]
+                .id
+                .starts_with("local-user-message:")
+        );
     }
 
     #[tokio::test]
@@ -1227,9 +1293,11 @@ mod mobile_client_tests {
         // The overlay is created before the IPC attempt and stays after
         // the fallback direct turn/start succeeds and binds it.
         assert_eq!(thread.local_overlay_items.len(), 1);
-        assert!(thread.local_overlay_items[0]
-            .id
-            .starts_with("local-user-message:"));
+        assert!(
+            thread.local_overlay_items[0]
+                .id
+                .starts_with("local-user-message:")
+        );
     }
 
     #[tokio::test]
@@ -1320,7 +1388,12 @@ mod mobile_client_tests {
         drop(captured);
 
         let thread = client.snapshot_thread(&key).expect("thread snapshot");
-        assert!(thread.queued_follow_up_drafts.iter().all(|d| d.preview.kind == AppQueuedFollowUpKind::PendingSteer));
+        assert!(
+            thread
+                .queued_follow_up_drafts
+                .iter()
+                .all(|d| d.preview.kind == AppQueuedFollowUpKind::PendingSteer)
+        );
         let server = client
             .app_store
             .snapshot()

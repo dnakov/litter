@@ -24,7 +24,7 @@ struct ContextBadgeView: View, Equatable {
             .padding(.vertical, inset + strokeWidth / 2)
 
             Text("\(percent)")
-                .litterMonoFont(size: 9.5, weight: .heavy)
+                .font(LitterFont.monospaced(size: 9.5, weight: .heavy))
                 .foregroundColor(tint)
         }
         .frame(width: 35, height: 16)

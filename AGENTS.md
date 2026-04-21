@@ -104,6 +104,7 @@ Before building on a new machine, verify:
 2. `cargo` and `rustc` must come from **rustup**, not Homebrew's `rust` formula. If `which cargo` points to `/opt/homebrew/bin/cargo` (a Homebrew standalone binary, not a rustup proxy), cross-compilation targets like `aarch64-apple-ios-sim` will fail even if `rustup target list` shows them installed. The Makefile prepends the rustup toolchain bin to PATH automatically, but standalone script runs and CI environments must also ensure the correct resolution. Either `brew uninstall rust` or put `~/.cargo/bin` (or the rustup toolchain bin from `rustup which cargo`) before `/opt/homebrew/bin` in PATH.
 3. `meson` and `ninja` must be installed (`brew install meson`). Required by `webrtc-audio-processing-sys`.
 4. `xcodegen` must be installed (`brew install xcodegen`). Required for Xcode project generation.
+5. *(Optional)* `pymobiledevice3` enables `make ios-device-run` over Tailscale when the device is not on the local network. Install with `pipx install pymobiledevice3` (or `uv tool install pymobiledevice3`). Also requires Tailscale on both the Mac and the iOS device.
 
 ## Build System
 The root `Makefile` is the primary build interface. It orchestrates submodule sync, patching, UniFFI binding generation, Rust cross-compilation, raw staticlib generation, optional xcframework packaging, Xcode project generation, and platform builds — with stamp-file caching in `.build-stamps/` so repeated runs skip completed steps. If `sccache` is installed it is used automatically via `RUSTC_WRAPPER=sccache`.
@@ -197,3 +198,4 @@ Incremental policy:
 - Use concise, imperative commit subjects with optional scope (example: `bridge: retry initialize handshake`).
 - PRs should include: purpose, key changes, verification steps (commands/device), and screenshots for UI changes.
 - If project structure changes, include updates to `apps/ios/project.yml` and mention whether project regeneration was run.
+- If using XcodeBuildMCP, use the installed XcodeBuildMCP skill before calling XcodeBuildMCP tools.

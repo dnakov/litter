@@ -27,12 +27,12 @@ final class ThemeManager {
     private(set) var themeIndex: [ThemeIndexEntry] = []
 
     var selectedLightSlug: String {
-        get { UserDefaults.standard.string(forKey: "selectedLightTheme") ?? "codex-light" }
+        get { UserDefaults.standard.string(forKey: "selectedLightTheme") ?? "kitty-litter-light" }
         set { UserDefaults.standard.set(newValue, forKey: "selectedLightTheme") }
     }
 
     var selectedDarkSlug: String {
-        get { UserDefaults.standard.string(forKey: "selectedDarkTheme") ?? "codex-dark" }
+        get { UserDefaults.standard.string(forKey: "selectedDarkTheme") ?? "kitty-litter-dark" }
         set { UserDefaults.standard.set(newValue, forKey: "selectedDarkTheme") }
     }
 

@@ -13,13 +13,40 @@ struct AnimatedSplashView: View {
     var compact: Bool = false
     let onFinished: () -> Void
 
+    // 30 Hz is plenty for this animation — the fastest thing in it is a
+    // ~150ms blink, easily resolved at 30fps. `TimelineView(.animation)`
+    // would otherwise tick at display refresh rate (120Hz on ProMotion),
+    // redrawing every kitten 4× more often than necessary. For the inline
+    // home-dashboard logo (always visible), that was ~200ms of main-thread
+    // CPU per minute just on kitten drawing.
+    private static let frameInterval: TimeInterval = 1.0 / 30.0
+
+    // Palette cached once at file scope: every draw pass used to re-init
+    // ~12 Color structs per frame. At 120Hz that's several thousand Color
+    // allocations per second across all kittens.
+    private enum Palette {
+        static let leftGray     = Color(red: 0.898, green: 0.906, blue: 0.922)
+        static let leftInk      = Color(red: 0.122, green: 0.161, blue: 0.216)
+        static let leftWhisker  = Color(red: 0.753, green: 0.769, blue: 0.792)
+        static let rightCharcoal = Color(red: 0.216, green: 0.255, blue: 0.318)
+        static let rightWhite   = Color(red: 0.976, green: 0.984, blue: 0.988)
+        static let rightWhisker = Color(red: 0.294, green: 0.333, blue: 0.388)
+        static let ginger       = Color(red: 0.961, green: 0.620, blue: 0.043)
+        static let gingerInk    = Color(red: 0.122, green: 0.161, blue: 0.216)
+        static let gingerWhisker = Color(red: 0.784, green: 0.525, blue: 0.055)
+        static let box          = Color(red: 0.851, green: 0.541, blue: 0.325)
+        static let boxLip       = Color(red: 0.761, green: 0.478, blue: 0.271)
+        static let boxHandle    = Color(red: 0.690, green: 0.396, blue: 0.208)
+        static let pawDark      = Color(red: 0.294, green: 0.333, blue: 0.388)
+    }
+
     var body: some View {
         ZStack {
             if !compact {
                 LitterTheme.backgroundGradient.ignoresSafeArea()
             }
 
-            TimelineView(.animation) { timeline in
+            TimelineView(.periodic(from: startDate, by: Self.frameInterval)) { timeline in
                 let t = timeline.date.timeIntervalSince(startDate)
 
                 Canvas { context, size in
@@ -156,9 +183,9 @@ struct AnimatedSplashView: View {
     // MARK: - Left Kitten (Gray #E5E7EB)
 
     private func drawLeftKitten(context: GraphicsContext, scale: CGFloat, ox: CGFloat, oy: CGFloat, anim: KittenAnimState) {
-        let gray = Color(red: 0.898, green: 0.906, blue: 0.922)
-        let ink  = Color(red: 0.122, green: 0.161, blue: 0.216)
-        let wc   = Color(red: 0.753, green: 0.769, blue: 0.792)
+        let gray = Palette.leftGray
+        let ink  = Palette.leftInk
+        let wc   = Palette.leftWhisker
         let bobY = -5 * scale * anim.bobLeft * anim.bobScale
         let s = scale
 
@@ -198,9 +225,9 @@ struct AnimatedSplashView: View {
     // MARK: - Right Kitten (Charcoal #374151)
 
     private func drawRightKitten(context: GraphicsContext, scale: CGFloat, ox: CGFloat, oy: CGFloat, anim: KittenAnimState) {
-        let ch  = Color(red: 0.216, green: 0.255, blue: 0.318)
-        let wht = Color(red: 0.976, green: 0.984, blue: 0.988)
-        let wc  = Color(red: 0.294, green: 0.333, blue: 0.388)
+        let ch  = Palette.rightCharcoal
+        let wht = Palette.rightWhite
+        let wc  = Palette.rightWhisker
         let bobY = -4 * scale * anim.bobRight * anim.bobScale
         let s = scale
 
@@ -240,9 +267,9 @@ struct AnimatedSplashView: View {
     // MARK: - Center Kitten (Ginger #F59E0B)
 
     private func drawCenterKitten(context: GraphicsContext, scale: CGFloat, ox: CGFloat, oy: CGFloat, anim: KittenAnimState) {
-        let ginger = Color(red: 0.961, green: 0.620, blue: 0.043)
-        let ink    = Color(red: 0.122, green: 0.161, blue: 0.216)
-        let wc     = Color(red: 0.784, green: 0.525, blue: 0.055)
+        let ginger = Palette.ginger
+        let ink    = Palette.gingerInk
+        let wc     = Palette.gingerWhisker
         let bobY = -7 * scale * anim.bobCenter * anim.bobScale
         let s = scale
         let m = anim.meow
@@ -307,9 +334,9 @@ struct AnimatedSplashView: View {
 
     private func drawBox(context: GraphicsContext, scale: CGFloat, ox: CGFloat, oy: CGFloat) {
         let s = scale
-        let boxColor    = Color(red: 0.851, green: 0.541, blue: 0.325)
-        let lipColor    = Color(red: 0.761, green: 0.478, blue: 0.271)
-        let handleColor = Color(red: 0.690, green: 0.396, blue: 0.208)
+        let boxColor    = Palette.box
+        let lipColor    = Palette.boxLip
+        let handleColor = Palette.boxHandle
 
         var bp = Path()
         bp.move(to: pt(100,256,s:s,ox:ox,oy:oy))
@@ -336,7 +363,7 @@ struct AnimatedSplashView: View {
     private func drawPaws(context: GraphicsContext, scale: CGFloat, ox: CGFloat, oy: CGFloat) {
         let s = scale
         let white = Color.white
-        let dark  = Color(red: 0.294, green: 0.333, blue: 0.388)
+        let dark  = Palette.pawDark
 
         for x in [135.0, 165.0] {
             context.fill(RoundedRectangle(cornerRadius: 9*s).path(in: CGRect(x:ox+x*s,y:oy+234*s,width:18*s,height:28*s)), with: .color(white))

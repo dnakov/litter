@@ -7,7 +7,9 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
@@ -38,33 +40,55 @@ enum class ConversationTextSize(val step: Int, val scale: Float, val label: Stri
  */
 val LocalTextScale = compositionLocalOf { ConversationTextSize.DEFAULT.scale }
 
-/** Scale a base sp value by the current text scale. */
+/**
+ * Scale a base value by the current app text scale AND bypass Android's
+ * system-wide font scale (Settings → Display → Font size).
+ *
+ * iOS point sizes come from `UIFont.preferredFont(forTextStyle:).pointSize`,
+ * which reflects iOS dynamic type. Android `sp` units multiply base values by
+ * the OS font-scale setting, so using `N.sp` directly would double-scale
+ * relative to iOS and make Android text noticeably larger on devices with
+ * non-default font scale. Converting `Dp → Sp` cancels the font-scale factor
+ * so the rendered glyph size depends only on our own app-level slider.
+ *
+ * Users who want larger UI text should use the app's 7-step scale slider
+ * (Settings → Appearance), which maps the same 0.65×–1.8× range iOS uses.
+ */
 val Int.scaled: TextUnit
-    @Composable get() = (this * LocalTextScale.current).sp
+    @Composable get() = with(LocalDensity.current) {
+        (this@scaled * LocalTextScale.current).dp.toSp()
+    }
 
 val Float.scaled: TextUnit
-    @Composable get() = (this * LocalTextScale.current).sp
+    @Composable get() = with(LocalDensity.current) {
+        (this@scaled * LocalTextScale.current).dp.toSp()
+    }
 
 /**
- * Semantic text sizes matching iOS conventions.
- * All are base sizes that get multiplied by [LocalTextScale].
+ * Semantic text sizes matching iOS UIFont text-style point sizes at default
+ * (Large) dynamic type. iOS reads `UIFont.preferredFont(forTextStyle: .body)
+ * .pointSize` for body — 17pt at the system default. Android mirrors those
+ * values so `LitterTextStyle.<role>.scaled` produces the same physical size
+ * as iOS's `.litterFont(size:)` at equal app-level scales.
+ *
+ * If you change these, change the iOS side at Extensions.swift:122 too.
  */
 object LitterTextStyle {
-    /** Main message body text — 14sp base */
-    const val body = 14f
-    /** User bubble text — 14sp base */
-    const val callout = 14f
-    /** Secondary title — 15sp base */
+    /** Main message body text — iOS .body = 17pt. */
+    const val body = 17f
+    /** User bubble / callout — iOS uses body (17pt). */
+    const val callout = 17f
+    /** Secondary title — iOS .subheadline = 15pt. */
     const val subheadline = 15f
-    /** Section headers, small titles — 13sp base */
+    /** Section headers, small titles — iOS .footnote = 13pt. */
     const val footnote = 13f
-    /** Small labels, timestamps — 12sp base */
+    /** Small labels, timestamps — iOS .caption = 12pt. */
     const val caption = 12f
-    /** Very small labels — 11sp base */
+    /** Very small labels — iOS .caption2 = 11pt. */
     const val caption2 = 11f
-    /** Code in messages — 13sp base */
-    const val code = 13f
-    /** Large headings — 17sp base */
+    /** Code in messages — matches iOS body (17pt) per CodeBlockView. */
+    const val code = 17f
+    /** Large headings — iOS .headline = 17pt. */
     const val headline = 17f
 }
 

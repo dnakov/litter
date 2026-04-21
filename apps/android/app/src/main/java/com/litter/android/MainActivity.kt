@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.litter.android.state.AppLifecycleController
@@ -43,6 +44,10 @@ class MainActivity : ComponentActivity() {
     private val lifecycleController = AppLifecycleController()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must be called before super.onCreate to hand off the system splash
+        // (Theme.App.Starting) to the Compose AnimatedSplashScreen without a
+        // theme-background flash between them.
+        installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)

@@ -19,6 +19,9 @@ pub(crate) fn shared_runtime() -> Arc<tokio::runtime::Runtime> {
             crate::logging::install_tracing_subscriber();
             Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
+                    // iOS can hand us very small default thread stacks; large
+                    // recorded/replayed payloads can overflow them during serde.
+                    .thread_stack_size(crate::MOBILE_ASYNC_THREAD_STACK_SIZE_BYTES)
                     .enable_all()
                     .build()
                     .expect("failed to create tokio runtime"),

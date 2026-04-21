@@ -4,15 +4,12 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import com.sigkitten.litter.android.R
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.text.method.LinkMovementMethod
 import android.util.Base64
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.TextView
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,16 +32,24 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
@@ -54,8 +59,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -72,9 +77,7 @@ import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalTextScale
 import com.litter.android.ui.scaled
-import io.noties.markwon.Markwon
-import io.noties.markwon.syntax.SyntaxHighlightPlugin
-import io.noties.prism4j.Prism4j
+import com.litter.android.state.AppModel
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.codex_mobile_client.AppMessageRenderBlock
@@ -83,7 +86,9 @@ import uniffi.codex_mobile_client.HydratedConversationItem
 import uniffi.codex_mobile_client.HydratedConversationItemContent
 import uniffi.codex_mobile_client.HydratedPlanStepStatus
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * Renders a single [HydratedConversationItem] by matching on its content type.
@@ -159,9 +164,14 @@ fun ConversationTimelineItem(
             data = content.v1,
         )
 
-        is HydratedConversationItemContent.McpToolCall -> McpToolCallRow(
-            data = content.v1,
-        )
+        is HydratedConversationItemContent.McpToolCall -> {
+            val cu = content.v1.computerUse
+            if (cu != null) {
+                ComputerUseToolCallRow(data = content.v1, view = cu)
+            } else {
+                McpToolCallRow(data = content.v1)
+            }
+        }
 
         is HydratedConversationItemContent.DynamicToolCall -> DynamicToolCallRow(
             data = content.v1,
@@ -172,6 +182,15 @@ fun ConversationTimelineItem(
         }
 
         is HydratedConversationItemContent.WebSearch -> WebSearchRow(
+            data = content.v1,
+        )
+
+        is HydratedConversationItemContent.ImageView -> ImageViewRow(
+            data = content.v1,
+            serverId = serverId,
+        )
+
+        is HydratedConversationItemContent.ImageGeneration -> ImageGenerationRow(
             data = content.v1,
         )
 
@@ -208,6 +227,8 @@ private fun HydratedConversationItemContent.shouldAutoFollowRenderedContent(): B
         is HydratedConversationItemContent.DynamicToolCall,
         is HydratedConversationItemContent.MultiAgentAction,
         is HydratedConversationItemContent.WebSearch,
+        is HydratedConversationItemContent.ImageView,
+        is HydratedConversationItemContent.ImageGeneration,
         is HydratedConversationItemContent.Widget -> true
         else -> false
     }
@@ -225,68 +246,90 @@ private fun UserMessageRow(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    Box {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(LitterTheme.surface.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                .then(
-                    if (onEdit != null || onFork != null) {
-                        Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = { showMenu = true },
-                        )
-                    } else {
-                        Modifier
-                    }
-                )
-                .padding(10.dp),
-        ) {
-            Text(
-                text = data.text,
-                color = LitterTheme.textPrimary,
-                fontSize = LitterTextStyle.callout.scaled,
-            )
-        // Inline images from data URIs
-        for (uri in data.imageDataUris) {
-            val bitmap = remember(uri) {
-                try {
-                    val base64Part = uri.substringAfter("base64,", "")
-                    if (base64Part.isNotEmpty()) {
-                        val bytes = Base64.decode(base64Part, Base64.DEFAULT)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    } else null
-                } catch (_: Exception) { null }
-            }
-            bitmap?.let {
-                Image(
-                    bitmap = it.asImageBitmap(),
-                    contentDescription = "Attached image",
-                    modifier = Modifier
-                        .padding(top = 4.dp)
-                        .heightIn(max = 200.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                )
-            }
-        }
-        }
+    // Right-aligned user bubble matching iOS `UserBubble`: accent-tinted
+    // rounded rect that hugs content width, with a 60dp minimum gutter on
+    // the left so long messages wrap before reaching that edge.
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Box {
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier
+                    .padding(start = 60.dp)
+                    .background(
+                        LitterTheme.accent.copy(alpha = 0.3f),
+                        RoundedCornerShape(14.dp),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                if (onEdit != null || onFork != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Message actions",
+                                    tint = LitterTheme.textSecondary,
+                                )
+                            }
 
-        // Long-press context menu
-        androidx.compose.material3.DropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false },
-        ) {
-            if (onEdit != null) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("Edit Message") },
-                    onClick = { showMenu = false; onEdit(turnIndex) },
-                )
-            }
-            if (onFork != null) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("Fork From Here") },
-                    onClick = { showMenu = false; onFork(turnIndex) },
-                )
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                            ) {
+                                if (onEdit != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Edit Message") },
+                                        onClick = { showMenu = false; onEdit(turnIndex) },
+                                    )
+                                }
+                                if (onFork != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Fork From Here") },
+                                        onClick = { showMenu = false; onFork(turnIndex) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SelectableConversationText {
+                    com.litter.android.ui.common.FormattedText(
+                        text = data.text,
+                        color = LitterTheme.textPrimary,
+                        fontSize = LitterTextStyle.callout.scaled,
+                    )
+                }
+                // Inline images from data URIs
+                for (uri in data.imageDataUris) {
+                    val bitmap = remember(uri) {
+                        try {
+                            val base64Part = uri.substringAfter("base64,", "")
+                            if (base64Part.isNotEmpty()) {
+                                val bytes = Base64.decode(base64Part, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            } else null
+                        } catch (_: Exception) { null }
+                    }
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .heightIn(max = 200.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                    }
+                }
             }
         }
     }
@@ -335,6 +378,7 @@ private fun AssistantMessageRow(
         if (!isStreamingMessage) {
             renderedText = data.text
             pendingText = null
+            StreamingTextCoordinator.evict(itemId)
             return@LaunchedEffect
         }
         if (data.text == renderedText) return@LaunchedEffect
@@ -378,18 +422,18 @@ private fun AssistantMessageRow(
             Spacer(Modifier.height(2.dp))
         }
 
-        val streamingBlocks = remember(renderedText, itemId, serverId, agentDirectoryVersion, isStreamingMessage) {
-            if (!isStreamingMessage) {
-                emptyList()
-            } else {
-                appModel.parser.extractRenderBlocksTyped(renderedText)
-            }
+        if (isStreamingMessage) {
+            StreamingMarkdownView(
+                text = renderedText,
+                itemId = itemId,
+                onRendered = onStreamingSnapshotRendered,
+            )
+        } else {
+            AssistantRenderBlocks(
+                blocks = renderBlocks,
+                fallbackText = renderedText,
+            )
         }
-
-        AssistantRenderBlocks(
-            blocks = if (isStreamingMessage) streamingBlocks else renderBlocks,
-            fallbackText = renderedText,
-        )
     }
 }
 
@@ -546,16 +590,19 @@ private fun ReasoningRow(
 
     if (reasoningText.isBlank()) return
 
-    Text(
-        text = reasoningText,
-        color = LitterTheme.textSecondary,
-        fontSize = LitterTextStyle.body.scaled,
-        fontFamily = LitterTheme.monoFont,
-        fontStyle = FontStyle.Italic,
+    SelectableConversationText(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-    )
+    ) {
+        Text(
+            text = reasoningText,
+            color = LitterTheme.textSecondary,
+            fontSize = LitterTextStyle.body.scaled,
+            fontFamily = LitterTheme.monoFont,
+            fontStyle = FontStyle.Italic,
+        )
+    }
 }
 
 // ── Command Execution ────────────────────────────────────────────────────────
@@ -643,15 +690,17 @@ private fun CommandExecutionRow(
                     .background(LitterTheme.codeBackground, RoundedCornerShape(10.dp))
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
-                Text(
-                    text = outputText,
-                    color = LitterTheme.textSecondary,
-                    fontFamily = LitterTheme.monoFont,
-                    fontSize = LitterTextStyle.body.scaled,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(outputScrollState),
-                )
+                SelectableConversationText {
+                    Text(
+                        text = outputText,
+                        color = LitterTheme.textSecondary,
+                        fontFamily = LitterTheme.monoFont,
+                        fontSize = LitterTextStyle.body.scaled,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(outputScrollState),
+                    )
+                }
             }
         }
     }
@@ -666,6 +715,9 @@ private fun FileChangeRow(
     val summary = remember(data.changes) {
         buildFileChangeSummary(data)
     }
+    val diffChanges = remember(data.changes) {
+        data.changes.filter { it.diff.isNotBlank() }
+    }
 
     ToolCardShell(
         summary = summary.plainText,
@@ -673,13 +725,14 @@ private fun FileChangeRow(
         accent = LitterTheme.toolCallFileChange,
         status = data.status,
     ) {
-        if (data.changes.isNotEmpty()) {
+        if (diffChanges.isEmpty() && data.changes.isNotEmpty()) {
             ListSection("Files", data.changes.map { workspaceTitle(it.path) })
         }
-        data.changes.forEach { change ->
-            if (change.diff.isNotBlank()) {
-                DiffSection(label = workspaceTitle(change.path), content = change.diff)
-            }
+        diffChanges.forEach { change ->
+            DiffSection(
+                label = if (diffChanges.size > 1) workspaceTitle(change.path) else "",
+                content = change.diff,
+            )
         }
     }
 }
@@ -842,6 +895,109 @@ private fun McpToolCallRow(
     }
 }
 
+// ── Computer Use Tool Call (computer-use MCP) ───────────────────────────────
+
+@Composable
+private fun ComputerUseToolCallRow(
+    data: uniffi.codex_mobile_client.HydratedMcpToolCallData,
+    view: uniffi.codex_mobile_client.ComputerUseView,
+) {
+    ToolCardShell(
+        summary = view.summary,
+        accent = LitterTheme.toolCallMcpCall,
+        status = data.status,
+        durationMs = data.durationMs,
+    ) {
+        view.screenshotPng?.let { bytes ->
+            ScreenshotPreview(bytes)
+        }
+        data.errorMessage?.takeIf { it.isNotBlank() }?.let {
+            InlineTextSection("Error", it, tone = LitterTheme.danger)
+        }
+        view.accessibilityText?.takeIf { it.isNotBlank() }?.let {
+            AccessibilityTreeSection(it)
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotPreview(bytes: ByteArray) {
+    val bitmap = remember(bytes) {
+        try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+    if (bitmap == null) {
+        InlineTextSection("Screenshot", "Unavailable", tone = LitterTheme.textMuted)
+        return
+    }
+    Column {
+        Text(
+            text = "SCREENSHOT",
+            color = LitterTheme.textSecondary,
+            fontSize = 10f.scaled,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(4.dp))
+        Image(
+            bitmap = bitmap,
+            contentDescription = "Computer Use screenshot",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(LitterTheme.codeBackground),
+        )
+    }
+}
+
+@Composable
+private fun AccessibilityTreeSection(text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    val lines = remember(text) { text.split('\n') }
+    val previewLineCount = 6
+    val display = if (expanded || lines.size <= previewLineCount) {
+        text
+    } else {
+        lines.take(previewLineCount).joinToString("\n") + "\n… (${lines.size - previewLineCount} more lines)"
+    }
+
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "ACCESSIBILITY TREE",
+                color = LitterTheme.textSecondary,
+                fontSize = 10f.scaled,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+            )
+            if (lines.size > previewLineCount) {
+                Text(
+                    text = if (expanded) "Collapse" else "Expand",
+                    color = LitterTheme.accent,
+                    fontSize = 10f.scaled,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable { expanded = !expanded },
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = display,
+            color = LitterTheme.textSecondary,
+            fontSize = LitterTextStyle.caption2.scaled,
+            fontFamily = BerkeleyMono,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(LitterTheme.codeBackground)
+                .padding(10.dp),
+        )
+    }
+}
+
 // ── Dynamic Tool Call ────────────────────────────────────────────────────────
 
 @Composable
@@ -888,6 +1044,221 @@ private fun WebSearchRow(
             InlineTextSection("Query", data.query)
         }
         data.actionJson?.takeIf { it.isNotBlank() }?.let { CodeSection("Action", it) }
+    }
+}
+
+@Composable
+private fun ImageViewRow(
+    data: uniffi.codex_mobile_client.HydratedImageViewData,
+    serverId: String,
+) {
+    ToolCardShell(
+        summary = workspaceTitle(data.path),
+        accent = LitterTheme.warning,
+        status = AppOperationStatus.COMPLETED,
+        defaultExpanded = true,
+    ) {
+        ImageResultSection(path = data.path, serverId = serverId)
+        KeyValueSection("Metadata", listOf("Path" to data.path))
+    }
+}
+
+@Composable
+private fun ImageGenerationRow(
+    data: uniffi.codex_mobile_client.HydratedImageGenerationData,
+) {
+    val summary = when (data.status) {
+        AppOperationStatus.COMPLETED -> "Generated image"
+        AppOperationStatus.FAILED -> "Image generation failed"
+        else -> "Generating image…"
+    }
+    ToolCardShell(
+        summary = summary,
+        accent = LitterTheme.accent,
+        status = data.status,
+        defaultExpanded = true,
+    ) {
+        GeneratedImageSection(data = data)
+        data.revisedPrompt?.takeIf { it.isNotBlank() }?.let { prompt ->
+            RevisedPromptSection(prompt)
+        }
+        data.savedPath?.takeIf { it.isNotBlank() }?.let { path ->
+            KeyValueSection("Metadata", listOf("Saved to" to path))
+        }
+    }
+}
+
+@Composable
+private fun GeneratedImageSection(
+    data: uniffi.codex_mobile_client.HydratedImageGenerationData,
+) {
+    val bitmap = remember(data.imagePng) {
+        val bytes = data.imagePng ?: return@remember null
+        try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SectionLabel("Image")
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LitterTheme.codeBackground, RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                bitmap != null -> {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "Generated image",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                }
+                data.status == AppOperationStatus.IN_PROGRESS ||
+                    data.status == AppOperationStatus.PENDING -> {
+                    CircularProgressIndicator(
+                        color = LitterTheme.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.padding(vertical = 24.dp),
+                    )
+                }
+                else -> {
+                    Text(
+                        text = "Image unavailable",
+                        color = LitterTheme.textMuted,
+                        fontSize = LitterTextStyle.caption.scaled,
+                        modifier = Modifier.padding(vertical = 20.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RevisedPromptSection(prompt: String) {
+    var expanded by remember(prompt) { mutableStateOf(false) }
+    val isLong = prompt.length > 220 || prompt.count { it == '\n' } >= 4
+    val display = if (expanded || !isLong) prompt else prompt.take(220).trimEnd() + "…"
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Revised Prompt")
+            Spacer(Modifier.weight(1f))
+            if (isLong) {
+                Text(
+                    text = if (expanded) "Collapse" else "Expand",
+                    color = LitterTheme.accent,
+                    fontSize = LitterTextStyle.caption2.scaled,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable { expanded = !expanded },
+                )
+            }
+        }
+        Text(
+            text = display,
+            color = LitterTheme.textSecondary,
+            fontSize = LitterTextStyle.body.scaled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LitterTheme.codeBackground, RoundedCornerShape(8.dp))
+                .padding(10.dp),
+        )
+    }
+}
+
+private sealed interface ToolImageLoadState {
+    data object Loading : ToolImageLoadState
+    data class Loaded(val bitmap: android.graphics.Bitmap) : ToolImageLoadState
+    data class Failed(val message: String) : ToolImageLoadState
+}
+
+@Composable
+private fun ImageResultSection(
+    path: String,
+    serverId: String,
+) {
+    val appModel = LocalAppModel.current
+    val loadState by produceState<ToolImageLoadState>(
+        initialValue = ToolImageLoadState.Loading,
+        path,
+        serverId,
+    ) {
+        value = ToolImageLoadState.Loading
+        value = loadToolImage(appModel, path, serverId)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SectionLabel("Image")
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LitterTheme.codeBackground, RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            when (val state = loadState) {
+                ToolImageLoadState.Loading -> {
+                    CircularProgressIndicator(
+                        color = LitterTheme.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.padding(vertical = 24.dp),
+                    )
+                }
+
+                is ToolImageLoadState.Loaded -> {
+                    Image(
+                        bitmap = state.bitmap.asImageBitmap(),
+                        contentDescription = workspaceTitle(path),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                }
+
+                is ToolImageLoadState.Failed -> {
+                    Text(
+                        text = state.message,
+                        color = LitterTheme.danger,
+                        fontSize = LitterTextStyle.caption.scaled,
+                        modifier = Modifier.padding(vertical = 20.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private suspend fun loadToolImage(
+    appModel: AppModel,
+    path: String,
+    serverId: String,
+): ToolImageLoadState {
+    return try {
+        val resolved = withContext(Dispatchers.IO) {
+            appModel.client.resolveImageView(serverId, path)
+        }
+        val bitmap = BitmapFactory.decodeByteArray(resolved.bytes, 0, resolved.bytes.size)
+        if (bitmap != null) {
+            ToolImageLoadState.Loaded(bitmap)
+        } else {
+            ToolImageLoadState.Failed("Could not decode the image.")
+        }
+    } catch (error: Exception) {
+        val message = error.message?.trim().orEmpty()
+        ToolImageLoadState.Failed(
+            if (message.isNotEmpty()) message else "Image unavailable",
+        )
     }
 }
 
@@ -1121,25 +1492,27 @@ private fun ErrorRow(
             .background(LitterTheme.surface, RoundedCornerShape(8.dp))
             .padding(8.dp),
     ) {
-        Text(
-            text = data.title.ifBlank { "Error" },
-            color = LitterTheme.danger,
-            fontSize = LitterTextStyle.body.scaled,
-            fontWeight = FontWeight.Medium,
-        )
-        Text(
-            text = data.message,
-            color = LitterTheme.textPrimary,
-            fontSize = LitterTextStyle.body.scaled,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-        data.details?.takeIf { it.isNotBlank() }?.let { details ->
+        SelectableConversationText {
             Text(
-                text = details,
-                color = LitterTheme.textSecondary,
+                text = data.title.ifBlank { "Error" },
+                color = LitterTheme.danger,
+                fontSize = LitterTextStyle.body.scaled,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = data.message,
+                color = LitterTheme.textPrimary,
                 fontSize = LitterTextStyle.body.scaled,
                 modifier = Modifier.padding(top = 2.dp),
             )
+            data.details?.takeIf { it.isNotBlank() }?.let { details ->
+                Text(
+                    text = details,
+                    color = LitterTheme.textSecondary,
+                    fontSize = LitterTextStyle.body.scaled,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
     }
 }
@@ -1151,33 +1524,20 @@ private fun MarkdownText(
     text: String,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val textScale = LocalTextScale.current
-    val markwon = remember(context) {
-        try {
-            val prism4j = Prism4j(com.litter.android.ui.Prism4jGrammarLocator())
-            Markwon.builder(context)
-                .usePlugin(SyntaxHighlightPlugin.create(prism4j, io.noties.markwon.syntax.Prism4jThemeDarkula.create()))
-                .build()
-        } catch (_: Exception) {
-            Markwon.create(context)
+    if (com.litter.android.state.DebugSettings.enabled && com.litter.android.state.DebugSettings.disableMarkdown) {
+        SelectableConversationText(modifier = modifier.fillMaxWidth()) {
+            Text(
+                text = text,
+                color = LitterTheme.textBody,
+                fontFamily = FontFamily.Monospace,
+                fontSize = LitterTextStyle.body.scaled,
+            )
         }
+        return
     }
 
-    AndroidView(
-        factory = { ctx ->
-            TextView(ctx).apply {
-                setTextColor(LitterTheme.textBody.toArgb())
-                textSize = LitterTextStyle.body * textScale
-                movementMethod = LinkMovementMethod.getInstance()
-                setLinkTextColor(LitterTheme.accent.toArgb())
-            }
-        },
-        update = { tv ->
-            tv.setTextColor(LitterTheme.textBody.toArgb())
-            tv.textSize = LitterTextStyle.body * textScale
-            markwon.setMarkdown(tv, text)
-        },
+    SelectableMarkdownText(
+        text = text,
         modifier = modifier.fillMaxWidth(),
     )
 }
@@ -1243,13 +1603,15 @@ private fun CodeBlockSegment(
                 .background(LitterTheme.codeBackground, RoundedCornerShape(8.dp))
                 .padding(10.dp),
         ) {
-            Text(
-                text = code,
-                color = LitterTheme.textBody,
-                fontFamily = LitterTheme.monoFont,
-                fontSize = LitterTextStyle.body.scaled,
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-            )
+            SelectableConversationText {
+                Text(
+                    text = code,
+                    color = LitterTheme.textBody,
+                    fontFamily = LitterTheme.monoFont,
+                    fontSize = LitterTextStyle.body.scaled,
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                )
+            }
         }
     }
 }
@@ -1484,34 +1846,18 @@ private fun DiffSection(
     content: String,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        SectionLabel(label)
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            content.lines().forEach { line ->
-                Text(
-                    text = if (line.isEmpty()) " " else line,
-                    color = when {
-                        line.startsWith("+") && !line.startsWith("+++") -> LitterTheme.success
-                        line.startsWith("-") && !line.startsWith("---") -> LitterTheme.danger
-                        line.startsWith("@@") -> LitterTheme.accentStrong
-                        else -> LitterTheme.textBody
-                    },
-                    fontFamily = LitterTheme.monoFont,
-                    fontSize = LitterTextStyle.body.scaled,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            when {
-                                line.startsWith("+") && !line.startsWith("+++") -> LitterTheme.success.copy(alpha = 0.12f)
-                                line.startsWith("-") && !line.startsWith("---") -> LitterTheme.danger.copy(alpha = 0.12f)
-                                line.startsWith("@@") -> LitterTheme.accentStrong.copy(alpha = 0.12f)
-                                else -> LitterTheme.codeBackground.copy(alpha = 0.72f)
-                            },
-                            RoundedCornerShape(8.dp),
-                        )
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
+        if (label.isNotEmpty()) {
+            SectionLabel(label)
         }
+        SyntaxHighlightedDiffBlock(
+            diff = content,
+            titleHint = label.ifEmpty { null },
+            fontSize = LitterTextStyle.caption.scaled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LitterTheme.codeBackground, RoundedCornerShape(8.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        )
     }
 }
 
@@ -1524,10 +1870,18 @@ private fun RichDynamicToolResult(
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 payload.items.forEach { item ->
                     SessionServerCard(
-                        icon = if (item.isLocal) "⌁" else "◫",
+                        icon = {
+                            Icon(
+                                if (item.isLocal) Icons.Default.PhoneAndroid else Icons.Default.Dns,
+                                contentDescription = null,
+                                tint = LitterTheme.accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
                         title = item.name,
                         subtitle = item.hostname,
                         trailing = if (item.isConnected) "Connected" else "Offline",
+                        statusDotColor = if (item.isConnected) LitterTheme.success else LitterTheme.textMuted,
                     )
                 }
             }
@@ -1538,12 +1892,20 @@ private fun RichDynamicToolResult(
                     val subtitle = listOfNotNull(
                         item.serverName?.takeIf { it.isNotBlank() },
                         item.model?.takeIf { it.isNotBlank() },
-                    ).joinToString(" · ")
+                    ).joinToString(" \u00b7 ")
                     SessionServerCard(
-                        icon = "◌",
+                        icon = {
+                            Icon(
+                                Icons.Default.Chat,
+                                contentDescription = null,
+                                tint = LitterTheme.accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
                         title = item.title.ifBlank { "Untitled session" },
                         subtitle = subtitle,
                         trailing = null,
+                        statusDotColor = null,
                     )
                 }
             }
@@ -1553,10 +1915,11 @@ private fun RichDynamicToolResult(
 
 @Composable
 private fun SessionServerCard(
-    icon: String,
+    icon: @Composable () -> Unit,
     title: String,
     subtitle: String,
     trailing: String?,
+    statusDotColor: Color?,
 ) {
     Row(
         modifier = Modifier
@@ -1566,12 +1929,14 @@ private fun SessionServerCard(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = icon,
-            color = LitterTheme.accent,
-            fontSize = LitterTextStyle.headline.scaled,
-            fontWeight = FontWeight.Medium,
-        )
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .background(LitterTheme.accent.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            icon()
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -1590,12 +1955,27 @@ private fun SessionServerCard(
                 )
             }
         }
-        trailing?.let {
-            Text(
-                text = it,
-                color = LitterTheme.textMuted,
-                fontSize = LitterTextStyle.caption.scaled,
-            )
+        if (statusDotColor != null || trailing != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                statusDotColor?.let { dotColor ->
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(dotColor),
+                    )
+                }
+                trailing?.let {
+                    Text(
+                        text = it,
+                        color = LitterTheme.textMuted,
+                        fontSize = LitterTextStyle.caption.scaled,
+                    )
+                }
+            }
         }
     }
 }

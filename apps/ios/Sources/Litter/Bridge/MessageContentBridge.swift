@@ -225,8 +225,36 @@ private extension AppToolCallCard {
     }
 
     private func normalizedSections(kind: ToolCallKind, sections: [ToolCallSection]) -> [ToolCallSection] {
-        guard kind.isCommandLike else { return sections }
-        return sections.filter { section in
+        var normalized = sections
+
+        if kind == .fileChange || kind == .fileDiff {
+            let diffIndices = normalized.enumerated().compactMap { index, section -> Int? in
+                if case .diff = section { return index }
+                return nil
+            }
+
+            if !diffIndices.isEmpty {
+                normalized.removeAll { section in
+                    if case .list(let label, _) = section {
+                        return normalizedText(label) == "files"
+                    }
+                    return false
+                }
+            }
+
+            if kind == .fileChange,
+               diffIndices.count == 1,
+               let diffIndex = normalized.enumerated().first(where: { _, section in
+                   if case .diff = section { return true }
+                   return false
+               })?.offset,
+               case .diff(_, let content) = normalized[diffIndex] {
+                normalized[diffIndex] = .diff(label: "", content: content)
+            }
+        }
+
+        guard kind.isCommandLike else { return normalized }
+        return normalized.filter { section in
             let label = normalizedLabel(for: section)
             return label != "command" && label != "directory" && label != "cwd" && label != "working directory"
         }

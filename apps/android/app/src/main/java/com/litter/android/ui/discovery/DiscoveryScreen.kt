@@ -861,7 +861,9 @@ private fun ManualEntryDialog(
                         singleLine = true,
                     )
                     Text(
-                        text = "Run: codex app-server --listen ws://0.0.0.0:8390",
+                        text = "Prefer the SSH flow — it binds 127.0.0.1 on the remote and forwards the port. " +
+                            "If you run manually, bind loopback and tunnel yourself: " +
+                            "codex app-server --listen ws://127.0.0.1:8390",
                         color = LitterTheme.textMuted,
                         fontSize = 11.sp,
                     )

@@ -31,8 +31,10 @@ final class StableSafeAreaInsets {
 
         observers = observedNames.map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self else { return }
-                self.refresh(fallback: self.bottomInset > 0 ? self.bottomInset : fallback)
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.refresh(fallback: self.bottomInset > 0 ? self.bottomInset : fallback)
+                }
             }
         }
 

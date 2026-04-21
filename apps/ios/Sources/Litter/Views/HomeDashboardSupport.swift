@@ -6,14 +6,45 @@ struct HomeDashboardRecentSession: Identifiable, Hashable {
     let serverId: String
     let serverDisplayName: String
     let sessionTitle: String
+    let preview: String
     let cwd: String
+    let model: String
+    let agentLabel: String?
     let updatedAt: Date
     let hasTurnActive: Bool
+    let isSubagent: Bool
+    let isFork: Bool
+    let lastResponsePreview: String?
+    /// `source_turn_id` of the assistant item behind
+    /// `lastResponsePreview`. Used as the crossfade key in
+    /// `HomeDashboardView.responsePreview` so the text only re-animates when
+    /// a new assistant reply arrives, not when the user submits a new
+    /// prompt (which bumps `stats.turnCount` before any assistant text
+    /// exists).
+    let lastResponseTurnId: String?
+    let lastUserMessage: String?
+    let lastToolLabel: String?
+    let stats: AppConversationStats?
+    let tokenUsage: AppTokenUsage?
+    /// Tool activity log precomputed by the Rust reducer in
+    /// `extract_conversation_activity` (shared/rust-bridge/.../boundary.rs).
+    /// The iOS home card used to redo this walk client-side — that was the
+    /// dominant AttributeGraph subscription during streaming. Using the
+    /// Rust-side log removes every `appModel.snapshot` read from the card
+    /// at zoom 1–3.
+    let recentToolLog: [AppToolLogEntry]
+    /// Bounds of the most recent turn. Rust emits these in milliseconds
+    /// since epoch alongside `recent_tool_log`; we project into `Date` so
+    /// the zoom-4 stopwatch chip can render durations without reading
+    /// `appModel.snapshot`. `end` is `nil` when the turn is still active
+    /// — the chip then drives its own live ticker.
+    let lastTurnStart: Date?
+    let lastTurnEnd: Date?
 
     var id: ThreadKey { key }
 }
 
-struct HomeDashboardServer: Identifiable {
+struct HomeDashboardServer: Identifiable, Equatable {
     let id: String
     let displayName: String
     let host: String
@@ -25,6 +56,7 @@ struct HomeDashboardServer: Identifiable {
     let statusLabel: String
     let statusColor: Color
     let backendKind: ServerBackendKind
+    let statusDotState: StatusDotState
 
     var deduplicationKey: String {
         if isLocal {
@@ -39,6 +71,18 @@ struct HomeDashboardServer: Identifiable {
 
         return normalized.isEmpty ? id : normalized
     }
+
+    static func == (lhs: HomeDashboardServer, rhs: HomeDashboardServer) -> Bool {
+        lhs.id == rhs.id &&
+            lhs.displayName == rhs.displayName &&
+            lhs.host == rhs.host &&
+            lhs.port == rhs.port &&
+            lhs.isLocal == rhs.isLocal &&
+            lhs.hasIpc == rhs.hasIpc &&
+            lhs.health == rhs.health &&
+            lhs.sourceLabel == rhs.sourceLabel &&
+            lhs.statusLabel == rhs.statusLabel
+    }
 }
 
 @MainActor
@@ -46,26 +90,41 @@ enum HomeDashboardSupport {
     static func recentConnectedSessions(
         from sessions: [AppSessionSummary],
         serversById: [String: HomeDashboardServer],
-        limit: Int = 10
+        limit: Int? = 10
     ) -> [HomeDashboardRecentSession] {
-        Array(
-            sessions
-                .filter { serversById[$0.key.serverId] != nil }
-                .sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
-                .compactMap { session in
-                    guard let server = serversById[session.key.serverId] else { return nil }
-                    return HomeDashboardRecentSession(
-                        key: session.key,
-                        serverId: session.key.serverId,
-                        serverDisplayName: server.displayName,
-                        sessionTitle: sessionTitle(for: session),
-                        cwd: session.cwd,
-                        updatedAt: Date(timeIntervalSince1970: TimeInterval(session.updatedAt ?? 0)),
-                        hasTurnActive: session.hasActiveTurn
-                    )
-                }
-                .prefix(limit)
-        )
+        let sorted = sessions
+            .filter { serversById[$0.key.serverId] != nil }
+            .sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
+            .compactMap { session -> HomeDashboardRecentSession? in
+                guard let server = serversById[session.key.serverId] else { return nil }
+                return HomeDashboardRecentSession(
+                    key: session.key,
+                    serverId: session.key.serverId,
+                    serverDisplayName: server.displayName,
+                    sessionTitle: sessionTitle(for: session),
+                    preview: session.preview,
+                    cwd: session.cwd,
+                    model: session.model,
+                    agentLabel: session.agentDisplayLabel,
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(session.updatedAt ?? 0)),
+                    hasTurnActive: session.hasActiveTurn,
+                    isSubagent: session.isSubagent,
+                    isFork: session.isFork,
+                    lastResponsePreview: session.lastResponsePreview,
+                    lastResponseTurnId: session.lastResponseTurnId,
+                    lastUserMessage: session.lastUserMessage,
+                    lastToolLabel: session.lastToolLabel,
+                    stats: session.stats,
+                    tokenUsage: session.tokenUsage,
+                    recentToolLog: session.recentToolLog,
+                    lastTurnStart: session.lastTurnStartMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000.0) },
+                    lastTurnEnd: session.hasActiveTurn
+                        ? nil
+                        : session.lastTurnEndMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000.0) }
+                )
+            }
+        if let limit { return Array(sorted.prefix(limit)) }
+        return sorted
     }
 
     static func sortedConnectedServers(
@@ -88,7 +147,8 @@ enum HomeDashboardSupport {
                     sourceLabel: server.connectionModeLabel,
                     statusLabel: server.statusLabel,
                     statusColor: server.statusColor,
-                    backendKind: server.backendKind
+                    backendKind: server.backendKind,
+                    statusDotState: server.statusDotState
                 )
             }
             .sorted { lhs, rhs in
@@ -126,6 +186,22 @@ enum HomeDashboardSupport {
     }
 
     private static func sessionTitle(for session: AppSessionSummary) -> String {
-        session.displayTitle
+        let trimmedPreview = session.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPreview.isEmpty { return trimmedPreview }
+
+        // Rust's `title` falls back to the literal "Untitled session" when
+        // title + preview are both empty on the server — treat it as empty
+        // here so we pick up the first user message instead.
+        let trimmedTitle = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty && trimmedTitle != "Untitled session" {
+            return trimmedTitle
+        }
+
+        if let userMessage = session.lastUserMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !userMessage.isEmpty {
+            return userMessage
+        }
+
+        return "New thread"
     }
 }

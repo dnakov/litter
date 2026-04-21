@@ -46,7 +46,9 @@ jobs:
           done
 
       - name: Install dependencies
-        run: brew install jq asc
+        run: |
+          brew install jq
+          HOMEBREW_NO_AUTO_UPDATE=0 brew install asc
 
       - name: Decode App Store Connect API key
         env:

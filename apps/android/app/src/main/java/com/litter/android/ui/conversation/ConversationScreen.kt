@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,6 +72,8 @@ import com.litter.android.ui.ChatWallpaperBackground
 import com.litter.android.ui.ConversationPrefs
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.LitterTextStyle
+import com.litter.android.ui.scaled
 import com.litter.android.ui.WallpaperManager
 import com.litter.android.ui.WallpaperType
 import com.litter.android.ui.isNearListBottom
@@ -96,6 +99,25 @@ fun ConversationScreen(
     val appModel = LocalAppModel.current
     val snapshot by appModel.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Pre-warm Markwon and MessageParser on conversation open
+    val warmMarkwon = remember(context) {
+        try {
+            val prism4j = io.noties.prism4j.Prism4j(com.litter.android.ui.Prism4jGrammarLocator())
+            io.noties.markwon.Markwon.builder(context)
+                .usePlugin(io.noties.markwon.syntax.SyntaxHighlightPlugin.create(prism4j, io.noties.markwon.syntax.Prism4jThemeDarkula.create()))
+                .build()
+        } catch (_: Exception) {
+            io.noties.markwon.Markwon.create(context)
+        }
+    }
+    LaunchedEffect(Unit) {
+        // Trigger a lightweight parse to JIT-warm the Rust MessageParser
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            appModel.parser.extractRenderBlocksTyped("")
+        }
+    }
 
     val thread = remember(snapshot, threadKey) {
         appModel.threadSnapshot(threadKey)
@@ -207,6 +229,7 @@ fun ConversationScreen(
     var showPermissionsSheet by remember { mutableStateOf(false) }
     var showExperimentalSheet by remember { mutableStateOf(false) }
     var showSkillsSheet by remember { mutableStateOf(false) }
+    var showSessionDiffSheet by remember { mutableStateOf(false) }
     var slashErrorMessage by remember { mutableStateOf<String?>(null) }
     var reloadErrorMessage by remember { mutableStateOf<String?>(null) }
     var collaborationModesLoading by remember { mutableStateOf(false) }
@@ -267,9 +290,7 @@ fun ConversationScreen(
     // Pinned context: latest TODO progress + combined session diff summary
     val pinnedContext = remember(items) {
         var todoProgress: String? = null
-        var diffAdditions = 0
-        var diffDeletions = 0
-        var sawDiff = false
+        val rawDiffSections = mutableListOf<SessionDiffSection>()
         for (i in items.indices.reversed()) {
             when (val c = items[i].content) {
                 is HydratedConversationItemContent.TodoList -> {
@@ -282,31 +303,35 @@ fun ConversationScreen(
                 }
                 is HydratedConversationItemContent.FileChange -> {
                     c.v1.changes.forEach { change ->
-                        if (change.diff.isBlank()) return@forEach
-                        sawDiff = true
-                        val stats = summarizeDiff(change.diff)
-                        diffAdditions += stats.additions
-                        diffDeletions += stats.deletions
+                        val diff = change.diff.trim()
+                        if (diff.isBlank()) return@forEach
+                        rawDiffSections += SessionDiffSection(
+                            title = workspaceTitleCompat(change.path),
+                            diff = diff,
+                        )
                     }
                 }
                 is HydratedConversationItemContent.TurnDiff -> {
-                    if (c.v1.diff.isNotBlank()) {
-                        sawDiff = true
-                        val stats = summarizeDiff(c.v1.diff)
-                        diffAdditions += stats.additions
-                        diffDeletions += stats.deletions
-                    }
+                    rawDiffSections += parseSessionDiffSections(c.v1.diff)
                 }
                 else -> {}
             }
         }
-        val diffSummary = if (sawDiff) {
-            DiffSummary(additions = diffAdditions, deletions = diffDeletions)
-        } else {
-            null
-        }
+        val diffSections = mergeSessionDiffSections(rawDiffSections)
+        val diffSummary = diffSections
+            .takeIf { it.isNotEmpty() }
+            ?.fold(DiffSummary(additions = 0, deletions = 0)) { acc, section ->
+                DiffSummary(
+                    additions = acc.additions + section.summary.additions,
+                    deletions = acc.deletions + section.summary.deletions,
+                )
+            }
         if (todoProgress != null || diffSummary != null) {
-            PinnedContextData(todoProgress = todoProgress, diffSummary = diffSummary)
+            PinnedContextData(
+                todoProgress = todoProgress,
+                diffSummary = diffSummary,
+                diffSections = diffSections,
+            )
         } else {
             null
         }
@@ -411,7 +436,7 @@ fun ConversationScreen(
                                     Text(
                                         "Loading conversation…",
                                         color = LitterTheme.textMuted,
-                                        fontSize = 12.sp,
+                                        fontSize = LitterTextStyle.caption.scaled,
                                     )
                                 }
                             }
@@ -428,7 +453,7 @@ fun ConversationScreen(
                                     Text(
                                         "Load earlier messages",
                                         color = LitterTheme.accent,
-                                        fontSize = 12.sp,
+                                        fontSize = LitterTextStyle.caption.scaled,
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                 }
@@ -518,6 +543,32 @@ fun ConversationScreen(
                                         }
                                     }
 
+                                    // Debug turn metrics
+                                    if (com.litter.android.state.DebugSettings.enabled && com.litter.android.state.DebugSettings.showTurnMetrics) {
+                                        val metricsText = remember(turn.items) {
+                                            val dur = turn.totalDurationMs
+                                            val cmds = turn.commandCount
+                                            val files = turn.fileChangeCount
+                                            val itemCount = turn.items.size
+                                            buildString {
+                                                append("$itemCount items")
+                                                if (cmds > 0) append(" \u00b7 $cmds cmds")
+                                                if (files > 0) append(" \u00b7 $files files")
+                                                if (dur > 0) {
+                                                    val durStr = if (dur < 1000) "${dur}ms" else "%.1fs".format(dur / 1000.0)
+                                                    append(" \u00b7 $durStr")
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = metricsText,
+                                            color = LitterTheme.textMuted.copy(alpha = 0.6f),
+                                            fontSize = 10f.scaled,
+                                            fontFamily = com.litter.android.ui.BerkeleyMono,
+                                            modifier = Modifier.padding(top = 2.dp, start = 4.dp),
+                                        )
+                                    }
+
                                     if (turn.isActiveTurn) {
                                         StreamingCursor()
                                     }
@@ -526,7 +577,7 @@ fun ConversationScreen(
                                         Text(
                                             text = "Show less",
                                             color = LitterTheme.textMuted,
-                                            fontSize = 11.sp,
+                                            fontSize = LitterTextStyle.caption2.scaled,
                                             fontWeight = FontWeight.Medium,
                                             modifier = Modifier
                                                 .clickable {
@@ -603,12 +654,34 @@ fun ConversationScreen(
                                 PlanContextBadge(progress = todo)
                             }
                             pinnedContext.diffSummary?.let { diff ->
-                                DiffSummaryBadge(summary = diff)
+                                DiffSummaryBadge(
+                                    summary = diff,
+                                    onClick = { showSessionDiffSheet = true },
+                                )
                                 CollaborationModeChip(
                                     mode = thread?.collaborationMode ?: uniffi.codex_mobile_client.AppModeKind.DEFAULT,
                                     onClick = { showCollaborationModeSelector = true },
                                 )
                             }
+                        }
+                    }
+
+                    // Inline voice status strip (above composer when voice active)
+                    run {
+                        val voiceController = remember { com.litter.android.state.VoiceRuntimeController.shared }
+                        val voiceLocalSession by voiceController.activeVoiceSession.collectAsState()
+                        val voiceSnap by appModel.snapshot.collectAsState()
+                        val voicePhase = voiceSnap?.voiceSession?.phase
+                        if (voiceLocalSession != null && voicePhase != null) {
+                            com.litter.android.ui.voice.InlineVoiceStatusStrip(
+                                phase = voicePhase,
+                                inputLevel = voiceLocalSession?.inputLevel ?: 0f,
+                                outputLevel = voiceLocalSession?.outputLevel ?: 0f,
+                                onToggleSpeaker = {
+                                    val current = voiceController.isSpeakerEnabled()
+                                    voiceController.setSpeakerEnabled(!current)
+                                },
+                            )
                         }
                     }
 
@@ -725,6 +798,19 @@ fun ConversationScreen(
                     cwd = thread?.info?.cwd ?: appModel.launchState.snapshot.value.currentCwd.ifBlank { "/" },
                     onDismiss = { showSkillsSheet = false },
                     onError = { slashErrorMessage = it },
+                )
+            }
+        }
+
+        if (showSessionDiffSheet && !pinnedContext?.diffSections.isNullOrEmpty()) {
+            ModalBottomSheet(
+                onDismissRequest = { showSessionDiffSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                SessionDiffSheet(
+                    sections = pinnedContext?.diffSections.orEmpty(),
+                    onDismiss = { showSessionDiffSheet = false },
                 )
             }
         }
@@ -873,7 +959,7 @@ private fun CollaborationModeSheet(
             Text(
                 text = "Collaboration Mode",
                 color = LitterTheme.textPrimary,
-                fontSize = 18.sp,
+                fontSize = 18f.scaled,
                 fontWeight = FontWeight.SemiBold,
             )
             TextButton(onClick = onDismiss) {
@@ -899,14 +985,14 @@ private fun CollaborationModeSheet(
                     Text(
                         text = preset.name,
                         color = LitterTheme.textPrimary,
-                        fontSize = 14.sp,
+                        fontSize = LitterTextStyle.body.scaled,
                         fontWeight = FontWeight.SemiBold,
                     )
                     preset.reasoningEffort?.let { effort ->
                         Text(
                             text = collaborationModeEffortLabel(effort),
                             color = LitterTheme.textSecondary,
-                            fontSize = 11.sp,
+                            fontSize = LitterTextStyle.caption2.scaled,
                         )
                     }
                 }
@@ -914,7 +1000,7 @@ private fun CollaborationModeSheet(
                     Text(
                         text = "Selected",
                         color = LitterTheme.accent,
-                        fontSize = 11.sp,
+                        fontSize = LitterTextStyle.caption2.scaled,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -938,6 +1024,7 @@ private fun collaborationModeEffortLabel(
 private data class PinnedContextData(
     val todoProgress: String?,
     val diffSummary: DiffSummary?,
+    val diffSections: List<SessionDiffSection>,
 )
 
 private data class DiffSummary(
@@ -947,6 +1034,17 @@ private data class DiffSummary(
     val hasChanges: Boolean
         get() = additions > 0 || deletions > 0
 }
+
+private data class SessionDiffSection(
+    val title: String,
+    val diff: String,
+) {
+    val id: String = "$title|${diff.hashCode()}"
+    val summary: DiffSummary = summarizeDiff(diff)
+}
+
+private const val MAX_STICKY_DIFF_SECTIONS = 8
+private const val MAX_STICKY_DIFF_CHARACTERS = 20_000
 
 private fun summarizeDiff(diff: String): DiffSummary {
     var additions = 0
@@ -983,7 +1081,7 @@ private fun PlanContextBadge(progress: String) {
     Text(
         text = "Plan $progress",
         color = LitterTheme.accent,
-        fontSize = 11.sp,
+        fontSize = LitterTextStyle.caption2.scaled,
         fontWeight = FontWeight.Medium,
         modifier = Modifier
             .background(LitterTheme.surface.copy(alpha = 0.72f), RoundedCornerShape(999.dp))
@@ -992,10 +1090,14 @@ private fun PlanContextBadge(progress: String) {
 }
 
 @Composable
-private fun DiffSummaryBadge(summary: DiffSummary) {
+private fun DiffSummaryBadge(
+    summary: DiffSummary,
+    onClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .background(LitterTheme.surface.copy(alpha = 0.72f), RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1003,21 +1105,21 @@ private fun DiffSummaryBadge(summary: DiffSummary) {
         Text(
             text = "\u2194",
             color = LitterTheme.accent,
-            fontSize = 11.sp,
+            fontSize = LitterTextStyle.caption2.scaled,
             fontWeight = FontWeight.SemiBold,
         )
         if (summary.hasChanges) {
             Text(
                 text = "+${summary.additions}",
                 color = LitterTheme.success,
-                fontSize = 11.sp,
+                fontSize = LitterTextStyle.caption2.scaled,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = BerkeleyMono,
             )
             Text(
                 text = "-${summary.deletions}",
                 color = LitterTheme.danger,
-                fontSize = 11.sp,
+                fontSize = LitterTextStyle.caption2.scaled,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = BerkeleyMono,
             )
@@ -1025,10 +1127,253 @@ private fun DiffSummaryBadge(summary: DiffSummary) {
             Text(
                 text = "Diff",
                 color = LitterTheme.textSecondary,
-                fontSize = 11.sp,
+                fontSize = LitterTextStyle.caption2.scaled,
                 fontWeight = FontWeight.SemiBold,
             )
         }
+    }
+}
+
+private fun parseSessionDiffSections(diff: String): List<SessionDiffSection> {
+    val normalized = diff.trim()
+    if (normalized.isBlank()) return emptyList()
+
+    val lines = normalized.lines()
+    val splitIndices = lines.mapIndexedNotNull { index, line ->
+        if (line.startsWith("diff --git ")) index else null
+    }
+
+    if (splitIndices.isEmpty()) {
+        return listOf(
+            SessionDiffSection(
+                title = diffSectionTitle(normalized),
+                diff = normalized,
+            ),
+        )
+    }
+
+    return splitIndices.mapIndexedNotNull { offset, start ->
+        val end = if (offset + 1 < splitIndices.size) splitIndices[offset + 1] else lines.size
+        val chunk = lines.subList(start, end).joinToString("\n").trim()
+        if (chunk.isBlank()) null else SessionDiffSection(title = diffSectionTitle(chunk), diff = chunk)
+    }
+}
+
+private fun mergeSessionDiffSections(sections: List<SessionDiffSection>): List<SessionDiffSection> {
+    val orderedTitles = mutableListOf<String>()
+    val mergedByTitle = linkedMapOf<String, String>()
+    val passthrough = mutableListOf<SessionDiffSection>()
+
+    sections.forEach { section ->
+        val title = section.title.trim()
+        if (title.isBlank()) {
+            passthrough += section
+            return@forEach
+        }
+
+        val existing = mergedByTitle[title]
+        if (existing == null) {
+            orderedTitles += title
+            mergedByTitle[title] = section.diff
+        } else {
+            mergedByTitle[title] = "$existing\n\n${section.diff}"
+        }
+    }
+
+    return orderedTitles.mapNotNull { title ->
+        mergedByTitle[title]?.let { SessionDiffSection(title = title, diff = it) }
+    } + passthrough
+}
+
+private fun diffSectionTitle(diff: String): String {
+    diff.lineSequence().forEach { line ->
+        when {
+            line.startsWith("diff --git ") -> {
+                return stripDiffPathPrefix(line.substringAfterLast(' '))
+            }
+            line.startsWith("+++ ") -> {
+                val path = line.removePrefix("+++ ")
+                if (path != "/dev/null") return stripDiffPathPrefix(path)
+            }
+            line.startsWith("--- ") -> {
+                val path = line.removePrefix("--- ")
+                if (path != "/dev/null") return stripDiffPathPrefix(path)
+            }
+        }
+    }
+    return ""
+}
+
+private fun stripDiffPathPrefix(path: String): String {
+    return when {
+        path.startsWith("a/") || path.startsWith("b/") -> path.drop(2)
+        else -> path
+    }
+}
+
+private fun workspaceTitleCompat(path: String): String {
+    return path.trimEnd('/').substringAfterLast('/').ifBlank { path }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SessionDiffSheet(
+    sections: List<SessionDiffSection>,
+    onDismiss: () -> Unit,
+) {
+    var collapsedSectionIds by remember(sections) {
+        mutableStateOf(sections.mapTo(linkedSetOf()) { it.id })
+    }
+    val totalSummary = remember(sections) {
+        sections.fold(DiffSummary(additions = 0, deletions = 0)) { acc, section ->
+            DiffSummary(
+                additions = acc.additions + section.summary.additions,
+                deletions = acc.deletions + section.summary.deletions,
+            )
+        }
+    }
+    val useStickyHeaders = remember(sections) {
+        sections.size <= MAX_STICKY_DIFF_SECTIONS &&
+            sections.sumOf { it.diff.length } <= MAX_STICKY_DIFF_CHARACTERS
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "+${totalSummary.additions}",
+                    color = LitterTheme.success,
+                    fontSize = LitterTextStyle.caption.scaled,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = BerkeleyMono,
+                )
+                Text(
+                    text = "-${totalSummary.deletions}",
+                    color = LitterTheme.danger,
+                    fontSize = LitterTextStyle.caption.scaled,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = BerkeleyMono,
+                )
+            }
+        }
+
+        sections.forEach { section ->
+            if (section.title.isNotEmpty()) {
+                if (useStickyHeaders) {
+                    stickyHeader(key = "header-${section.id}") {
+                        SessionDiffSectionHeader(
+                            section = section,
+                            expanded = !collapsedSectionIds.contains(section.id),
+                        ) {
+                            collapsedSectionIds =
+                                linkedSetOf<String>().apply {
+                                    addAll(collapsedSectionIds)
+                                    if (contains(section.id)) {
+                                        remove(section.id)
+                                    } else {
+                                        add(section.id)
+                                    }
+                                }
+                        }
+                    }
+                } else {
+                    item(key = "header-${section.id}") {
+                        SessionDiffSectionHeader(
+                            section = section,
+                            expanded = !collapsedSectionIds.contains(section.id),
+                        ) {
+                            collapsedSectionIds =
+                                linkedSetOf<String>().apply {
+                                    addAll(collapsedSectionIds)
+                                    if (contains(section.id)) {
+                                        remove(section.id)
+                                    } else {
+                                        add(section.id)
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+
+            item(key = "body-${section.id}") {
+                if (section.title.isEmpty() || !collapsedSectionIds.contains(section.id)) {
+                    SyntaxHighlightedDiffBlock(
+                        diff = section.diff,
+                        titleHint = section.title.ifEmpty { null },
+                        fontSize = LitterTextStyle.body.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(LitterTheme.codeBackground, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Done", color = LitterTheme.accent)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionDiffSectionHeader(
+    section: SessionDiffSection,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(LitterTheme.background)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = section.title.uppercase(),
+            color = LitterTheme.textSecondary,
+            fontSize = LitterTextStyle.caption2.scaled,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "+${section.summary.additions}",
+            color = LitterTheme.success,
+            fontSize = LitterTextStyle.caption2.scaled,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = BerkeleyMono,
+        )
+        Text(
+            text = "-${section.summary.deletions}",
+            color = LitterTheme.danger,
+            fontSize = LitterTextStyle.caption2.scaled,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = BerkeleyMono,
+        )
+        Text(
+            text = if (expanded) "▲" else "▼",
+            color = LitterTheme.textMuted,
+            fontSize = LitterTextStyle.caption2.scaled,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
@@ -1058,7 +1403,7 @@ private fun StreamingCursor() {
     )
     Text(
         text = "Thinking...",
-        fontSize = 14.sp,
+        fontSize = LitterTextStyle.body.scaled,
         fontWeight = FontWeight.Medium,
         style = TextStyle(brush = shimmerBrush),
     )

@@ -446,10 +446,10 @@ impl ServerSession {
         use codex_app_server_protocol::{ClientInfo, InitializeCapabilities, InitializeParams};
         use codex_arg0::Arg0DispatchPaths;
         use codex_cloud_requirements::cloud_requirements_loader;
-        use codex_core::auth::AuthManager;
         use codex_core::config::ConfigBuilder;
         use codex_core::config_loader::LoaderOverrides;
         use codex_feedback::CodexFeedback;
+        use codex_login::AuthManager;
         use codex_protocol::protocol::SessionSource;
 
         let (health_tx, health_rx) = watch::channel(ConnectionHealth::Connecting {
@@ -508,7 +508,7 @@ impl ServerSession {
             .map_err(|e| TransportError::ConnectionFailed(format!("config build failed: {e}")))?;
 
         let auth_manager = AuthManager::shared(
-            base_config.codex_home.clone(),
+            base_config.codex_home.to_path_buf(),
             false,
             base_config.cli_auth_credentials_store_mode,
         );
@@ -516,7 +516,7 @@ impl ServerSession {
         let cloud_requirements = cloud_requirements_loader(
             auth_manager.clone(),
             base_config.chatgpt_base_url.clone(),
-            base_config.codex_home.clone(),
+            base_config.codex_home.to_path_buf(),
         );
 
         let mut resolved_builder = ConfigBuilder::default()
@@ -541,6 +541,8 @@ impl ServerSession {
             loader_overrides: LoaderOverrides::default(),
             cloud_requirements,
             feedback,
+            log_db: None,
+            environment_manager: Arc::new(codex_exec_server::EnvironmentManager::new(None)),
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: true,

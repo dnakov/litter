@@ -3,7 +3,6 @@
 use crate::MobileClient;
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
-use crate::store::snapshot::AppLifecyclePhaseSnapshot;
 use crate::store::{AppSnapshotRecord, AppStoreUpdateRecord, AppThreadSnapshot};
 use crate::types::{AppForkThreadFromMessageRequest, AppModeKind, AppStartTurnRequest, ThreadKey};
 use std::collections::VecDeque;
@@ -210,24 +209,6 @@ impl AppStore {
             .map_err(ClientError::Serialization)
     }
 
-    pub fn note_app_became_active(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Active);
-    }
-
-    pub fn note_app_became_inactive(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Inactive);
-    }
-
-    pub fn note_app_entered_background(&self) {
-        self.inner
-            .app_store
-            .note_app_lifecycle_phase(AppLifecyclePhaseSnapshot::Background);
-    }
-
     pub async fn start_turn(
         &self,
         key: ThreadKey,
@@ -374,8 +355,51 @@ impl AppStore {
         self.inner.set_active_thread(key);
     }
 
+    pub fn rename_server(&self, server_id: String, display_name: String) {
+        self.inner.app_store.rename_server(&server_id, display_name);
+    }
+
     pub fn set_voice_handoff_thread(&self, key: Option<ThreadKey>) {
         self.inner.set_voice_handoff_thread(key);
+    }
+
+    // -- Recording / Replay --
+
+    pub fn start_recording(&self) {
+        self.inner.recorder.start_recording();
+    }
+
+    pub fn stop_recording(&self) -> String {
+        self.inner.recorder.stop_recording()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.inner.recorder.is_recording()
+    }
+
+    pub async fn start_replay(
+        &self,
+        data: String,
+        target_key: ThreadKey,
+    ) -> Result<(), ClientError> {
+        let entries = crate::recorder::MessageRecorder::replay_entries(
+            &data,
+            &target_key.server_id,
+            &target_key.thread_id,
+        )
+        .map_err(|e| ClientError::Serialization(e))?;
+        let processor = Arc::clone(&self.inner.event_processor);
+        for (i, (ts_ms, server_id, notification)) in entries.iter().enumerate() {
+            if i > 0 {
+                let prev_ts = entries[i - 1].0;
+                let delta = ts_ms.saturating_sub(prev_ts);
+                if delta > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delta)).await;
+                }
+            }
+            processor.process_notification(server_id, notification);
+        }
+        Ok(())
     }
 }
 
@@ -504,13 +528,19 @@ fn merge_app_update(
             Ok(())
         }
         (
-            AppStoreUpdateRecord::ThreadItemChanged { key, item },
+            AppStoreUpdateRecord::ThreadItemChanged {
+                key,
+                item,
+                session_summary,
+            },
             AppStoreUpdateRecord::ThreadItemChanged {
                 key: next_key,
                 item: next_item,
+                session_summary: next_summary,
             },
         ) if *key == next_key && item.id == next_item.id => {
             *item = next_item;
+            *session_summary = next_summary;
             Ok(())
         }
         (

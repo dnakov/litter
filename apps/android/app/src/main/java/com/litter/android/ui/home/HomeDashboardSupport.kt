@@ -1,10 +1,43 @@
 package com.litter.android.ui.home
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.litter.android.ui.LitterTextStyle
+import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.LitterThemeManager
+import com.litter.android.ui.LocalTextScale
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppSessionSummary
 import uniffi.codex_mobile_client.AppSnapshotRecord
 import uniffi.codex_mobile_client.Account
+
+/**
+ * TextStyle matching the conversation body size at the current text scale,
+ * using the user's selected markdown font (mono when mono is enabled,
+ * platform default otherwise) at [FontWeight.Medium].
+ *
+ * Mirrors iOS `MarkdownMatchedTitleFont` so home dashboard titles render at
+ * the same size as conversation message bodies — making row headings visually
+ * match what appears inside a conversation.
+ *
+ * Swift reference: HomeDashboardView.swift MarkdownMatchedTitleFont (L1203-1213).
+ */
+@Composable
+@ReadOnlyComposable
+fun markdownMatchedTitleStyle(): TextStyle {
+    val scale = LocalTextScale.current
+    val family = if (LitterThemeManager.monoFontEnabled) LitterTheme.monoFont else FontFamily.Default
+    return TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Medium,
+        fontSize = (LitterTextStyle.body * scale).sp,
+    )
+}
 
 /**
  * Pure functions for deriving home dashboard data from Rust snapshots.
@@ -123,3 +156,18 @@ object HomeDashboardSupport {
         return prefix + mask + suffix
     }
 }
+
+// ─────────────────────────────────────────────────────────
+// Hydrated conversation walks moved to Rust
+// ─────────────────────────────────────────────────────────
+//
+// Everything that used to live here — `isToolCallRunning`,
+// `lastTurnBounds`, `hydratedToolRows`, `explorationSummary`,
+// `displayedAssistantMessage`, `HomeToolRow` — duplicated reducer logic
+// from `shared/rust-bridge/codex-mobile-client/src/store/boundary.rs`
+// (`extract_conversation_activity`). The Rust side now produces a
+// complete `AppSessionSummary` with `recent_tool_log` (flat
+// `List<AppToolLogEntry>` including "Explore" / "WebSearch" entries),
+// `last_response_preview`, and `last_turn_start_ms` / `last_turn_end_ms`.
+// Home card composables read those session props directly; see
+// `SessionCanvasRow.kt`, `InlineStats.kt`, `HomeToolRowView.kt`.

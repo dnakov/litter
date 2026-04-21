@@ -56,8 +56,7 @@ import com.litter.android.ui.RecentDirectoryEntry
 import com.litter.android.ui.RecentDirectoryStore
 import com.litter.android.state.canBrowseDirectories
 import kotlinx.coroutines.launch
-import uniffi.codex_mobile_client.AbsolutePath
-import uniffi.codex_mobile_client.AppExecCommandRequest
+import uniffi.codex_mobile_client.RemotePath
 
 @Composable
 fun DirectoryPickerSheet(
@@ -110,26 +109,14 @@ fun DirectoryPickerSheet(
             errorMessage = "Selected server is not connected."
             return "/"
         }
-        val response = runCatching {
-            appModel.client.execCommand(
-                serverId,
-                AppExecCommandRequest(
-                    command = listOf("/bin/sh", "-lc", "printf %s \"\$HOME\""),
-                    processId = null,
-                    tty = false,
-                    streamStdin = false,
-                    streamStdoutStderr = false,
-                    outputBytesCap = null,
-                    disableOutputCap = false,
-                    disableTimeout = false,
-                    timeoutMs = null,
-                    cwd = "/tmp",
-                    sandboxPolicy = null,
-                ),
-            )
-        }.getOrNull()
-        val home = response?.stdout?.trim().orEmpty()
-        return if (home.isNotEmpty()) home else "/"
+        return runCatching {
+            appModel.client.resolveRemoteHome(serverId)
+        }.getOrElse { error ->
+            if (isDisconnectedError(error)) {
+                errorMessage = "Selected server is not connected."
+            }
+            "/"
+        }
     }
 
     suspend fun listDirectory(serverId: String, path: String) {
@@ -143,42 +130,18 @@ fun DirectoryPickerSheet(
         val normalizedPath = path.trim().ifEmpty { "/" }
         isLoading = true
         errorMessage = null
+
         val response = runCatching {
-            appModel.client.execCommand(
-                serverId,
-                AppExecCommandRequest(
-                    command = listOf("/bin/ls", "-1ap", normalizedPath),
-                    processId = null,
-                    tty = false,
-                    streamStdin = false,
-                    streamStdoutStderr = false,
-                    outputBytesCap = null,
-                    disableOutputCap = false,
-                    disableTimeout = false,
-                    timeoutMs = null,
-                    cwd = normalizedPath,
-                    sandboxPolicy = null,
-                ),
-            )
+            appModel.client.listRemoteDirectory(serverId, normalizedPath)
         }
 
         if (serverId != selectedServerId) {
             return
         }
 
-        response.onSuccess { exec ->
-            if (exec.exitCode != 0) {
-                allEntries = emptyList()
-                errorMessage = exec.stderr.ifBlank { "Failed to list directory." }
-            } else {
-                allEntries = exec.stdout
-                    .lines()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() && it.endsWith("/") && it != "./" && it != "../" }
-                    .map { it.removeSuffix("/") }
-                    .sortedBy { it.lowercase() }
-                currentPath = normalizedPath
-            }
+        response.onSuccess { result ->
+            allEntries = result.directories
+            currentPath = result.path
         }.onFailure { error ->
             allEntries = emptyList()
             errorMessage = if (isDisconnectedError(error)) {
@@ -203,14 +166,10 @@ fun DirectoryPickerSheet(
 
     fun pathSegments(path: String): List<Pair<String, String>> {
         val normalized = path.trim()
-        if (normalized.isEmpty() || normalized == "/") return listOf("/" to "/")
-        val output = mutableListOf("/" to "/")
-        var runningPath = ""
-        normalized.split('/').filter { it.isNotBlank() }.forEach { component ->
-            runningPath = if (runningPath.isEmpty()) "/$component" else "$runningPath/$component"
-            output += component to runningPath
+        if (normalized.isEmpty()) return listOf("/" to "/")
+        return RemotePath.parse(normalized).segments().map { seg ->
+            seg.label to seg.fullPath
         }
-        return output
     }
 
     fun relativeTime(epochMillis: Long): String {
@@ -225,16 +184,12 @@ fun DirectoryPickerSheet(
     }
 
     fun navigateInto(name: String) {
-        val nextPath = when {
-            currentPath == "/" -> "/$name"
-            currentPath.endsWith("/") -> "$currentPath$name"
-            else -> "$currentPath/$name"
-        }
+        val nextPath = RemotePath.parse(currentPath).join(name).asString()
         scope.launch { listDirectory(selectedServerId, nextPath) }
     }
 
     fun navigateUp() {
-        val nextPath = currentPath.substringBeforeLast('/', missingDelimiterValue = "/").ifBlank { "/" }
+        val nextPath = RemotePath.parse(currentPath).parent().asString()
         scope.launch { listDirectory(selectedServerId, nextPath) }
     }
 

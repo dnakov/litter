@@ -5,7 +5,7 @@ index a4399ddc4..0ec92221b 100644
 @@ -46,6 +46,21 @@ use codex_utils_absolute_path::AbsolutePathBuf;
  use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
  use codex_utils_pty::process_group::kill_child_process_group;
- 
+
 +#[cfg(target_os = "ios")]
 +use std::sync::OnceLock;
 +
@@ -22,7 +22,7 @@ index a4399ddc4..0ec92221b 100644
 +}
 +
  pub const DEFAULT_EXEC_COMMAND_TIMEOUT_MS: u64 = 10_000;
- 
+
  // Hardcode these since it does not seem worth including the libc crate just
 @@ -854,6 +869,34 @@ async fn exec(
      if let Some(network) = network.as_ref() {
@@ -56,17 +56,17 @@ index a4399ddc4..0ec92221b 100644
 +            timed_out: false,
 +        });
 +    }
- 
+
      let (program, args) = command.split_first().ok_or_else(|| {
          CodexErr::Io(io::Error::new(
 diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
 index 2d992507b..4e021fb66 100644
 --- a/codex-rs/core/src/unified_exec/process_manager.rs
 +++ b/codex-rs/core/src/unified_exec/process_manager.rs
-@@ -166,6 +166,12 @@ impl UnifiedExecProcessManager {
+@@ -235,6 +235,12 @@ impl UnifiedExecProcessManager {
              .workdir
              .clone()
-             .unwrap_or_else(|| context.turn.cwd.to_path_buf());
+             .unwrap_or_else(|| context.turn.cwd.clone());
 +        #[cfg(target_os = "ios")]
 +        {
 +            return self.exec_command_ios(&request, cwd, context).await;
@@ -76,15 +76,15 @@ index 2d992507b..4e021fb66 100644
          let process = self
              .open_session_with_sandbox(&request, cwd.clone(), context)
              .await;
-@@ -333,6 +339,80 @@ impl UnifiedExecProcessManager {
+@@ -402,6 +408,80 @@ impl UnifiedExecProcessManager {
          Ok(response)
      }
- 
+
 +    #[cfg(target_os = "ios")]
 +    async fn exec_command_ios(
 +        &self,
 +        request: &ExecCommandRequest,
-+        cwd: PathBuf,
++        cwd: codex_utils_absolute_path::AbsolutePathBuf,
 +        context: &UnifiedExecContext,
 +    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
 +        use crate::exec::IOS_EXEC_HOOK;

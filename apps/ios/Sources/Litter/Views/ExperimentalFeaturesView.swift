@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ExperimentalFeaturesView: View {
     @State private var experimentalFeatures = ExperimentalFeatures.shared
+    @State private var debugSettings = DebugSettings.shared
 
     var body: some View {
         ZStack {
@@ -28,6 +29,32 @@ struct ExperimentalFeaturesView: View {
                 } footer: {
                     Text("Experimental features may be unstable or change without notice.")
                         .foregroundColor(LitterTheme.textMuted)
+                }
+
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { debugSettings.enabled },
+                        set: { debugSettings.enabled = $0 }
+                    )) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "ant")
+                                .foregroundColor(LitterTheme.accent)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Debug Mode")
+                                    .litterFont(.subheadline)
+                                    .foregroundColor(LitterTheme.textPrimary)
+                                Text("Show debug controls in conversations")
+                                    .litterFont(.caption)
+                                    .foregroundColor(LitterTheme.textSecondary)
+                            }
+                        }
+                    }
+                    .tint(LitterTheme.accent)
+                    .listRowBackground(LitterTheme.surface.opacity(0.6))
+                } header: {
+                    Text("Debug")
+                        .foregroundColor(LitterTheme.textSecondary)
                 }
             }
             .scrollContentBackground(.hidden)

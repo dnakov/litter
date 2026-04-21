@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Theme shown BEFORE onCreate completes. Background matches the in-app
+         AnimatedSplashScreen so there's no flash between system splash and
+         Compose splash. Pre-API-31 SplashScreen compat falls back to the
+         windowBackground. -->
+    <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.App</item>
+    </style>
+
+    <!-- Post-splash theme: same as the existing app theme. -->
+    <style name="Theme.App" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+
+</resources>

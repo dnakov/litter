@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppDynamicToolSpec
 import uniffi.codex_mobile_client.AppStoreUpdateRecord
 import uniffi.codex_mobile_client.HandoffManager
+import uniffi.codex_mobile_client.PinnedThreadKey
 import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.AppAppendRealtimeAudioRequest
 import uniffi.codex_mobile_client.AppFinalizeRealtimeHandoffRequest
@@ -169,6 +170,14 @@ class VoiceRuntimeController {
         audioManager = manager
         prepareCommunicationAudio(manager)
 
+        if (manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+            android.util.Log.w(
+                "VoiceRuntime",
+                "AudioManager mode not set to MODE_IN_COMMUNICATION after prepare (mode=${manager.mode}), retrying",
+            )
+            runCatching { manager.mode = AudioManager.MODE_IN_COMMUNICATION }
+        }
+
         val recorderConfig = createRecorder(manager)
         if (recorderConfig == null) {
             synchronized(captureLock) { isCapturing = false }
@@ -310,19 +319,29 @@ class VoiceRuntimeController {
 
     private fun configureOutputRoute(manager: AudioManager) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            val targetType = if (speakerEnabled) {
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            } else {
-                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            // Prefer Bluetooth SCO (HFP) over A2DP for voice communication
+            val btScoDevice = manager.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
             }
-            val device = manager.availableCommunicationDevices.firstOrNull { it.type == targetType }
-            if (device != null) {
-                runCatching { manager.setCommunicationDevice(device) }
+            if (btScoDevice != null && !speakerEnabled) {
+                runCatching { manager.setCommunicationDevice(btScoDevice) }
+            } else {
+                val targetType = if (speakerEnabled) {
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                } else {
+                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                }
+                val device = manager.availableCommunicationDevices.firstOrNull { it.type == targetType }
+                if (device != null) {
+                    runCatching { manager.setCommunicationDevice(device) }
+                }
             }
         }
         @Suppress("DEPRECATION")
         runCatching { manager.isSpeakerphoneOn = speakerEnabled }
     }
+
+    fun isSpeakerEnabled(): Boolean = speakerEnabled
 
     fun setSpeakerEnabled(enabled: Boolean) {
         speakerEnabled = enabled
@@ -436,7 +455,23 @@ class VoiceRuntimeController {
 
     // ── Event handling ───────────────────────────────────────────────────────
 
+    suspend fun retryActiveSession(appModel: AppModel) {
+        val session = _activeSession.value ?: return
+        val threadKey = session.threadKey
+        android.util.Log.i("VoiceRuntime", "Retrying active session for ${threadKey.threadId}")
+        cleanup()
+        startRealtimeSession(appModel, threadKey)
+    }
+
     private suspend fun startRealtimeSession(appModel: AppModel, threadKey: ThreadKey) {
+        // Check RECORD_AUDIO permission before anything else
+        val hasPermission = android.content.pm.PackageManager.PERMISSION_GRANTED ==
+            appModel.appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+        if (!hasPermission) {
+            android.util.Log.e("VoiceRuntime", "RECORD_AUDIO permission not granted, cannot start voice session")
+            return
+        }
+
         val resolvedThreadKey = appModel.ensureThreadLoaded(threadKey) ?: threadKey
         val hasKnownThread = appModel.snapshot.value?.threads?.any { it.key == resolvedThreadKey } == true
         if (!hasKnownThread) {
@@ -504,7 +539,7 @@ class VoiceRuntimeController {
             handoffManager = HandoffManager.create(resolvedThreadKey.serverId)
         } catch (e: Exception) {
             android.util.Log.e("VoiceRuntime", "startRealtimeSession failed", e)
-            _activeSession.value = _activeSession.value
+            cleanup()
         }
     }
 
@@ -544,6 +579,10 @@ class VoiceRuntimeController {
                 launchConfig.toAppStartThreadRequest(
                     preferredVoiceThreadCwd(appModel, key = null, fallback = cwd),
                 ),
+            )
+            SavedThreadsStore.add(
+                appModel.appContext,
+                PinnedThreadKey(serverId = key.serverId, threadId = key.threadId),
             )
             appModel.store.setActiveThread(key)
             setPersistedLocalVoiceThreadId(appModel, key.threadId)
@@ -684,6 +723,10 @@ class VoiceRuntimeController {
                     val key = appModel.client.startThread(
                         action.targetServerId,
                         appModel.launchState.threadStartRequest(action.cwd),
+                    )
+                    SavedThreadsStore.add(
+                        appModel.appContext,
+                        PinnedThreadKey(serverId = key.serverId, threadId = key.threadId),
                     )
                     handoffManager?.uniffiReportThreadCreated(action.handoffId, action.targetServerId, key.threadId)
                 } catch (e: Exception) {

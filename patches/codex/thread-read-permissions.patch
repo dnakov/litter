@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server-protocol/src/protocol/v2.rs b/codex-rs/app-server-protocol/src/protocol/v2.rs
-index 147c91db2..4c3bdfd03 100644
+index 72ac0db65e..ca5c5c1693 100644
 --- a/codex-rs/app-server-protocol/src/protocol/v2.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2.rs
-@@ -3157,6 +3157,10 @@ pub struct ThreadReadParams {
+@@ -3395,6 +3395,10 @@ pub struct ThreadReadParams {
  #[ts(export_to = "v2/")]
  pub struct ThreadReadResponse {
      pub thread: Thread,
@@ -14,16 +14,17 @@ index 147c91db2..4c3bdfd03 100644
  
  #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 diff --git a/codex-rs/app-server/src/codex_message_processor.rs b/codex-rs/app-server/src/codex_message_processor.rs
-index 620a85a09..63440dda5 100644
+index 0342cc84ce..22e4dfc8e9 100644
 --- a/codex-rs/app-server/src/codex_message_processor.rs
 +++ b/codex-rs/app-server/src/codex_message_processor.rs
-@@ -3390,7 +3390,37 @@ impl CodexMessageProcessor {
-             thread_status,
-             has_live_in_progress_turn,
-         );
+@@ -3911,7 +3911,38 @@ impl CodexMessageProcessor {
+                 return;
+             }
+         };
 -        let response = ThreadReadResponse { thread };
-+        let live_config_snapshot = if let Some(loaded_thread) = loaded_thread.as_ref() {
-+            Some(loaded_thread.config_snapshot().await)
++        let loaded_thread = self.load_live_thread_for_read(thread_uuid).await;
++        let live_config_snapshot = if let Some(loaded) = loaded_thread.as_ref() {
++            Some(loaded.config_snapshot().await)
 +        } else {
 +            None
 +        };
@@ -56,7 +57,7 @@ index 620a85a09..63440dda5 100644
          self.outgoing.send_response(request_id, response).await;
      }
  
-@@ -7725,6 +7755,28 @@ fn merge_persisted_resume_metadata(
+@@ -9171,6 +9202,28 @@ fn merge_persisted_resume_metadata(
      }
  }
  
@@ -85,145 +86,3 @@ index 620a85a09..63440dda5 100644
  fn has_model_resume_override(
      request_overrides: Option<&HashMap<String, serde_json::Value>>,
      typesafe_overrides: &ConfigOverrides,
-@@ -8661,6 +8713,23 @@ mod tests {
-         Ok(metadata)
-     }
- 
-+    #[test]
-+    fn thread_metadata_permission_helpers_parse_stringified_values() -> Result<()> {
-+        let mut metadata = test_thread_metadata(None, None)?;
-+        metadata.approval_mode = "never".to_string();
-+        metadata.sandbox_policy = r#"{"type":"dangerFullAccess"}"#.to_string();
-+
-+        assert_eq!(
-+            thread_metadata_approval_policy(&metadata),
-+            Some(codex_protocol::protocol::AskForApproval::Never)
-+        );
-+        assert_eq!(
-+            thread_metadata_sandbox_policy(&metadata),
-+            Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess)
-+        );
-+        Ok(())
-+    }
-+
-     #[test]
-     fn merge_persisted_resume_metadata_prefers_persisted_model_and_reasoning_effort() -> Result<()>
-     {
-diff --git a/codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs b/codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs
-index 680e70f2d..66789b2cd 100644
---- a/codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs
-+++ b/codex-rs/app-server/tests/suite/v2/thread_metadata_update.rs
-@@ -109,7 +109,7 @@ async fn thread_metadata_update_patches_git_branch_and_returns_updated_thread()
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread: read } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(
-         read.git_info,
-@@ -421,7 +421,7 @@ async fn thread_metadata_update_can_clear_stored_git_fields() -> Result<()> {
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread: read } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(read.git_info, None);
- 
-diff --git a/codex-rs/app-server/tests/suite/v2/thread_read.rs b/codex-rs/app-server/tests/suite/v2/thread_read.rs
-index dcc411538..fccf41471 100644
---- a/codex-rs/app-server/tests/suite/v2/thread_read.rs
-+++ b/codex-rs/app-server/tests/suite/v2/thread_read.rs
-@@ -74,7 +74,7 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(thread.id, conversation_id);
-     assert_eq!(thread.preview, preview);
-@@ -129,7 +129,7 @@ async fn thread_read_can_include_turns() -> Result<()> {
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(thread.turns.len(), 1);
-     let turn = &thread.turns[0];
-@@ -190,7 +190,7 @@ async fn thread_read_loaded_thread_returns_precomputed_path_before_materializati
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread: read } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(read.id, thread.id);
-     assert_eq!(read.path, Some(thread_path));
-@@ -258,7 +258,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
-     )
-     .await??;
-     let read_result = read_resp.result.clone();
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
-     assert_eq!(thread.id, conversation_id);
-     assert_eq!(thread.name.as_deref(), Some(new_name));
-     let thread_json = read_result
-@@ -467,7 +467,7 @@ async fn thread_read_reports_system_error_idle_flag_after_failed_turn() -> Resul
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(thread.status, ThreadStatus::SystemError,);
- 
-diff --git a/codex-rs/app-server/tests/suite/v2/thread_resume.rs b/codex-rs/app-server/tests/suite/v2/thread_resume.rs
-index 4443abd6e..539861edd 100644
---- a/codex-rs/app-server/tests/suite/v2/thread_resume.rs
-+++ b/codex-rs/app-server/tests/suite/v2/thread_resume.rs
-@@ -518,6 +518,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
-     .await??;
-     let ThreadReadResponse {
-         thread: read_thread,
-+        ..
-     } = to_response::<ThreadReadResponse>(read_resp)?;
- 
-     assert_eq!(read_thread.status, ThreadStatus::Idle);
-diff --git a/codex-rs/app-server/tests/suite/v2/thread_shell_command.rs b/codex-rs/app-server/tests/suite/v2/thread_shell_command.rs
-index 5b58796bf..fe5ed8a0f 100644
---- a/codex-rs/app-server/tests/suite/v2/thread_shell_command.rs
-+++ b/codex-rs/app-server/tests/suite/v2/thread_shell_command.rs
-@@ -130,7 +130,7 @@ async fn thread_shell_command_runs_as_standalone_turn_and_persists_history() ->
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
-     assert_eq!(thread.turns.len(), 1);
-     let ThreadItem::CommandExecution {
-         source,
-@@ -299,7 +299,7 @@ async fn thread_shell_command_uses_existing_active_turn() -> Result<()> {
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
-     assert_eq!(thread.turns.len(), 1);
-     assert!(
-         thread.turns[0].items.iter().any(|item| {
-diff --git a/codex-rs/app-server/tests/suite/v2/thread_unsubscribe.rs b/codex-rs/app-server/tests/suite/v2/thread_unsubscribe.rs
-index 6427ae7ce..24ccd42dd 100644
---- a/codex-rs/app-server/tests/suite/v2/thread_unsubscribe.rs
-+++ b/codex-rs/app-server/tests/suite/v2/thread_unsubscribe.rs
-@@ -276,7 +276,7 @@ async fn thread_unsubscribe_clears_cached_status_before_resume() -> Result<()> {
-         mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-     )
-     .await??;
--    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
-+    let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
-     assert_eq!(thread.status, ThreadStatus::SystemError);
- 
-     let unsubscribe_id = mcp

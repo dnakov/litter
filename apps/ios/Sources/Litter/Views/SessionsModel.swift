@@ -9,11 +9,12 @@ final class SessionsModel {
         let updatedAt: Date
     }
 
-    private struct Snapshot {
+    private struct Snapshot: Equatable {
         let derivedData: SessionsDerivedData
         let connectedServerOptions: [DirectoryPickerServerOption]
         let connectedServers: [HomeDashboardServer]
         let ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState]
+        let activeThreadKey: ThreadKey?
         let frozenMostRecentThreadOrder: [ThreadKey]?
     }
 
@@ -21,6 +22,7 @@ final class SessionsModel {
     private(set) var connectedServerOptions: [DirectoryPickerServerOption] = []
     private(set) var connectedServers: [HomeDashboardServer] = []
     private(set) var ephemeralStateByThreadKey: [ThreadKey: ThreadEphemeralState] = [:]
+    private(set) var activeThreadKey: ThreadKey?
 
     @ObservationIgnored private weak var appModel: AppModel?
     @ObservationIgnored private weak var appState: AppState?
@@ -28,6 +30,7 @@ final class SessionsModel {
     @ObservationIgnored private var hasInitializedState = false
     @ObservationIgnored private var observationGeneration = 0
     @ObservationIgnored private var frozenMostRecentThreadOrder: [ThreadKey]?
+    @ObservationIgnored private var lastPublishedSnapshot: Snapshot?
 
     func bind(appModel: AppModel, appState: AppState) {
         let needsRebind = self.appModel !== appModel || self.appState !== appState
@@ -53,7 +56,9 @@ final class SessionsModel {
             connectedServerOptions = []
             connectedServers = []
             ephemeralStateByThreadKey = [:]
+            activeThreadKey = nil
             frozenMostRecentThreadOrder = nil
+            lastPublishedSnapshot = nil
             return
         }
 
@@ -108,6 +113,7 @@ final class SessionsModel {
                 connectedServerOptions: nextConnectedServerOptions,
                 connectedServers: nextConnectedServers,
                 ephemeralStateByThreadKey: nextEphemeralStateByThreadKey,
+                activeThreadKey: appSnapshot?.activeThread,
                 frozenMostRecentThreadOrder: nextFrozenMostRecentThreadOrder
             )
         } onChange: { [weak self] in
@@ -117,11 +123,30 @@ final class SessionsModel {
             }
         }
 
+        let previousSnapshot = lastPublishedSnapshot
+        guard previousSnapshot != snapshot else {
+            frozenMostRecentThreadOrder = snapshot.frozenMostRecentThreadOrder
+            return
+        }
+
         frozenMostRecentThreadOrder = snapshot.frozenMostRecentThreadOrder
-        connectedServerOptions = snapshot.connectedServerOptions
-        connectedServers = snapshot.connectedServers
-        ephemeralStateByThreadKey = snapshot.ephemeralStateByThreadKey
-        derivedData = snapshot.derivedData
+        lastPublishedSnapshot = snapshot
+
+        if previousSnapshot?.connectedServerOptions != snapshot.connectedServerOptions {
+            connectedServerOptions = snapshot.connectedServerOptions
+        }
+        if previousSnapshot?.connectedServers != snapshot.connectedServers {
+            connectedServers = snapshot.connectedServers
+        }
+        if previousSnapshot?.ephemeralStateByThreadKey != snapshot.ephemeralStateByThreadKey {
+            ephemeralStateByThreadKey = snapshot.ephemeralStateByThreadKey
+        }
+        if previousSnapshot?.activeThreadKey != snapshot.activeThreadKey {
+            activeThreadKey = snapshot.activeThreadKey
+        }
+        if previousSnapshot?.derivedData != snapshot.derivedData {
+            derivedData = snapshot.derivedData
+        }
     }
 
     private func resolvedFrozenMostRecentThreadOrder(

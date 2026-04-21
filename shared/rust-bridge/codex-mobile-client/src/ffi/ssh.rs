@@ -1,7 +1,10 @@
 use crate::ffi::ClientError;
 use crate::ffi::shared::{shared_mobile_client, shared_runtime};
 use crate::session::connection::ServerConfig;
-use crate::ssh::{RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError};
+use crate::ssh::{
+    CodexInstallOutcome, RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials,
+    SshError,
+};
 use crate::store::{
     AppConnectionProgressSnapshot, AppConnectionStepKind, AppConnectionStepState,
     ServerHealthSnapshot,
@@ -642,15 +645,47 @@ async fn run_guided_ssh_connect(
                 AppConnectionStepState::Completed,
                 Some(binary.path().to_string()),
             );
+            mobile_client
+                .app_store
+                .update_server_connection_progress(&server_id, Some(progress.clone()));
+
+            // Best-effort: if this looks like our managed `~/.litter/` install
+            // and we haven't checked in 24h, probe for a newer release and
+            // swap in the updated binary. Any failure falls through to the
+            // already-resolved binary.
+            let update_result = ssh_client
+                .maybe_update_managed_codex(&binary, remote_shell)
+                .await;
+            let (effective_binary, install_detail, install_state) = match update_result {
+                Some((new_binary, CodexInstallOutcome::Installed)) => {
+                    info!(
+                        "guided ssh connect auto-updated codex server_id={} path={}",
+                        server_id,
+                        new_binary.path()
+                    );
+                    let detail = format!("Updated Codex ({})", new_binary.path());
+                    (new_binary, detail, AppConnectionStepState::Completed)
+                }
+                Some((_, CodexInstallOutcome::AlreadyAtLatestTag)) => (
+                    binary,
+                    "Already installed (up to date)".to_string(),
+                    AppConnectionStepState::Cancelled,
+                ),
+                None => (
+                    binary,
+                    "Already installed".to_string(),
+                    AppConnectionStepState::Cancelled,
+                ),
+            };
             progress.update_step(
                 AppConnectionStepKind::InstallingCodex,
-                AppConnectionStepState::Cancelled,
-                Some("Already installed".to_string()),
+                install_state,
+                Some(install_detail),
             );
             mobile_client
                 .app_store
                 .update_server_connection_progress(&server_id, Some(progress.clone()));
-            binary
+            effective_binary
         }
         None => {
             info!(
@@ -726,14 +761,15 @@ async fn run_guided_ssh_connect(
                 "guided ssh connect install platform server_id={} platform={:?}",
                 server_id, platform
             );
-            let installed_binary = ssh_client
+            let (installed_binary, install_outcome) = ssh_client
                 .install_latest_stable_codex(platform)
                 .await
                 .map_err(map_ssh_error)?;
             info!(
-                "guided ssh connect install completed server_id={} path={}",
+                "guided ssh connect install completed server_id={} path={} outcome={:?}",
                 server_id,
-                installed_binary.path()
+                installed_binary.path(),
+                install_outcome
             );
             progress.update_step(
                 AppConnectionStepKind::InstallingCodex,

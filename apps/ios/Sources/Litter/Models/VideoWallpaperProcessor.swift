@@ -76,30 +76,18 @@ final class VideoWallpaperProcessor {
             throw ProcessorError.transcodeFailed("Could not create export session")
         }
 
-        exportSession.outputURL = destination
-        exportSession.outputFileType = .mp4
         exportSession.shouldOptimizeForNetworkUse = true
 
-        await exportSession.export()
+        try await exportSession.export(to: destination, as: .mp4)
 
-        switch exportSession.status {
-        case .completed:
-            // Validate file size
-            let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
-            let fileSize = attrs[.size] as? Int64 ?? 0
-            if fileSize > maxFileSize {
-                try? FileManager.default.removeItem(at: destination)
-                throw ProcessorError.fileTooLarge(fileSize)
-            }
-            return duration
-        case .failed:
-            let message = exportSession.error?.localizedDescription ?? "unknown error"
-            throw ProcessorError.transcodeFailed(message)
-        case .cancelled:
-            throw ProcessorError.transcodeFailed("export cancelled")
-        default:
-            throw ProcessorError.transcodeFailed("unexpected status: \(exportSession.status.rawValue)")
+        // Validate file size
+        let attrs = try FileManager.default.attributesOfItem(atPath: destination.path)
+        let fileSize = attrs[.size] as? Int64 ?? 0
+        if fileSize > maxFileSize {
+            try? FileManager.default.removeItem(at: destination)
+            throw ProcessorError.fileTooLarge(fileSize)
         }
+        return duration
     }
 
     /// Download a remote video URL to a temporary file, then transcode to the destination.

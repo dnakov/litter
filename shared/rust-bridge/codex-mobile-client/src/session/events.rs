@@ -391,13 +391,17 @@ impl EventProcessor {
                     notification: n.clone(),
                 });
             }
-            ServerNotification::ThreadRealtimeTranscriptUpdated(n) => {
+            ServerNotification::ThreadRealtimeTranscriptDone(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeTranscriptUpdated {
                     key,
                     role: n.role.clone(),
                     text: n.text.clone(),
                 });
+            }
+            ServerNotification::ThreadRealtimeTranscriptDelta(_) => {
+                // Deltas are consumed via ThreadRealtimeItemAdded by the bridge;
+                // the UI currently only needs the finalized text.
             }
             ServerNotification::ThreadRealtimeOutputAudioDelta(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);

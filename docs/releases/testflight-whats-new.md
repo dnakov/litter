@@ -1,13 +1,14 @@
 Summary
 
-- Fixed image input: pasting and attaching images in conversations works correctly again.
-- Fixed local OAuth login: ChatGPT sign-in now opens from a single stable presenter instead of flashing closed.
-- Improved Live Activity UI: the lock screen card and Dynamic Island use a tighter, cleaner layout.
-- Better new-session recents: recent directories are deduplicated and promoted more consistently when starting sessions.
+- Added expand button to open composer full screen
+- Fixed persistent LiveViews
+- Fixed subagent names not showing
+- Fixed a deserialization error that prevented some threads from loading after syncing with the latest Codex runtime
+- Composer autocorrect/smart quotes/spell check now follow iPhone Settings
+- Fixed inline code in rendered messages showing larger than body text
 
 What to test
 
-- In a conversation, paste an image and use image input normally. Confirm the attachment appears and sends correctly.
-- Trigger local ChatGPT login on the device and confirm the OAuth sheet stays open until you finish or cancel it.
-- Start a turn that creates a Live Activity and check the lock screen card plus Dynamic Island layout for sizing and readability.
-- Start a new session from a few different directories and confirm the recent-directory picker shows deduplicated entries in the expected order.
+- Inline code rendering: open a conversation where the assistant responded with inline backtick code (e.g. a file path like `apps/ios/...`). In the rendered message bubble, the code should appear at the same visual size as the surrounding body text — not visibly larger. Try both mono and system font modes in Appearance.
+- Composer keyboard behavior: go to Settings → General → Keyboard and toggle Auto-Correction, Check Spelling, Smart Punctuation, and Auto-Capitalization. The conversation and home composers should match those toggles (autocorrect suggestions, red spelling underlines, and `"` → `"` / `--` → `—` conversion should all follow the system setting).
+- Thread loading: connect to a server running the updated Codex runtime, open the thread list, and resume existing threads. They should load without errors, and `thread/read` should succeed for threads whose metadata now includes the new approval/sandbox fields.

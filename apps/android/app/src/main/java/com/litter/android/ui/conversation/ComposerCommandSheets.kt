@@ -47,7 +47,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.litter.android.ui.LocalAppModel
+import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.scaled
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AbsolutePath
 import uniffi.codex_mobile_client.AppAskForApproval
@@ -195,19 +197,19 @@ fun ComposerPermissionsSheet(threadKey: ThreadKey? = null, onDismiss: () -> Unit
                     Text(
                         text = "Thread permissions",
                         color = LitterTheme.textPrimary,
-                        fontSize = 18.sp,
+                        fontSize = 18f.scaled,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
                         text = "Changes apply on your next turn and later turns.",
                         color = LitterTheme.textMuted,
-                        fontSize = 11.sp,
+                        fontSize = LitterTextStyle.caption2.scaled,
                     )
                 }
                 Text(
                     text = if (usesThreadDefaults) "Using defaults" else "Custom override",
                     color = if (usesThreadDefaults) LitterTheme.textSecondary else LitterTheme.accentStrong,
-                    fontSize = 11.sp,
+                    fontSize = LitterTextStyle.caption2.scaled,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .background(
@@ -287,7 +289,7 @@ private fun PermissionSummaryTile(
         Text(
             text = title,
             color = LitterTheme.textSecondary,
-            fontSize = 11.sp,
+            fontSize = LitterTextStyle.caption2.scaled,
             fontWeight = FontWeight.SemiBold,
         )
         PermissionSummaryRow(label = "Approval", value = approval, accent = accent)
@@ -305,13 +307,13 @@ private fun PermissionSummaryRow(
         Text(
             text = label,
             color = LitterTheme.textMuted,
-            fontSize = 10.sp,
+            fontSize = 10f.scaled,
             fontWeight = FontWeight.Medium,
         )
         Text(
             text = value,
             color = accent,
-            fontSize = 13.sp,
+            fontSize = LitterTextStyle.code.scaled,
             fontWeight = FontWeight.SemiBold,
         )
     }
@@ -335,13 +337,13 @@ private fun PermissionSettingsSection(
             Text(
                 text = title,
                 color = LitterTheme.textPrimary,
-                fontSize = 18.sp,
+                fontSize = 18f.scaled,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
                 text = subtitle,
                 color = LitterTheme.textSecondary,
-                fontSize = 12.sp,
+                fontSize = LitterTextStyle.caption.scaled,
             )
         }
         content()
@@ -375,14 +377,14 @@ private fun PermissionDropdownField(
                 Text(
                     text = selectedOption?.title ?: "Custom",
                     color = LitterTheme.textPrimary,
-                    fontSize = 14.sp,
+                    fontSize = LitterTextStyle.body.scaled,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
                 Text(
                     text = selectedOption?.description ?: "This setting is managed by the server.",
                     color = LitterTheme.textMuted,
-                    fontSize = 11.sp,
+                    fontSize = LitterTextStyle.caption2.scaled,
                     maxLines = 1,
                 )
             }
@@ -405,13 +407,13 @@ private fun PermissionDropdownField(
                             Text(
                                 text = option.title,
                                 color = LitterTheme.textPrimary,
-                                fontSize = 14.sp,
+                                fontSize = LitterTextStyle.body.scaled,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
                                 text = option.description,
                                 color = LitterTheme.textMuted,
-                                fontSize = 11.sp,
+                                fontSize = LitterTextStyle.caption2.scaled,
                             )
                         }
                     },
@@ -485,7 +487,7 @@ fun ComposerExperimentalSheet(
             }
 
             features.isEmpty() -> {
-                Text("No experimental features available", color = LitterTheme.textMuted, fontSize = 13.sp)
+                Text("No experimental features available", color = LitterTheme.textMuted, fontSize = LitterTextStyle.code.scaled)
             }
 
             else -> {
@@ -499,9 +501,9 @@ fun ComposerExperimentalSheet(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(feature.displayName ?: feature.name, color = LitterTheme.textPrimary, fontSize = 14.sp)
+                                Text(feature.displayName ?: feature.name, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.body.scaled)
                                 feature.description?.takeIf { it.isNotBlank() }?.let { description ->
-                                    Text(description, color = LitterTheme.textSecondary, fontSize = 12.sp)
+                                    Text(description, color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled)
                                 }
                             }
                             Switch(
@@ -618,7 +620,7 @@ fun ComposerSkillsSheet(
             }
 
             skills.isEmpty() -> {
-                Text("No skills available for this workspace", color = LitterTheme.textMuted, fontSize = 13.sp)
+                Text("No skills available for this workspace", color = LitterTheme.textMuted, fontSize = LitterTextStyle.code.scaled)
             }
 
             else -> {
@@ -632,21 +634,21 @@ fun ComposerSkillsSheet(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(skill.name, color = LitterTheme.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text(skill.name, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.body.scaled, fontWeight = FontWeight.Medium)
                                 Spacer(Modifier.weight(1f))
                                 if (skill.enabled) {
                                     Text(
                                         "enabled",
                                         color = LitterTheme.accent,
-                                        fontSize = 11.sp,
+                                        fontSize = LitterTextStyle.caption2.scaled,
                                         modifier = Modifier
                                             .background(LitterTheme.accent.copy(alpha = 0.14f), RoundedCornerShape(999.dp))
                                             .padding(horizontal = 6.dp, vertical = 2.dp),
                                     )
                                 }
                             }
-                            Text(skill.description, color = LitterTheme.textSecondary, fontSize = 12.sp)
-                            Text(skill.path.value, color = LitterTheme.textMuted, fontSize = 11.sp)
+                            Text(skill.description, color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled)
+                            Text(skill.path.value, color = LitterTheme.textMuted, fontSize = LitterTextStyle.caption2.scaled)
                         }
                     }
                 }
@@ -674,7 +676,7 @@ private fun SheetHeader(
             Spacer(Modifier.width(64.dp))
         }
         Spacer(Modifier.weight(1f))
-        Text(title, color = LitterTheme.textPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Text(title, color = LitterTheme.textPrimary, fontSize = LitterTextStyle.headline.scaled, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onDismiss) {
             Text("Done", color = LitterTheme.accent)

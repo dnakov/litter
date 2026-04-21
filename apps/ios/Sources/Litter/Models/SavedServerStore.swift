@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 @MainActor
 enum SavedServerStore {
@@ -14,7 +15,26 @@ enum SavedServerStore {
         let decoded = (try? JSONDecoder().decode([SavedServer].self, from: data)) ?? []
         let migrated = decoded.map { saved -> SavedServer in
             let server = saved.toDiscoveredServer()
-            return SavedServer.from(server, rememberedByUser: saved.rememberedByUser)
+            let restored = SavedServer.from(server, rememberedByUser: saved.rememberedByUser)
+            if shouldReplaceLegacyLocalPlaceholder(restored) {
+                return SavedServer(
+                    id: restored.id,
+                    name: UIDevice.current.name,
+                    hostname: restored.hostname,
+                    port: restored.port,
+                    codexPorts: restored.codexPorts,
+                    sshPort: restored.sshPort,
+                    source: restored.source,
+                    hasCodexServer: restored.hasCodexServer,
+                    wakeMAC: restored.wakeMAC,
+                    preferredConnectionMode: restored.preferredConnectionMode,
+                    preferredCodexPort: restored.preferredCodexPort,
+                    sshPortForwardingEnabled: restored.sshPortForwardingEnabled,
+                    websocketURL: restored.websocketURL,
+                    rememberedByUser: restored.rememberedByUser
+                )
+            }
+            return restored
         }
         if migrated != decoded {
             save(migrated)
@@ -44,6 +64,35 @@ enum SavedServerStore {
 
     static func rememberedServers() -> [SavedServer] {
         load().filter(\.rememberedByUser)
+    }
+
+    static func reconnectRecords(
+        localDisplayName: String,
+        rememberedOnly: Bool = false
+    ) -> [SavedServerRecord] {
+        let saved = rememberedOnly ? rememberedServers() : load()
+        var records = saved.map { $0.toRecord() }
+        if records.contains(where: { $0.id == "local" || $0.source == ServerSource.local.rawValue }) == false {
+            records.append(
+                SavedServerRecord(
+                    id: "local",
+                    name: localDisplayName,
+                    hostname: "127.0.0.1",
+                    port: 0,
+                    codexPorts: [],
+                    sshPort: nil,
+                    source: ServerSource.local.rawValue,
+                    hasCodexServer: true,
+                    wakeMac: nil,
+                    preferredConnectionMode: nil,
+                    preferredCodexPort: nil,
+                    sshPortForwardingEnabled: nil,
+                    websocketUrl: nil,
+                    rememberedByUser: true
+                )
+            )
+        }
+        return records
     }
 
     static func remove(serverId: String) {
@@ -126,5 +175,10 @@ enum SavedServerStore {
         }
 
         return normalized.lowercased()
+    }
+
+    private static func shouldReplaceLegacyLocalPlaceholder(_ server: SavedServer) -> Bool {
+        server.source == .local
+            && server.name.trimmingCharacters(in: .whitespacesAndNewlines) == "This Device"
     }
 }

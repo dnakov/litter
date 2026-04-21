@@ -6,6 +6,7 @@ actor PushProxyClient {
     struct RegisterBody: Encodable {
         let platform: String
         let pushToken: String
+        let apnsEnvironment: String
         let intervalSeconds: Int
         let ttlSeconds: Int
     }
@@ -20,7 +21,9 @@ actor PushProxyClient {
             "push proxy register request",
             fields: ["intervalSeconds": interval, "ttlSeconds": ttl]
         )
-        let body = RegisterBody(platform: "ios", pushToken: pushToken, intervalSeconds: interval, ttlSeconds: ttl)
+        let apnsEnv = Self.apnsEnvironment
+        LLog.info("push", "detected APNS environment", fields: ["environment": apnsEnv])
+        let body = RegisterBody(platform: "ios", pushToken: pushToken, apnsEnvironment: apnsEnv, intervalSeconds: interval, ttlSeconds: ttl)
         let data = try await post(path: "/register", body: body)
         return try JSONDecoder().decode(RegisterResponse.self, from: data).id
     }
@@ -28,6 +31,17 @@ actor PushProxyClient {
     func deregister(registrationId: String) async throws {
         LLog.info("push", "push proxy deregister request", fields: ["registrationId": registrationId])
         _ = try await post(path: "/\(registrationId)/deregister", body: Empty())
+    }
+
+    static var apnsEnvironment: String {
+        #if DEBUG
+        return "sandbox"
+        #else
+        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" {
+            return "sandbox"
+        }
+        return "production"
+        #endif
     }
 
     private struct Empty: Encodable {}

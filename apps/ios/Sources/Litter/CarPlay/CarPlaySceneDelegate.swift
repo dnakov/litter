@@ -1,39 +1,73 @@
 import CarPlay
 import UIKit
+import os
 
+@objc(CarPlaySceneDelegate)
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
+    private static let log = Logger(subsystem: "com.sigkitten.litter", category: "CarPlay")
+
     private var interfaceController: CPInterfaceController?
     private var voiceManager: CarPlayVoiceManager?
 
     // MARK: - Scene Lifecycle
 
-    func templateApplicationScene(
-        _ scene: CPTemplateApplicationScene,
-        didConnect interfaceController: CPInterfaceController,
-        to window: CPWindow
-    ) {
-        self.interfaceController = interfaceController
-
-        let vm = CarPlayVoiceManager(
-            voiceActions: VoiceRuntimeController.shared,
-            appModel: AppModel.shared,
-            interfaceController: interfaceController
-        )
-        self.voiceManager = vm
-
-        let tabBar = CPTabBarTemplate(templates: [
-            vm.buildVoiceTab(),
-            vm.buildSessionsTab()
-        ])
-        interfaceController.setRootTemplate(tabBar, animated: false)
-        vm.startObserving()
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        Self.log.info("CarPlay scene willConnect role=\(session.role.rawValue, privacy: .public)")
     }
 
     func templateApplicationScene(
         _ scene: CPTemplateApplicationScene,
-        didDisconnect interfaceController: CPInterfaceController,
-        from window: CPWindow
+        didConnect interfaceController: CPInterfaceController
     ) {
+        Self.log.info("CarPlay didConnect interfaceController")
+        self.interfaceController = interfaceController
+
+        // Set a minimal root template first so the watchdog is satisfied
+        // (CarPlay kills the scene if no root template is set quickly).
+        let placeholder = CPGridTemplate(title: "Litter", gridButtons: [Self.placeholderButton()])
+        placeholder.tabImage = UIImage(systemName: "waveform")
+        placeholder.tabTitle = "Voice"
+        interfaceController.setRootTemplate(placeholder, animated: false, completion: nil)
+        Self.log.info("CarPlay placeholder root set")
+
+        // Build the real templates asynchronously so any slow init in
+        // AppModel.shared / VoiceRuntimeController.shared can't block the
+        // scene-connect watchdog. Any exception gets logged rather than
+        // tearing down the scene.
+        Task { @MainActor [weak self] in
+            guard let self, let ic = self.interfaceController else { return }
+            do {
+                let vm = CarPlayVoiceManager(
+                    voiceActions: VoiceRuntimeController.shared,
+                    appModel: AppModel.shared,
+                    interfaceController: ic
+                )
+                self.voiceManager = vm
+                let tabBar = CPTabBarTemplate(templates: [
+                    vm.buildVoiceTab(),
+                    vm.buildSessionsTab()
+                ])
+                ic.setRootTemplate(tabBar, animated: false, completion: nil)
+                vm.startObserving()
+                Self.log.info("CarPlay tab bar root installed")
+            } catch {
+                Self.log.error("CarPlay setup threw: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    private static func placeholderButton() -> CPGridButton {
+        let image = UIImage(systemName: "waveform",
+                            withConfiguration: UIImage.SymbolConfiguration(pointSize: 48, weight: .semibold))
+            ?? UIImage()
+        return CPGridButton(titleVariants: ["Loading…"], image: image) { _ in }
+    }
+
+    func templateApplicationScene(
+        _ scene: CPTemplateApplicationScene,
+        didDisconnectInterfaceController interfaceController: CPInterfaceController
+    ) {
+        Self.log.info("CarPlay didDisconnect")
         voiceManager?.stopObserving()
         voiceManager = nil
         self.interfaceController = nil

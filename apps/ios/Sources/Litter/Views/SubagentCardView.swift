@@ -1,4 +1,5 @@
 import SwiftUI
+import HairballUI
 
 struct SubagentCardView: View {
     @Environment(AppModel.self) private var appModel

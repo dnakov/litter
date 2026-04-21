@@ -333,7 +333,9 @@ enum LitterPreviewData {
             contextTokensUsed: 156_000,
             modelContextWindow: 200_000,
             rateLimits: nil,
-            realtimeSessionId: nil
+            realtimeSessionId: nil,
+            stats: nil,
+            tokenUsage: nil
         )
     }
 
@@ -367,7 +369,8 @@ enum LitterPreviewData {
             rateLimits: nil,
             availableModels: sampleModels,
             backendKind: .codex,
-            connectionProgress: nil
+            connectionProgress: nil,
+            usageStats: nil
         )
 
         let sessionSummaries = threads.map { thread in
@@ -392,7 +395,16 @@ enum LitterPreviewData {
                 updatedAt: thread.info.updatedAt,
                 hasActiveTurn: thread.hasActiveTurn,
                 isSubagent: thread.info.parentThreadId != nil,
-                isFork: thread.info.parentThreadId != nil
+                isFork: thread.info.parentThreadId != nil,
+                lastResponsePreview: nil,
+                lastResponseTurnId: nil,
+                lastUserMessage: nil,
+                lastToolLabel: nil,
+                recentToolLog: [],
+                lastTurnStartMs: nil,
+                lastTurnEndMs: nil,
+                stats: nil,
+                tokenUsage: nil
             )
         }
 

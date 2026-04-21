@@ -1,0 +1,16 @@
+diff --git a/codex-rs/core/src/shell_snapshot.rs b/codex-rs/core/src/shell_snapshot.rs
+index 29b50cb9e..bdad4f632 100644
+--- a/codex-rs/core/src/shell_snapshot.rs
++++ b/codex-rs/core/src/shell_snapshot.rs
+@@ -29,6 +29,11 @@ pub struct ShellSnapshot {
+     pub cwd: AbsolutePathBuf,
+ }
+
++// On mobile (iOS/Android) the shell environment is minimal and snapshot
++// attempts frequently timeout, adding 10s to every thread/start.
++#[cfg(any(target_os = "ios", target_os = "android"))]
++const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(2);
++#[cfg(not(any(target_os = "ios", target_os = "android")))]
+ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+ const SNAPSHOT_RETENTION: Duration = Duration::from_secs(60 * 60 * 24 * 3); // 3 days retention.
+ const SNAPSHOT_DIR: &str = "shell_snapshots";

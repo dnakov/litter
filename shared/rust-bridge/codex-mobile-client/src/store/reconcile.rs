@@ -204,7 +204,7 @@ impl MobileClient {
         server_id: &str,
         response: &upstream::ThreadStartResponse,
     ) -> Result<ThreadKey, String> {
-        let snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
+        let mut snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
             server_id,
             response.thread.clone(),
             Some(response.model.clone()),
@@ -217,6 +217,8 @@ impl MobileClient {
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
+        let existing = self.app_store.thread_snapshot(&key);
+        crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
     }
@@ -226,7 +228,7 @@ impl MobileClient {
         server_id: &str,
         response: &upstream::ThreadReadResponse,
     ) -> Result<ThreadKey, String> {
-        let snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
+        let mut snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
             server_id,
             response.thread.clone(),
             None,
@@ -236,6 +238,8 @@ impl MobileClient {
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
+        let existing = self.app_store.thread_snapshot(&key);
+        crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
     }
@@ -245,7 +249,7 @@ impl MobileClient {
         server_id: &str,
         response: &upstream::ThreadResumeResponse,
     ) -> Result<ThreadKey, String> {
-        let snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
+        let mut snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
             server_id,
             response.thread.clone(),
             Some(response.model.clone()),
@@ -258,6 +262,8 @@ impl MobileClient {
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
+        let existing = self.app_store.thread_snapshot(&key);
+        crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
     }
@@ -267,7 +273,7 @@ impl MobileClient {
         server_id: &str,
         response: &upstream::ThreadForkResponse,
     ) -> Result<ThreadKey, String> {
-        let snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
+        let mut snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
             server_id,
             response.thread.clone(),
             Some(response.model.clone()),
@@ -280,6 +286,8 @@ impl MobileClient {
         )
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
+        let existing = self.app_store.thread_snapshot(&key);
+        crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
     }
@@ -316,6 +324,7 @@ impl MobileClient {
         .map_err(|e| e.to_string())?;
         if let Some(current) = current.as_ref() {
             crate::copy_thread_runtime_fields(current, &mut snapshot);
+            crate::reconcile_active_turn(Some(current), &mut snapshot, &response.thread.turns);
         }
         let next_key = snapshot.key.clone();
         self.app_store.upsert_thread_snapshot(snapshot);

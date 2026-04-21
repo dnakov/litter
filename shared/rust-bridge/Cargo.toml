@@ -18,6 +18,9 @@ codex-app-server-protocol = { path = "../third_party/codex/codex-rs/app-server-p
 codex-protocol = { path = "../third_party/codex/codex-rs/protocol" }
 codex-utils-cli = { path = "../third_party/codex/codex-rs/utils/cli" }
 codex-core = { path = "../third_party/codex/codex-rs/core" }
+codex-exec-server = { path = "../third_party/codex/codex-rs/exec-server" }
+codex-login = { path = "../third_party/codex/codex-rs/login" }
+codex-shell-command = { path = "../third_party/codex/codex-rs/shell-command" }
 codex-apply-patch = { path = "../third_party/codex/codex-rs/apply-patch" }
 codex-arg0 = { path = "../third_party/codex/codex-rs/arg0" }
 codex-feedback = { path = "../third_party/codex/codex-rs/feedback" }
@@ -43,10 +46,21 @@ url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls"] }
 tracing-subscriber = { version = "0.3", features = ["registry"] }
+shlex = "1"
 
 [profile.release]
 strip = true
 lto = true
+
+# Used by the iOS fast lanes (`--fast-device`, `--fast-sim`).
+# `debug = 1` emits line tables only — crashes still resolve to file:line,
+# but the massive per-variable DWARF (which pushes the default `dev`
+# staticlib to ~2.7GB) is gone. Expect ~10× smaller libcodex_mobile_client.a
+# and a correspondingly faster Swift link step.
+[profile.ios-dev]
+inherits = "dev"
+debug = 1
+codegen-units = 256
 
 [profile.mobile-release]
 inherits = "release"

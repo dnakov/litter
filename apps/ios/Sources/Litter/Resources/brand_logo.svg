@@ -41,6 +41,30 @@
     <polygon points="246,198 254,198 250,204" fill="#1F2937" />
   </g>
 
+  <!-- Left Kitten Whiskers -->
+  <g id="whiskers-left" stroke="#C0C4CA" stroke-width="1.2" stroke-linecap="round">
+    <line x1="120" y1="216" x2="144" y2="220" />
+    <line x1="118" y1="222" x2="143" y2="223" />
+    <line x1="180" y1="220" x2="204" y2="216" />
+    <line x1="181" y1="223" x2="206" y2="222" />
+  </g>
+
+  <!-- Right Kitten Whiskers -->
+  <g id="whiskers-right" stroke="#4B5563" stroke-width="1.2" stroke-linecap="round">
+    <line x1="296" y1="216" x2="320" y2="220" />
+    <line x1="294" y1="222" x2="319" y2="223" />
+    <line x1="356" y1="220" x2="380" y2="216" />
+    <line x1="357" y1="223" x2="382" y2="222" />
+  </g>
+
+  <!-- Center Kitten Whiskers -->
+  <g id="whiskers-center" stroke="#C88638" stroke-width="1.2" stroke-linecap="round">
+    <line x1="195" y1="195" x2="228" y2="200" />
+    <line x1="193" y1="203" x2="227" y2="204" />
+    <line x1="272" y1="200" x2="305" y2="195" />
+    <line x1="273" y1="204" x2="307" y2="203" />
+  </g>
+
   <!-- Box Structure -->
   <g id="cardboard-box">
     <!-- Box Body -->

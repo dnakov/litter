@@ -23,8 +23,8 @@ struct ConversationInfoView: View {
 
     @State private var renameText = ""
     @State private var isRenaming = false
-    @State private var stats: ConversationStatistics = .init()
-    @State private var serverUsage: ServerUsageData = .init()
+    @State private var stats: AppConversationStats?
+    @State private var serverUsage: AppServerUsageStats?
 
     private var thread: AppThreadSnapshot? {
         guard let threadKey else { return nil }
@@ -102,7 +102,7 @@ struct ConversationInfoView: View {
 
     private var serverOnlyActionRow: some View {
         HStack(spacing: 0) {
-            actionCircle(icon: "photo.on.rectangle", label: "Wallpaper") {
+            actionCircle(icon: "paintbrush", label: "Appearance") {
                 onOpenWallpaper?()
             }
         }
@@ -158,6 +158,20 @@ struct ConversationInfoView: View {
                     }
                 }
 
+                if let tid = threadKey?.threadId {
+                    HStack(spacing: 5) {
+                        Image(systemName: "number")
+                            .font(.system(size: 10))
+                            .foregroundStyle(LitterTheme.textMuted)
+                        Text(tid)
+                            .litterFont(size: 11)
+                            .foregroundStyle(LitterTheme.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+
                 HStack(spacing: 12) {
                     if let created = thread?.info.createdAt {
                         HStack(spacing: 3) {
@@ -193,7 +207,7 @@ struct ConversationInfoView: View {
 
     private var actionButtonsRow: some View {
         HStack(spacing: 0) {
-            actionCircle(icon: "photo.on.rectangle", label: "Wallpaper") {
+            actionCircle(icon: "paintbrush", label: "Appearance") {
                 onOpenWallpaper?()
             }
             actionCircle(icon: "arrow.branch", label: "Fork") {
@@ -326,12 +340,12 @@ struct ConversationInfoView: View {
                 GridItem(.flexible(), spacing: 12),
                 GridItem(.flexible(), spacing: 12)
             ], spacing: 12) {
-                statCard("Messages", value: "\(stats.totalMessages)", detail: "\(stats.userMessageCount) user · \(stats.assistantMessageCount) assistant")
-                statCard("Turns", value: "\(stats.turnCount)")
-                statCard("Commands", value: "\(stats.commandsExecuted)", detail: "\(stats.commandsSucceeded) ok · \(stats.commandsFailed) fail")
-                statCard("Files Changed", value: "\(stats.filesChanged)")
-                statCard("MCP Calls", value: "\(stats.mcpToolCallCount)")
-                statCard("Exec Time", value: formatDuration(stats.totalCommandDurationMs))
+                statCard("Messages", value: "\(stats?.totalMessages ?? 0)", detail: "\(stats?.userMessageCount ?? 0) user · \(stats?.assistantMessageCount ?? 0) assistant")
+                statCard("Turns", value: "\(stats?.turnCount ?? 0)")
+                statCard("Commands", value: "\(stats?.commandsExecuted ?? 0)", detail: "\(stats?.commandsSucceeded ?? 0) ok · \(stats?.commandsFailed ?? 0) fail")
+                statCard("Files Changed", value: "\(stats?.filesChanged ?? 0)", detail: "+\(stats?.diffAdditions ?? 0) / -\(stats?.diffDeletions ?? 0)")
+                statCard("MCP Calls", value: "\(stats?.mcpToolCallCount ?? 0)")
+                statCard("Exec Time", value: formatDuration(Int64(stats?.totalCommandDurationMs ?? 0)))
             }
         }
         .padding(16)
@@ -374,19 +388,21 @@ struct ConversationInfoView: View {
                 .litterFont(size: 14, weight: .semibold)
                 .foregroundStyle(LitterTheme.textPrimary)
 
-            if !serverUsage.tokensByThread.isEmpty {
-                tokenUsageChart
+            if let usage = serverUsage {
+                if !usage.tokensByThread.isEmpty {
+                    tokenUsageChart(usage)
+                }
+
+                if !usage.activityByDay.isEmpty {
+                    activityChart(usage)
+                }
+
+                if !usage.modelUsage.isEmpty {
+                    modelBreakdownChart(usage)
+                }
             }
 
-            if !serverUsage.activityByDay.isEmpty {
-                activityChart
-            }
-
-            if !serverUsage.modelUsage.isEmpty {
-                modelBreakdownChart
-            }
-
-            if let rateLimits = serverUsage.rateLimits {
+            if let rateLimits = server?.rateLimits {
                 rateLimitGauge(rateLimits)
             }
         }
@@ -394,13 +410,13 @@ struct ConversationInfoView: View {
         .modifier(GlassRectModifier(cornerRadius: 12))
     }
 
-    private var tokenUsageChart: some View {
+    private func tokenUsageChart(_ usage: AppServerUsageStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Token Usage by Conversation")
                 .litterFont(size: 12, weight: .medium)
                 .foregroundStyle(LitterTheme.textSecondary)
 
-            Chart(serverUsage.tokensByThread) { entry in
+            Chart(Array(usage.tokensByThread.enumerated()), id: \.offset) { _, entry in
                 AreaMark(
                     x: .value("Thread", entry.threadTitle),
                     y: .value("Tokens", entry.tokens)
@@ -435,15 +451,15 @@ struct ConversationInfoView: View {
         }
     }
 
-    private var activityChart: some View {
+    private func activityChart(_ usage: AppServerUsageStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Activity Timeline")
                 .litterFont(size: 12, weight: .medium)
                 .foregroundStyle(LitterTheme.textSecondary)
 
-            Chart(serverUsage.activityByDay) { entry in
+            Chart(Array(usage.activityByDay.enumerated()), id: \.offset) { _, entry in
                 BarMark(
-                    x: .value("Date", entry.date, unit: .day),
+                    x: .value("Date", Date(timeIntervalSince1970: TimeInterval(entry.dateEpoch)), unit: .day),
                     y: .value("Activity", entry.turnCount)
                 )
                 .foregroundStyle(LitterTheme.accent.opacity(0.7))
@@ -469,13 +485,13 @@ struct ConversationInfoView: View {
         }
     }
 
-    private var modelBreakdownChart: some View {
+    private func modelBreakdownChart(_ usage: AppServerUsageStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Model Usage")
                 .litterFont(size: 12, weight: .medium)
                 .foregroundStyle(LitterTheme.textSecondary)
 
-            Chart(serverUsage.modelUsage) { entry in
+            Chart(Array(usage.modelUsage.enumerated()), id: \.offset) { _, entry in
                 BarMark(
                     x: .value("Count", entry.threadCount),
                     y: .value("Model", entry.model)
@@ -499,7 +515,7 @@ struct ConversationInfoView: View {
                         .foregroundStyle(LitterTheme.textSecondary)
                 }
             }
-            .frame(height: CGFloat(max(serverUsage.modelUsage.count * 32, 60)))
+            .frame(height: CGFloat(max(usage.modelUsage.count * 32, 60)))
         }
     }
 
@@ -716,10 +732,10 @@ struct ConversationInfoView: View {
 
     private func computeData() {
         if let thread {
-            stats = ConversationStatistics.compute(from: thread.hydratedConversationItems)
+            stats = thread.stats
         }
         if let server {
-            serverUsage = ServerUsageData.compute(from: allServerThreads, server: server)
+            serverUsage = server.usageStats
         }
     }
 }

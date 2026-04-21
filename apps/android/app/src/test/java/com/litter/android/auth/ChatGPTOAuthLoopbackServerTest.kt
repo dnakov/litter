@@ -1,9 +1,9 @@
 package com.litter.android.auth
 
-import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.URI
 
 class ChatGPTOAuthLoopbackServerTest {
     @Test
@@ -18,17 +18,18 @@ class ChatGPTOAuthLoopbackServerTest {
 
     @Test
     fun callbackUriForRequest_reusesRedirectOrigin() {
-        val callbackUri = ChatGPTOAuthLoopbackServer.callbackUriForRequest(
-            redirectUri = Uri.parse("http://localhost:1455/auth/callback"),
-            requestTarget = "/auth/callback?code=abc&state=xyz",
+        val callbackUri = URI.create(
+            ChatGPTOAuthLoopbackServer.callbackUriStringForRequest(
+                redirectUri = "http://localhost:1455/auth/callback",
+                requestTarget = "/auth/callback?code=abc&state=xyz",
+            ),
         )
 
         assertEquals("http", callbackUri.scheme)
         assertEquals("localhost", callbackUri.host)
         assertEquals(1455, callbackUri.port)
         assertEquals("/auth/callback", callbackUri.path)
-        assertEquals("abc", callbackUri.getQueryParameter("code"))
-        assertEquals("xyz", callbackUri.getQueryParameter("state"))
+        assertEquals("code=abc&state=xyz", callbackUri.rawQuery)
     }
 
     @Test

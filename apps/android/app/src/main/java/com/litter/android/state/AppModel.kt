@@ -27,6 +27,7 @@ import uniffi.codex_mobile_client.HydratedConversationItem
 import uniffi.codex_mobile_client.HydratedConversationItemContent
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.MessageParser
+import uniffi.codex_mobile_client.ReconnectController
 import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
 import uniffi.codex_mobile_client.ThreadKey
@@ -73,6 +74,7 @@ class AppModel private constructor(context: android.content.Context) {
     val ssh: SshBridge
     val sshSessionStore: SshSessionStore
     val parser: MessageParser
+    val reconnectController: ReconnectController
     val launchState: AppLaunchState
     val appContext: android.content.Context = context
     init {
@@ -85,6 +87,13 @@ class AppModel private constructor(context: android.content.Context) {
         ssh = SshBridge()
         sshSessionStore = SshSessionStore(ssh)
         parser = MessageParser()
+        reconnectController = ReconnectController()
+        reconnectController.setCredentialProvider(
+            KotlinSshCredentialProvider(SshCredentialStore(context))
+        )
+        reconnectController.setIpcSocketPathOverride(
+            com.litter.android.ui.ExperimentalFeatures.ipcSocketPathOverride()
+        )
         launchState = AppLaunchState(context)
     }
 
@@ -239,6 +248,24 @@ class AppModel private constructor(context: android.content.Context) {
         } else {
             summary
         }
+    }
+
+    /// Patch a single `AppSessionSummary` in the snapshot. Called whenever
+    /// the reducer emits a per-item summary update on `threadItemChanged`,
+    /// so home-list derived fields track streaming items without waiting
+    /// for a full snapshot rebuild.
+    private fun applySessionSummary(summary: AppSessionSummary) {
+        val current = _snapshot.value ?: return
+        val adjusted = applySavedServerName(summary)
+        val existingIndex = current.sessionSummaries.indexOfFirst { it.key == adjusted.key }
+        val updatedSummaries = current.sessionSummaries.toMutableList().apply {
+            if (existingIndex >= 0) {
+                this[existingIndex] = adjusted
+            } else {
+                add(adjusted)
+            }
+        }
+        _snapshot.value = current.copy(sessionSummaries = updatedSummaries)
     }
 
     suspend fun restartLocalServer() {
@@ -505,6 +532,12 @@ class AppModel private constructor(context: android.content.Context) {
                 if (!applyThreadItemChanged(update.key, update.item)) {
                     recoverThreadDeltaApplication(update.key)
                 }
+                // Reducer piggybacks the refreshed per-thread summary on
+                // every item change; patch our local session-summary cache
+                // so home-list derived fields (stats, last tool label, etc.)
+                // stay in sync with streaming items without waiting for a
+                // full snapshot rebuild.
+                applySessionSummary(update.sessionSummary)
             }
             is AppStoreUpdateRecord.ThreadStreamingDelta -> {
                 if (!applyThreadStreamingDelta(update.key, update.itemId, update.kind, update.text)) {

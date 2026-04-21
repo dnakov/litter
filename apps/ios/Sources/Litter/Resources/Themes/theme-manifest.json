@@ -248,6 +248,22 @@
     "foregroundHex": "#DCD7BA"
   },
   {
+    "slug": "kitty-litter-dark",
+    "name": "Kitty Litter",
+    "type": "dark",
+    "accentHex": "#F59E0B",
+    "backgroundHex": "#1F2937",
+    "foregroundHex": "#E5E7EB"
+  },
+  {
+    "slug": "kitty-litter-light",
+    "name": "Kitty Litter Light",
+    "type": "light",
+    "accentHex": "#F59E0B",
+    "backgroundHex": "#FAF7F0",
+    "foregroundHex": "#1F2937"
+  },
+  {
     "slug": "laserwave",
     "name": "laserwave",
     "type": "dark",

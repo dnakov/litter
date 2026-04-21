@@ -1,16 +1,10 @@
 import Foundation
 import Observation
+import UIKit
 
 @MainActor
 @Observable
 final class AppModel {
-    private struct PendingStreamingDeltaEvent: Sendable {
-        let key: ThreadKey
-        let itemId: String
-        let kind: ThreadStreamingDeltaKind
-        var text: String
-    }
-
     private struct PendingThreadStateEvent: Sendable {
         let state: AppThreadStateRecord
         let sessionSummary: AppSessionSummary
@@ -21,12 +15,8 @@ final class AppModel {
         let key: ThreadKey
         let itemId: String
         var upsertItem: HydratedConversationItem?
-        var commandOutputText: String = ""
     }
 
-    // Coalescing windows: delta < mutation < state.
-    // Cheaper updates flush faster; expensive state changes coalesce longer.
-    private static let streamingDeltaCoalescingNanoseconds: UInt64 = 50_000_000   // ~20fps text
     private static let liveItemMutationCoalescingNanoseconds: UInt64 = 120_000_000 // ~8fps commands
     private static let liveThreadStateCoalescingNanoseconds: UInt64 = 150_000_000  // ~6fps metadata
 
@@ -39,6 +29,7 @@ final class AppModel {
         let discovery: DiscoveryBridge
         let serverBridge: ServerBridge
         let ssh: SshBridge
+        let reconnectController: ReconnectController
     }
 
     /// Kick off Rust bridge construction on a background thread.
@@ -48,12 +39,16 @@ final class AppModel {
     }
 
     private nonisolated static let _prewarmResult: RustBridges = {
-        RustBridges(
+        let rc = ReconnectController()
+        rc.setCredentialProvider(provider: SwiftSshCredentialProvider())
+        rc.setIpcSocketPathOverride(path: ExperimentalFeatures.shared.ipcSocketPathOverride())
+        return RustBridges(
             store: AppStore(),
             client: AppClient(),
             discovery: DiscoveryBridge(),
             serverBridge: ServerBridge(),
-            ssh: SshBridge()
+            ssh: SshBridge(),
+            reconnectController: rc
         )
     }()
 
@@ -70,6 +65,7 @@ final class AppModel {
     let discovery: DiscoveryBridge
     let serverBridge: ServerBridge
     let ssh: SshBridge
+    let reconnectController: ReconnectController
 
     private(set) var snapshot: AppSnapshotRecord? {
         didSet {
@@ -91,8 +87,6 @@ final class AppModel {
     @ObservationIgnored private var pendingActiveThreadHydrationKey: ThreadKey?
     @ObservationIgnored private var pendingActiveThreadHydrationTask: Task<Void, Never>?
     @ObservationIgnored private var pendingSnapshotRefreshTask: Task<Void, Never>?
-    @ObservationIgnored private var pendingStreamingDeltaEvents: [PendingStreamingDeltaEvent] = []
-    @ObservationIgnored private var pendingStreamingDeltaTask: Task<Void, Never>?
     @ObservationIgnored private var pendingThreadStateEvents: [ThreadKey: PendingThreadStateEvent] = [:]
     @ObservationIgnored private var pendingThreadStateTask: Task<Void, Never>?
     @ObservationIgnored private var pendingCommandRowMutations: [String: PendingCommandRowMutation] = [:]
@@ -104,7 +98,8 @@ final class AppModel {
         client: AppClient? = nil,
         discovery: DiscoveryBridge? = nil,
         serverBridge: ServerBridge? = nil,
-        ssh: SshBridge? = nil
+        ssh: SshBridge? = nil,
+        reconnectController: ReconnectController? = nil
     ) {
         let bridges = Self._prewarmResult
         self.store = store ?? bridges.store
@@ -112,6 +107,7 @@ final class AppModel {
         self.discovery = discovery ?? bridges.discovery
         self.serverBridge = serverBridge ?? bridges.serverBridge
         self.ssh = ssh ?? bridges.ssh
+        self.reconnectController = reconnectController ?? bridges.reconnectController
     }
 
     deinit {
@@ -119,7 +115,6 @@ final class AppModel {
         pendingThreadRefreshTask?.cancel()
         pendingActiveThreadHydrationTask?.cancel()
         pendingSnapshotRefreshTask?.cancel()
-        pendingStreamingDeltaTask?.cancel()
         pendingThreadStateTask?.cancel()
         pendingCommandRowMutationTask?.cancel()
     }
@@ -155,9 +150,6 @@ final class AppModel {
         pendingActiveThreadHydrationKey = nil
         pendingSnapshotRefreshTask?.cancel()
         pendingSnapshotRefreshTask = nil
-        pendingStreamingDeltaTask?.cancel()
-        pendingStreamingDeltaTask = nil
-        pendingStreamingDeltaEvents.removeAll()
         pendingThreadStateTask?.cancel()
         pendingThreadStateTask = nil
         pendingThreadStateEvents.removeAll()
@@ -212,17 +204,15 @@ final class AppModel {
         cwdOverride: String?
     ) async throws -> ThreadKey {
         let trimmedCwdOverride = cwdOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresResumeOverrides = requiresResumeOverrides(
+            for: key,
+            launchConfig: launchConfig,
+            cwdOverride: trimmedCwdOverride
+        )
         let requiresDistinctCwdOverride = requiresResumeCwdOverride(
             for: key,
             cwdOverride: trimmedCwdOverride
         )
-        let requiresResumeOverrides =
-            launchConfig.model != nil ||
-            launchConfig.approvalPolicy != nil ||
-            launchConfig.sandbox != nil ||
-            !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) ||
-            requiresDistinctCwdOverride ||
-            !launchConfig.persistExtendedHistory
 
         if requiresResumeOverrides {
             return try await client.resumeThread(
@@ -245,17 +235,15 @@ final class AppModel {
         cwdOverride: String?
     ) async throws -> ThreadKey {
         let trimmedCwdOverride = cwdOverride?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requiresResumeOverrides = requiresResumeOverrides(
+            for: key,
+            launchConfig: launchConfig,
+            cwdOverride: trimmedCwdOverride
+        )
         let requiresDistinctCwdOverride = requiresResumeCwdOverride(
             for: key,
             cwdOverride: trimmedCwdOverride
         )
-        let requiresResumeOverrides =
-            launchConfig.model != nil ||
-            launchConfig.approvalPolicy != nil ||
-            launchConfig.sandbox != nil ||
-            !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) ||
-            requiresDistinctCwdOverride ||
-            !launchConfig.persistExtendedHistory
 
         if requiresResumeOverrides {
             return try await client.resumeThread(
@@ -290,10 +278,72 @@ final class AppModel {
         return existingCwd != normalizedOverride
     }
 
+    private func requiresResumeOverrides(
+        for key: ThreadKey,
+        launchConfig: AppThreadLaunchConfig,
+        cwdOverride: String?
+    ) -> Bool {
+        if !(launchConfig.developerInstructions?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return true
+        }
+        if !launchConfig.persistExtendedHistory {
+            return true
+        }
+        if requiresResumeCwdOverride(for: key, cwdOverride: cwdOverride) {
+            return true
+        }
+
+        guard let existingThread = threadSnapshot(for: key) else {
+            let existingModel = snapshot?.sessionSummary(for: key)?.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let requestedModel = launchConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let requestedModel, !requestedModel.isEmpty, requestedModel != existingModel {
+                return true
+            }
+            return launchConfig.approvalPolicy != nil
+                || launchConfig.sandbox != nil
+        }
+
+        let requestedModel = launchConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingModel = (existingThread.model ?? existingThread.info.model)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let requestedModel, !requestedModel.isEmpty, requestedModel != existingModel {
+            return true
+        }
+        if let requestedApproval = launchConfig.approvalPolicy,
+           requestedApproval != existingThread.effectiveApprovalPolicy {
+            return true
+        }
+        if let requestedSandbox = launchConfig.sandbox,
+           requestedSandbox != existingThread.effectiveSandboxPolicy?.launchOverrideMode {
+            return true
+        }
+        return false
+    }
+
+    func resolvedLocalServerDisplayName() -> String {
+        let connectedLocalName = snapshot?.servers
+            .first(where: \.isLocal)
+            .flatMap { $0.displayName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        if let connectedLocalName, !connectedLocalName.isEmpty, connectedLocalName != "This Device" {
+            return connectedLocalName
+        }
+
+        let savedLocalName = SavedServerStore.load()
+            .first(where: { $0.id == "local" || $0.source == .local })
+            .flatMap { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        if let savedLocalName, !savedLocalName.isEmpty, savedLocalName != "This Device" {
+            return savedLocalName
+        }
+
+        return UIDevice.current.name
+    }
+
     func restartLocalServer() async throws {
         let currentLocal = snapshot?.servers.first(where: \.isLocal)
         let serverId = currentLocal?.serverId ?? "local"
-        let displayName = currentLocal?.displayName ?? "This Device"
+        let displayName = resolvedLocalServerDisplayName()
         serverBridge.disconnectServer(serverId: serverId)
         _ = try await serverBridge.connectLocalServer(
             serverId: serverId,
@@ -325,7 +375,8 @@ final class AppModel {
     }
 
     func applySnapshot(_ snapshot: AppSnapshotRecord?) {
-        let mergedSnapshot = snapshot.map(mergingCachedThreadSnapshots)
+        let normalizedSnapshot = snapshot.map(normalizingLocalServerDisplayNames)
+        let mergedSnapshot = normalizedSnapshot.map(mergingCachedThreadSnapshots)
         self.snapshot = mergedSnapshot
         if let mergedSnapshot {
             persistWakeMACs(from: mergedSnapshot.servers)
@@ -342,6 +393,19 @@ final class AppModel {
                 wakeMAC: server.wakeMac
             )
         }
+    }
+
+    private func normalizingLocalServerDisplayNames(_ snapshot: AppSnapshotRecord) -> AppSnapshotRecord {
+        var snapshot = snapshot
+        let fallbackName = UIDevice.current.name
+        for index in snapshot.servers.indices {
+            guard snapshot.servers[index].isLocal else { continue }
+            let displayName = snapshot.servers[index].displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if displayName.isEmpty || displayName == "This Device" {
+                snapshot.servers[index].displayName = fallbackName
+            }
+        }
+        return snapshot
     }
 
     private func handleStoreUpdate(_ update: AppStoreUpdateRecord) async {
@@ -366,27 +430,23 @@ final class AppModel {
                     agentDirectoryVersion: agentDirectoryVersion
                 )
             }
-        case .threadItemChanged(let key, let item):
+        case .threadItemChanged(let key, let item, let sessionSummary):
             let isBatched = shouldBatchCommandRowMutation(for: key, item: item)
             if isBatched {
                 enqueueCommandRowUpsert(key: key, item: item)
             } else if !applyThreadItemUpsert(key: key, item: item) {
                 scheduleThreadSnapshotRefresh(for: key)
             }
+            // Reducer piggybacks the refreshed per-thread summary on every
+            // item change, so the home dashboard's session-summary driven
+            // fields (stats, last tool label, etc.) stay in sync with the
+            // stream without waiting for a full snapshot rebuild.
+            applySessionSummary(sessionSummary)
         case .threadStreamingDelta(let key, let itemId, let kind, let text):
-            if pendingStreamingDeltaEvents.isEmpty {
-                LLog.debug("streaming", "first delta enqueue", fields: [
-                    "threadId": key.threadId,
-                    "itemId": itemId,
-                    "kind": String(describing: kind),
-                    "textLen": text.count,
-                    "isActiveThread": snapshot?.activeThread == key
-                ])
-            }
-            if kind == .commandOutput, shouldBatchLiveCommandMutation(for: key) {
-                enqueueThreadCommandOutputDelta(key: key, itemId: itemId, text: text)
+            if kind == .assistantText {
+                StreamingRendererCoordinator.shared.appendDelta(text, for: itemId)
             } else {
-                enqueueThreadStreamingDelta(key: key, itemId: itemId, kind: kind, text: text)
+                scheduleThreadSnapshotRefresh(for: key)
             }
         case .threadRemoved(let key, let agentDirectoryVersion):
             removeThreadSnapshot(for: key, agentDirectoryVersion: agentDirectoryVersion)
@@ -551,20 +611,6 @@ final class AppModel {
         schedulePendingCommandRowMutationsFlush()
     }
 
-    private func enqueueThreadCommandOutputDelta(
-        key: ThreadKey,
-        itemId: String,
-        text: String
-    ) {
-        guard !text.isEmpty else { return }
-        let mutationKey = commandRowMutationKey(key: key, itemId: itemId)
-        var mutation = pendingCommandRowMutations[mutationKey]
-            ?? PendingCommandRowMutation(key: key, itemId: itemId)
-        mutation.commandOutputText += text
-        pendingCommandRowMutations[mutationKey] = mutation
-        schedulePendingCommandRowMutationsFlush()
-    }
-
     private func schedulePendingCommandRowMutationsFlush() {
         guard pendingCommandRowMutationTask == nil else { return }
         pendingCommandRowMutationTask = Task { [weak self] in
@@ -597,116 +643,6 @@ final class AppModel {
         for key in refreshKeys {
             await refreshThreadSnapshot(key: key)
         }
-    }
-
-    private func enqueueThreadStreamingDelta(
-        key: ThreadKey,
-        itemId: String,
-        kind: ThreadStreamingDeltaKind,
-        text: String
-    ) {
-        guard !text.isEmpty else { return }
-
-        if let lastIndex = pendingStreamingDeltaEvents.indices.last,
-           pendingStreamingDeltaEvents[lastIndex].key == key,
-           pendingStreamingDeltaEvents[lastIndex].itemId == itemId,
-           pendingStreamingDeltaEvents[lastIndex].kind == kind {
-            pendingStreamingDeltaEvents[lastIndex].text += text
-        } else {
-            pendingStreamingDeltaEvents.append(
-                PendingStreamingDeltaEvent(
-                    key: key,
-                    itemId: itemId,
-                    kind: kind,
-                    text: text
-                )
-            )
-        }
-
-        guard pendingStreamingDeltaTask == nil else { return }
-        pendingStreamingDeltaTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.streamingDeltaCoalescingNanoseconds)
-            guard let self else { return }
-            await self.flushPendingStreamingDeltas()
-        }
-    }
-
-    private func flushPendingStreamingDeltas() async {
-        let events = pendingStreamingDeltaEvents
-        pendingStreamingDeltaEvents.removeAll()
-        pendingStreamingDeltaTask = nil
-        guard !events.isEmpty else { return }
-
-        LLog.debug("streaming", "flush \(events.count) deltas", fields: [
-            "itemIds": events.map(\.itemId).joined(separator: ","),
-            "totalTextLen": events.reduce(0) { $0 + $1.text.count }
-        ])
-
-        let refreshKeys = applyStreamingDeltaBatch(events)
-        if !refreshKeys.isEmpty {
-            LLog.debug("streaming", "delta batch triggered refresh for \(refreshKeys.count) keys")
-        }
-        for key in refreshKeys {
-            await refreshThreadSnapshot(key: key)
-        }
-    }
-
-    private func applyStreamingDeltaBatch(
-        _ events: [PendingStreamingDeltaEvent]
-    ) -> Set<ThreadKey> {
-        guard var snapshot else {
-            return Set(events.map(\.key))
-        }
-
-        var mutated = false
-        var refreshKeys: Set<ThreadKey> = []
-        var touchedThreadIndexes: Set<Int> = []
-
-        for event in events {
-            guard let threadIndex = snapshot.threads.firstIndex(where: { $0.key == event.key }) else {
-                LLog.debug("streaming", "delta: thread not found", fields: ["threadId": event.key.threadId])
-                refreshKeys.insert(event.key)
-                continue
-            }
-            guard let itemIndex = snapshot.threads[threadIndex].hydratedConversationItems.firstIndex(where: { $0.id == event.itemId }) else {
-                LLog.debug("streaming", "delta: item not found", fields: [
-                    "threadId": event.key.threadId,
-                    "itemId": event.itemId,
-                    "itemCount": snapshot.threads[threadIndex].hydratedConversationItems.count
-                ])
-                refreshKeys.insert(event.key)
-                continue
-            }
-
-            var item = snapshot.threads[threadIndex].hydratedConversationItems[itemIndex]
-            guard let updatedContent = Self.applyingStreamingDelta(
-                kind: event.kind,
-                text: event.text,
-                to: item.content
-            ) else {
-                LLog.debug("streaming", "delta: content mismatch", fields: [
-                    "itemId": event.itemId,
-                    "kind": String(describing: event.kind)
-                ])
-                refreshKeys.insert(event.key)
-                continue
-            }
-
-            item.content = updatedContent
-            snapshot.threads[threadIndex].hydratedConversationItems[itemIndex] = item
-            mutated = true
-            touchedThreadIndexes.insert(threadIndex)
-        }
-
-        if mutated {
-            self.snapshot = snapshot
-            for threadIndex in touchedThreadIndexes {
-                cacheThreadSnapshot(snapshot.threads[threadIndex])
-            }
-            lastError = nil
-        }
-
-        return refreshKeys
     }
 
     private func applyCommandRowMutationBatch(
@@ -891,47 +827,20 @@ final class AppModel {
                 continue
             }
 
+            guard let item = mutation.upsertItem else { continue }
             var thread = snapshot.threads[threadIndex]
 
-            if let item = mutation.upsertItem {
-                if let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == item.id }) {
-                    if thread.hydratedConversationItems[itemIndex] != item {
-                        thread.hydratedConversationItems[itemIndex] = item
-                        mutated = true
-                    }
-                } else {
-                    let insertionIndex = Self.insertionIndex(for: item, in: thread.hydratedConversationItems)
-                    thread.hydratedConversationItems.insert(item, at: insertionIndex)
-                    mutated = true
-                }
-            }
-
-            guard let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == mutation.itemId }) else {
-                refreshKeys.insert(mutation.key)
-                continue
-            }
-
-            var item = thread.hydratedConversationItems[itemIndex]
-
-            if !mutation.commandOutputText.isEmpty {
-                guard let updatedContent = Self.applyingStreamingDelta(
-                    kind: .commandOutput,
-                    text: mutation.commandOutputText,
-                    to: item.content
-                ) else {
-                    refreshKeys.insert(mutation.key)
-                    continue
-                }
-                item.content = updatedContent
-            }
-
-            if thread.hydratedConversationItems[itemIndex] != item {
+            if let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == item.id }) {
+                guard thread.hydratedConversationItems[itemIndex] != item else { continue }
                 thread.hydratedConversationItems[itemIndex] = item
-                mutated = true
+            } else {
+                let insertionIndex = Self.insertionIndex(for: item, in: thread.hydratedConversationItems)
+                thread.hydratedConversationItems.insert(item, at: insertionIndex)
             }
 
             snapshot.threads[threadIndex] = thread
             touchedThreadIndexes.insert(threadIndex)
+            mutated = true
         }
 
         return refreshKeys
@@ -983,16 +892,11 @@ final class AppModel {
         }
 
         do {
-            let nextKey = try await client.resumeThread(
+            let nextKey = try await client.readThread(
                 serverId: key.serverId,
-                params: AppResumeThreadRequest(
+                params: AppReadThreadRequest(
                     threadId: key.threadId,
-                    model: nil,
-                    cwd: nil,
-                    approvalPolicy: nil,
-                    sandbox: nil,
-                    developerInstructions: nil,
-                    persistExtendedHistory: true
+                    includeTurns: true
                 )
             )
             if let threadSnapshot = try await store.threadSnapshot(key: nextKey) {
@@ -1106,6 +1010,21 @@ final class AppModel {
         return true
     }
 
+    /// Patch the matching `AppSessionSummary` in `snapshot.sessionSummaries`
+    /// when the reducer hands us a freshly-derived one (via `threadItemChanged`,
+    /// which now carries it as a field). Ensures home-list fields like
+    /// `lastResponsePreview`, `lastToolLabel`, and `stats` track streaming
+    /// items without needing a full snapshot rebuild.
+    private func applySessionSummary(_ summary: AppSessionSummary) {
+        guard var snapshot else { return }
+        if let idx = snapshot.sessionSummaries.firstIndex(where: { $0.key == summary.key }) {
+            snapshot.sessionSummaries[idx] = summary
+        } else {
+            snapshot.sessionSummaries.append(summary)
+        }
+        self.snapshot = snapshot
+    }
+
     private func applyThreadCommandExecutionUpdated(
         key: ThreadKey,
         itemId: String,
@@ -1165,38 +1084,6 @@ final class AppModel {
         guard var snapshot else { return }
         snapshot.activeThread = key
         self.snapshot = snapshot
-    }
-
-    private static func applyingStreamingDelta(
-        kind: ThreadStreamingDeltaKind,
-        text: String,
-        to content: HydratedConversationItemContent
-    ) -> HydratedConversationItemContent? {
-        switch (kind, content) {
-        case (.assistantText, .assistant(var data)):
-            data.text += text
-            return .assistant(data)
-        case (.reasoningText, .reasoning(var data)):
-            if data.content.isEmpty {
-                data.content.append(text)
-            } else {
-                data.content[data.content.count - 1] += text
-            }
-            return .reasoning(data)
-        case (.planText, .proposedPlan(var data)):
-            data.content += text
-            return .proposedPlan(data)
-        case (.commandOutput, .commandExecution(var data)):
-            data.output = (data.output ?? "") + text
-            return .commandExecution(data)
-        case (.mcpProgress, .mcpToolCall(var data)):
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                data.progressMessages.append(text)
-            }
-            return .mcpToolCall(data)
-        default:
-            return nil
-        }
     }
 
     private static func preserveStreamingText(

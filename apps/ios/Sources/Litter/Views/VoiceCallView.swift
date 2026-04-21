@@ -557,6 +557,33 @@ private struct VoiceTranscriptEntry: Identifiable, Equatable {
                 body: [data.query, data.actionJSON].compactMap { $0 }.joined(separator: "\n\n")
             )
 
+        case .imageView(let data):
+            self = VoiceTranscriptEntry(
+                id: item.id,
+                kind: .tool,
+                title: "IMAGE VIEW",
+                body: data.path
+            )
+
+        case .imageGeneration(let data):
+            let statusWord: String = {
+                switch data.status {
+                case .completed: return "Completed"
+                case .failed: return "Failed"
+                default: return "Generating"
+                }
+            }()
+            let body = [statusWord, data.revisedPrompt ?? ""]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            self = VoiceTranscriptEntry(
+                id: item.id,
+                kind: .tool,
+                title: "IMAGE GENERATION",
+                body: body.isEmpty ? statusWord : body
+            )
+
         case .widget(let data):
             self = VoiceTranscriptEntry(
                 id: item.id,

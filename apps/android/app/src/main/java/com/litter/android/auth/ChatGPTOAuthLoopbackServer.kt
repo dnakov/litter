@@ -84,6 +84,10 @@ internal class ChatGPTOAuthLoopbackServer private constructor(
         }
 
         internal fun callbackUriForRequest(redirectUri: Uri, requestTarget: String): Uri {
+            return Uri.parse(callbackUriStringForRequest(redirectUri.toString(), requestTarget))
+        }
+
+        internal fun callbackUriStringForRequest(redirectUri: String, requestTarget: String): String {
             val base = URI.create(redirectUri.toString())
             val target = URI.create(requestTarget)
             val resolved = URI(
@@ -95,7 +99,7 @@ internal class ChatGPTOAuthLoopbackServer private constructor(
                 target.rawQuery,
                 target.rawFragment,
             )
-            return Uri.parse(resolved.toString())
+            return resolved.toString()
         }
 
         internal fun successHtml(appReturnUri: String): String = """

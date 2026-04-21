@@ -25,6 +25,10 @@ final class AppState {
     var sessionsWorkspaceSortModeRaw = "mostRecent"
     var selectedModel = ""
     var reasoningEffort = ""
+    /// Collaboration mode the user picked before a thread exists (on the
+    /// home composer). Applied to the first `startThread` via
+    /// `setThreadCollaborationMode` immediately after creation.
+    var pendingCollaborationMode: AppModeKind = .default
     var showModelSelector = false
     var showSettings = false
     var pendingThreadNavigation: ThreadKey?

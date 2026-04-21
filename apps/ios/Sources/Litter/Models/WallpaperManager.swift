@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import UIKit
+import HairballUI
 
 // MARK: - Types
 
@@ -38,11 +39,68 @@ struct WallpaperConfig: Codable, Equatable {
     var videoDuration: Double?
 }
 
+enum GranularityKind: String, CaseIterable, Identifiable {
+    case character = "Character"
+    case chunk8 = "Chunk (8)"
+    case chunk32 = "Chunk (32)"
+    case line = "Line"
+    case block = "Block"
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .character: return "Char"
+        case .chunk8: return "8"
+        case .chunk32: return "32"
+        case .line: return "Line"
+        case .block: return "Block"
+        }
+    }
+
+    var granularity: RevealGranularity {
+        switch self {
+        case .character: return .character
+        case .chunk8: return .chunk(8)
+        case .chunk32: return .chunk(32)
+        case .line: return .line
+        case .block: return .block
+        }
+    }
+}
+
+struct TypingEffectConfig: Codable, Equatable, Hashable {
+    var effects: [String] = []
+    var revealDuration: Double = 0.5
+    var granularity: String = "Character"
+    var revealMode: String = "Continuous"
+
+    static let `default` = TypingEffectConfig(effects: ["Fade Edge"], revealDuration: 0.5, granularity: "Character", revealMode: "Continuous")
+
+    var activeEffect: StreamingEffectKind? {
+        effects.first.flatMap { StreamingEffectKind(rawValue: $0) }
+    }
+
+    var resolvedEffect: (any StreamingTextEffect)? {
+        activeEffect?.effect
+    }
+
+    var effectiveRevealMode: TokenRevealMode {
+        revealMode == "Continuous" ? .continuous : .linear
+    }
+
+    var effectiveGranularity: RevealGranularity {
+        (GranularityKind(rawValue: granularity) ?? .block).granularity
+    }
+}
+
 // MARK: - JSON Storage
 
 private struct WallpaperPrefsFile: Codable {
     var threads: [String: WallpaperConfig] = [:]
     var servers: [String: WallpaperConfig] = [:]
+    var typingEffectThreads: [String: TypingEffectConfig] = [:]
+    var typingEffectServers: [String: TypingEffectConfig] = [:]
 }
 
 // MARK: - WallpaperManager
@@ -152,6 +210,39 @@ final class WallpaperManager {
         setWallpaper(config, scope: scope)
     }
 
+    // MARK: - Typing Effect
+
+    func resolveTypingEffect(for threadKey: ThreadKey?) -> TypingEffectConfig {
+        guard let key = threadKey else { return .default }
+
+        let threadScopeKey = scopeKey(for: .thread(key))
+        if let cfg = prefs.typingEffectThreads[threadScopeKey] {
+            return cfg
+        }
+
+        if let cfg = prefs.typingEffectServers[key.serverId] {
+            return cfg
+        }
+
+        return .default
+    }
+
+    func resolveTypingEffectForServer(_ serverId: String) -> TypingEffectConfig {
+        prefs.typingEffectServers[serverId] ?? .default
+    }
+
+    func setTypingEffect(_ config: TypingEffectConfig, scope: WallpaperScope) {
+        switch scope {
+        case .thread(let key):
+            let k = scopeKey(for: .thread(key))
+            prefs.typingEffectThreads[k] = config
+        case .server(let serverId):
+            prefs.typingEffectServers[serverId] = config
+        }
+        savePrefs()
+        version += 1
+    }
+
     func setActiveThreadKey(_ key: ThreadKey?) {
         guard activeThreadKey != key else { return }
         activeThreadKey = key
@@ -187,6 +278,15 @@ final class WallpaperManager {
                 }
                 changed = true
             }
+        }
+
+        for key in prefs.typingEffectThreads.keys where !knownThreadKeys.contains(key) {
+            prefs.typingEffectThreads.removeValue(forKey: key)
+            changed = true
+        }
+        for serverId in prefs.typingEffectServers.keys where !knownServerIds.contains(serverId) {
+            prefs.typingEffectServers.removeValue(forKey: serverId)
+            changed = true
         }
 
         if changed {

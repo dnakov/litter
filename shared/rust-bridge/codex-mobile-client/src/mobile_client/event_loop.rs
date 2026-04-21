@@ -32,6 +32,7 @@ impl MobileClient {
     pub(super) fn spawn_event_reader(&self, server_id: String, session: Arc<ServerSession>) {
         let mut events = session.events();
         let processor = Arc::clone(&self.event_processor);
+        let recorder = Arc::clone(&self.recorder);
         let oauth_callback_tunnels = Arc::clone(&self.oauth_callback_tunnels);
         let oauth_session = Arc::clone(&session);
         let sessions = Arc::clone(&self.sessions);
@@ -67,6 +68,7 @@ impl MobileClient {
                             "event reader server_id={} notification={:?}",
                             server_id, notification
                         );
+                        recorder.record_notification(&server_id, &notification);
                         processor.process_notification(&server_id, &notification);
                     }
                     Ok(ServerEvent::LegacyNotification { method, params }) => {
@@ -125,10 +127,21 @@ impl MobileClient {
         mut health_rx: tokio::sync::watch::Receiver<crate::session::connection::ConnectionHealth>,
     ) {
         let processor = Arc::clone(&self.event_processor);
+        let sessions = Arc::clone(&self.sessions);
+        let app_store = Arc::clone(&self.app_store);
         Self::spawn_detached(async move {
             processor.emit_connection_state(&server_id, "connecting");
+            // Initialize as if previously Connected so the first observation —
+            // which after a successful connect_* call is normally Connected —
+            // does not double-fire alongside spawn_post_connect_warmup. A real
+            // disconnect/reconnect cycle still triggers the transition below.
+            let mut prev_connected: bool = true;
             loop {
                 let health = health_rx.borrow().clone();
+                let is_connected = matches!(
+                    health,
+                    crate::session::connection::ConnectionHealth::Connected
+                );
                 let health_wire = match health {
                     crate::session::connection::ConnectionHealth::Disconnected => "disconnected",
                     crate::session::connection::ConnectionHealth::Connecting { .. } => "connecting",
@@ -138,6 +151,23 @@ impl MobileClient {
                     }
                 };
                 processor.emit_connection_state(&server_id, health_wire);
+
+                if !prev_connected && is_connected {
+                    let session = sessions
+                        .read()
+                        .ok()
+                        .and_then(|guard| guard.get(&server_id).cloned());
+                    if let Some(session) = session {
+                        run_connect_warmup(
+                            Arc::clone(&sessions),
+                            Arc::clone(&app_store),
+                            server_id.clone(),
+                            session,
+                            "reconnect",
+                        );
+                    }
+                }
+                prev_connected = is_connected;
 
                 if health_rx.changed().await.is_err() {
                     break;
@@ -187,7 +217,8 @@ impl MobileClient {
                 MobileClient::spawn_detached(async move {
                     let mut stale_turn_interval =
                         tokio::time::interval(IPC_STALE_TURN_CHECK_INTERVAL);
-                    stale_turn_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    stale_turn_interval
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     // Skip the first immediate tick.
                     stale_turn_interval.tick().await;
                     loop {
@@ -488,6 +519,7 @@ impl MobileClient {
     where
         R: serde::de::DeserializeOwned,
     {
+        self.recorder.record_request(server_id, &request);
         let wire_method = client_request_wire_method(&request);
         let started_at = Instant::now();
         let session = self.get_session(server_id).map_err(|e| e.to_string())?;
@@ -551,13 +583,9 @@ impl MobileClient {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(future);
         } else {
-            std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("create detached runtime");
-                runtime.block_on(future);
-            });
+            // Route detached mobile work onto the shared runtime instead of
+            // creating ad-hoc current-thread runtimes with tiny iOS stacks.
+            crate::ffi::shared::shared_runtime().spawn(future);
         }
     }
 }
@@ -668,10 +696,9 @@ fn process_ipc_stream_processor_message(
             }
         },
         IpcStreamProcessorMessage::StaleTurnCheck => {
-            let events = state.bridge.check_stale_turns(
-                Instant::now(),
-                IPC_STALE_TURN_QUIET_THRESHOLD,
-            );
+            let events = state
+                .bridge
+                .check_stale_turns(Instant::now(), IPC_STALE_TURN_QUIET_THRESHOLD);
             for event in events {
                 apply_bridge_event(&app_store, server_id, event);
             }
@@ -697,12 +724,12 @@ fn handle_bridge_output(
             }
             // Sync pending approvals/user inputs from bridge projection
             if let Some(proj) = bridge.projected_state(thread_id) {
-                sync_ipc_thread_requests_from_projection(
-                    app_store, server_id, thread_id, proj,
-                );
+                sync_ipc_thread_requests_from_projection(app_store, server_id, thread_id, proj);
             }
         }
-        BridgeOutput::FullReplace { thread_id: replace_thread_id } => {
+        BridgeOutput::FullReplace {
+            thread_id: replace_thread_id,
+        } => {
             // Bridge has authoritative state but can't diff granularly
             // (e.g., synthesized turn IDs resolved to real server IDs).
             // Build a full thread snapshot from the bridge's cached raw state
@@ -722,10 +749,18 @@ fn handle_bridge_output(
                         let mut snapshot = projection.snapshot;
                         if let Some(existing) = app_store.snapshot().threads.get(&key) {
                             copy_thread_runtime_fields(existing, &mut snapshot);
+                            reconcile_active_turn(
+                                Some(existing),
+                                &mut snapshot,
+                                &proj.thread.turns,
+                            );
                         }
                         app_store.upsert_thread_snapshot(snapshot);
                         sync_ipc_thread_requests_from_projection(
-                            app_store, server_id, &replace_thread_id, proj,
+                            app_store,
+                            server_id,
+                            &replace_thread_id,
+                            proj,
                         );
                     }
                     Err(e) => {
@@ -752,7 +787,9 @@ fn handle_bridge_output(
                 }
             }
         }
-        BridgeOutput::NeedsRefresh { thread_id: refresh_thread_id } => {
+        BridgeOutput::NeedsRefresh {
+            thread_id: refresh_thread_id,
+        } => {
             queue_ipc_thread_stream_recovery(
                 pending_thread_events,
                 recovering_threads,

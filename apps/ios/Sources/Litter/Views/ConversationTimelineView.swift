@@ -1,5 +1,5 @@
 import SwiftUI
-import Textual
+import HairballUI
 import UIKit
 
 enum ConversationLiveDetailRetentionPolicy {
@@ -35,6 +35,10 @@ struct ConversationTurnTimeline: View {
     var onOpenConversation: ((ThreadKey) -> Void)? = nil
 
     var body: some View {
+        timelineContent
+    }
+
+    private var timelineContent: some View {
         let rows = rowDescriptors
         let retainedRichDetailItemIDs = ConversationLiveDetailRetentionPolicy.retainedRichDetailItemIDs(for: items)
         let latestCommandExecutionItemId = rows.reversed().compactMap { row -> String? in
@@ -44,7 +48,7 @@ struct ConversationTurnTimeline: View {
             return item.id
         }.first
 
-        VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 rowView(
                     row,
@@ -55,6 +59,7 @@ struct ConversationTurnTimeline: View {
                     retainedRichDetailItemIDs: retainedRichDetailItemIDs
                 )
                     .id(row.id)
+                    .modifier(RowEntranceModifier(isAssistantRow: row.isAssistantRow))
             }
         }
     }
@@ -70,42 +75,52 @@ struct ConversationTurnTimeline: View {
         return items.last(where: \.isAssistantItem)?.id
     }
 
-    @ViewBuilder
+    // Returns AnyView rather than `some View` with @ViewBuilder so the result
+    // type doesn't fan out to Group<_ConditionalContent<_ConditionalContent<…>, …>>.
+    // Time Profiler showed 44% of main-thread CPU in `outlined destroy` of that
+    // nested union; AnyView's per-node diff overhead is cheaper than destroying
+    // the union every SwiftUI pass.
     private func rowView(
         _ row: ConversationTimelineRowDescriptor,
         isLastRow: Bool,
         isPreferredExpandedCommandRow: Bool,
         retainedRichDetailItemIDs: Set<String>
-    ) -> some View {
+    ) -> AnyView {
         switch row {
         case .item(let item):
-            ConversationTimelineItemRow(
-                item: item,
-                serverId: serverId,
-                agentDirectoryVersion: agentDirectoryVersion,
-                isPreferredExpandedCommandRow: isPreferredExpandedCommandRow,
-                isLiveTurn: isLive,
-                isStreamingMessage: item.id == streamingAssistantItemId,
-                shouldPreserveRichDetail: retainedRichDetailItemIDs.contains(item.id),
-                messageActionsDisabled: messageActionsDisabled,
-                onStreamingSnapshotRendered: item.id == streamingAssistantItemId ? onStreamingSnapshotRendered : nil,
-                resolveTargetLabel: resolveTargetLabel,
-                onWidgetPrompt: onWidgetPrompt,
-                onEditUserItem: onEditUserItem,
-                onForkFromUserItem: onForkFromUserItem,
-                onOpenConversation: onOpenConversation
+            return AnyView(
+                ConversationTimelineItemRow(
+                    item: item,
+                    serverId: serverId,
+                    agentDirectoryVersion: agentDirectoryVersion,
+                    isPreferredExpandedCommandRow: isPreferredExpandedCommandRow,
+                    isLiveTurn: isLive,
+                    isStreamingMessage: item.id == streamingAssistantItemId,
+                    shouldPreserveRichDetail: retainedRichDetailItemIDs.contains(item.id),
+                    messageActionsDisabled: messageActionsDisabled,
+                    onStreamingSnapshotRendered: item.id == streamingAssistantItemId ? onStreamingSnapshotRendered : nil,
+                    resolveTargetLabel: resolveTargetLabel,
+                    onWidgetPrompt: onWidgetPrompt,
+                    onEditUserItem: onEditUserItem,
+                    onForkFromUserItem: onForkFromUserItem,
+                    onOpenConversation: onOpenConversation
+                )
+                .equatable()
             )
-            .equatable()
         case .exploration(let id, let items):
-            ConversationExplorationGroupRow(
-                id: id,
-                items: items,
-                showsCollapsedPreview: isLastRow
+            return AnyView(
+                ConversationExplorationGroupRow(
+                    id: id,
+                    items: items,
+                    showsCollapsedPreview: isLastRow
+                )
             )
         case .subagentGroup(_, let merged, _):
-            SubagentCardView(
-                data: merged,
-                serverId: serverId
+            return AnyView(
+                SubagentCardView(
+                    data: merged,
+                    serverId: serverId
+                )
             )
         }
     }
@@ -125,6 +140,11 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
         case .subagentGroup(let id, _, _):
             return id
         }
+    }
+
+    var isAssistantRow: Bool {
+        guard case .item(let item) = self else { return false }
+        return item.isAssistantItem
     }
 
     func preferredExpandedCommandRow(latestCommandExecutionItemId: String?) -> Bool {
@@ -266,6 +286,74 @@ private enum ConversationTimelineRowDescriptor: Identifiable, Equatable {
     }
 }
 
+private struct RowEntranceModifier: ViewModifier {
+    let isAssistantRow: Bool
+
+    func body(content: Content) -> some View {
+        if isAssistantRow {
+            // Block the ambient withAnimation transaction from leaking into
+            // the streaming markdown renderer, which would replay the token
+            // reveal animation on every snapshot update.
+            content
+                .transaction { $0.animation = nil }
+        } else {
+            content
+                .transition(.asymmetric(
+                    insertion: .rowEntranceReveal,
+                    removal: .opacity
+                ))
+        }
+    }
+}
+
+struct RowEntranceEffect: ViewModifier, Animatable {
+    var progress: CGFloat
+    var yOffset: CGFloat
+    var minScale: CGFloat
+    var maxBlur: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let clampedProgress = min(max(progress, 0), 1)
+        let revealProgress = max(clampedProgress, 0.001)
+
+        content
+            .compositingGroup()
+            .scaleEffect(
+                x: 1,
+                y: minScale + ((1 - minScale) * clampedProgress),
+                anchor: .topLeading
+            )
+            .offset(y: yOffset * (1 - clampedProgress))
+            .opacity(clampedProgress)
+            .blur(radius: maxBlur * (1 - clampedProgress))
+            .mask(alignment: .topLeading) {
+                Rectangle()
+                    .scaleEffect(x: 1, y: revealProgress, anchor: .topLeading)
+            }
+    }
+}
+
+extension AnyTransition {
+    static var rowEntranceReveal: AnyTransition {
+        .modifier(
+            active: RowEntranceEffect(progress: 0, yOffset: 10, minScale: 0.965, maxBlur: 2.5),
+            identity: RowEntranceEffect(progress: 1, yOffset: 0, minScale: 1, maxBlur: 0)
+        )
+    }
+
+    static var sectionReveal: AnyTransition {
+        .modifier(
+            active: RowEntranceEffect(progress: 0, yOffset: 6, minScale: 0.985, maxBlur: 1.2),
+            identity: RowEntranceEffect(progress: 1, yOffset: 0, minScale: 1, maxBlur: 0)
+        )
+    }
+}
+
 private struct ConversationTimelineItemRow: View, Equatable {
     private let renderCache = MessageRenderCache.shared
     @Environment(ThemeManager.self) private var themeManager
@@ -286,99 +374,134 @@ private struct ConversationTimelineItemRow: View, Equatable {
     var onOpenConversation: ((ThreadKey) -> Void)? = nil
 
     static func == (lhs: ConversationTimelineItemRow, rhs: ConversationTimelineItemRow) -> Bool {
-        lhs.item.id == rhs.item.id &&
-            lhs.item.renderDigest == rhs.item.renderDigest &&
+        let isAssistant = lhs.item.isAssistantItem
+        // For assistant rows: the StreamingRendererCoordinator owns the
+        // streaming→finished lifecycle.  Skip digest, richDetail, AND
+        // isStreamingMessage so the bubble body never re-evaluates when
+        // a tool call arrives and a new assistant message takes over as
+        // the "streaming" item.  Re-rendering the bubble would recreate
+        // StreamingMarkdownContentView and replay the token reveal.
+        let result = lhs.item.id == rhs.item.id &&
+            (isAssistant || lhs.item.renderDigest == rhs.item.renderDigest) &&
+            (isAssistant || lhs.shouldPreserveRichDetail == rhs.shouldPreserveRichDetail) &&
+            (isAssistant || lhs.isStreamingMessage == rhs.isStreamingMessage) &&
             lhs.serverId == rhs.serverId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
             lhs.isPreferredExpandedCommandRow == rhs.isPreferredExpandedCommandRow &&
             lhs.isLiveTurn == rhs.isLiveTurn &&
-            lhs.isStreamingMessage == rhs.isStreamingMessage &&
-            lhs.shouldPreserveRichDetail == rhs.shouldPreserveRichDetail &&
             lhs.messageActionsDisabled == rhs.messageActionsDisabled
+        return result
     }
 
-    var body: some View {
-        Group {
-            switch item.content {
-            case .user(let data):
-                userRow(data)
-            case .assistant(let data):
-                assistantRow(data)
-            case .codeReview(let data):
-                ConversationCodeReviewRow(data: data)
-            case .reasoning(let data):
-                ConversationReasoningRow(data: data)
-            case .todoList(let data):
-                ConversationTodoListRow(data: data)
-            case .proposedPlan(let data):
-                ConversationProposedPlanRow(data: data)
-            case .commandExecution(let data):
-                commandExecutionRow(data)
-            case .fileChange(let data):
-                toolCallRow(makeFileChangeModel(data))
-            case .turnDiff(let data):
-                ConversationTurnDiffRow(data: data)
-            case .mcpToolCall(let data):
-                toolCallRow(makeMcpModel(data))
-            case .dynamicToolCall(let data):
-                if CrossServerTools.isRichTool(data.tool) {
-                    CrossServerToolResultView(data: data)
-                } else {
-                    toolCallRow(makeDynamicToolModel(data))
-                }
-            case .multiAgentAction(let data):
+    // 16-case switch returns AnyView rather than `some View` so the body type
+    // doesn't resolve to a 4-deep `Group<_ConditionalContent<…>>` nested union.
+    // Time Profiler on 2026-04-18 showed that union's `outlined destroy` +
+    // witness-table accessor accounting for ~49% of main-thread CPU on device.
+    var body: AnyView {
+        switch item.content {
+        case .user(let data):
+            return AnyView(userRow(data))
+        case .assistant(let data):
+            return AnyView(assistantRow(data))
+        case .codeReview(let data):
+            return AnyView(ConversationCodeReviewRow(data: data))
+        case .reasoning(let data):
+            return AnyView(ConversationReasoningRow(data: data))
+        case .todoList(let data):
+            return AnyView(ConversationTodoListRow(data: data))
+        case .proposedPlan(let data):
+            return AnyView(ConversationProposedPlanRow(data: data))
+        case .commandExecution(let data):
+            return AnyView(commandExecutionRow(data))
+        case .fileChange(let data):
+            return AnyView(toolCallRow(makeFileChangeModel(data)))
+        case .turnDiff(let data):
+            return AnyView(ConversationTurnDiffRow(data: data))
+        case .mcpToolCall(let data):
+            if let view = data.computerUse {
+                return AnyView(
+                    ComputerUseToolCallView(
+                        data: data,
+                        view: view,
+                        externalExpanded: !isLiveTurn && shouldPreserveRichDetail
+                    )
+                )
+            } else {
+                return AnyView(toolCallRow(makeMcpModel(data)))
+            }
+        case .dynamicToolCall(let data):
+            if CrossServerTools.isRichTool(data.tool) {
+                return AnyView(CrossServerToolResultView(data: data))
+            } else {
+                return AnyView(toolCallRow(makeDynamicToolModel(data)))
+            }
+        case .multiAgentAction(let data):
+            return AnyView(
                 SubagentCardView(
                     data: data,
                     serverId: serverId
                 )
-            case .webSearch(let data):
-                toolCallRow(makeWebSearchModel(data))
-            case .widget(let data):
+            )
+        case .webSearch(let data):
+            return AnyView(toolCallRow(makeWebSearchModel(data)))
+        case .imageView(let data):
+            return AnyView(toolCallRow(makeImageViewModel(data)))
+        case .imageGeneration(let data):
+            return AnyView(
+                ImageGenerationToolCallView(
+                    data: data,
+                    externalExpanded: !isLiveTurn && shouldPreserveRichDetail
+                )
+            )
+        case .widget(let data):
+            return AnyView(
                 WidgetContainerView(
                     widget: data.widgetState,
                     onMessage: handleWidgetMessage
                 )
-            case .userInputResponse(let data):
-                ConversationUserInputResponseRow(data: data)
-            case .divider(let kind):
-                ConversationDividerRow(kind: kind, isLiveTurn: isLiveTurn)
-            case .error(let data):
+            )
+        case .userInputResponse(let data):
+            return AnyView(ConversationUserInputResponseRow(data: data))
+        case .divider(let kind):
+            return AnyView(ConversationDividerRow(kind: kind, isLiveTurn: isLiveTurn))
+        case .error(let data):
+            return AnyView(
                 ConversationSystemCardRow(
                     title: data.title.isEmpty ? "Error" : data.title,
                     content: [data.message, data.details].compactMap { $0 }.joined(separator: "\n\n"),
                     accent: LitterTheme.danger,
                     iconName: "exclamationmark.triangle.fill",
                 )
-            case .note(let data):
+            )
+        case .note(let data):
+            return AnyView(
                 ConversationSystemCardRow(
                     title: data.title,
                     content: data.body,
                     accent: LitterTheme.accent,
                     iconName: "info.circle.fill"
                 )
-            }
+            )
         }
     }
 
     @ViewBuilder
     private func commandExecutionRow(_ data: ConversationCommandExecutionData) -> some View {
-        if !isLiveTurn || shouldPreserveRichDetail {
-            ConversationCommandExecutionRow(
-                data: data,
-                isPreferredExpanded: isPreferredExpandedCommandRow || data.isInProgress
-            )
-        } else {
-            ConversationCompactCommandExecutionRow(data: data)
-        }
+        ConversationCommandExecutionRow(
+            data: data,
+            isPreferredExpanded: isPreferredExpandedCommandRow
+                || data.isInProgress
+                || (!isLiveTurn && shouldPreserveRichDetail)
+        )
     }
 
     @ViewBuilder
     private func toolCallRow(_ model: ToolCallCardModel) -> some View {
-        if !isLiveTurn || shouldPreserveRichDetail {
-            ConversationToolCardRow(model: model)
-        } else {
-            ConversationCompactToolCallRow(model: model)
-        }
+        ToolCallCardView(
+            model: model,
+            serverId: serverId,
+            externalExpanded: !isLiveTurn && shouldPreserveRichDetail
+        )
     }
 
     private func userRow(_ data: ConversationUserMessageData) -> some View {
@@ -408,6 +531,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
         StreamingAssistantBubble(
             itemId: item.id,
             text: data.text,
+            isStreaming: isStreamingMessage,
             label: assistantLabel,
             themeVersion: themeManager.themeVersion,
             onSnapshotRendered: isStreamingMessage ? onStreamingSnapshotRendered : nil
@@ -435,13 +559,15 @@ private struct ConversationTimelineItemRow: View, Equatable {
         let changedPaths = data.changes.map(\.path)
         let summary = fileChangeSummary(for: data)
 
-        var sections: [ToolCallSection] = []
-        if !changedPaths.isEmpty {
-            sections.append(.list(label: "Files", items: changedPaths.map(workspaceTitle(for:))))
-        }
         let diffSections = data.changes.compactMap { change -> ToolCallSection? in
             guard !change.diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return .diff(label: workspaceTitle(for: change.path), content: change.diff)
+            let label = data.changes.count > 1 ? workspaceTitle(for: change.path) : ""
+            return .diff(label: label, content: change.diff)
+        }
+
+        var sections: [ToolCallSection] = []
+        if diffSections.isEmpty, !changedPaths.isEmpty {
+            sections.append(.list(label: "Files", items: changedPaths.map(workspaceTitle(for:))))
         }
         sections.append(contentsOf: diffSections)
         if let outputDelta = data.outputDelta?.trimmingCharacters(in: .whitespacesAndNewlines), !outputDelta.isEmpty {
@@ -605,6 +731,25 @@ private struct ConversationTimelineItemRow: View, Equatable {
             status: data.isInProgress ? .inProgress : .completed,
             duration: nil,
             sections: sections
+        )
+    }
+
+    private func makeImageViewModel(_ data: ConversationImageViewData) -> ToolCallCardModel {
+        let trimmedPath = data.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = workspaceTitle(for: trimmedPath)
+        return ToolCallCardModel(
+            kind: .imageView,
+            title: "Image View",
+            summary: displayName.isEmpty ? "Image" : displayName,
+            status: .completed,
+            duration: nil,
+            sections: [
+                .kv(
+                    label: "Metadata",
+                    entries: [ToolCallKeyValue(key: "Path", value: trimmedPath)]
+                )
+            ],
+            initiallyExpanded: true
         )
     }
 }
@@ -954,7 +1099,7 @@ private struct ConversationTodoListRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.sectionReveal)
             }
         }
     }
@@ -1050,7 +1195,13 @@ private struct ConversationTurnDiffRow: View {
 
     var body: some View {
         Button {
-            presented = PresentedDiff(id: "turn-diff", title: "Turn Diff", diff: data.diff)
+            presented = PresentedDiff(
+                id: "turn-diff",
+                title: "Turn Diff",
+                diff: data.diff,
+                stats: DiffStats(additions: data.additions, deletions: data.deletions),
+                sections: presentedDiffSections(from: data.diff)
+            )
         } label: {
             DiffIndicatorLabel(additions: data.additions, deletions: data.deletions)
         }
@@ -1058,7 +1209,8 @@ private struct ConversationTurnDiffRow: View {
         .sheet(item: $presented) { sheet in
             ConversationDiffDetailSheet(
                 title: sheet.title,
-                diff: sheet.diff
+                diff: sheet.diff ?? "",
+                sections: sheet.sections
             )
         }
     }
@@ -1070,10 +1222,7 @@ private struct ConversationCommandExecutionRow: View {
 
     @State private var expanded: Bool
 
-    init(
-        data: ConversationCommandExecutionData,
-        isPreferredExpanded: Bool
-    ) {
+    init(data: ConversationCommandExecutionData, isPreferredExpanded: Bool) {
         self.data = data
         self.isPreferredExpanded = isPreferredExpanded
         _expanded = State(initialValue: isPreferredExpanded)
@@ -1092,10 +1241,9 @@ private struct ConversationCommandExecutionRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .animation(.spring(duration: 0.35, bounce: 0.15), value: expanded)
         .onChange(of: isPreferredExpanded) { _, newValue in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                expanded = newValue
-            }
+            expanded = newValue
         }
     }
 
@@ -1274,135 +1422,6 @@ private struct ConversationCommandOutputViewport: View {
     }
 }
 
-private struct ConversationToolCardRow: View {
-    let model: ToolCallCardModel
-
-    var body: some View {
-        ToolCallCardView(model: model)
-    }
-}
-
-private struct ConversationCompactCommandExecutionRow: View {
-    let data: ConversationCommandExecutionData
-    @State private var expanded = false
-
-    var body: some View {
-        if expanded {
-            ConversationCommandExecutionRow(
-                data: data,
-                isPreferredExpanded: false
-            )
-        } else {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("$")
-                    .litterMonoFont(size: 12, weight: .semibold)
-                    .foregroundColor(LitterTheme.warning)
-
-                Text(collapsedCommand)
-                    .litterMonoFont(size: 12)
-                    .foregroundColor(LitterTheme.textSystem)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                if let durationText = formatDuration(data.durationMs), !durationText.isEmpty {
-                    Text(durationText)
-                        .litterFont(.caption2)
-                        .foregroundColor(statusColor)
-                }
-
-                Image(systemName: "chevron.down")
-                    .litterFont(size: 11, weight: .medium)
-                    .foregroundColor(LitterTheme.textMuted)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    expanded = true
-                }
-            }
-        }
-    }
-
-    private var collapsedCommand: String {
-        let collapsed = data.command
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        return collapsed.isEmpty ? "command" : collapsed
-    }
-
-    private var statusColor: Color { data.status.toolCallStatus.themeColor }
-}
-
-private struct ConversationCompactToolCallRow: View {
-    let model: ToolCallCardModel
-    @State private var expanded = false
-
-    var body: some View {
-        if expanded {
-            ToolCallCardView(model: model)
-        } else {
-            HStack(spacing: 8) {
-                Image(systemName: model.kind.iconName)
-                    .litterFont(size: 12, weight: .semibold)
-                    .foregroundColor(kindAccent)
-
-                if let attributedSummary = model.attributedSummary {
-                    Text(attributedSummary)
-                        .litterFont(size: LitterFont.conversationBodyPointSize)
-                        .lineLimit(1)
-                } else {
-                    Text(model.summary)
-                        .litterFont(size: LitterFont.conversationBodyPointSize)
-                        .foregroundColor(LitterTheme.textSystem)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                if let duration = model.duration, !duration.isEmpty {
-                    Text(duration)
-                        .litterFont(.caption2)
-                        .foregroundColor(durationStatusColor)
-                }
-
-                Image(systemName: "chevron.down")
-                    .litterFont(size: 11, weight: .medium)
-                    .foregroundColor(LitterTheme.textMuted)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    expanded = true
-                }
-            }
-        }
-    }
-
-    private var durationStatusColor: Color { model.status.themeColor }
-
-    private var kindAccent: Color {
-        switch model.kind {
-        case .commandExecution, .commandOutput:
-            return LitterTheme.warning
-        case .fileChange, .fileDiff, .webSearch:
-            return LitterTheme.accent
-        case .mcpToolCall, .widget:
-            return LitterTheme.accentStrong
-        case .mcpToolProgress, .imageView:
-            return LitterTheme.warning
-        case .collaboration:
-            return LitterTheme.success
-        }
-    }
-}
-
 private struct ConversationUserInputResponseRow: View {
     let data: ConversationUserInputResponseData
 
@@ -1438,11 +1457,12 @@ private struct ConversationDividerRow: View {
         HStack(spacing: 10) {
             Capsule()
                 .fill(LitterTheme.border)
-                .frame(height: 1)
+                .frame(minWidth: 16, maxHeight: 1)
             dividerContent
+                .layoutPriority(1)
             Capsule()
                 .fill(LitterTheme.border)
-                .frame(height: 1)
+                .frame(minWidth: 16, maxHeight: 1)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .ignore)
@@ -1638,11 +1658,19 @@ struct ConversationPinnedContextStrip: View {
     let items: [ConversationItem]
     @State private var todoExpanded = false
     @State private var selectedDiff: PresentedDiff?
+    @State private var cachedCombinedPinnedDiff: PresentedDiff?
+
+    init(items: [ConversationItem]) {
+        self.items = items
+        _cachedCombinedPinnedDiff = State(
+            initialValue: Self.buildCombinedPinnedDiff(from: items)
+        )
+    }
 
     var body: some View {
-        if pinnedPlan != nil || combinedPinnedDiff != nil {
-            VStack(alignment: .leading, spacing: 8) {
-                if let plan = pinnedPlan, let diff = combinedPinnedDiff {
+        VStack(alignment: .leading, spacing: 8) {
+            if pinnedPlan != nil || cachedCombinedPinnedDiff != nil {
+                if let plan = pinnedPlan, let diff = cachedCombinedPinnedDiff {
                     HStack(alignment: .top, spacing: 10) {
                         compactTodoAccordion(for: plan)
                             .layoutPriority(1)
@@ -1653,19 +1681,23 @@ struct ConversationPinnedContextStrip: View {
                         compactTodoAccordion(for: plan)
                     }
 
-                    if let diff = combinedPinnedDiff {
+                    if let diff = cachedCombinedPinnedDiff {
                         diffIndicatorButton(for: diff)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .sheet(item: $selectedDiff) { presentedDiff in
-                ConversationDiffDetailSheet(
-                    title: presentedDiff.title,
-                    diff: presentedDiff.diff
-                )
-            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .sheet(item: $selectedDiff) { presentedDiff in
+            ConversationDiffDetailSheet(
+                title: presentedDiff.title,
+                diff: presentedDiff.diff ?? "",
+                sections: presentedDiff.sections
+            )
+        }
+        .onChange(of: pinnedDiffTaskKey, initial: false) { _, _ in
+            cachedCombinedPinnedDiff = Self.buildCombinedPinnedDiff(from: items)
         }
     }
 
@@ -1678,27 +1710,45 @@ struct ConversationPinnedContextStrip: View {
         })
     }
 
-    private var combinedPinnedDiff: PresentedDiff? {
-        let diffs = items.flatMap { item -> [String] in
+    private var pinnedDiffTaskKey: [Int] {
+        items.map(\.renderDigest)
+    }
+
+    private static func buildCombinedPinnedDiff(from items: [ConversationItem]) -> PresentedDiff? {
+        let rawSections = items.flatMap { item -> [PresentedDiffSection] in
             switch item.content {
             case .fileChange(let data):
-                return data.changes
-                    .map(\.diff)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
+                return data.changes.compactMap { change in
+                    let diff = change.diff.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !diff.isEmpty else { return nil }
+                    return PresentedDiffSection(
+                        title: workspaceTitle(for: change.path),
+                        diff: diff
+                    )
+                }
             case .turnDiff(let data):
                 let diff = data.diff.trimmingCharacters(in: .whitespacesAndNewlines)
-                return diff.isEmpty ? [] : [diff]
+                return diff.isEmpty ? [] : presentedDiffSections(from: diff)
             default:
                 return []
             }
         }
 
-        guard !diffs.isEmpty else { return nil }
+        let sections = mergePresentedDiffSections(rawSections)
+        guard !sections.isEmpty else { return nil }
+        let stats = sections.reduce(into: DiffStats(additions: 0, deletions: 0)) { partial, section in
+            let sectionStats = DiffStats(diff: section.diff)
+            partial = DiffStats(
+                additions: partial.additions + sectionStats.additions,
+                deletions: partial.deletions + sectionStats.deletions
+            )
+        }
         return PresentedDiff(
             id: "session-diff",
             title: "Session Diff",
-            diff: diffs.joined(separator: "\n\n")
+            diff: nil,
+            stats: stats,
+            sections: sections
         )
     }
 
@@ -1759,7 +1809,7 @@ struct ConversationPinnedContextStrip: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.sectionReveal)
                 }
             }
         }
@@ -1788,7 +1838,10 @@ struct ConversationPinnedContextStrip: View {
         Button {
             selectedDiff = presented
         } label: {
-            DiffIndicatorLabel(diff: presented.diff)
+            DiffIndicatorLabel(
+                additions: presented.stats.additions,
+                deletions: presented.stats.deletions
+            )
         }
         .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
@@ -1800,7 +1853,21 @@ struct ConversationPinnedContextStrip: View {
 private struct PresentedDiff: Identifiable {
     let id: String
     let title: String
+    let diff: String?
+    let stats: DiffStats
+    let sections: [PresentedDiffSection]
+}
+
+private struct PresentedDiffSection: Identifiable {
+    let id: String
+    let title: String
     let diff: String
+
+    init(title: String, diff: String) {
+        self.title = title
+        self.diff = diff
+        self.id = "\(title)|\(diff.hashValue)"
+    }
 }
 
 struct DiffStats: Equatable {
@@ -1826,58 +1893,6 @@ struct DiffStats: Equatable {
         }
         self.additions = adds
         self.deletions = dels
-    }
-}
-
-/// Builds a single styled `AttributedString` for the entire diff instead of
-/// one SwiftUI `Text` view per line — avoids the layout explosion that
-/// `.fixedSize` + horizontal `ScrollView` causes with hundreds of child views.
-struct DiffAttributedContent {
-    let attributedString: AttributedString
-    let stats: DiffStats
-
-    init(diff: String) {
-        var result = AttributedString()
-        var additions = 0
-        var deletions = 0
-        let monoFont = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-
-        for rawLine in diff.split(separator: "\n", omittingEmptySubsequences: false) {
-            let text = rawLine.last == "\r" ? String(rawLine.dropLast()) : String(rawLine)
-            let displayText = text.isEmpty ? " " : text
-
-            let fg: UIColor
-            let bg: UIColor
-            if text.hasPrefix("+"), !text.hasPrefix("+++") {
-                additions += 1
-                fg = UIColor(LitterTheme.success)
-                bg = UIColor(LitterTheme.success).withAlphaComponent(0.12)
-            } else if text.hasPrefix("-"), !text.hasPrefix("---") {
-                deletions += 1
-                fg = UIColor(LitterTheme.danger)
-                bg = UIColor(LitterTheme.danger).withAlphaComponent(0.12)
-            } else if text.hasPrefix("@@") {
-                fg = UIColor(LitterTheme.accentStrong)
-                bg = UIColor(LitterTheme.accentStrong).withAlphaComponent(0.12)
-            } else {
-                fg = UIColor(LitterTheme.textBody)
-                bg = UIColor(LitterTheme.codeBackground).withAlphaComponent(0.72)
-            }
-
-            var line = AttributedString(displayText + "\n")
-            line.font = monoFont
-            line.foregroundColor = Color(fg)
-            line.backgroundColor = Color(bg)
-            result.append(line)
-        }
-
-        self.attributedString = result
-        self.stats = DiffStats(additions: additions, deletions: deletions)
-    }
-
-    private init(additions: Int, deletions: Int) {
-        self.attributedString = AttributedString()
-        self.stats = DiffStats(additions: additions, deletions: deletions)
     }
 }
 
@@ -1960,25 +1975,31 @@ private struct DiffLine: Identifiable {
 private struct ConversationDiffDetailSheet: View {
     let title: String
     let stats: DiffStats
-    let lines: [DiffLine]
+    let sections: [PresentedDiffSectionModel]
     @Environment(ThemeManager.self) private var themeManager
     @Environment(\.dismiss) private var dismiss
+    @State private var collapsedSectionIDs: Set<String> = []
+    private let fullDiffFontSize = LitterFont.conversationBodyPointSize
+    private let maxStickyDiffSections = 8
+    private let maxStickyDiffCharacters = 20_000
 
-    init(title: String, diff: String) {
+    init(title: String, diff: String, sections: [PresentedDiffSection]) {
         self.title = title
-        var adds = 0, dels = 0
-        var parsed: [DiffLine] = []
-        for (i, raw) in diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            let text = raw.last == "\r" ? String(raw.dropLast()) : String(raw)
-            let kind: DiffLine.Kind
-            if text.hasPrefix("+"), !text.hasPrefix("+++") { kind = .addition; adds += 1 }
-            else if text.hasPrefix("-"), !text.hasPrefix("---") { kind = .deletion; dels += 1 }
-            else if text.hasPrefix("@@") { kind = .hunk }
-            else { kind = .context }
-            parsed.append(DiffLine(id: i, text: text, kind: kind))
-        }
-        self.stats = DiffStats(additions: adds, deletions: dels)
-        self.lines = parsed
+        let sectionModels = sections.isEmpty
+            ? [PresentedDiffSectionModel(PresentedDiffSection(title: "", diff: diff))]
+            : sections.map(PresentedDiffSectionModel.init)
+        self.stats = DiffStats(
+            additions: sectionModels.reduce(0) { $0 + $1.stats.additions },
+            deletions: sectionModels.reduce(0) { $0 + $1.stats.deletions }
+        )
+        self.sections = sectionModels
+        _collapsedSectionIDs = State(
+            initialValue: Set(
+                sectionModels
+                    .filter { !$0.title.isEmpty }
+                    .map(\.id)
+            )
+        )
     }
 
     var body: some View {
@@ -1997,17 +2018,21 @@ private struct ConversationDiffDetailSheet: View {
                 .padding(.bottom, 8)
 
                 ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(lines) { line in
-                            Text(verbatim: line.text.isEmpty ? " " : line.text)
-                                .litterMonoFont(size: 12)
-                                .foregroundStyle(line.kind.foregroundColor)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(line.kind.backgroundColor)
+                    LazyVStack(
+                        alignment: .leading,
+                        spacing: 8,
+                        pinnedViews: usesStickyHeaders ? [.sectionHeaders] : []
+                    ) {
+                        ForEach(sections) { section in
+                            if section.title.isEmpty {
+                                diffSectionBody(section)
+                            } else {
+                                Section {
+                                    diffSectionBody(section)
+                                } header: {
+                                    diffSectionHeader(section)
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -2028,6 +2053,170 @@ private struct ConversationDiffDetailSheet: View {
         .presentationDetents([.medium, .large])
         .id(themeManager.themeVersion)
     }
+
+    private var usesStickyHeaders: Bool {
+        guard sections.count <= maxStickyDiffSections else { return false }
+        return sections.reduce(0) { $0 + $1.diff.count } <= maxStickyDiffCharacters
+    }
+
+    @ViewBuilder
+    private func diffSection(_ section: PresentedDiffSectionModel) -> some View {
+        let isExpanded = !collapsedSectionIDs.contains(section.id)
+
+        VStack(alignment: .leading, spacing: 6) {
+            if isExpanded {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    SyntaxHighlightedDiffText(
+                        diff: section.diff,
+                        titleHint: section.title.isEmpty ? nil : section.title,
+                        fontSize: fullDiffFontSize
+                    )
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                }
+                .background(LitterTheme.codeBackground.opacity(0.72))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+    }
+
+    private func diffSectionHeader(_ section: PresentedDiffSectionModel) -> some View {
+        let isExpanded = !collapsedSectionIDs.contains(section.id)
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                toggleSection(section.id)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(section.title)
+                    .litterFont(.caption2, weight: .bold)
+                    .foregroundColor(LitterTheme.textSecondary)
+                    .textCase(.uppercase)
+                Spacer(minLength: 0)
+                Text("+\(section.stats.additions)")
+                    .litterFont(.caption2, weight: .semibold)
+                    .foregroundColor(LitterTheme.success)
+                Text("-\(section.stats.deletions)")
+                    .litterFont(.caption2, weight: .semibold)
+                    .foregroundColor(LitterTheme.danger)
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .litterFont(size: 10, weight: .medium)
+                    .foregroundColor(LitterTheme.textMuted)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .background(LitterTheme.backgroundGradient)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func diffSectionBody(_ section: PresentedDiffSectionModel) -> some View {
+        diffSection(section)
+    }
+
+    private func toggleSection(_ id: String) {
+        if collapsedSectionIDs.contains(id) {
+            collapsedSectionIDs.remove(id)
+        } else {
+            collapsedSectionIDs.insert(id)
+        }
+    }
+}
+
+private struct PresentedDiffSectionModel: Identifiable {
+    let id: String
+    let title: String
+    let diff: String
+    let stats: DiffStats
+
+    init(_ section: PresentedDiffSection) {
+        self.id = section.id
+        self.title = section.title
+        self.diff = section.diff
+        self.stats = DiffStats(diff: section.diff)
+    }
+}
+
+private func presentedDiffSections(from diff: String) -> [PresentedDiffSection] {
+    let normalized = diff.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return [] }
+
+    let lines = normalized.components(separatedBy: .newlines)
+    let splitIndices = lines.enumerated().compactMap { index, line -> Int? in
+        line.hasPrefix("diff --git ") ? index : nil
+    }
+
+    if !splitIndices.isEmpty {
+        return splitIndices.enumerated().compactMap { offset, start in
+            let end = offset + 1 < splitIndices.count ? splitIndices[offset + 1] : lines.count
+            let chunk = Array(lines[start..<end]).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !chunk.isEmpty else { return nil }
+            return PresentedDiffSection(title: diffSectionTitle(from: chunk), diff: chunk)
+        }
+    }
+
+    return [PresentedDiffSection(title: diffSectionTitle(from: normalized), diff: normalized)]
+}
+
+private func mergePresentedDiffSections(_ sections: [PresentedDiffSection]) -> [PresentedDiffSection] {
+    var orderedTitles: [String] = []
+    var mergedByTitle: [String: String] = [:]
+    var passthrough: [PresentedDiffSection] = []
+
+    for section in sections {
+        let normalizedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            passthrough.append(section)
+            continue
+        }
+
+        if let existing = mergedByTitle[normalizedTitle] {
+            mergedByTitle[normalizedTitle] = existing + "\n\n" + section.diff
+        } else {
+            orderedTitles.append(normalizedTitle)
+            mergedByTitle[normalizedTitle] = section.diff
+        }
+    }
+
+    let merged = orderedTitles.compactMap { title -> PresentedDiffSection? in
+        guard let diff = mergedByTitle[title] else { return nil }
+        return PresentedDiffSection(title: title, diff: diff)
+    }
+
+    return merged + passthrough
+}
+
+private func diffSectionTitle(from diff: String) -> String {
+    for line in diff.components(separatedBy: .newlines) {
+        if line.hasPrefix("diff --git ") {
+            let parts = line.split(separator: " ")
+            if let candidate = parts.last {
+                return stripDiffPathPrefix(String(candidate))
+            }
+        }
+        if line.hasPrefix("+++ ") {
+            let candidate = String(line.dropFirst(4))
+            if candidate != "/dev/null" {
+                return stripDiffPathPrefix(candidate)
+            }
+        }
+        if line.hasPrefix("--- ") {
+            let candidate = String(line.dropFirst(4))
+            if candidate != "/dev/null" {
+                return stripDiffPathPrefix(candidate)
+            }
+        }
+    }
+    return ""
+}
+
+private func stripDiffPathPrefix(_ path: String) -> String {
+    if path.hasPrefix("a/") || path.hasPrefix("b/") {
+        return String(path.dropFirst(2))
+    }
+    return path
 }
 
 private func formatDuration(_ durationMs: Int?) -> String? {
@@ -2066,6 +2255,10 @@ private extension ConversationItem {
             return data.status.toolCallStatus
         case .webSearch(let data):
             return data.isInProgress ? .inProgress : .completed
+        case .imageView:
+            return .completed
+        case .imageGeneration(let data):
+            return data.status.toolCallStatus
         default:
             return nil
         }

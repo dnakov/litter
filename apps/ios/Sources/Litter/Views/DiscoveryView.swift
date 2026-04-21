@@ -395,7 +395,7 @@ struct DiscoveryView: View {
                         .foregroundColor(LitterTheme.textSecondary)
                 }
                 Spacer()
-                if serverSnapshot?.isIpcConnected == true {
+                if serverSnapshot?.isIpcConnected == true, ExperimentalFeatures.shared.isEnabled(.ipc) {
                     statusTag(label: "ipc", color: LitterTheme.accentStrong)
                 }
                 if let progressTag = progressTag(for: serverSnapshot) {
@@ -459,7 +459,7 @@ struct DiscoveryView: View {
         if server.canConnectViaSSH {
             parts.append(" - ssh \(server.resolvedSSHPort)")
         }
-        if snapshot?.isIpcConnected == true {
+        if snapshot?.isIpcConnected == true, ExperimentalFeatures.shared.isEnabled(.ipc) {
             parts.append(" - ipc")
         }
         return parts.joined()
@@ -1010,7 +1010,7 @@ struct DiscoveryView: View {
                             .foregroundColor(LitterTheme.textSecondary)
                     } footer: {
                         if manualConnectionMode == .codex {
-                            Text("Run: codex app-server --listen ws://0.0.0.0:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not expose directly to the internet unless you know what you are doing.")
+                            Text("Prefer the SSH flow — it bootstraps codex on the remote bound to 127.0.0.1 and forwards the port over SSH.\nIf you run it manually, bind loopback and tunnel yourself: codex app-server --listen ws://127.0.0.1:8390\nFor reverse proxies: wss://example.com/ws?token=SECRET\nDo not bind 0.0.0.0 or expose directly to the internet unless you know what you are doing.")
                                 .litterFont(.caption2)
                                 .foregroundColor(LitterTheme.textMuted)
                         }

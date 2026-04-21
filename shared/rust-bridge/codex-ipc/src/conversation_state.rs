@@ -258,10 +258,19 @@ pub fn project_conversation_state(
         .as_deref()
         .and_then(non_empty)
         .map(PathBuf::from);
-    let cwd = PathBuf::from(infer_cwd(&conversation));
+    let cwd_path = PathBuf::from(infer_cwd(&conversation));
+    let cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&cwd_path)
+        .or_else(|_| codex_utils_absolute_path::AbsolutePathBuf::relative_to_current_dir(&cwd_path))
+        .unwrap_or_else(|_| {
+            codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+                &std::path::PathBuf::from("/"),
+            )
+            .expect("root is absolute")
+        });
 
     let thread = upstream::Thread {
         id: conversation_id.to_string(),
+        forked_from_id: None,
         preview: thread_preview(&turns).unwrap_or_default(),
         ephemeral: conversation.ephemeral.unwrap_or(false),
         model_provider: conversation.model_provider.unwrap_or_default(),
@@ -327,7 +336,7 @@ pub fn project_conversation_turn(
 pub fn seed_conversation_state_from_thread(thread: &upstream::Thread) -> Value {
     serde_json::json!({
         "title": thread.name.clone(),
-        "cwd": path_to_string(thread.cwd.clone()),
+        "cwd": path_to_string(thread.cwd.to_path_buf()),
         "rolloutPath": thread.path.clone().map(path_to_string),
         "source": thread.source.clone(),
         "gitInfo": thread.git_info.clone(),
@@ -427,6 +436,9 @@ fn project_turn(
         items,
         status: parse_turn_status(turn.status.as_deref()),
         error: turn.error.clone(),
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
     })
 }
 
@@ -539,7 +551,7 @@ fn project_pending_approvals(requests: &[DesktopPendingRequest]) -> Vec<Projecte
                     command: params.command,
                     path: None,
                     grant_root: None,
-                    cwd: params.cwd.map(path_to_string),
+                    cwd: params.cwd.map(|c| path_to_string(c.to_path_buf())),
                     reason: params.reason,
                     raw_params: request.params.clone(),
                 })

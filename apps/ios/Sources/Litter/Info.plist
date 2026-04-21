@@ -59,6 +59,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Codex discovers coding agents and SSH servers on your local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Litter uses the camera to capture photos for conversations.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Litter uses the microphone for voice-to-text input.</string>
 	<key>NSSupportsLiveActivities</key>

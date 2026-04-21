@@ -17,6 +17,9 @@ codex-ipc = { path = "../codex-ipc" }
 pi-mono-client = { path = "../pi-mono-client" }
 codex-protocol = { workspace = true }
 codex-core = { workspace = true }
+codex-exec-server = { workspace = true }
+codex-login = { workspace = true }
+codex-shell-command = { workspace = true }
 codex-config = { workspace = true }
 codex-cloud-requirements = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
@@ -41,9 +44,13 @@ url = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
+shlex = { workspace = true }
 
 [features]
 rpc-trace = []
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 uniffi = { version = "0.31.0", features = ["build"] }

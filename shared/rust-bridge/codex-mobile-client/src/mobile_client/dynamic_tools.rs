@@ -242,6 +242,7 @@ pub(super) async fn list_sessions_tool_output(
                 cursor: None,
                 limit: Some(limit),
                 sort_key: None,
+                sort_direction: None,
                 model_providers: None,
                 source_kinds: None,
                 archived: None,

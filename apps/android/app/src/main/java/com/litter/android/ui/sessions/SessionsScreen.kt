@@ -605,12 +605,11 @@ private fun SessionNodeRow(
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(
+                com.litter.android.ui.common.FormattedText(
                     text = summary.displayTitle,
                     color = LitterTheme.textPrimary,
                     fontSize = 13.sp,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     summary.model?.let { model ->

@@ -28,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,8 +61,10 @@ import com.litter.android.state.accentColor
 import com.litter.android.state.isIpcConnected
 import com.litter.android.state.resolvedModel
 import com.litter.android.state.statusColor
+import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.scaled
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppModeKind
 import uniffi.codex_mobile_client.AppServerHealth
@@ -112,7 +116,7 @@ fun HeaderBar(
             if (threadReasoning.isNotEmpty()) {
                 threadReasoning
             } else {
-                selectedModelDefinition?.defaultReasoningEffort?.let(::effortLabel) ?: "default"
+                selectedModelDefinition?.defaultReasoningEffort?.let(::effortLabelLocal) ?: "default"
             }
         }
     }
@@ -176,7 +180,7 @@ fun HeaderBar(
                     Text(
                         text = modelLabel,
                         color = LitterTheme.textPrimary,
-                        fontSize = 13.sp,
+                        fontSize = LitterTextStyle.footnote.scaled,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -185,14 +189,14 @@ fun HeaderBar(
                         Text(
                             text = "\u26A1",
                             color = LitterTheme.warning,
-                            fontSize = 11.sp,
+                            fontSize = LitterTextStyle.caption2.scaled,
                         )
                     }
                     Spacer(Modifier.width(6.dp))
                     Text(
                         text = reasoningLabel,
                         color = LitterTheme.textSecondary,
-                        fontSize = 12.sp,
+                        fontSize = LitterTextStyle.caption.scaled,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -212,7 +216,7 @@ fun HeaderBar(
                         Text(
                             text = abbreviated,
                             color = LitterTheme.textMuted,
-                            fontSize = 10.sp,
+                            fontSize = 10f.scaled,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
@@ -222,7 +226,7 @@ fun HeaderBar(
                             Text(
                                 text = "plan",
                                 color = Color.Black,
-                                fontSize = 10.sp,
+                                fontSize = 10f.scaled,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                                 modifier = Modifier
                                     .background(
@@ -232,12 +236,33 @@ fun HeaderBar(
                                     .padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }
+                        // Permission-preset chip: show a danger-tinted `lock.open`
+                        // when this thread is running at full-access (approval =
+                        // never + sandbox = danger-full-access). Mirrors iOS
+                        // HeaderView.swift:74-78 `headerPermissionPreset == .fullAccess`.
+                        val permissionPreset = thread?.let { t ->
+                            val approval = appModel.launchState.approvalPolicyValue(t.key)
+                                ?: t.effectiveApprovalPolicy
+                            val sandbox = appModel.launchState.turnSandboxPolicy(t.key)
+                                ?: t.effectiveSandboxPolicy
+                            uniffi.codex_mobile_client.threadPermissionPreset(approval, sandbox)
+                        }
+                        if (permissionPreset ==
+                            uniffi.codex_mobile_client.AppThreadPermissionPreset.FULL_ACCESS) {
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.LockOpen,
+                                contentDescription = "Full access permissions",
+                                tint = LitterTheme.danger,
+                                modifier = Modifier.size(10.dp),
+                            )
+                        }
                         if (server?.isIpcConnected == true) {
                             Spacer(Modifier.width(6.dp))
                             Text(
                                 text = "IPC",
                                 color = LitterTheme.accentStrong,
-                                fontSize = 10.sp,
+                                fontSize = 10f.scaled,
                                 modifier = Modifier
                                     .background(
                                         LitterTheme.accentStrong.copy(alpha = 0.14f),
@@ -334,13 +359,16 @@ fun HeaderBar(
             }
         }
 
-        // Inline model selector
+        // Inline model selector — shared panel lives in
+        // `com.litter.android.ui.common.ModelSelectorPanel`; the home
+        // composer's HomeModelChip uses the same panel inside a
+        // ModalBottomSheet.
         AnimatedVisibility(
             visible = showModelSelector,
             enter = expandVertically(),
             exit = shrinkVertically(),
         ) {
-            ModelSelectorPanel(
+            com.litter.android.ui.common.ModelSelectorPanel(
                 thread = thread,
                 availableModels = server?.availableModels ?: emptyList(),
                 onToggleMode = { mode ->
@@ -352,6 +380,8 @@ fun HeaderBar(
                         }
                     }
                 },
+                fastMode = HeaderOverrides.pendingFastMode,
+                onFastModeChange = { HeaderOverrides.pendingFastMode = it },
             )
         }
     }
@@ -365,159 +395,7 @@ object HeaderOverrides {
     var pendingFastMode by mutableStateOf(false)
 }
 
-@Composable
-private fun ModelSelectorPanel(
-    thread: AppThreadSnapshot?,
-    availableModels: List<uniffi.codex_mobile_client.ModelInfo>,
-    onToggleMode: ((AppModeKind) -> Unit)? = null,
-) {
-    val appModel = LocalAppModel.current
-    val launchState by appModel.launchState.snapshot.collectAsState()
-    val selectedModel = launchState.selectedModel
-        .takeIf { it.isNotBlank() }
-        ?: thread?.model
-        ?: availableModels.firstOrNull { it.isDefault }?.id
-        ?: availableModels.firstOrNull()?.id
-    val fastMode = HeaderOverrides.pendingFastMode
-    val selectedModelDefinition by remember(selectedModel, availableModels) {
-        derivedStateOf {
-            availableModels.firstOrNull { it.id == selectedModel }
-                ?: availableModels.firstOrNull { it.isDefault }
-                ?: availableModels.firstOrNull()
-        }
-    }
-    val supportedEfforts = remember(selectedModelDefinition) {
-        selectedModelDefinition?.supportedReasoningEfforts ?: emptyList()
-    }
-    val selectedEffort = launchState.reasoningEffort
-        .takeIf { pending -> pending.isNotBlank() && supportedEfforts.any { effortLabel(it.reasoningEffort) == pending } }
-        ?: thread?.reasoningEffort
-            ?.takeIf { current -> supportedEfforts.any { effortLabel(it.reasoningEffort) == current } }
-        ?: selectedModelDefinition?.defaultReasoningEffort?.let(::effortLabel)
-
-    LaunchedEffect(launchState.reasoningEffort, selectedModelDefinition, supportedEfforts) {
-        val pendingEffort = launchState.reasoningEffort.trim()
-        val defaultEffort = selectedModelDefinition?.defaultReasoningEffort
-        if (pendingEffort.isEmpty() || defaultEffort == null || supportedEfforts.isEmpty()) {
-            return@LaunchedEffect
-        }
-        if (supportedEfforts.none { effortLabel(it.reasoningEffort) == pendingEffort }) {
-            appModel.launchState.updateReasoningEffort(
-                effortLabel(defaultEffort),
-            )
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(LitterTheme.codeBackground)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        Text(
-            text = "Model",
-            color = LitterTheme.textSecondary,
-            fontSize = 11.sp,
-        )
-
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(vertical = 4.dp),
-        ) {
-            items(availableModels) { model ->
-                val isSelected = model.id == selectedModel
-                FilterChip(
-                    selected = isSelected,
-                    onClick = {
-                        appModel.launchState.updateSelectedModel(model.id)
-                        appModel.launchState.updateReasoningEffort(
-                            model.defaultReasoningEffort.let(::effortLabel),
-                        )
-                    },
-                    label = {
-                        Text(
-                            text = model.displayName.ifBlank { model.id },
-                            fontSize = 11.sp,
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = LitterTheme.accent,
-                        selectedLabelColor = Color.Black,
-                    ),
-                )
-            }
-        }
-
-        if (availableModels.isEmpty()) {
-            Text(
-                text = "Loading models…",
-                color = LitterTheme.textMuted,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(vertical = 4.dp),
-            )
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Effort", color = LitterTheme.textSecondary, fontSize = 11.sp)
-                Spacer(Modifier.width(4.dp))
-            }
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(supportedEfforts) { option ->
-                    val effort = effortLabel(option.reasoningEffort)
-                    FilterChip(
-                        selected = selectedEffort == effort,
-                        onClick = {
-                            appModel.launchState.updateReasoningEffort(effort)
-                        },
-                        label = { Text(effort, fontSize = 10.sp) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = LitterTheme.accent,
-                            selectedLabelColor = Color.Black,
-                        ),
-                    )
-                }
-            }
-        }
-
-        // Plan + Fast mode toggles
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(top = 4.dp),
-        ) {
-            val isPlan = thread?.collaborationMode == AppModeKind.PLAN
-            FilterChip(
-                selected = isPlan,
-                onClick = {
-                    val next = if (isPlan) AppModeKind.DEFAULT else AppModeKind.PLAN
-                    onToggleMode?.invoke(next)
-                },
-                label = { Text("Plan", fontSize = 10.sp) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = LitterTheme.accent,
-                    selectedLabelColor = Color.Black,
-                ),
-            )
-            Spacer(Modifier.weight(1f))
-            Text("Fast mode", color = LitterTheme.textSecondary, fontSize = 11.sp)
-            Switch(
-                checked = fastMode,
-                onCheckedChange = {
-                    HeaderOverrides.pendingFastMode = it
-                },
-                colors = SwitchDefaults.colors(
-                    checkedTrackColor = LitterTheme.accent,
-                ),
-            )
-        }
-    }
-}
-
-private fun effortLabel(value: uniffi.codex_mobile_client.ReasoningEffort): String =
+private fun effortLabelLocal(value: uniffi.codex_mobile_client.ReasoningEffort): String =
     when (value) {
         uniffi.codex_mobile_client.ReasoningEffort.NONE -> "none"
         uniffi.codex_mobile_client.ReasoningEffort.MINIMAL -> "minimal"
@@ -526,3 +404,4 @@ private fun effortLabel(value: uniffi.codex_mobile_client.ReasoningEffort): Stri
         uniffi.codex_mobile_client.ReasoningEffort.HIGH -> "high"
         uniffi.codex_mobile_client.ReasoningEffort.X_HIGH -> "xhigh"
     }
+

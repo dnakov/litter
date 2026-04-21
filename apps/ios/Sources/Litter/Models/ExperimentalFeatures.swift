@@ -5,6 +5,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
     case realtimeVoice = "realtime_voice"
     case ipc = "ipc"
     case generativeUI = "generative_ui"
+    case appleWatch = "apple_watch"
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         case .realtimeVoice: return "Realtime"
         case .ipc: return "IPC"
         case .generativeUI: return "Generative UI"
+        case .appleWatch: return "Apple Watch"
         }
     }
 
@@ -21,6 +23,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         case .realtimeVoice: return "Show the realtime voice launcher on the home screen."
         case .ipc: return "Attach to desktop IPC over SSH for faster sync, approvals, and resume. Requires reconnecting the server."
         case .generativeUI: return "Show interactive widgets, diagrams, and charts inline in conversations. Requires starting a new thread."
+        case .appleWatch: return "Push server, task, and approval state to a paired Apple Watch. Requires the Litter watch app to be installed."
         }
     }
 
@@ -29,6 +32,16 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         case .realtimeVoice: return true
         case .ipc: return false
         case .generativeUI: return false
+        case .appleWatch:
+            // Off by default in both Debug and Release. The projection pipeline
+            // polls `AppModel.shared.snapshot` every 250ms on the main actor and
+            // runs two full `WatchProjection.tasks(...)` sweeps per tick; on an
+            // idle home screen that cost ~1.8s of main-thread CPU over a 23s
+            // trace (Instruments, 2026-04). Release already had it off to avoid
+            // WCSession startup without a companion binary embedded; Debug no
+            // longer auto-enables either. Flip in Settings → Experimental
+            // Features to test the watch pipeline locally.
+            return false
         }
     }
 }

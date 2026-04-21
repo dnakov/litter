@@ -340,6 +340,7 @@ impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
             developer_instructions: value.developer_instructions,
             personality: None,
             ephemeral: None,
+            session_start_source: None,
             dynamic_tools: value
                 .dynamic_tools
                 .map(|tools| {
@@ -505,6 +506,7 @@ impl From<AppListThreadsRequest> for upstream::ThreadListParams {
             cursor: value.cursor,
             limit: value.limit,
             sort_key: None,
+            sort_direction: None,
             model_providers: None,
             source_kinds: None,
             archived: value.archived,
@@ -589,6 +591,7 @@ impl TryFrom<AppStartTurnRequest> for upstream::TurnStartParams {
                 .into_iter()
                 .map(user_input_into_upstream)
                 .collect::<Result<Vec<_>, _>>()?,
+            responsesapi_client_metadata: None,
             cwd: None,
             approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
             approvals_reviewer: None,
@@ -614,6 +617,15 @@ pub struct AppStartRealtimeSessionRequest {
     pub thread_id: String,
     pub prompt: String,
     pub session_id: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub output_modality: Option<crate::types::models::AppRealtimeOutputModality>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub transport: Option<crate::types::models::AppRealtimeStartTransport>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub voice: Option<crate::types::models::AppRealtimeVoice>,
     pub client_controlled_handoff: bool,
     pub dynamic_tools: Option<Vec<AppDynamicToolSpec>>,
 }
@@ -624,8 +636,14 @@ impl TryFrom<AppStartRealtimeSessionRequest> for upstream::ThreadRealtimeStartPa
     fn try_from(value: AppStartRealtimeSessionRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             thread_id: value.thread_id,
-            prompt: value.prompt,
+            prompt: Some(Some(value.prompt)),
             session_id: value.session_id,
+            output_modality: value
+                .output_modality
+                .unwrap_or(crate::types::models::AppRealtimeOutputModality::Audio)
+                .into(),
+            transport: value.transport.map(Into::into),
+            voice: value.voice.map(Into::into),
             client_controlled_handoff: value.client_controlled_handoff,
             dynamic_tools: value
                 .dynamic_tools

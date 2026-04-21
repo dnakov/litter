@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <TargetConditionals.h>
 #include <Foundation/Foundation.h>
@@ -28,6 +29,10 @@ extern void ios_setContext(const void *context);
 extern __thread void *thread_context;
 extern NSError *addCommandList(NSString *fileLocation);
 extern char **environ;
+
+static NSString *codex_ios_single_quote(NSString *value);
+static const size_t CODEX_IOS_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
+static const size_t CODEX_IOS_COMMAND_LENGTH_LIMIT = 32 * 1024;
 
 static NSString *codex_find_command_plist(NSString *name) {
     NSBundle *mainBundle = [NSBundle mainBundle];
@@ -71,6 +76,121 @@ static void codex_load_command_list(NSString *name) {
     }
 }
 
+static NSSet<NSString *> *codex_registered_command_names(void) {
+    static NSSet<NSString *> *names = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableSet<NSString *> *collected = [NSMutableSet set];
+        for (NSString *plistName in @[ @"commandDictionary", @"extraCommandsDictionary" ]) {
+            NSString *path = codex_find_command_plist(plistName);
+            if (path.length == 0) {
+                continue;
+            }
+            NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:path];
+            if ([plist isKindOfClass:[NSDictionary class]]) {
+                [collected addObjectsFromArray:plist.allKeys];
+            }
+        }
+        names = [collected copy] ?: [NSSet set];
+    });
+    return names ?: [NSSet set];
+}
+
+static NSString *codex_ios_strip_matching_quotes(NSString *value) {
+    if (value.length >= 2) {
+        unichar first = [value characterAtIndex:0];
+        unichar last = [value characterAtIndex:value.length - 1];
+        if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
+            return [value substringWithRange:NSMakeRange(1, value.length - 2)];
+        }
+    }
+    return value;
+}
+
+static NSArray<NSString *> *codex_ios_command_tokens(NSString *command) {
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    for (NSString *part in [command componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+        if (part.length == 0) {
+            continue;
+        }
+        [tokens addObject:codex_ios_strip_matching_quotes(part)];
+    }
+    return tokens;
+}
+
+static BOOL codex_ios_is_simple_lookup_command(NSString *command) {
+    NSCharacterSet *unsupported = [NSCharacterSet characterSetWithCharactersInString:@"|&;<>`$(){}[]"];
+    return [command rangeOfCharacterFromSet:unsupported].location == NSNotFound;
+}
+
+static BOOL codex_ios_handle_lookup_probe(
+    NSString *command,
+    char **output,
+    size_t *output_len,
+    int *exit_code
+) {
+    NSString *trimmed = [command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0 || !codex_ios_is_simple_lookup_command(trimmed)) {
+        return NO;
+    }
+
+    NSArray<NSString *> *tokens = codex_ios_command_tokens(trimmed);
+    if (tokens.count == 0) {
+        return NO;
+    }
+
+    NSString *mode = nil;
+    NSArray<NSString *> *requested = nil;
+    if (tokens.count >= 3 && [tokens[0] isEqualToString:@"command"] && [tokens[1] isEqualToString:@"-v"]) {
+        mode = @"command-v";
+        requested = [tokens subarrayWithRange:NSMakeRange(2, tokens.count - 2)];
+    } else if (tokens.count >= 3 && [tokens[0] isEqualToString:@"command"] && [tokens[1] isEqualToString:@"-V"]) {
+        mode = @"command-V";
+        requested = [tokens subarrayWithRange:NSMakeRange(2, tokens.count - 2)];
+    } else if (tokens.count >= 2 && [tokens[0] isEqualToString:@"which"]) {
+        mode = @"which";
+        requested = [tokens subarrayWithRange:NSMakeRange(1, tokens.count - 1)];
+    } else if (tokens.count >= 2 && [tokens[0] isEqualToString:@"type"]) {
+        mode = @"type";
+        requested = [tokens subarrayWithRange:NSMakeRange(1, tokens.count - 1)];
+    } else {
+        return NO;
+    }
+
+    NSSet<NSString *> *registered = codex_registered_command_names();
+    NSMutableString *rendered = [NSMutableString string];
+    BOOL foundAll = YES;
+    for (NSString *name in requested) {
+        if (name.length == 0) {
+            continue;
+        }
+        if (![registered containsObject:name]) {
+            foundAll = NO;
+            continue;
+        }
+        if ([mode isEqualToString:@"type"]) {
+            [rendered appendFormat:@"%@ is %@\n", name, name];
+        } else if ([mode isEqualToString:@"command-V"]) {
+            [rendered appendFormat:@"%@ is available in ios_system\n", name];
+        } else {
+            [rendered appendFormat:@"%@\n", name];
+        }
+    }
+
+    NSData *data = [rendered dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length > 0) {
+        char *buf = malloc(data.length + 1);
+        if (buf != NULL) {
+            memcpy(buf, data.bytes, data.length);
+            buf[data.length] = '\0';
+            *output = buf;
+            *output_len = data.length;
+        }
+    }
+    *exit_code = foundAll ? 0 : 1;
+    return YES;
+}
+
 /// Returns the sandbox root (~/Documents), creating a Unix-like directory layout inside it.
 static NSString *codex_sandbox_root(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
@@ -106,6 +226,124 @@ static pthread_mutex_t *codex_ios_exec_mutex(void) {
     return &mutex;
 }
 
+static NSData *codex_ios_truncation_notice(size_t originalLength, size_t cap) {
+    NSString *message = [NSString stringWithFormat:
+        @"\n[output truncated on iOS: captured first %zu of %zu bytes]\n",
+        cap,
+        originalLength
+    ];
+    return [message dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+}
+
+static BOOL codex_ios_copy_string_output(
+    NSString *message,
+    char **output,
+    size_t *output_len
+) {
+    if (output == NULL || output_len == NULL) {
+        return NO;
+    }
+
+    NSData *data = [message dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    char *buf = malloc(data.length + 1);
+    if (buf == NULL) {
+        return NO;
+    }
+
+    if (data.length > 0) {
+        memcpy(buf, data.bytes, data.length);
+    }
+    buf[data.length] = '\0';
+    *output = buf;
+    *output_len = data.length;
+    return YES;
+}
+
+static BOOL codex_ios_read_output_file_limited(
+    NSString *path,
+    size_t cap,
+    char **output,
+    size_t *output_len,
+    size_t *original_len,
+    BOOL *truncated
+) {
+    if (output == NULL || output_len == NULL || original_len == NULL || truncated == NULL) {
+        return NO;
+    }
+
+    *output = NULL;
+    *output_len = 0;
+    *original_len = 0;
+    *truncated = NO;
+
+    struct stat st;
+    if (stat(path.fileSystemRepresentation, &st) != 0) {
+        return NO;
+    }
+
+    size_t fileLen = st.st_size > 0 ? (size_t)st.st_size : 0;
+    *original_len = fileLen;
+    if (fileLen == 0) {
+        return YES;
+    }
+
+    NSData *notice = [NSData data];
+    size_t prefixCap = cap;
+    if (fileLen > cap) {
+        *truncated = YES;
+        notice = codex_ios_truncation_notice(fileLen, cap);
+        size_t noticeLen = notice.length;
+        if (noticeLen >= cap) {
+            prefixCap = cap / 2;
+        } else {
+            prefixCap = cap - noticeLen;
+        }
+    }
+
+    FILE *rf = fopen(path.fileSystemRepresentation, "r");
+    if (rf == NULL) {
+        return NO;
+    }
+
+    size_t bufferLen = MIN(fileLen, prefixCap) + notice.length;
+    char *buf = malloc(bufferLen + 1);
+    if (buf == NULL) {
+        fclose(rf);
+        return NO;
+    }
+
+    size_t written = 0;
+    while (written < prefixCap) {
+        size_t remaining = prefixCap - written;
+        size_t chunk = remaining > 8192 ? 8192 : remaining;
+        size_t count = fread(buf + written, 1, chunk, rf);
+        if (count > 0) {
+            written += count;
+            continue;
+        }
+        if (feof(rf)) {
+            break;
+        }
+        if (ferror(rf)) {
+            NSLog(@"[ios-system] fread FAILED errno=%d (%s)", errno, strerror(errno));
+            free(buf);
+            fclose(rf);
+            return NO;
+        }
+    }
+    fclose(rf);
+
+    if (notice.length > 0) {
+        memcpy(buf + written, notice.bytes, notice.length);
+        written += notice.length;
+    }
+    buf[written] = '\0';
+
+    *output = buf;
+    *output_len = written;
+    return YES;
+}
+
 static NSString *codex_ios_decode_wrapped_shell_argument(NSString *value) {
     NSString *trimmed = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length < 2) {
@@ -128,6 +366,42 @@ static NSString *codex_ios_decode_wrapped_shell_argument(NSString *value) {
     }
 
     return nil;
+}
+
+static BOOL codex_ios_requires_shell_wrapper(NSString *command) {
+    BOOL inSingle = NO;
+    BOOL inDouble = NO;
+    BOOL escaped = NO;
+    NSUInteger length = command.length;
+    for (NSUInteger i = 0; i < length; i++) {
+        unichar ch = [command characterAtIndex:i];
+        if (escaped) {
+            escaped = NO;
+            continue;
+        }
+        if (ch == '\\') {
+            escaped = YES;
+            continue;
+        }
+        if (!inDouble && ch == '\'') {
+            inSingle = !inSingle;
+            continue;
+        }
+        if (!inSingle && ch == '"') {
+            inDouble = !inDouble;
+            continue;
+        }
+        if (inSingle || inDouble) {
+            continue;
+        }
+        if (ch == '\n' || ch == ';' || ch == '|' || ch == '<' || ch == '>') {
+            return YES;
+        }
+        if ((ch == '&' || ch == '|') && (i + 1 < length) && [command characterAtIndex:i + 1] == ch) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 static NSString *codex_ios_normalize_shell_command(const char *cmd) {
@@ -156,11 +430,8 @@ static NSString *codex_ios_normalize_shell_command(const char *cmd) {
             if ([command hasPrefix:prefix]) {
                 NSString *body = [command substringFromIndex:prefix.length];
                 NSString *decoded = codex_ios_decode_wrapped_shell_argument(body);
-                if (decoded.length > 0) {
-                    command = decoded;
-                } else {
-                    command = [@"sh -c " stringByAppendingString:body];
-                }
+                NSString *script = decoded.length > 0 ? decoded : body;
+                command = [@"sh -c " stringByAppendingString:codex_ios_single_quote(script)];
                 changed = YES;
                 break;
             }
@@ -173,9 +444,12 @@ static NSString *codex_ios_normalize_shell_command(const char *cmd) {
             NSString *body = [command substringFromIndex:6];
             NSString *decoded = codex_ios_decode_wrapped_shell_argument(body);
             if (decoded.length > 0) {
-                command = decoded;
-                changed = YES;
-                continue;
+                NSString *normalized = [@"sh -c " stringByAppendingString:codex_ios_single_quote(decoded)];
+                if (![command isEqualToString:normalized]) {
+                    command = normalized;
+                    changed = YES;
+                    continue;
+                }
             }
         }
 
@@ -187,6 +461,10 @@ static NSString *codex_ios_normalize_shell_command(const char *cmd) {
             command = @"sh";
             changed = YES;
         }
+    }
+
+    if (codex_ios_requires_shell_wrapper(command) && ![command hasPrefix:@"sh -c "]) {
+        command = [@"sh -c " stringByAppendingString:codex_ios_single_quote(command)];
     }
 
     return [command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -431,14 +709,32 @@ int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t
     *output_len = 0;
 
     NSString *normalizedCmd = codex_ios_normalize_shell_command(cmd);
-    const char *runCmd = normalizedCmd.UTF8String;
-
-#if TARGET_OS_SIMULATOR
-    if (cmd != NULL && strcmp(cmd, runCmd) != 0) {
-        NSLog(@"[ios-system] normalized cmd from '%s' to '%s'", cmd, runCmd);
+    size_t normalizedLen = [normalizedCmd lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+    if (normalizedLen > CODEX_IOS_COMMAND_LENGTH_LIMIT) {
+        NSString *message = [NSString stringWithFormat:
+            @"command rejected on iOS: %zu bytes exceeds limit of %zu bytes\n",
+            normalizedLen,
+            CODEX_IOS_COMMAND_LENGTH_LIMIT
+        ];
+        codex_ios_copy_string_output(message, output, output_len);
+        NSLog(
+            @"[ios-system] rejected oversized cmd len=%zu limit=%zu cwd='%s'",
+            normalizedLen,
+            CODEX_IOS_COMMAND_LENGTH_LIMIT,
+            cwd ? cwd : "(null)"
+        );
+        return 64;
     }
-    return codex_ios_host_spawn_run(runCmd, cwd, output, output_len);
-#endif
+
+    const char *runCmd = normalizedCmd.UTF8String;
+    int builtinExit = 0;
+    if (codex_ios_handle_lookup_probe(normalizedCmd, output, output_len, &builtinExit)) {
+        if (cmd != NULL && strcmp(cmd, runCmd) != 0) {
+            NSLog(@"[ios-system] normalized cmd from '%s' to '%s'", cmd, runCmd);
+        }
+        NSLog(@"[ios-system] handled lookup probe cmd='%s' code=%d output_len=%zu", runCmd, builtinExit, *output_len);
+        return builtinExit;
+    }
 
     int code = -1;
     pthread_mutex_lock(codex_ios_exec_mutex());
@@ -472,29 +768,31 @@ int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t
     fflush(wf);
     ios_setStreams(stdin, stdout, stderr);
 
-    // Read captured output.
-    NSData *data = [NSData dataWithContentsOfFile:tmpPath];
+    // Read captured output with a hard cap so a noisy local command cannot
+    // blow up the app's RSS by being copied through NSData -> malloc -> Vec.
+    size_t originalLen = 0;
+    BOOL truncated = NO;
+    BOOL readOK = codex_ios_read_output_file_limited(
+        tmpPath,
+        CODEX_IOS_OUTPUT_CAPTURE_LIMIT,
+        output,
+        output_len,
+        &originalLen,
+        &truncated
+    );
     unlink(tmpPath.UTF8String);
-
-    size_t total = 0;
-    char *buf = NULL;
-    if (data.length > 0) {
-        buf = malloc(data.length + 1);
-        if (buf) {
-            memcpy(buf, data.bytes, data.length);
-            total = data.length;
-        }
+    if (!readOK) {
+        NSLog(@"[ios-system] failed to read captured output for cmd='%s'", runCmd);
     }
 
-    NSLog(@"[ios-system] code=%d output_len=%zu for cmd='%s'", code, total, runCmd);
-
-    if (buf && total > 0) {
-        buf[total] = '\0';
-        *output = buf;
-        *output_len = total;
-    } else {
-        free(buf);
-    }
+    NSLog(
+        @"[ios-system] code=%d output_len=%zu original_len=%zu truncated=%d for cmd='%s'",
+        code,
+        *output_len,
+        originalLen,
+        truncated,
+        runCmd
+    );
     pthread_mutex_unlock(codex_ios_exec_mutex());
     return code;
 }

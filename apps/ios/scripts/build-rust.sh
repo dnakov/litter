@@ -52,14 +52,14 @@ for arg in "$@"; do
     --fast-device)
       FAST_DEVICE=1
       DEVICE_ONLY=1
-      PROFILE="debug"
-      CARGO_PROFILE_FLAG=""
+      PROFILE="ios-dev"
+      CARGO_PROFILE_FLAG="--profile ios-dev"
       ;;
     --fast-sim)
       FAST_SIM=1
       SIM_ONLY=1
-      PROFILE="debug"
-      CARGO_PROFILE_FLAG=""
+      PROFILE="ios-dev"
+      CARGO_PROFILE_FLAG="--profile ios-dev"
       ;;
     --force-bindings)
       FORCE_BINDINGS=1

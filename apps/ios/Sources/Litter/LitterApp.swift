@@ -43,8 +43,17 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
         application.registerForRemoteNotifications()
         UNUserNotificationCenter.current().delegate = self
+        OrientationResponder.shared.start()
         showSplashWindow()
         scheduleKeyboardWarmup()
+        // Start pushing state to the paired Apple Watch, gated behind the
+        // experimental feature flag. Flip the `appleWatch` feature in
+        // Settings → Experimental Features to enable. No-op when disabled.
+        DispatchQueue.main.async {
+            if ExperimentalFeatures.shared.isEnabled(.appleWatch) {
+                WatchCompanionBridge.shared.start()
+            }
+        }
         return true
     }
 
@@ -393,6 +402,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $bindableAppState.showSettings) {
             SettingsView()
+                .environment(appState)
                 .environment(\.textScale, textScale)
         }
     }
@@ -418,10 +428,12 @@ private struct HomeNavigationView: View {
     @State private var homeDashboardModel = HomeDashboardModel()
     @State private var navigationPath: [HomeNavigationRoute] = []
     @State private var directoryPickerSheet: SessionLaunchSupport.DirectoryPickerSheetModel?
+    @State private var showProjectPicker = false
     @State private var openingRecentSessionKey: ThreadKey?
     @State private var isStartingNewSession = false
     @State private var isStartingVoice = false
     @State private var actionErrorMessage: String?
+    @State private var homeInputMode: HomeInputMode = .collapsed
     @State private var hasSeededInitialConversationRoute = false
     @State private var pendingWallpaperConfig: WallpaperConfig?
     @State private var pendingWallpaperImage: UIImage?
@@ -438,6 +450,7 @@ private struct HomeNavigationView: View {
         case serverInfo(serverId: String)
         case serverWallpaperSelection(serverId: String)
         case serverWallpaperAdjust(serverId: String)
+        case replayRecording(URL)
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
@@ -458,43 +471,15 @@ private struct HomeNavigationView: View {
         NavigationStack(path: $navigationPath) {
             Group {
                 if isHomeRouteActive {
-                    HomeDashboardView(
-                        recentSessions: homeDashboardModel.recentSessions,
-                        connectedServers: homeDashboardModel.connectedServers,
-                        openingRecentSessionKey: openingRecentSessionKey,
-                        isStartingNewSession: isStartingNewSession,
-                        onOpenRecentSession: openRecentSession,
-                        onOpenServerSessions: openServerSessions,
-                        onNewSession: handleNewSessionTap,
-                        onConnectServer: { appState.showServerPicker = true },
-                        onShowSettings: { appState.showSettings = true },
-                        onDeleteThread: { key in
-                            _ = try? await appModel.client.archiveThread(
-                                serverId: key.serverId,
-                                params: AppArchiveThreadRequest(threadId: key.threadId)
-                            )
-                            await appModel.refreshSnapshot()
-                        },
-                        onReconnectServer: { server in
-                            Task {
-                                await AppRuntimeController.shared.reconnectServer(serverId: server.id)
-                            }
-                        },
-                        onDisconnectServer: { serverId in
-                            SavedServerStore.remove(serverId: serverId)
-                            Task { await SshSessionStore.shared.close(serverId: serverId, ssh: appModel.ssh) }
-                            appModel.serverBridge.disconnectServer(serverId: serverId)
-                        },
-                        onRenameServer: { serverId, newName in
-                            SavedServerStore.rename(serverId: serverId, newName: newName)
-                        }
-                    )
+                    homeDashboard
                 } else {
                     LitterTheme.backgroundGradient.ignoresSafeArea()
                 }
             }
-            .overlay(alignment: .bottom) {
-                if isHomeRouteActive, experimentalFeatures.isEnabled(.realtimeVoice) {
+            .overlay(alignment: .bottomLeading) {
+                if isHomeRouteActive,
+                   experimentalFeatures.isEnabled(.realtimeVoice),
+                   homeInputMode == .collapsed {
                     homeVoiceLauncher
                 }
             }
@@ -520,12 +505,15 @@ private struct HomeNavigationView: View {
                 case let .conversation(threadKey):
                     ConversationDestinationScreen(
                         threadKey: threadKey,
-                        topInset: topInset,
                         bottomInset: bottomInset,
-                        onBack: popCurrentRoute,
                         onResumeSessions: { showSessions(for: $0) },
                         onOpenConversation: { replaceTopConversation(with: $0) },
                         onInfo: { navigationPath.append(.conversationInfo(threadKey)) }
+                    )
+                case let .replayRecording(recordingUrl):
+                    ReplayDestinationScreen(
+                        recordingUrl: recordingUrl,
+                        bottomInset: bottomInset
                     )
                 case let .realtimeVoice(threadKey):
                     RealtimeVoiceScreen(
@@ -646,13 +634,32 @@ private struct HomeNavigationView: View {
                     },
                     onDirectorySelected: { serverId, cwd in
                         directoryPickerSheet = nil
-                        Task { await startNewSession(serverId: serverId, cwd: cwd) }
+                        createAndSelectProject(serverId: serverId, cwd: cwd)
                     },
                     onDismissRequested: {
                         directoryPickerSheet = nil
                     }
                 )
             }
+        }
+        .sheet(isPresented: $showProjectPicker) {
+            ProjectPickerSheet(
+                projects: homeDashboardModel.projects,
+                serverNamesById: Dictionary(uniqueKeysWithValues: homeDashboardModel.connectedServers.map { ($0.id, $0.displayName) }),
+                onSelect: { project in
+                    homeDashboardModel.selectedServerId = project.serverId
+                    homeDashboardModel.selectedProject = project
+                },
+                onCreateNew: {
+                    showProjectPicker = false
+                    let defaultServerId = homeDashboardModel.selectedServerId ?? defaultNewSessionServerId()
+                    if let defaultServerId {
+                        directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
+                    } else {
+                        appState.showServerPicker = true
+                    }
+                }
+            )
         }
         .alert("Home Action Failed", isPresented: Binding(
             get: { actionErrorMessage != nil },
@@ -672,6 +679,11 @@ private struct HomeNavigationView: View {
         )
     }
 
+    private func createAndSelectProject(serverId: String, cwd: String) {
+        homeDashboardModel.selectFreshProject(serverId: serverId, cwd: cwd)
+        RecentDirectoryStore.shared.record(path: cwd, for: serverId)
+    }
+
     private func handleNewSessionTap() {
         if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
             // For local on-device server, skip directory picker and use /home/codex.
@@ -688,18 +700,17 @@ private struct HomeNavigationView: View {
     }
 
     private var homeVoiceLauncher: some View {
-        HStack {
-            Spacer()
-            HomeVoiceOrbButton(
-                session: voiceRuntime.activeVoiceSession,
-                isAvailable: true,
-                isStarting: isStartingVoice,
-                action: startHomeVoiceSession
-            )
-            Spacer()
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, max(bottomInset - 12, 6))
+        HomeVoiceOrbButton(
+            session: voiceRuntime.activeVoiceSession,
+            isAvailable: true,
+            isStarting: isStartingVoice,
+            action: startHomeVoiceSession
+        )
+        // Match the bottom inset used by `HomeBottomBar` inside
+        // `HomeDashboardView.bottomChrome` so the mic button sits on the
+        // same horizontal line as the `+` and search pills on the right.
+        .padding(.leading, 14)
+        .padding(.bottom, 4)
     }
 
     private func startHomeVoiceSession() {
@@ -828,6 +839,7 @@ private struct HomeNavigationView: View {
             )
             startedKey = key
             RecentDirectoryStore.shared.record(path: cwd, for: serverId)
+            homeDashboardModel.pinThread(key)
             appModel.store.setActiveThread(key: startedKey)
             await appModel.refreshSnapshot()
         } catch {
@@ -940,6 +952,195 @@ private struct HomeNavigationView: View {
         navigationPath.removeLast()
     }
 
+    private var homeDashboard: some View {
+        HomeDashboardView(
+            recentSessions: homeDashboardModel.recentSessions,
+            allSessions: homeDashboardModel.allSessions,
+            pinnedThreadKeys: homeDashboardModel.pinnedKeys,
+            connectedServers: homeDashboardModel.connectedServers,
+            projects: homeDashboardModel.projects,
+            selectedServerId: homeDashboardModel.selectedServerId,
+            selectedProject: homeDashboardModel.selectedProject,
+            openingRecentSessionKey: openingRecentSessionKey,
+            onOpenRecentSession: openRecentSession,
+            onSelectServer: handleSelectServer,
+            onAddServer: { appState.showServerPicker = true },
+            onOpenProjectPicker: { showProjectPicker = true },
+            onThreadCreated: { key in homeDashboardModel.pinThread(key) },
+            onShowSettings: { appState.showSettings = true },
+            onPinThread: pinThread,
+            onUnpinThread: unpinThread,
+            onHideThread: hideThread,
+            onHydrateThread: hydrateThread,
+            onDeleteThread: deleteThread,
+            onReconnectServer: reconnectServer,
+            onDisconnectServer: disconnectServer,
+            onRenameServer: renameServer,
+            onOpenRecording: { url in
+                navigationPath.append(.replayRecording(url))
+            },
+            onSendReply: sendQuickReply,
+            onCancelThread: cancelThread,
+            onInputModeChange: { mode in
+                homeInputMode = mode
+            },
+            onLoadAllThreads: loadAllThreads
+        )
+    }
+
+    private func handleSelectServer(_ server: HomeDashboardServer) {
+        if homeDashboardModel.selectedServerId == server.id {
+            homeDashboardModel.clearScope()
+        } else {
+            homeDashboardModel.selectedServerId = server.id
+        }
+    }
+
+    private func pinThread(_ key: ThreadKey) {
+        homeDashboardModel.pinThread(key)
+    }
+
+    private func unpinThread(_ key: ThreadKey) {
+        homeDashboardModel.unpinThread(key)
+    }
+
+    private func hideThread(_ key: ThreadKey) {
+        homeDashboardModel.hideThread(key)
+    }
+
+    private func hydrateThread(_ key: ThreadKey) async {
+        // Resume rather than just read: `external_resume_thread` loads the
+        // thread's items AND attaches a server-side conversation listener
+        // for this connection, so we get live `TurnStarted` / `ItemStarted`
+        // / `MessageDelta` / `TurnCompleted` events. Without it the server
+        // would only push `ThreadStatusChanged` — the active-turn dot would
+        // flip but the streaming bubble, tool log, and session-summary
+        // updates would stay frozen until the user opened the thread.
+        //
+        // For the home list the listener cost is still low enough, and
+        // resuming preemptively avoids the "first half-second of a stream
+        // is missed while we set up a subscription" latency window that an
+        // active-only subscription strategy would have. `externalResume`
+        // short-circuits to a no-op when IPC is live and the thread's
+        // items are already populated, so warm/IPC paths are cheap.
+        try? await appModel.store.externalResumeThread(key: key, hostId: nil)
+        await appModel.refreshSnapshot()
+    }
+
+    private func deleteThread(_ key: ThreadKey) async {
+        _ = try? await appModel.client.archiveThread(
+            serverId: key.serverId,
+            params: AppArchiveThreadRequest(threadId: key.threadId)
+        )
+        await appModel.refreshSnapshot()
+    }
+
+    @MainActor
+    private func cancelThread(_ threadKey: ThreadKey) async {
+        // Look up the thread's active turn id — interrupt requires both.
+        guard let thread = appModel.snapshot?.threadSnapshot(for: threadKey),
+              let turnId = thread.activeTurnId?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !turnId.isEmpty else {
+            return
+        }
+        do {
+            _ = try await appModel.client.interruptTurn(
+                serverId: threadKey.serverId,
+                params: AppInterruptTurnRequest(
+                    threadId: threadKey.threadId,
+                    turnId: turnId
+                )
+            )
+            await appModel.refreshSnapshot()
+        } catch {
+            actionErrorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func sendQuickReply(_ threadKey: ThreadKey, text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // The server needs the thread resumed before `startTurn` can find
+        // it — same path `openRecentSession` takes. On a cold launch the
+        // thread is in hydrated snapshot state but not yet registered with
+        // the upstream session, so a quick-reply without resume would fail
+        // with "thread cannot be found".
+        let resumeKey = await appModel.hydrateThreadPermissions(for: threadKey, appState: appState)
+            ?? threadKey
+        let activeKey: ThreadKey
+        do {
+            activeKey = try await appModel.resumeThread(
+                key: resumeKey,
+                launchConfig: launchConfig(for: resumeKey),
+                cwdOverride: nil
+            )
+        } catch {
+            actionErrorMessage = error.localizedDescription
+            return
+        }
+        let payload = AppComposerPayload(
+            text: trimmed,
+            additionalInputs: [],
+            approvalPolicy: appState.launchApprovalPolicy(for: activeKey),
+            sandboxPolicy: appState.turnSandboxPolicy(for: activeKey),
+            model: nil,
+            effort: nil,
+            serviceTier: nil
+        )
+        do {
+            try await appModel.startTurn(key: activeKey, payload: payload)
+            await appModel.refreshSnapshot()
+        } catch {
+            actionErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func reconnectServer(_ server: HomeDashboardServer) {
+        Task {
+            await AppRuntimeController.shared.reconnectServer(serverId: server.id)
+        }
+    }
+
+    private func disconnectServer(_ serverId: String) {
+        SavedServerStore.remove(serverId: serverId)
+        Task { await SshSessionStore.shared.close(serverId: serverId, ssh: appModel.ssh) }
+        appModel.serverBridge.disconnectServer(serverId: serverId)
+    }
+
+    private func renameServer(_ serverId: String, newName: String) {
+        SavedServerStore.rename(serverId: serverId, newName: newName)
+        appModel.reconnectController.syncSavedServers(
+            servers: SavedServerStore.reconnectRecords(
+                localDisplayName: appModel.resolvedLocalServerDisplayName()
+            )
+        )
+        appModel.store.renameServer(serverId: serverId, displayName: newName)
+    }
+
+    @Sendable
+    private func loadAllThreads() async {
+        await withTaskGroup(of: Void.self) { group in
+            for server in homeDashboardModel.connectedServers {
+                let serverId = server.id
+                group.addTask {
+                    _ = try? await appModel.client.listThreads(
+                        serverId: serverId,
+                        params: AppListThreadsRequest(
+                            cursor: nil,
+                            limit: nil,
+                            archived: nil,
+                            cwd: nil,
+                            searchTerm: nil
+                        )
+                    )
+                }
+            }
+        }
+        await appModel.refreshSnapshot()
+    }
+
     private func updateHomeDashboardActivity() {
         if isHomeRouteActive {
             homeDashboardModel.activate()
@@ -987,22 +1188,13 @@ private struct ConversationDestinationScreen: View {
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @State private var screenModel = ConversationScreenModel()
     let threadKey: ThreadKey
-    let topInset: CGFloat
     let bottomInset: CGFloat
-    let onBack: () -> Void
     let onResumeSessions: (String) -> Void
     let onOpenConversation: (ThreadKey) -> Void
     var onInfo: (() -> Void)?
 
     private var conversationThread: AppThreadSnapshot? {
-        if let exact = appModel.threadSnapshot(for: threadKey) {
-            return exact
-        }
-        guard let activeKey = appModel.snapshot?.activeThread,
-              activeKey.serverId == threadKey.serverId else {
-            return nil
-        }
-        return appModel.threadSnapshot(for: activeKey)
+        appModel.threadSnapshot(for: threadKey)
     }
 
     private var resolvedThreadKey: ThreadKey {
@@ -1029,40 +1221,25 @@ private struct ConversationDestinationScreen: View {
         )
     }
 
+    private var navigationTitle: String {
+        conversationThread?.displayTitle ?? "Conversation"
+    }
+
     var body: some View {
         Group {
             if let conversationThread {
-                ZStack(alignment: .top) {
-                    ConversationView(
-                        thread: conversationThread,
-                        activeThreadKey: resolvedThreadKey,
-                        transcript: screenModel.transcript,
-                        followScrollToken: screenModel.followScrollToken,
-                        pinnedContextItems: screenModel.pinnedContextItems,
-                        composer: screenModel.composer,
-                        topInset: topInset,
-                        bottomInset: bottomInset,
-                        onOpenConversation: onOpenConversation,
-                        onResumeSessions: onResumeSessions
-                    )
-                    if appState.showModelSelector {
-                        Color.black.opacity(0.01)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                    appState.showModelSelector = false
-                                }
-                            }
-                            .zIndex(1)
-                    }
-                    HeaderView(
-                        thread: conversationThread,
-                        onBack: onBack,
-                        onInfo: onInfo,
-                        topInset: topInset
-                    )
-                    .zIndex(2)
-                }
+                ConversationView(
+                    thread: conversationThread,
+                    activeThreadKey: resolvedThreadKey,
+                    transcript: screenModel.transcript,
+                    followScrollToken: screenModel.followScrollToken,
+                    pinnedContextItems: screenModel.pinnedContextItems,
+                    composer: screenModel.composer,
+                    topInset: 0,
+                    bottomInset: bottomInset,
+                    onOpenConversation: onOpenConversation,
+                    onResumeSessions: onResumeSessions
+                )
                 .onAppear {
                     bindScreenModel(for: conversationThread)
                 }
@@ -1093,25 +1270,33 @@ private struct ConversationDestinationScreen: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(LitterTheme.backgroundGradient.ignoresSafeArea())
-                .overlay(alignment: .topLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .litterFont(size: 14, weight: .semibold)
-                            Text("Back")
-                                .litterFont(.callout)
-                        }
-                        .foregroundColor(LitterTheme.accent)
-                        .padding(.horizontal, 16)
-                        .padding(.top, topInset + 12)
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let conversationThread {
+                ToolbarItem(placement: .principal) {
+                    HeaderView(thread: conversationThread)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    ConversationToolbarControls(
+                        thread: conversationThread,
+                        control: .reload
+                    )
+                }
+                if onInfo != nil {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ConversationToolbarControls(
+                            thread: conversationThread,
+                            control: .info,
+                            onInfo: onInfo
+                        )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.container, edges: [.top, .bottom])
-        .toolbar(.hidden, for: .navigationBar)
+        .ignoresSafeArea(.container, edges: .bottom)
         .task(id: threadKey) {
             os_signpost(
                 .event,
@@ -1133,6 +1318,82 @@ private struct ConversationDestinationScreen: View {
                 appState.currentCwd = cwd
             }
         }
+    }
+}
+
+private struct ReplayDestinationScreen: View {
+    @Environment(AppModel.self) private var appModel
+    let recordingUrl: URL
+    let bottomInset: CGFloat
+    @State private var screenModel = ConversationScreenModel()
+    @State private var replayThreadKey: ThreadKey?
+    @State private var recorder = MessageRecorder.shared
+
+    private var conversationThread: AppThreadSnapshot? {
+        guard let key = replayThreadKey else { return nil }
+        return appModel.threadSnapshot(for: key)
+    }
+
+    var body: some View {
+        Group {
+            if let thread = conversationThread, let key = replayThreadKey {
+                ConversationView(
+                    thread: thread,
+                    activeThreadKey: key,
+                    transcript: screenModel.transcript,
+                    followScrollToken: screenModel.followScrollToken,
+                    pinnedContextItems: screenModel.pinnedContextItems,
+                    composer: screenModel.composer,
+                    topInset: 0,
+                    bottomInset: bottomInset,
+                    onOpenConversation: nil,
+                    onResumeSessions: { _ in }
+                )
+                .onAppear { bindScreenModel(for: thread) }
+                .onChange(of: thread) { _, t in bindScreenModel(for: t) }
+                .onChange(of: appModel.snapshotRevision) { _, _ in
+                    if let t = conversationThread { bindScreenModel(for: t) }
+                }
+            } else {
+                VStack(spacing: 16) {
+                    Spacer()
+                    ProgressView()
+                        .tint(LitterTheme.accent)
+                    Text(recorder.isReplaying ? "Replaying..." : "Starting replay...")
+                        .litterFont(.caption)
+                        .foregroundColor(LitterTheme.textMuted)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+            }
+        }
+        .navigationTitle("Replay")
+        .navigationBarTitleDisplayMode(.inline)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.container, edges: .bottom)
+        .task {
+            let targetKey: ThreadKey
+            if let server = appModel.snapshot?.servers.first {
+                targetKey = ThreadKey(serverId: server.serverId, threadId: UUID().uuidString)
+            } else {
+                targetKey = ThreadKey(serverId: "replay", threadId: UUID().uuidString)
+            }
+            replayThreadKey = targetKey
+            appModel.activateThread(targetKey)
+            recorder.startReplay(url: recordingUrl, store: appModel.store, targetKey: targetKey)
+        }
+        .onDisappear {
+            recorder.stopReplay()
+        }
+    }
+
+    private func bindScreenModel(for thread: AppThreadSnapshot) {
+        screenModel.bind(
+            thread: thread,
+            appModel: appModel,
+            agentDirectoryVersion: appModel.snapshot?.agentDirectoryVersion ?? 0
+        )
     }
 }
 

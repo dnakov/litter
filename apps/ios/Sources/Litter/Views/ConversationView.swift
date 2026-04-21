@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UIKit
 import os
+import HairballUI
 
 private let conversationViewSignpostLog = OSLog(
     subsystem: Bundle.main.bundleIdentifier ?? "com.litter.ios",
@@ -22,7 +23,12 @@ enum ConversationStreamingViewportPolicy {
         return isNearBottom
     }
 
-
+    static func isStreaming(_ threadStatus: ConversationStatus) -> Bool {
+        if case .thinking = threadStatus {
+            return true
+        }
+        return false
+    }
 }
 
 struct ConversationView: View {
@@ -43,6 +49,7 @@ struct ConversationView: View {
     @AppStorage("fastMode") private var fastMode = false
     @State private var messageActionError: String?
     @State private var hasLoggedFirstRender = false
+    @State private var localSendScrollToken = 0
 
     private var items: [ConversationItem] {
         transcript.items
@@ -73,6 +80,7 @@ struct ConversationView: View {
             threadHasServerData: thread.hasPreviewOrTitle,
             transcriptRenderDigest: transcript.renderDigest,
             followScrollToken: followScrollToken,
+            sendScrollToken: localSendScrollToken,
             activeThreadKey: activeThreadKey,
             agentDirectoryVersion: agentDirectoryVersion,
             topInset: thread.isSubagent ? topInset + 32 : topInset,
@@ -83,15 +91,8 @@ struct ConversationView: View {
             onForkFromUserItem: forkFromMessage,
             onOpenConversation: onOpenConversation
         )
+        .activeThreadKey(activeThreadKey)
         .background { ChatWallpaperBackground(threadKey: activeThreadKey) }
-        .mask {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 60)
-                Rectangle().fill(.black)
-            }
-            .ignoresSafeArea()
-        }
         .overlay(alignment: .top) {
             if thread.isSubagent {
                 SubagentBreadcrumbBar(
@@ -103,6 +104,11 @@ struct ConversationView: View {
                         }
                     }
                 )
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if DebugSettings.shared.enabled {
+                ConversationDebugButton(topInset: topInset, activeThreadKey: activeThreadKey)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -136,6 +142,7 @@ struct ConversationView: View {
     }
 
     private func sendMessage(_ text: String, attachmentImage: UIImage?, skillMentions: [SkillMentionSelection]) {
+        localSendScrollToken &+= 1
         Task {
             do {
                 NSLog(
@@ -169,6 +176,7 @@ struct ConversationView: View {
 
     private func sendWidgetPrompt(_ text: String) {
         guard !text.isEmpty else { return }
+        localSendScrollToken &+= 1
         Task {
             do {
                 let payload = try makeComposerPayload(
@@ -442,7 +450,7 @@ struct RateLimitBadgeView: View, Equatable {
     var body: some View {
         HStack(spacing: 3) {
             Text(label)
-                .litterMonoFont(size: 9.5, weight: .semibold)
+                .font(LitterFont.monospaced(size: 9.5, weight: .semibold))
                 .foregroundColor(LitterTheme.textSecondary)
             ContextBadgeView(percent: percent, tint: tint)
         }
@@ -456,6 +464,7 @@ private struct ConversationMessageList: View {
     let threadHasServerData: Bool
     let transcriptRenderDigest: Int
     let followScrollToken: Int
+    let sendScrollToken: Int
     let activeThreadKey: ThreadKey
     let agentDirectoryVersion: UInt64
     var topInset: CGFloat = 0
@@ -465,14 +474,10 @@ private struct ConversationMessageList: View {
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
     var onOpenConversation: ((ThreadKey) -> Void)? = nil
-    @State private var pendingScrollWorkItem: DispatchWorkItem?
     @State private var isNearBottom = true
     @State private var autoFollowStreaming = true
     @State private var userIsDraggingScroll = false
     @State private var waitingForDataExpired = false
-    @State private var suppressStatusScroll = false
-    @State private var streamingRenderTick = 0
-    @State private var transcriptLayoutTick = 0
     @State private var pinchBaseStep: Int?
     @State private var pinchAppliedDelta = 0
     @State private var transcriptTurns: [TranscriptTurn] = []
@@ -508,11 +513,8 @@ private struct ConversationMessageList: View {
         return sourceTurns.last?.isLive == true
     }
 
-
     private var messageActionsDisabled: Bool {
-        if case .thinking = threadStatus {
-            return true
-        }
+        if case .thinking = threadStatus { return true }
         return false
     }
 
@@ -525,21 +527,9 @@ private struct ConversationMessageList: View {
     }
 
     private var isStreaming: Bool {
-        if case .thinking = threadStatus {
-            return true
-        }
+        if case .thinking = threadStatus { return true }
         return false
     }
-
-    private var shouldMaintainBottomAnchor: Bool {
-        ConversationStreamingViewportPolicy.shouldMaintainBottomAnchor(
-            isStreaming: isStreaming,
-            isNearBottom: isNearBottom,
-            autoFollowStreaming: autoFollowStreaming,
-            userIsDraggingScroll: userIsDraggingScroll
-        )
-    }
-
 
     private static let initialTurnWindow = 10
     private static let turnPageSize = 20
@@ -547,9 +537,7 @@ private struct ConversationMessageList: View {
 
     private var displayedTurns: [TranscriptTurn] {
         let all = sourceTurns
-        if all.count <= turnWindowSize {
-            return all
-        }
+        if all.count <= turnWindowSize { return all }
         return Array(all.suffix(turnWindowSize))
     }
 
@@ -568,9 +556,7 @@ private struct ConversationMessageList: View {
     private var mergedRenderableTurns: [TranscriptTurn] {
         let turns = displayedTurns
         let buildKey = makeRenderedTurnsBuildKey(for: turns)
-        if renderedTurnsBuildKey == buildKey {
-            return renderedTurns
-        }
+        if renderedTurnsBuildKey == buildKey { return renderedTurns }
         return TranscriptTurn.mergeConsecutiveExplorationTurnsForRendering(turns)
     }
 
@@ -613,7 +599,7 @@ private struct ConversationMessageList: View {
                                     onToggleExpansion: {
                                         toggleTurnExpansion(turn)
                                     },
-                                    onStreamingSnapshotRendered: turn.isLive ? handleStreamingSnapshotRendered : nil,
+                                    onStreamingSnapshotRendered: nil,
                                     resolveTargetLabel: resolveTargetLabel,
                                     onWidgetPrompt: onWidgetPrompt,
                                     onEditUserItem: onEditUserItem,
@@ -621,10 +607,12 @@ private struct ConversationMessageList: View {
                                     onOpenConversation: onOpenConversation
                                 )
                                 .equatable()
+                                .turnDebugOverlay(turnId: turn.id)
                             }
                         }
                         .padding(.horizontal, 16)
                         .padding(.top, topInset + 56)
+                        .animation(.spring(response: 0.22, dampingFraction: 0.9), value: textSizeStep)
 
                         if isWaitingForData {
                             ConversationLoadingIndicator(label: "Loading conversation...")
@@ -639,38 +627,26 @@ private struct ConversationMessageList: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                 }
-                .onAppear {
-                    syncTranscriptTurns()
-
-                }
+                .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                .defaultScrollAnchor(.bottom)
                 .simultaneousGesture(
                     MagnificationGesture(minimumScaleDelta: 0.03)
-                        .onChanged { scale in
-                            handlePinchChanged(scale: scale)
-                        }
-                        .onEnded { scale in
-                            finishPinch(scale: scale)
-                        }
+                        .onChanged { scale in handlePinchChanged(scale: scale) }
+                        .onEnded { scale in finishPinch(scale: scale) }
                 )
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    if isStreaming && autoFollowStreaming && !userIsDraggingScroll && isNearBottom {
-                        return 0
-                    }
-                    return geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height
+                    geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height
                 } action: { _, distance in
-                    guard pendingScrollWorkItem == nil, !suppressStatusScroll else { return }
-                    // Hysteresis: must exceed 150px to leave bottom, but only 60px to re-enter.
-                    // Prevents oscillation when the scroll indicator toggling shifts layout.
+                    // During streaming auto-follow, don't let intermediate layout values flip isNearBottom.
+                    if isStreaming && autoFollowStreaming && !userIsDraggingScroll { return }
                     let next: Bool
                     if isNearBottom {
                         next = distance <= 150
                     } else {
                         next = distance <= 60
                     }
-                    if next != isNearBottom {
-                        isNearBottom = next
-                    }
+                    if next != isNearBottom { isNearBottom = next }
                     if next {
                         autoFollowStreaming = true
                     } else if isStreaming && userIsDraggingScroll {
@@ -680,98 +656,80 @@ private struct ConversationMessageList: View {
                 .onScrollPhaseChange { _, newPhase in
                     switch newPhase {
                     case .tracking, .interacting:
-                        pendingScrollWorkItem?.cancel()
-                        pendingScrollWorkItem = nil
                         userIsDraggingScroll = true
-                        if isStreaming {
-                            autoFollowStreaming = false
-                        }
+                        if isStreaming { autoFollowStreaming = false }
                     case .decelerating:
                         userIsDraggingScroll = true
                     default:
                         userIsDraggingScroll = false
-                        if isNearBottom {
-                            autoFollowStreaming = true
+                        if isNearBottom { autoFollowStreaming = true }
+                    }
+                }
+                .onAppear {
+                    autoFollowStreaming = true
+                    syncTranscriptTurns()
+                }
+                .onChange(of: activeThreadKey) {
+                    autoFollowStreaming = true
+                    isNearBottom = true
+                    waitingForDataExpired = false
+                    resetTurnWindow()
+                    syncTranscriptTurns(resetExpansion: true)
+                    StreamingRendererCoordinator.shared.reset()
+                }
+                .task(id: activeThreadKey) {
+                    try? await Task.sleep(for: .seconds(1))
+                    waitingForDataExpired = true
+                }
+                .onChange(of: items) { _, _ in
+                    syncTranscriptTurns()
+                }
+                .onChange(of: collapseTurns) {
+                    syncTranscriptTurns(resetExpansion: true)
+                }
+                .onChange(of: followScrollToken) {
+                    guard isStreaming, autoFollowStreaming, !userIsDraggingScroll else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onChange(of: sendScrollToken) {
+                    autoFollowStreaming = true
+                    isNearBottom = true
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
                         }
                     }
                 }
-                    .defaultScrollAnchor(.bottom)
-                    .onAppear {
-                        autoFollowStreaming = true
+                .onChange(of: threadStatus) { oldStatus, _ in
+                    syncTranscriptTurns()
+                    // When streaming ends, finish active renderers so they
+                    // switch to static rendering (no re-animation on view rebuild).
+                    let wasStreaming = { if case .thinking = oldStatus { return true }; return false }()
+                    if wasStreaming && !isStreaming {
+                        StreamingRendererCoordinator.shared.finishActive()
                     }
-                    .onChange(of: activeThreadKey) {
-                        autoFollowStreaming = true
-                        isNearBottom = true
-                        waitingForDataExpired = false
-                        suppressStatusScroll = true
-                        resetTurnWindow()
-                        syncTranscriptTurns(resetExpansion: true)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                            suppressStatusScroll = false
+                    if wasStreaming && !isStreaming && autoFollowStreaming {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
                         }
                     }
-                    .task(id: activeThreadKey) {
-                        try? await Task.sleep(for: .seconds(1))
-                        waitingForDataExpired = true
-                    }
-                    .onChange(of: items) { _, _ in
-                        syncTranscriptTurns()
-                    }
-                    .onChange(of: collapseTurns) {
-                        syncTranscriptTurns(resetExpansion: true)
-    
-                    }
-                    .onChange(of: followScrollToken) {
-                        guard isStreaming, shouldMaintainBottomAnchor else { return }
-                        scheduleScrollToBottom(
-                            proxy,
-                            delay: 0.01,
-                            replacePending: true,
-                            animation: .easeOut(duration: 0.16)
-                        )
-                    }
-                    .onChange(of: threadStatus) { oldStatus, newStatus in
-                        syncTranscriptTurns()
-
-                        if isStreaming {
-                            autoFollowStreaming = isNearBottom
-                        } else if oldStatus != newStatus, !suppressStatusScroll {
-                            let shouldFinalizeAtBottom = autoFollowStreaming || isNearBottom
-                            userIsDraggingScroll = false
-                            scheduleScrollToBottom(
-                                proxy,
-                                delay: 0.2,
-                                force: shouldFinalizeAtBottom,
-                                animation: nil
-                            )
-                        }
-                    }
-                    .onChange(of: streamingRenderTick) {
-                        guard isStreaming else { return }
-                        scheduleScrollToBottom(
-                            proxy,
-                            delay: 0.02,
-                            replacePending: false,
-                            animation: .easeOut(duration: 0.16)
-                        )
-                    }
-                    .onDisappear {
-                        pendingScrollWorkItem?.cancel()
-                        pendingScrollWorkItem = nil
-
-                    }
-                .animation(.spring(response: 0.22, dampingFraction: 0.9), value: textSizeStep)
+                }
 
                 if shouldShowScrollToBottom {
                     ScrollToBottomIndicator {
                         autoFollowStreaming = true
                         isNearBottom = true
-                        suppressStatusScroll = true
-                        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            suppressStatusScroll = false
+                        // Jump without animation first so LazyVStack realizes
+                        // content near the bottom, then do an animated corrective
+                        // scroll once layout has settled.  This avoids the
+                        // overshoot caused by stale estimated heights.
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
                         }
                     }
                     .padding(.trailing, 14)
@@ -801,9 +759,7 @@ private struct ConversationMessageList: View {
     private func syncTranscriptTurns(resetExpansion: Bool = false) {
         let nextBuildKey = makeTranscriptBuildKey()
         if transcriptBuildKey == nextBuildKey, !transcriptTurns.isEmpty {
-            if resetExpansion {
-                expandedTurnIDs.removeAll()
-            }
+            if resetExpansion { expandedTurnIDs.removeAll() }
             return
         }
 
@@ -825,7 +781,23 @@ private struct ConversationMessageList: View {
             return
         }
 
-        applyTranscriptTurns(nextTurns, resetExpansion: resetExpansion)
+        let lastTurnItemCountGrew = {
+            guard let currentLast = transcriptTurns.last,
+                  let nextLast = nextTurns.last,
+                  currentLast.id == nextLast.id,
+                  nextLast.items.count > currentLast.items.count else {
+                return false
+            }
+            return true
+        }()
+
+        if lastTurnItemCountGrew {
+            withAnimation(.spring(duration: 0.4, bounce: 0.08)) {
+                applyTranscriptTurns(nextTurns, resetExpansion: resetExpansion)
+            }
+        } else {
+            applyTranscriptTurns(nextTurns, resetExpansion: resetExpansion)
+        }
     }
 
     private func makeTranscriptBuildKey() -> Int {
@@ -863,17 +835,11 @@ private struct ConversationMessageList: View {
         }
 
         let candidateDelta: Int
-        if scale >= 1.18 {
-            candidateDelta = 2
-        } else if scale >= 1.03 {
-            candidateDelta = 1
-        } else if scale <= 0.86 {
-            candidateDelta = -2
-        } else if scale <= 0.97 {
-            candidateDelta = -1
-        } else {
-            candidateDelta = 0
-        }
+        if scale >= 1.18 { candidateDelta = 2 }
+        else if scale >= 1.03 { candidateDelta = 1 }
+        else if scale <= 0.86 { candidateDelta = -2 }
+        else if scale <= 0.97 { candidateDelta = -1 }
+        else { candidateDelta = 0 }
         guard candidateDelta != 0 else { return }
 
         if pinchAppliedDelta == 0 {
@@ -902,11 +868,6 @@ private struct ConversationMessageList: View {
         }
         pinchBaseStep = nil
         pinchAppliedDelta = 0
-    }
-
-    private func handleStreamingSnapshotRendered() {
-        guard shouldMaintainBottomAnchor else { return }
-        streamingRenderTick &+= 1
     }
 
     private func shouldAnimateNewTurnInsertion(
@@ -971,8 +932,6 @@ private struct ConversationMessageList: View {
         resetExpansion: Bool = false,
         removeExpandedTurnID: String? = nil
     ) {
-        let previousLayoutSignature = transcriptTurns.map(layoutSignature(for:))
-        let nextLayoutSignature = nextTurns.map(layoutSignature(for:))
         let nextTurnIDs = Set(nextTurns.map(\.id))
         let nextRenderedTurns = TranscriptTurn.mergeConsecutiveExplorationTurnsForRendering(nextTurns)
         transcriptTurns = nextTurns
@@ -985,47 +944,6 @@ private struct ConversationMessageList: View {
         }
         if let removeExpandedTurnID {
             expandedTurnIDs.remove(removeExpandedTurnID)
-        }
-        if !isStreaming && previousLayoutSignature != nextLayoutSignature {
-            transcriptLayoutTick &+= 1
-        }
-    }
-
-    private func scheduleScrollToBottom(
-        _ proxy: ScrollViewProxy,
-        delay: TimeInterval = 0.05,
-        force: Bool = false,
-        replacePending: Bool = false,
-        animation: Animation? = .interactiveSpring(response: 0.28, dampingFraction: 0.9)
-    ) {
-        guard force || shouldMaintainBottomAnchor else { return }
-        if force {
-            pendingScrollWorkItem?.cancel()
-            pendingScrollWorkItem = nil
-        } else if replacePending {
-            pendingScrollWorkItem?.cancel()
-            pendingScrollWorkItem = nil
-        } else if pendingScrollWorkItem != nil {
-            return
-        }
-        let work = DispatchWorkItem {
-            pendingScrollWorkItem = nil
-            guard force || shouldMaintainBottomAnchor else { return }
-            let effectiveAnimation = isStreaming ? nil : animation
-            if let effectiveAnimation {
-                withAnimation(effectiveAnimation) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-            } else {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            isNearBottom = true
-        }
-        pendingScrollWorkItem = work
-        if delay == 0 {
-            DispatchQueue.main.async(execute: work)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 
@@ -1074,7 +992,6 @@ private struct ConversationTurnRow: View, Equatable {
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Render items with inline handoff views interleaved after each handoff note.
             ConversationTurnTimeline(
                 items: turn.items,
                 isLive: turn.isLive,
@@ -1089,9 +1006,9 @@ private struct ConversationTurnRow: View, Equatable {
                 onOpenConversation: onOpenConversation
             )
 
-            if showTypingIndicator {
-                TypingIndicator()
-            }
+            TypingIndicator()
+                .opacity(showTypingIndicator ? 1 : 0)
+                .animation(nil)
 
             if canCollapse {
                 Button("Show Less", systemImage: "chevron.up", action: onToggleExpansion)
@@ -1157,10 +1074,7 @@ private struct ConversationTurnRow: View, Equatable {
             if !footerMetadataItems.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(footerMetadataItems, id: \.id) { item in
-                        CollapsedTurnMetaItem(
-                            systemImage: item.systemImage,
-                            text: item.text
-                        )
+                        CollapsedTurnMetaItem(systemImage: item.systemImage, text: item.text)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1174,17 +1088,9 @@ private struct ConversationTurnRow: View, Equatable {
         .padding(.bottom, 2)
     }
 
-    private var collapsedPreviewHeight: CGFloat {
-        collapsedPrimaryLineHeight + collapsedResponseHeight + 4
-    }
-
-    private var collapsedFooterReservedInset: CGFloat {
-        collapsedFooterHeight + 10
-    }
-
-    private var collapsedFooterHeight: CGFloat {
-        max(UIFont.preferredFont(forTextStyle: .caption1).lineHeight * textScale, 14)
-    }
+    private var collapsedPreviewHeight: CGFloat { collapsedPrimaryLineHeight + collapsedResponseHeight + 4 }
+    private var collapsedFooterReservedInset: CGFloat { collapsedFooterHeight + 10 }
+    private var collapsedFooterHeight: CGFloat { max(UIFont.preferredFont(forTextStyle: .caption1).lineHeight * textScale, 14) }
 
     private var responsePreviewMask: some View {
         LinearGradient(
@@ -1199,17 +1105,9 @@ private struct ConversationTurnRow: View, Equatable {
         )
     }
 
-    private var collapsedPrimaryLineHeight: CGFloat {
-        collapsedPreviewLineHeight
-    }
-
-    private var collapsedResponseHeight: CGFloat {
-        (collapsedPreviewLineHeight * 2) + 2
-    }
-
-    private var collapsedPreviewLineHeight: CGFloat {
-        UIFont.preferredFont(forTextStyle: .body).lineHeight * textScale
-    }
+    private var collapsedPrimaryLineHeight: CGFloat { collapsedPreviewLineHeight }
+    private var collapsedResponseHeight: CGFloat { (collapsedPreviewLineHeight * 2) + 2 }
+    private var collapsedPreviewLineHeight: CGFloat { UIFont.preferredFont(forTextStyle: .body).lineHeight * textScale }
 
     private var footerMetadataItems: [CollapsedTurnMeta] {
         var items: [CollapsedTurnMeta] = []
@@ -1232,45 +1130,21 @@ private struct ConversationTurnRow: View, Equatable {
     }
 
     private var secondaryPreviewText: String? {
-        guard let secondaryText = turn.preview.secondaryText,
-              secondaryText != turn.preview.primaryText else {
-            return nil
-        }
+        guard let secondaryText = turn.preview.secondaryText, secondaryText != turn.preview.primaryText else { return nil }
         return secondaryText
     }
 
-    private var responsePreviewText: String {
-        secondaryPreviewText ?? turn.preview.primaryText
-    }
+    private var responsePreviewText: String { secondaryPreviewText ?? turn.preview.primaryText }
 
     private var accessibilitySummary: String {
         var parts = [turn.preview.primaryText]
-        if let secondaryPreviewText {
-            parts.append(secondaryPreviewText)
-        }
-        if let durationText = turn.preview.durationText {
-            parts.append("Duration \(durationText)")
-        }
-        if turn.preview.toolCallCount > 0 {
-            parts.append("\(turn.preview.toolCallCount) tool \(turn.preview.toolCallCount == 1 ? "call" : "calls")")
-        }
-        if turn.preview.widgetCount > 0 {
-            parts.append("\(turn.preview.widgetCount) \(turn.preview.widgetCount == 1 ? "widget" : "widgets")")
-        }
-        if turn.preview.eventCount > 0 {
-            parts.append("\(turn.preview.eventCount) \(turn.preview.eventCount == 1 ? "event" : "events")")
-        }
-        if turn.preview.imageCount > 0 {
-            parts.append("\(turn.preview.imageCount) \(turn.preview.imageCount == 1 ? "image" : "images")")
-        }
+        if let secondaryPreviewText { parts.append(secondaryPreviewText) }
+        if let durationText = turn.preview.durationText { parts.append("Duration \(durationText)") }
+        if turn.preview.toolCallCount > 0 { parts.append("\(turn.preview.toolCallCount) tool \(turn.preview.toolCallCount == 1 ? "call" : "calls")") }
+        if turn.preview.widgetCount > 0 { parts.append("\(turn.preview.widgetCount) \(turn.preview.widgetCount == 1 ? "widget" : "widgets")") }
+        if turn.preview.eventCount > 0 { parts.append("\(turn.preview.eventCount) \(turn.preview.eventCount == 1 ? "event" : "events")") }
+        if turn.preview.imageCount > 0 { parts.append("\(turn.preview.imageCount) \(turn.preview.imageCount == 1 ? "image" : "images")") }
         return parts.joined(separator: ". ")
-    }
-}
-
-private struct LastTurnHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -1307,6 +1181,7 @@ private struct ScrollToBottomIndicator: View {
                 Image(systemName: "arrow.down")
                     .litterFont(.caption, weight: .bold)
                     .offset(y: bob ? 1.5 : -1.5)
+                    .animation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true), value: bob)
                 Text("Latest")
                     .litterFont(.caption, weight: .semibold)
             }
@@ -1317,9 +1192,7 @@ private struct ScrollToBottomIndicator: View {
         }
         .contentShape(Capsule())
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true)) {
-                bob = true
-            }
+            bob = true
         }
     }
 }
@@ -2698,25 +2571,31 @@ struct PendingUserInputPromptView: View {
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             if !question.options.isEmpty {
-                                HStack(spacing: 8) {
-                                    ForEach(question.options, id: \.label) { option in
-                                        let isSelected =
-                                            selectedAnswers[question.id] == option.label &&
-                                            trimmedOtherAnswer(for: question).isEmpty
-                                        Button {
-                                            selectedAnswers[question.id] = option.label
-                                            otherAnswers[question.id] = ""
-                                        } label: {
-                                            Text(option.label)
-                                                .litterFont(.caption2, weight: .semibold)
-                                                .foregroundColor(isSelected ? Color.black : LitterTheme.textPrimary)
-                                                .padding(.horizontal, 10)
-                                                .padding(.vertical, 6)
-                                                .background(isSelected ? LitterTheme.accent : LitterTheme.surface.opacity(0.8))
-                                                .clipShape(Capsule())
-                                        }
-                                        .buttonStyle(.plain)
+                                // ViewThatFits + VStack fallback so long
+                                // option labels wrap to a new row instead
+                                // of squeezing a short option into a narrow
+                                // column with character-by-character wrapping.
+                                let optionButtons = ForEach(question.options, id: \.label) { option in
+                                    let isSelected =
+                                        selectedAnswers[question.id] == option.label &&
+                                        trimmedOtherAnswer(for: question).isEmpty
+                                    Button {
+                                        selectedAnswers[question.id] = option.label
+                                        otherAnswers[question.id] = ""
+                                    } label: {
+                                        Text(option.label)
+                                            .litterFont(.caption2, weight: .semibold)
+                                            .foregroundColor(isSelected ? Color.black : LitterTheme.textPrimary)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(isSelected ? LitterTheme.accent : LitterTheme.surface.opacity(0.8))
+                                            .clipShape(Capsule())
                                     }
+                                    .buttonStyle(.plain)
+                                }
+                                ViewThatFits(in: .horizontal) {
+                                    HStack(spacing: 8) { optionButtons }
+                                    VStack(alignment: .leading, spacing: 8) { optionButtons }
                                 }
                             }
 
@@ -2990,10 +2869,9 @@ private struct ConversationLoadingIndicator: View {
                     endPoint: UnitPoint(x: shimmerOffset + 0.3, y: 0.5)
                 )
             )
+            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false), value: shimmerOffset)
             .onAppear {
-                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                    shimmerOffset = 2
-                }
+                shimmerOffset = 2
             }
     }
 }
@@ -3002,7 +2880,7 @@ struct TypingIndicator: View {
     @State private var shimmerOffset: CGFloat = -1
 
     var body: some View {
-        Text("Thinking...")
+        Text("Thinking")
             .litterFont(.body, weight: .medium)
             .foregroundStyle(
                 LinearGradient(
@@ -3015,11 +2893,10 @@ struct TypingIndicator: View {
                     endPoint: UnitPoint(x: shimmerOffset + 0.3, y: 0.5)
                 )
             )
+            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false), value: shimmerOffset)
             .padding(.leading, 12)
             .onAppear {
-                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                    shimmerOffset = 2
-                }
+                shimmerOffset = 2
             }
     }
 }
@@ -3092,12 +2969,228 @@ private struct SubagentBreadcrumbBar: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        .padding(.top, topInset + 48)
+        .padding(.top, topInset + 8)
         .background(
             LitterTheme.surface.opacity(0.85)
                 .background(.ultraThinMaterial)
                 .ignoresSafeArea()
         )
+    }
+}
+
+// MARK: - Debug Overlay
+
+private struct ConversationDebugButton: View {
+    let topInset: CGFloat
+    let activeThreadKey: ThreadKey
+    @State private var showPopover = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                showPopover.toggle()
+            } label: {
+                Image(systemName: "ant")
+                    .litterFont(size: 12, weight: .semibold)
+                    .foregroundColor(LitterTheme.accent)
+                    .padding(6)
+                    .background(
+                        Circle()
+                            .fill(LitterTheme.surface.opacity(0.85))
+                            .background(Circle().fill(.ultraThinMaterial))
+                    )
+            }
+            .buttonStyle(.plain)
+
+            if DebugSettings.shared.enabled {
+                if MessageRecorder.shared.isRecording {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .modifier(PulseModifier())
+                }
+                if MessageRecorder.shared.isReplaying {
+                    Image(systemName: "play.fill")
+                        .litterFont(size: 8, weight: .semibold)
+                        .foregroundColor(LitterTheme.accent)
+                }
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.top, topInset + 12)
+        .popover(isPresented: $showPopover) {
+            DebugPopoverContent(activeThreadKey: activeThreadKey)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
+private struct PulseModifier: ViewModifier {
+    @State private var pulse = false
+    func body(content: Content) -> some View {
+        content
+            .opacity(pulse ? 0.3 : 1.0)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+            .onAppear { pulse = true }
+    }
+}
+
+private struct DebugPopoverContent: View {
+    @Environment(AppModel.self) private var appModel
+    let activeThreadKey: ThreadKey
+    @State private var debugSettings = DebugSettings.shared
+    @State private var recorder = MessageRecorder.shared
+    @State private var recordings: [URL] = []
+
+    var body: some View {
+        ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Debug")
+                .litterFont(.subheadline, weight: .semibold)
+                .foregroundColor(LitterTheme.textPrimary)
+
+            Toggle(isOn: Binding(
+                get: { debugSettings.disableMarkdown },
+                set: { debugSettings.disableMarkdown = $0 }
+            )) {
+                Text("Disable Markdown")
+                    .litterFont(.caption)
+                    .foregroundColor(LitterTheme.textPrimary)
+            }
+            .tint(LitterTheme.accent)
+
+            Toggle(isOn: Binding(
+                get: { debugSettings.showTurnMetrics },
+                set: { debugSettings.showTurnMetrics = $0 }
+            )) {
+                Text("Turn Metrics")
+                    .litterFont(.caption)
+                    .foregroundColor(LitterTheme.textPrimary)
+            }
+            .tint(LitterTheme.accent)
+
+            if debugSettings.enabled {
+                Divider().background(LitterTheme.border)
+
+                // MARK: Recording controls
+                Text("Recording")
+                    .litterFont(.caption, weight: .semibold)
+                    .foregroundColor(LitterTheme.textPrimary)
+
+                HStack(spacing: 8) {
+                    if recorder.isRecording {
+                        Button {
+                            recorder.stopRecording(store: appModel.store)
+                            recordings = recorder.listRecordings()
+                        } label: {
+                            Label("Stop", systemImage: "stop.fill")
+                                .litterFont(.caption, weight: .medium)
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
+                    } else if recorder.isReplaying {
+                        Button {
+                            recorder.stopReplay()
+                        } label: {
+                            Label("Stop", systemImage: "stop.fill")
+                                .litterFont(.caption, weight: .medium)
+                                .foregroundColor(.orange)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button {
+                            recorder.startRecording(store: appModel.store)
+                        } label: {
+                            Label("Record", systemImage: "record.circle")
+                                .litterFont(.caption, weight: .medium)
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if !recordings.isEmpty && !recorder.isRecording && !recorder.isReplaying {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(recordings, id: \.absoluteString) { url in
+                            HStack {
+                                Button {
+                                    recorder.startReplay(url: url, store: appModel.store, targetKey: activeThreadKey)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "play.fill")
+                                            .litterFont(size: 9, weight: .semibold)
+                                        Text(url.deletingPathExtension().lastPathComponent)
+                                            .litterFont(.caption2)
+                                            .lineLimit(1)
+                                    }
+                                    .foregroundColor(LitterTheme.accent)
+                                }
+                                .buttonStyle(.plain)
+
+                                Spacer()
+
+                                Button {
+                                    recorder.deleteRecording(url: url)
+                                    recordings = recorder.listRecordings()
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .litterFont(size: 9, weight: .semibold)
+                                        .foregroundColor(LitterTheme.textSecondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        }
+        .frame(width: 260)
+        .frame(maxHeight: 500)
+        .background(LitterTheme.surface)
+        .onAppear { recordings = recorder.listRecordings() }
+    }
+}
+
+private struct TurnDebugOverlay: ViewModifier {
+    let turnId: String
+
+    // Debug is already gated at the call site via `.turnDebugOverlay(turnId:)`,
+    // so this modifier only runs when debug overlays should actually render —
+    // no inner if/else branch means SwiftUI no longer has to diff a
+    // `_ConditionalContent<Modified, Content>` per turn on every body eval.
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    VStack(alignment: .leading) {
+                        Text("\(turnId.prefix(8)) h=\(Int(geo.size.height)) y=\(Int(geo.frame(in: .global).minY))")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
+                            .padding(2)
+                            .background(.black.opacity(0.7))
+                        Spacer()
+                    }
+                }
+            )
+            .border(Color.red.opacity(0.3), width: 1)
+    }
+}
+
+extension View {
+    /// Applies `TurnDebugOverlay` only when debug settings opt into turn
+    /// metrics. Reading the flag here — rather than inside the modifier's
+    /// body — means the overlay node doesn't participate in the view tree
+    /// at all for the common (debug-off) case, saving per-turn per-diff
+    /// modifier evaluation cost.
+    @ViewBuilder
+    fileprivate func turnDebugOverlay(turnId: String) -> some View {
+        if DebugSettings.shared.enabled && DebugSettings.shared.showTurnMetrics {
+            self.modifier(TurnDebugOverlay(turnId: turnId))
+        } else {
+            self
+        }
     }
 }
 

@@ -119,8 +119,6 @@ final class ConversationScreenModel {
         }
 
         let currentTranscript = transcript
-        let currentPinnedContextItems = pinnedContextItems
-        let currentComposer = composer
 
         let projection = projectConversationItems(from: thread.hydratedConversationItems)
         let items = projection.items

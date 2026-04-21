@@ -68,14 +68,24 @@ import com.litter.android.state.resolvedModel
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
+import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
+import com.litter.android.ui.LocalTextScale
+import com.litter.android.ui.scaled
 import kotlinx.coroutines.launch
+import uniffi.codex_mobile_client.AppActivityByDayEntry
+import uniffi.codex_mobile_client.AppConversationStats
+import uniffi.codex_mobile_client.AppModelUsageEntry
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
+import uniffi.codex_mobile_client.AppServerUsageStats
 import uniffi.codex_mobile_client.AppThreadSnapshot
+import uniffi.codex_mobile_client.AppTokensByThreadEntry
 import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.AppRenameThreadRequest
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
 
@@ -102,16 +112,10 @@ fun ConversationInfoScreen(
     val server = remember(snapshot, resolvedServerId) {
         snapshot?.servers?.find { it.serverId == resolvedServerId }
     }
-    val serverThreads = remember(snapshot, resolvedServerId) {
-        snapshot?.threads?.filter { it.key.serverId == resolvedServerId } ?: emptyList()
-    }
 
-    val stats = remember(thread) {
-        thread?.let { ConversationStatistics.compute(it.hydratedConversationItems) }
-    }
-    val serverUsage = remember(serverThreads, server) {
-        if (server != null) ServerUsageData.compute(serverThreads, server) else null
-    }
+    val stats = remember(thread) { thread?.stats }
+    val serverUsage = remember(server) { server?.usageStats }
+    val rateLimits = remember(server) { server?.rateLimits }
 
     Column(
         modifier = Modifier
@@ -140,7 +144,7 @@ fun ConversationInfoScreen(
             Text(
                 text = if (isServerOnly) "Server Info" else "Conversation Info",
                 color = LitterTheme.textPrimary,
-                fontSize = 16.sp,
+                fontSize = 16f.scaled,
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -244,11 +248,11 @@ fun ConversationInfoScreen(
                         ModelBreakdownChart(data = serverUsage.modelUsage)
                     }
                 }
+            }
 
-                if (serverUsage.rateLimits != null) {
-                    item {
-                        RateLimitGauge(rateLimits = serverUsage.rateLimits!!)
-                    }
+            if (rateLimits != null) {
+                item {
+                    RateLimitGauge(rateLimits = rateLimits)
                 }
             }
 
@@ -310,7 +314,7 @@ private fun SectionHeader(title: String) {
     Text(
         text = title.uppercase(),
         color = LitterTheme.textMuted,
-        fontSize = 11.sp,
+        fontSize = LitterTextStyle.caption2.scaled,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.sp,
         modifier = Modifier.padding(top = 8.dp),
@@ -328,7 +332,7 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
         Text(
             text = thread?.displayTitle ?: "Untitled session",
             color = LitterTheme.textPrimary,
-            fontSize = 20.sp,
+            fontSize = 20f.scaled,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -340,7 +344,7 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
                 Text(
                     text = thread.resolvedModel,
                     color = LitterTheme.accent,
-                    fontSize = 13.sp,
+                    fontSize = LitterTextStyle.code.scaled,
                     fontWeight = FontWeight.Medium,
                 )
                 thread.reasoningEffort?.let { effort ->
@@ -348,7 +352,7 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
                     Text(
                         text = effort,
                         color = LitterTheme.textMuted,
-                        fontSize = 11.sp,
+                        fontSize = LitterTextStyle.caption2.scaled,
                         modifier = Modifier
                             .background(LitterTheme.border.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
                             .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -363,13 +367,23 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
                 Text(
                     text = abbreviated,
                     color = LitterTheme.textSecondary,
-                    fontSize = 12.sp,
+                    fontSize = LitterTextStyle.caption.scaled,
                     fontFamily = LitterTheme.monoFont,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(6.dp))
             }
+
+            Text(
+                text = "id: ${thread.key.threadId}",
+                color = LitterTheme.textSecondary,
+                fontSize = LitterTextStyle.caption2.scaled,
+                fontFamily = LitterTheme.monoFont,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(6.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 thread.info.createdAt?.let { ts ->
@@ -386,8 +400,8 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
 @Composable
 private fun InfoLabel(label: String, value: String) {
     Column {
-        Text(text = label, color = LitterTheme.textMuted, fontSize = 10.sp)
-        Text(text = value, color = LitterTheme.textSecondary, fontSize = 12.sp)
+        Text(text = label, color = LitterTheme.textMuted, fontSize = 10f.scaled)
+        Text(text = value, color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled)
     }
 }
 
@@ -407,8 +421,8 @@ private fun ContextWindowBar(thread: AppThreadSnapshot) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("Context Window", color = LitterTheme.textSecondary, fontSize = 12.sp)
-            Text("$percent%", color = LitterTheme.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("Context Window", color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled)
+            Text("$percent%", color = LitterTheme.accent, fontSize = LitterTextStyle.caption.scaled, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(8.dp))
         LinearProgressIndicator(
@@ -424,13 +438,13 @@ private fun ContextWindowBar(thread: AppThreadSnapshot) {
         Text(
             text = "${formatTokenCount(used)} / ${formatTokenCount(window)} tokens",
             color = LitterTheme.textMuted,
-            fontSize = 10.sp,
+            fontSize = 10f.scaled,
         )
     }
 }
 
 @Composable
-private fun StatsGrid(stats: ConversationStatistics) {
+private fun StatsGrid(stats: AppConversationStats) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -452,6 +466,10 @@ private fun StatsGrid(stats: ConversationStatistics) {
             StatCard("MCP Calls", "${stats.mcpToolCallCount}", null, Modifier.weight(1f))
             StatCard("Cmd Time", formatDuration(stats.totalCommandDurationMs), null, Modifier.weight(1f))
         }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatCard("Diff", "+${stats.diffAdditions} / -${stats.diffDeletions}", null, Modifier.weight(1f))
+            StatCard("Images", "${stats.imageCount}", null, Modifier.weight(1f))
+        }
     }
 }
 
@@ -462,16 +480,16 @@ private fun StatCard(title: String, value: String, subtitle: String?, modifier: 
             .background(LitterTheme.codeBackground, RoundedCornerShape(8.dp))
             .padding(12.dp),
     ) {
-        Text(text = title, color = LitterTheme.textMuted, fontSize = 10.sp)
+        Text(text = title, color = LitterTheme.textMuted, fontSize = 10f.scaled)
         Text(
             text = value,
             color = LitterTheme.textPrimary,
-            fontSize = 18.sp,
+            fontSize = 18f.scaled,
             fontWeight = FontWeight.Bold,
             fontFamily = LitterTheme.monoFont,
         )
         if (subtitle != null) {
-            Text(text = subtitle, color = LitterTheme.textSecondary, fontSize = 10.sp)
+            Text(text = subtitle, color = LitterTheme.textSecondary, fontSize = 10f.scaled)
         }
     }
 }
@@ -479,8 +497,9 @@ private fun StatCard(title: String, value: String, subtitle: String?, modifier: 
 // --- Charts ---
 
 @Composable
-private fun TokenUsageChart(data: List<Pair<String, Long>>) {
+private fun TokenUsageChart(data: List<AppTokensByThreadEntry>) {
     val textMeasurer = rememberTextMeasurer()
+    val textScale = LocalTextScale.current
     var animProgress by remember { mutableFloatStateOf(0f) }
     val animatedProgress by animateFloatAsState(
         targetValue = animProgress,
@@ -489,7 +508,7 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
     )
     LaunchedEffect(Unit) { animProgress = 1f }
 
-    val maxTokens = data.maxOfOrNull { it.second } ?: 1L
+    val maxTokens = data.maxOfOrNull { it.tokens.toLong() } ?: 1L
 
     Column(
         modifier = Modifier
@@ -497,7 +516,7 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
             .background(LitterTheme.surface, RoundedCornerShape(12.dp))
             .padding(16.dp),
     ) {
-        Text("Token Usage by Thread", color = LitterTheme.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("Token Usage by Thread", color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(12.dp))
 
         val accent = LitterTheme.accent
@@ -514,8 +533,9 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
             val labelWidth = size.width * 0.3f
             val chartWidth = size.width - labelWidth - 16f
 
-            data.forEachIndexed { index, (title, tokens) ->
+            data.forEachIndexed { index, entry ->
                 val y = index * barSpacing + 10f
+                val tokens = entry.tokens.toLong()
                 val barWidth = (tokens.toFloat() / maxTokens * chartWidth * animatedProgress).coerceAtLeast(2f)
 
                 // Bar
@@ -527,12 +547,13 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
                 )
 
                 // Label
+                val title = entry.threadTitle
                 val labelText = if (title.length > 18) title.take(18) + "\u2026" else title
                 drawText(
                     textMeasurer = textMeasurer,
                     text = labelText,
                     topLeft = Offset(0f, y + 2f),
-                    style = TextStyle(color = labelColor, fontSize = 10.sp),
+                    style = TextStyle(color = labelColor, fontSize = (10f * textScale).sp),
                 )
 
                 // Value
@@ -540,7 +561,7 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
                     textMeasurer = textMeasurer,
                     text = formatTokenCount(tokens),
                     topLeft = Offset(labelWidth + barWidth + 12f, y + 2f),
-                    style = TextStyle(color = labelColor, fontSize = 9.sp),
+                    style = TextStyle(color = labelColor, fontSize = (9f * textScale).sp),
                 )
             }
         }
@@ -548,8 +569,9 @@ private fun TokenUsageChart(data: List<Pair<String, Long>>) {
 }
 
 @Composable
-private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
+private fun ActivityChart(data: List<AppActivityByDayEntry>) {
     val textMeasurer = rememberTextMeasurer()
+    val textScale = LocalTextScale.current
     var animProgress by remember { mutableFloatStateOf(0f) }
     val animatedProgress by animateFloatAsState(
         targetValue = animProgress,
@@ -558,7 +580,7 @@ private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
     )
     LaunchedEffect(Unit) { animProgress = 1f }
 
-    val maxCount = data.maxOfOrNull { it.second } ?: 1
+    val maxCount = data.maxOfOrNull { it.turnCount.toInt() } ?: 1
 
     Column(
         modifier = Modifier
@@ -566,7 +588,7 @@ private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
             .background(LitterTheme.surface, RoundedCornerShape(12.dp))
             .padding(16.dp),
     ) {
-        Text("Activity Timeline", color = LitterTheme.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("Activity Timeline", color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(12.dp))
 
         val accent = LitterTheme.accent
@@ -588,8 +610,9 @@ private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
                 drawLine(border, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
             }
 
-            data.forEachIndexed { index, (date, count) ->
+            data.forEachIndexed { index, entry ->
                 val x = index * barWidth + gap
+                val count = entry.turnCount.toInt()
                 val barH = (count.toFloat() / maxCount * chartHeight * animatedProgress).coerceAtLeast(2f)
                 val y = chartHeight - barH
 
@@ -604,20 +627,24 @@ private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
             // X-axis labels (first and last)
             if (data.isNotEmpty()) {
                 val fmt = java.time.format.DateTimeFormatter.ofPattern("M/d")
+                val firstDate = Instant.ofEpochSecond(data.first().dateEpoch)
+                    .atZone(ZoneId.systemDefault()).toLocalDate()
                 drawText(
                     textMeasurer = textMeasurer,
-                    text = data.first().first.format(fmt),
+                    text = firstDate.format(fmt),
                     topLeft = Offset(0f, chartHeight + 4f),
-                    style = TextStyle(color = labelColor, fontSize = 9.sp),
+                    style = TextStyle(color = labelColor, fontSize = (9f * textScale).sp),
                 )
                 if (data.size > 1) {
-                    val lastLabel = data.last().first.format(fmt)
-                    val measured = textMeasurer.measure(lastLabel, TextStyle(fontSize = 9.sp))
+                    val lastDate = Instant.ofEpochSecond(data.last().dateEpoch)
+                        .atZone(ZoneId.systemDefault()).toLocalDate()
+                    val lastLabel = lastDate.format(fmt)
+                    val measured = textMeasurer.measure(lastLabel, TextStyle(fontSize = (9f * textScale).sp))
                     drawText(
                         textMeasurer = textMeasurer,
                         text = lastLabel,
                         topLeft = Offset(size.width - measured.size.width, chartHeight + 4f),
-                        style = TextStyle(color = labelColor, fontSize = 9.sp),
+                        style = TextStyle(color = labelColor, fontSize = (9f * textScale).sp),
                     )
                 }
             }
@@ -626,8 +653,9 @@ private fun ActivityChart(data: List<Pair<java.time.LocalDate, Int>>) {
 }
 
 @Composable
-private fun ModelBreakdownChart(data: List<Pair<String, Int>>) {
+private fun ModelBreakdownChart(data: List<AppModelUsageEntry>) {
     val textMeasurer = rememberTextMeasurer()
+    val textScale = LocalTextScale.current
     var animProgress by remember { mutableFloatStateOf(0f) }
     val animatedProgress by animateFloatAsState(
         targetValue = animProgress,
@@ -636,7 +664,7 @@ private fun ModelBreakdownChart(data: List<Pair<String, Int>>) {
     )
     LaunchedEffect(Unit) { animProgress = 1f }
 
-    val total = data.sumOf { it.second }.coerceAtLeast(1)
+    val total = data.sumOf { it.threadCount.toInt() }.coerceAtLeast(1)
 
     Column(
         modifier = Modifier
@@ -644,7 +672,7 @@ private fun ModelBreakdownChart(data: List<Pair<String, Int>>) {
             .background(LitterTheme.surface, RoundedCornerShape(12.dp))
             .padding(16.dp),
     ) {
-        Text("Model Breakdown", color = LitterTheme.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("Model Breakdown", color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(12.dp))
 
         val accent = LitterTheme.accent
@@ -663,8 +691,9 @@ private fun ModelBreakdownChart(data: List<Pair<String, Int>>) {
                 .fillMaxWidth()
                 .height((data.size * 32 + 8).dp),
         ) {
-            data.forEachIndexed { index, (model, count) ->
+            data.forEachIndexed { index, entry ->
                 val y = index * 32f + 4f
+                val count = entry.threadCount.toInt()
                 val ratio = count.toFloat() / total
                 val barWidth = size.width * 0.6f * ratio * animatedProgress
                 val color = colors[index % colors.size]
@@ -676,12 +705,12 @@ private fun ModelBreakdownChart(data: List<Pair<String, Int>>) {
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f),
                 )
 
-                val label = "$model ($count)"
+                val label = "${entry.model} ($count)"
                 drawText(
                     textMeasurer = textMeasurer,
                     text = label,
                     topLeft = Offset(barWidth + 8f, y + 2f),
-                    style = TextStyle(color = labelColor, fontSize = 10.sp),
+                    style = TextStyle(color = labelColor, fontSize = (10f * textScale).sp),
                 )
             }
         }
@@ -707,7 +736,7 @@ private fun RateLimitGauge(rateLimits: uniffi.codex_mobile_client.RateLimitSnaps
             .background(LitterTheme.surface, RoundedCornerShape(12.dp))
             .padding(16.dp),
     ) {
-        Text("Rate Limits", color = LitterTheme.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text("Rate Limits", color = LitterTheme.textSecondary, fontSize = LitterTextStyle.caption.scaled, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(12.dp))
 
         val accent = LitterTheme.accent
@@ -790,11 +819,11 @@ private fun GaugeArc(
         Text(
             text = "$percent%",
             color = LitterTheme.textPrimary,
-            fontSize = 16.sp,
+            fontSize = 16f.scaled,
             fontWeight = FontWeight.Bold,
             fontFamily = LitterTheme.monoFont,
         )
-        Text(text = label, color = LitterTheme.textMuted, fontSize = 10.sp)
+        Text(text = label, color = LitterTheme.textMuted, fontSize = 10f.scaled)
     }
 }
 
@@ -821,7 +850,7 @@ private fun ServerInfoSection(server: AppServerSnapshot) {
             Text(
                 text = server.displayName,
                 color = LitterTheme.textPrimary,
-                fontSize = 14.sp,
+                fontSize = LitterTextStyle.body.scaled,
                 fontWeight = FontWeight.Medium,
             )
         }
@@ -844,11 +873,11 @@ private fun ServerInfoSection(server: AppServerSnapshot) {
 
         server.availableModels?.let { models ->
             if (models.isNotEmpty()) {
-                Text("Available Models", color = LitterTheme.textMuted, fontSize = 10.sp)
+                Text("Available Models", color = LitterTheme.textMuted, fontSize = 10f.scaled)
                 Text(
                     text = models.joinToString(", ") { it.displayName.ifBlank { it.id } },
                     color = LitterTheme.textSecondary,
-                    fontSize = 11.sp,
+                    fontSize = LitterTextStyle.caption2.scaled,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -863,11 +892,11 @@ private fun InfoRow(label: String, value: String) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(text = label, color = LitterTheme.textMuted, fontSize = 11.sp)
+        Text(text = label, color = LitterTheme.textMuted, fontSize = LitterTextStyle.caption2.scaled)
         Text(
             text = value,
             color = LitterTheme.textSecondary,
-            fontSize = 11.sp,
+            fontSize = LitterTextStyle.caption2.scaled,
             fontFamily = LitterTheme.monoFont,
         )
     }
@@ -928,7 +957,7 @@ private fun ActionCircleButton(
         Text(
             text = label,
             color = LitterTheme.textSecondary,
-            fontSize = 11.sp,
+            fontSize = LitterTextStyle.caption2.scaled,
             fontWeight = FontWeight.Medium,
         )
     }

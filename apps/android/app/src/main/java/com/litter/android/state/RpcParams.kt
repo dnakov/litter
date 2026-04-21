@@ -12,13 +12,14 @@ import uniffi.codex_mobile_client.AppSandboxMode
 import uniffi.codex_mobile_client.AppSandboxPolicy
 import uniffi.codex_mobile_client.ServiceTier
 import uniffi.codex_mobile_client.AppUserInput
+import java.util.Base64
 
 data class ComposerImageAttachment(
     val data: ByteArray,
     val mimeType: String,
 ) {
     val dataUri: String
-        get() = "data:$mimeType;base64,${android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)}"
+        get() = "data:$mimeType;base64,${Base64.getEncoder().withoutPadding().encodeToString(data)}"
 
     fun toUserInput(): AppUserInput.Image = AppUserInput.Image(url = dataUri)
 }

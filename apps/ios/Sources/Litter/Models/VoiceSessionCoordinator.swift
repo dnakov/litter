@@ -255,7 +255,7 @@ final class VoiceSessionCoordinator {
     }
 
     private func applyAudioSessionCategory() throws {
-        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetooth]
+        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .allowBluetoothHFP]
         if speakerModeEnabled {
             options.insert(.defaultToSpeaker)
         }
@@ -276,21 +276,21 @@ final class VoiceSessionCoordinator {
                 object: session,
                 queue: .main
             ) { [weak self] _ in
-                self?.emitRoute()
+                Task { @MainActor in self?.emitRoute() }
             },
             center.addObserver(
                 forName: AVAudioSession.interruptionNotification,
                 object: session,
                 queue: .main
             ) { [weak self] notification in
-                self?.handleInterruption(notification)
+                Task { @MainActor in self?.handleInterruption(notification) }
             },
             center.addObserver(
                 forName: AVAudioSession.mediaServicesWereResetNotification,
                 object: session,
                 queue: .main
             ) { [weak self] _ in
-                self?.onEvent?(.failure("Audio services reset"))
+                Task { @MainActor in self?.onEvent?(.failure("Audio services reset")) }
             }
         ]
     }

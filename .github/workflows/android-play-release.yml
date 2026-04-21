@@ -2,6 +2,42 @@ name: Android Play Release
 
 on:
   workflow_dispatch:
+    inputs:
+      track:
+        description: "Upload track (destination if promote_track is blank)."
+        required: false
+        default: "alpha"
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+      promote_track:
+        description: "If set, promote the uploaded build from `track` to this track."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - alpha
+          - beta
+          - production
+      release_status:
+        description: "Release status for the final track."
+        required: false
+        default: "completed"
+        type: choice
+        options:
+          - completed
+          - inProgress
+          - draft
+          - halted
+      user_fraction:
+        description: "Staged rollout (0.0–1.0). Only used when release_status=inProgress."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -254,7 +290,7 @@ jobs:
             -PLITTER_UPLOAD_KEY_ALIAS="$LITTER_UPLOAD_KEY_ALIAS" \
             -PLITTER_UPLOAD_KEY_PASSWORD="$LITTER_UPLOAD_KEY_PASSWORD"
 
-      - name: Publish Android bundle to Google Play
+      - name: Publish and promote Android bundle to Google Play
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
@@ -267,7 +303,10 @@ jobs:
           LITTER_UPLOAD_KEY_ALIAS: ${{ secrets.LITTER_UPLOAD_KEY_ALIAS }}
           LITTER_UPLOAD_KEY_PASSWORD: ${{ secrets.LITTER_UPLOAD_KEY_PASSWORD }}
           LITTER_PLAY_SERVICE_ACCOUNT_JSON: ${{ env.LITTER_PLAY_SERVICE_ACCOUNT_JSON }}
-          LITTER_PLAY_TRACK: alpha
+          LITTER_PLAY_TRACK: ${{ inputs.track }}
+          LITTER_PLAY_PROMOTE_TRACK: ${{ inputs.promote_track }}
+          LITTER_PLAY_RELEASE_STATUS: ${{ inputs.release_status }}
+          LITTER_PLAY_USER_FRACTION: ${{ inputs.user_fraction }}
         run: |
           set -euo pipefail
           heartbeat() {

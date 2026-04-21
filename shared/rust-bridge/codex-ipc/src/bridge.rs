@@ -5,8 +5,8 @@ use codex_app_server_protocol as upstream;
 use tracing::warn;
 
 use crate::conversation_state::{
-    apply_stream_change_to_conversation_state, project_conversation_state,
-    ProjectedConversationState,
+    ProjectedConversationState, apply_stream_change_to_conversation_state,
+    project_conversation_state,
 };
 use crate::protocol::params::TypedBroadcast;
 
@@ -316,7 +316,9 @@ fn diff_item(
             },
         ) => {
             let prev_len = snap.map_or(prev_text.len(), |s| s.agent_text_len);
-            if next_text.len() > prev_len && next_text.starts_with(&prev_text[..prev_len.min(prev_text.len())]) {
+            if next_text.len() > prev_len
+                && next_text.starts_with(&prev_text[..prev_len.min(prev_text.len())])
+            {
                 let delta = &next_text[prev_len..];
                 if !delta.is_empty() {
                     events.push(BridgeEvent {
@@ -345,7 +347,9 @@ fn diff_item(
             },
         ) => {
             let prev_len = snap.map_or(prev_text.len(), |s| s.plan_text_len);
-            if next_text.len() > prev_len && next_text.starts_with(&prev_text[..prev_len.min(prev_text.len())]) {
+            if next_text.len() > prev_len
+                && next_text.starts_with(&prev_text[..prev_len.min(prev_text.len())])
+            {
                 let delta = &next_text[prev_len..];
                 if !delta.is_empty() {
                     events.push(BridgeEvent {
@@ -695,11 +699,9 @@ impl IpcBridge {
                 self.threads.remove(&thread_id);
                 BridgeOutput::ThreadArchived { thread_id }
             }
-            TypedBroadcast::ThreadUnarchived(params) => {
-                BridgeOutput::ThreadUnarchived {
-                    thread_id: params.conversation_id.clone(),
-                }
-            }
+            TypedBroadcast::ThreadUnarchived(params) => BridgeOutput::ThreadUnarchived {
+                thread_id: params.conversation_id.clone(),
+            },
             // ClientStatusChanged, ThreadQueuedFollowupsChanged,
             // QueryCacheInvalidate, Unknown — not thread-stream related.
             _ => BridgeOutput::None,
@@ -718,10 +720,7 @@ impl IpcBridge {
         // If we have no cached entry, wrap None so `apply_stream_change` can
         // accept a snapshot (but will fail on patches-without-baseline).
         let had_previous = self.threads.contains_key(&thread_id);
-        let mut raw_state_opt = self
-            .threads
-            .get(&thread_id)
-            .map(|c| c.raw_state.clone());
+        let mut raw_state_opt = self.threads.get(&thread_id).map(|c| c.raw_state.clone());
 
         if let Err(e) = apply_stream_change_to_conversation_state(&mut raw_state_opt, params) {
             warn!(
@@ -794,8 +793,7 @@ impl IpcBridge {
         } else {
             // First event for this thread — bootstrap.
             let mut text_snapshot = snapshot_item_texts(&new_projection);
-            let events =
-                bootstrap_events(&thread_id, &new_projection, &mut text_snapshot);
+            let events = bootstrap_events(&thread_id, &new_projection, &mut text_snapshot);
             self.threads.insert(
                 thread_id.clone(),
                 ThreadCache {
@@ -1060,7 +1058,10 @@ mod tests {
 
         let events = bootstrap_events("t1", &proj, &mut snap);
 
-        let names: Vec<&str> = events.iter().map(|e| notification_name(&e.notification)).collect();
+        let names: Vec<&str> = events
+            .iter()
+            .map(|e| notification_name(&e.notification))
+            .collect();
         assert_eq!(
             names,
             vec![
@@ -1077,7 +1078,11 @@ mod tests {
 
     #[test]
     fn bootstrap_idle_thread_emits_nothing() {
-        let turn = make_turn("turn-1", TurnStatus::Completed, vec![agent_message("i1", "done")]);
+        let turn = make_turn(
+            "turn-1",
+            TurnStatus::Completed,
+            vec![agent_message("i1", "done")],
+        );
         let proj = make_projection("t1", None, vec![turn]);
         let mut snap = HashMap::new();
 
@@ -1129,7 +1134,10 @@ mod tests {
 
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
-        let names: Vec<&str> = events.iter().map(|e| notification_name(&e.notification)).collect();
+        let names: Vec<&str> = events
+            .iter()
+            .map(|e| notification_name(&e.notification))
+            .collect();
         assert_eq!(names, vec!["TurnCompleted", "TurnStarted"]);
     }
 
@@ -1159,7 +1167,10 @@ mod tests {
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
         assert_eq!(events.len(), 1);
-        assert_eq!(notification_name(&events[0].notification), "AgentMessageDelta");
+        assert_eq!(
+            notification_name(&events[0].notification),
+            "AgentMessageDelta"
+        );
         if let upstream::ServerNotification::AgentMessageDelta(ref n) = events[0].notification {
             assert_eq!(n.delta, ", world!");
             assert_eq!(n.item_id, "i1");
@@ -1254,7 +1265,10 @@ mod tests {
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
         assert_eq!(events.len(), 1);
-        assert_eq!(notification_name(&events[0].notification), "ReasoningTextDelta");
+        assert_eq!(
+            notification_name(&events[0].notification),
+            "ReasoningTextDelta"
+        );
         if let upstream::ServerNotification::ReasoningTextDelta(ref n) = events[0].notification {
             assert_eq!(n.delta, " more");
             assert_eq!(n.content_index, 0);
@@ -1284,9 +1298,16 @@ mod tests {
 
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
-        let names: Vec<&str> = events.iter().map(|e| notification_name(&e.notification)).collect();
-        assert_eq!(names, vec!["ReasoningSummaryPartAdded", "ReasoningSummaryTextDelta"]);
-        if let upstream::ServerNotification::ReasoningSummaryPartAdded(ref n) = events[0].notification
+        let names: Vec<&str> = events
+            .iter()
+            .map(|e| notification_name(&e.notification))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["ReasoningSummaryPartAdded", "ReasoningSummaryTextDelta"]
+        );
+        if let upstream::ServerNotification::ReasoningSummaryPartAdded(ref n) =
+            events[0].notification
         {
             assert_eq!(n.summary_index, 1);
         }
@@ -1308,8 +1329,11 @@ mod tests {
         let turn_prev = make_turn("turn-1", TurnStatus::InProgress, vec![item_prev]);
         let prev = make_projection("t1", Some("turn-1"), vec![turn_prev]);
 
-        let item_next =
-            command_item("c1", CommandExecutionStatus::InProgress, Some("line1\nline2\n"));
+        let item_next = command_item(
+            "c1",
+            CommandExecutionStatus::InProgress,
+            Some("line1\nline2\n"),
+        );
         let turn_next = make_turn("turn-1", TurnStatus::InProgress, vec![item_next]);
         let next = make_projection("t1", Some("turn-1"), vec![turn_next]);
 
@@ -1373,7 +1397,10 @@ mod tests {
 
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
-        let names: Vec<&str> = events.iter().map(|e| notification_name(&e.notification)).collect();
+        let names: Vec<&str> = events
+            .iter()
+            .map(|e| notification_name(&e.notification))
+            .collect();
         assert_eq!(names, vec!["ItemStarted", "ItemCompleted"]);
     }
 
@@ -1583,7 +1610,10 @@ mod tests {
 
         let events = diff_projections("t1", &prev, &next, &mut snap);
 
-        let names: Vec<&str> = events.iter().map(|e| notification_name(&e.notification)).collect();
+        let names: Vec<&str> = events
+            .iter()
+            .map(|e| notification_name(&e.notification))
+            .collect();
         // turn-1 is not active, so changed item emits ItemCompleted
         // turn-2 is active, so appended text emits AgentMessageDelta
         assert!(names.contains(&"ItemCompleted"));
@@ -1611,9 +1641,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Build a minimal desktop conversation state JSON that projects cleanly.
-    fn make_conversation_state_json(
-        turns: Vec<serde_json::Value>,
-    ) -> serde_json::Value {
+    fn make_conversation_state_json(turns: Vec<serde_json::Value>) -> serde_json::Value {
         serde_json::json!({
             "cwd": "/tmp",
             "turns": turns,
@@ -1641,11 +1669,7 @@ mod tests {
         })
     }
 
-    fn make_command_item_json(
-        id: &str,
-        status: &str,
-        output: Option<&str>,
-    ) -> serde_json::Value {
+    fn make_command_item_json(id: &str, status: &str, output: Option<&str>) -> serde_json::Value {
         serde_json::json!({
             "type": "commandExecution",
             "id": id,
@@ -1657,10 +1681,7 @@ mod tests {
         })
     }
 
-    fn make_snapshot_broadcast(
-        conversation_id: &str,
-        state: serde_json::Value,
-    ) -> TypedBroadcast {
+    fn make_snapshot_broadcast(conversation_id: &str, state: serde_json::Value) -> TypedBroadcast {
         use crate::protocol::params::{StreamChange, ThreadStreamStateChangedParams};
 
         TypedBroadcast::ThreadStreamStateChanged(ThreadStreamStateChangedParams {
@@ -1675,25 +1696,22 @@ mod tests {
     #[test]
     fn patch_on_missing_cache_returns_needs_refresh() {
         use crate::protocol::params::{
-            ImmerOp, ImmerPatch, ImmerPathSegment, StreamChange,
-            ThreadStreamStateChangedParams,
+            ImmerOp, ImmerPatch, ImmerPathSegment, StreamChange, ThreadStreamStateChangedParams,
         };
 
         let mut bridge = IpcBridge::new();
         // Send patches without any prior snapshot — should fail with NeedsRefresh.
-        let broadcast = TypedBroadcast::ThreadStreamStateChanged(
-            ThreadStreamStateChangedParams {
-                conversation_id: "t1".to_string(),
-                change: StreamChange::Patches {
-                    patches: vec![ImmerPatch {
-                        op: ImmerOp::Replace,
-                        path: vec![ImmerPathSegment::Key("turns".to_string())],
-                        value: Some(serde_json::json!([])),
-                    }],
-                },
-                version: 1,
+        let broadcast = TypedBroadcast::ThreadStreamStateChanged(ThreadStreamStateChangedParams {
+            conversation_id: "t1".to_string(),
+            change: StreamChange::Patches {
+                patches: vec![ImmerPatch {
+                    op: ImmerOp::Replace,
+                    path: vec![ImmerPathSegment::Key("turns".to_string())],
+                    value: Some(serde_json::json!([])),
+                }],
             },
-        );
+            version: 1,
+        });
         match bridge.process_broadcast(&broadcast) {
             BridgeOutput::NeedsRefresh { thread_id } => assert_eq!(thread_id, "t1"),
             other => panic!("expected NeedsRefresh, got {:?}", other),
@@ -1705,21 +1723,22 @@ mod tests {
         let mut bridge = IpcBridge::new();
 
         // Seed a thread first via snapshot.
-        let state = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "completed", vec![make_agent_message_json("i1", "hi")]),
-        ]);
+        let state = make_conversation_state_json(vec![make_turn_json(
+            "turn-1",
+            "completed",
+            vec![make_agent_message_json("i1", "hi")],
+        )]);
         let broadcast = make_snapshot_broadcast("t1", state);
         bridge.process_broadcast(&broadcast);
         assert!(bridge.projected_state("t1").is_some());
 
         // Archive it.
-        let archived = TypedBroadcast::ThreadArchived(
-            crate::protocol::params::ThreadArchivedParams {
+        let archived =
+            TypedBroadcast::ThreadArchived(crate::protocol::params::ThreadArchivedParams {
                 host_id: "h1".to_string(),
                 conversation_id: "t1".to_string(),
                 cwd: "/tmp".to_string(),
-            },
-        );
+            });
         match bridge.process_broadcast(&archived) {
             BridgeOutput::ThreadArchived { thread_id } => assert_eq!(thread_id, "t1"),
             other => panic!("expected ThreadArchived, got {:?}", other),
@@ -1733,24 +1752,20 @@ mod tests {
         let mut bridge = IpcBridge::new();
 
         // Seed with a conversation state that has an active turn with one item.
-        let initial_state = make_conversation_state_json(vec![
-            make_turn_json(
-                "turn-1",
-                "inProgress",
-                vec![make_agent_message_json("i1", "Hello")],
-            ),
-        ]);
+        let initial_state = make_conversation_state_json(vec![make_turn_json(
+            "turn-1",
+            "inProgress",
+            vec![make_agent_message_json("i1", "Hello")],
+        )]);
         bridge.seed_thread("t1", initial_state);
         assert!(bridge.projected_state("t1").is_some());
 
         // Now send a snapshot with appended text.
-        let updated_state = make_conversation_state_json(vec![
-            make_turn_json(
-                "turn-1",
-                "inProgress",
-                vec![make_agent_message_json("i1", "Hello world")],
-            ),
-        ]);
+        let updated_state = make_conversation_state_json(vec![make_turn_json(
+            "turn-1",
+            "inProgress",
+            vec![make_agent_message_json("i1", "Hello world")],
+        )]);
         let broadcast = make_snapshot_broadcast("t1", updated_state);
         match bridge.process_broadcast(&broadcast) {
             BridgeOutput::Events(events) => {
@@ -1775,9 +1790,8 @@ mod tests {
         let mut bridge = IpcBridge::new();
 
         // Seed with an active turn.
-        let state = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "inProgress", vec![]),
-        ]);
+        let state =
+            make_conversation_state_json(vec![make_turn_json("turn-1", "inProgress", vec![])]);
         bridge.seed_thread("t1", state);
         let proj = bridge.projected_state("t1").unwrap();
         assert!(proj.active_turn_id.is_some());
@@ -1804,9 +1818,11 @@ mod tests {
         let mut bridge = IpcBridge::new();
 
         // Seed with an active turn.
-        let state = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "inProgress", vec![make_agent_message_json("i1", "hi")]),
-        ]);
+        let state = make_conversation_state_json(vec![make_turn_json(
+            "turn-1",
+            "inProgress",
+            vec![make_agent_message_json("i1", "hi")],
+        )]);
         bridge.seed_thread("t1", state);
 
         let now = Instant::now();
@@ -1822,20 +1838,17 @@ mod tests {
         let mut bridge = IpcBridge::new();
 
         // First snapshot: active turn, no items.
-        let state1 = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "inProgress", vec![]),
-        ]);
+        let state1 =
+            make_conversation_state_json(vec![make_turn_json("turn-1", "inProgress", vec![])]);
         let bc1 = make_snapshot_broadcast("t1", state1);
         bridge.process_broadcast(&bc1);
 
         // Second snapshot: same turn, new item appeared.
-        let state2 = make_conversation_state_json(vec![
-            make_turn_json(
-                "turn-1",
-                "inProgress",
-                vec![make_agent_message_json("i1", "Hello")],
-            ),
-        ]);
+        let state2 = make_conversation_state_json(vec![make_turn_json(
+            "turn-1",
+            "inProgress",
+            vec![make_agent_message_json("i1", "Hello")],
+        )]);
         let bc2 = make_snapshot_broadcast("t1", state2);
         match bridge.process_broadcast(&bc2) {
             BridgeOutput::Events(events) => {
@@ -1860,9 +1873,8 @@ mod tests {
         bridge.process_broadcast(&bc1);
 
         // Snapshot 2: turn starts.
-        let state2 = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "inProgress", vec![]),
-        ]);
+        let state2 =
+            make_conversation_state_json(vec![make_turn_json("turn-1", "inProgress", vec![])]);
         let bc2 = make_snapshot_broadcast("t1", state2);
         match bridge.process_broadcast(&bc2) {
             BridgeOutput::Events(events) => {
@@ -1876,9 +1888,8 @@ mod tests {
         }
 
         // Snapshot 3: turn completes.
-        let state3 = make_conversation_state_json(vec![
-            make_turn_json("turn-1", "completed", vec![]),
-        ]);
+        let state3 =
+            make_conversation_state_json(vec![make_turn_json("turn-1", "completed", vec![])]);
         let bc3 = make_snapshot_broadcast("t1", state3);
         match bridge.process_broadcast(&bc3) {
             BridgeOutput::Events(events) => {

@@ -16,13 +16,6 @@
 		<string>dhiflM:N:nsuw</string>
 		<string>file</string>
 	</array>
-	<key>bc</key>
-	<array>
-		<string>bc_ios.framework/bc_ios</string>
-		<string>bcdc_main</string>
-		<string>e:f:hilqsvVwx</string>
-		<string>no</string>
-	</array>
 	<key>cat</key>
 	<array>
 		<string>text.framework/text</string>
@@ -86,26 +79,12 @@
 		<string>d:f:jnRr:t:uv:</string>
 		<string>no</string>
 	</array>
-	<key>dc</key>
-	<array>
-		<string>bc_ios.framework/bc_ios</string>
-		<string>bcdc_main</string>
-		<string>e:f:hilqsvVwx</string>
-		<string>no</string>
-	</array>
 	<key>diff</key>
 	<array>
 		<string>text.framework/text</string>
 		<string>diff_main</string>
 		<string>0123456789aBbC:cdD:efHhI:iL:lnNPpqrS:sTtU:uwX:x:</string>
 		<string>file</string>
-	</array>
-	<key>dig</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>dig_main</string>
-		<string></string>
-		<string>no</string>
 	</array>
 	<key>du</key>
 	<array>
@@ -184,20 +163,6 @@
 		<string>n:c:</string>
 		<string>file</string>
 	</array>
-	<key>host</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>host_main</string>
-		<string>46ac:dilnm:rst:vVwCDN:R:TW:</string>
-		<string>no</string>
-	</array>
-	<key>ifconfig</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>ifconfig_main</string>
-		<string>abdlmruv</string>
-		<string>no</string>
-	</array>
 	<key>link</key>
 	<array>
 		<string>files.framework/files</string>
@@ -240,20 +205,6 @@
 		<string>finv</string>
 		<string>file</string>
 	</array>
-	<key>nc</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>netcat_main</string>
-		<string>46AacDCb:dEhi:jFG:H:I:J:K:L:klMnN:Oop:rSs:T:tUuvw:X:x:z</string>
-		<string>no</string>
-	</array>
-	<key>nslookup</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>nslookup_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
 	<key>openurl</key>
 	<array>
 		<string>shell.framework/shell</string>
@@ -282,13 +233,6 @@
 		<string></string>
 		<string>no</string>
 	</array>
-	<key>ping</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>ping_main</string>
-		<string>AaB:b:Cc:DdfG:g:h:I:i:k:K:Ll:M:m:noP:p:QqRrS:s:T:t:vW:z:</string>
-		<string>no</string>
-	</array>
 	<key>printenv</key>
 	<array>
 		<string>shell.framework/shell</string>
@@ -309,13 +253,6 @@
 		<string>stat_main</string>
 		<string>n</string>
 		<string>file</string>
-	</array>
-	<key>rlogin</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>telnet_main</string>
-		<string>468EKLNS:X:acde:fFk:l:n:rs:uxy</string>
-		<string>no</string>
 	</array>
 	<key>rm</key>
 	<array>
@@ -436,13 +373,6 @@
 		<string>ai</string>
 		<string>file</string>
 	</array>
-	<key>telnet</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>telnet_main</string>
-		<string>468EKLNS:X:acde:fFk:l:n:rs:uxy</string>
-		<string>no</string>
-	</array>
 	<key>touch</key>
 	<array>
 		<string>files.framework/files</string>
@@ -520,25 +450,11 @@
 		<string></string>
 		<string>no</string>
 	</array>
-	<key>whois</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>whois_main</string>
-		<string>aAbc:fgh:iIklmp:PQrRS</string>
-		<string>no</string>
-	</array>
 	<key>xargs</key>
 	<array>
 		<string>shell.framework/shell</string>
 		<string>xargs_main</string>
 		<string>0E:I:J:L:n:oP:pR:s:tx</string>
-		<string>no</string>
-	</array>
-	<key>wol</key>
-	<array>
-		<string>network_ios.framework/network_ios</string>
-		<string>_Z8wol_mainiPKPc</string>
-		<string>hqb:p:d:</string>
 		<string>no</string>
 	</array>
 </dict>

@@ -68,7 +68,6 @@ struct WidgetWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ container: WidgetWebViewContainer, context: Context) {
-        let webView = container.webView
         guard !widgetHTML.isEmpty else { return }
         let coordinator = context.coordinator
         coordinator.onMessage = onMessage

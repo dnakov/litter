@@ -179,6 +179,46 @@ struct SupporterBadge: View {
     }
 }
 
+/// Renders purchased kitty icons for a tier range (e.g. 0..<2 = lower tiers,
+/// 2..<4 = higher tiers) next to the home logo. Collapses to nothing for
+/// ranges with no purchased tiers. `loadProducts` is called by the host
+/// screen so this stays a pure read.
+struct SupporterKittyBadges: View {
+    let tierIndices: Range<Int>
+    @State private var showTipJar = false
+
+    var body: some View {
+        let store = TipJarStore.shared
+        let purchased = store.tiers.enumerated()
+            .filter { tierIndices.contains($0.offset) && $0.element.isPurchased }
+            .map(\.element)
+        if !purchased.isEmpty {
+            HStack(spacing: 2) {
+                ForEach(purchased, id: \.id) { tier in
+                    Button { showTipJar = true } label: {
+                        Image(tier.icon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .sheet(isPresented: $showTipJar) {
+                NavigationStack {
+                    TipJarView()
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showTipJar = false }
+                                    .foregroundColor(LitterTheme.accent)
+                            }
+                        }
+                }
+            }
+        }
+    }
+}
+
 private struct TipCatIcon: View {
     let name: String
     let size: CGFloat
