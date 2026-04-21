@@ -44,6 +44,8 @@ uuid = { workspace = true }
 reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 shlex = { workspace = true }
+sha1 = "0.10"
+hex = "0.4"
 
 [features]
 rpc-trace = []
@@ -54,7 +56,7 @@ tempfile = "3"
 [build-dependencies]
 uniffi = { version = "0.31.0", features = ["build"] }
 
-[target.'cfg(target_os = "ios")'.dependencies]
+[target.'cfg(all(target_os = "ios", not(target_abi = "macabi")))'.dependencies]
 codex-apply-patch = { workspace = true }
 codex-ios-audio = { path = "../codex-ios-audio" }
 

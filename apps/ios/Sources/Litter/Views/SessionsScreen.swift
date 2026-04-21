@@ -10,6 +10,7 @@ struct SessionsScreen: View {
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     @Environment(ConversationWarmupCoordinator.self) private var conversationWarmup
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var sessionsModel = SessionsModel()
     @State private var isLoading: Bool
     @State private var resumingKey: ThreadKey?
@@ -332,7 +333,7 @@ struct SessionsScreen: View {
         Button {
             if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
                 if connectedServers.first(where: { $0.id == defaultServerId })?.isLocal == true {
-                    let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+                    let cwd = LitterPlatform.defaultLocalWorkingDirectory()
                     Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                 } else {
                     directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
@@ -360,8 +361,15 @@ struct SessionsScreen: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .disabled(isStartingNewSession)
+        #if !targetEnvironment(macCatalyst)
+        .keyboardShortcut("n", modifiers: [.command])
+        #endif
         .accessibilityIdentifier("sessions.newSessionButton")
-        .padding(16)
+        .padding(isRegularSurface ? 12 : 16)
+    }
+
+    private var isRegularSurface: Bool {
+        LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
     }
 
     private var refreshToolbarButton: some View {
@@ -384,10 +392,38 @@ struct SessionsScreen: View {
     }
 
     private var serversRow: some View {
+        let connected = connectedServers
+        let activeThread = sessionsModel.derivedData.allThreads.first(where: { $0.key == activeThreadKey })
+        let activeThreadEphemeralState = activeThread.flatMap { ephemeralStateByThreadKey[$0.key] }
+
+        return ViewThatFits(in: .horizontal) {
+            serversRowContent(
+                connected: connected,
+                activeThread: activeThread,
+                activeThreadEphemeralState: activeThreadEphemeralState,
+                useSpacer: true
+            )
+            ScrollView(.horizontal, showsIndicators: false) {
+                serversRowContent(
+                    connected: connected,
+                    activeThread: activeThread,
+                    activeThreadEphemeralState: activeThreadEphemeralState,
+                    useSpacer: false
+                )
+            }
+        }
+        .padding(.horizontal, isRegularSurface ? 12 : 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func serversRowContent(
+        connected: [HomeDashboardServer],
+        activeThread: AppSessionSummary?,
+        activeThreadEphemeralState: SessionsModel.ThreadEphemeralState?,
+        useSpacer: Bool
+    ) -> some View {
         HStack(spacing: 10) {
-            let connected = connectedServers
-            let activeThread = sessionsModel.derivedData.allThreads.first(where: { $0.key == activeThreadKey })
-            let activeThreadEphemeralState = activeThread.flatMap { ephemeralStateByThreadKey[$0.key] }
             if connected.isEmpty {
                 Image(systemName: "xmark.circle")
                     .foregroundColor(LitterTheme.textMuted)
@@ -395,13 +431,15 @@ struct SessionsScreen: View {
                 Text("Not connected")
                     .litterFont(.footnote)
                     .foregroundColor(LitterTheme.textMuted)
-                Spacer()
+                    .fixedSize(horizontal: true, vertical: false)
+                if useSpacer { Spacer() }
                 Button("Connect") {
                     appState.showServerPicker = true
                 }
                 .accessibilityIdentifier("sessions.connectButton")
                 .litterFont(.caption)
                 .foregroundColor(LitterTheme.accent)
+                .hoverEffect(.highlight)
             } else {
                 Image(systemName: "server.rack")
                     .foregroundColor(LitterTheme.accent)
@@ -409,13 +447,15 @@ struct SessionsScreen: View {
                 Text("\(connected.count) server\(connected.count == 1 ? "" : "s")")
                     .litterFont(.footnote)
                     .foregroundColor(LitterTheme.textPrimary)
-                Spacer()
+                    .fixedSize(horizontal: true, vertical: false)
+                if useSpacer { Spacer() }
                 Button("Add") {
                     appState.showServerPicker = true
                 }
                 .accessibilityIdentifier("sessions.addServerButton")
                 .litterFont(.caption)
                 .foregroundColor(LitterTheme.accent)
+                .hoverEffect(.highlight)
                 if let activeThread {
                     Button {
                         Task { await forkThread(activeThread) }
@@ -431,11 +471,10 @@ struct SessionsScreen: View {
                     .disabled(isForkingActiveThread || (activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasActiveTurn))
                     .litterFont(.caption)
                     .foregroundColor((activeThreadEphemeralState?.hasTurnActive ?? activeThread.hasActiveTurn) ? LitterTheme.textMuted : LitterTheme.accent)
+                    .hoverEffect(.highlight)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
     }
 
     private var sessionSearchBar: some View {
@@ -833,6 +872,8 @@ struct SessionsScreen: View {
                     .fill(LitterTheme.surfaceLight.opacity(0.55))
             }
         }
+        .contentShape(Rectangle())
+        .hoverEffect(.highlight)
     }
 
     private func lineageSummary(for thread: AppSessionSummary, derived: SessionsDerivedData) -> some View {

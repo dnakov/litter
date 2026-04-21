@@ -4,9 +4,14 @@ import SwiftUI
 struct HeaderView: View {
     @Environment(AppState.self) private var appState
     @Environment(AppModel.self) private var appModel
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let thread: AppThreadSnapshot
     @State private var pulsing = false
     @AppStorage("fastMode") private var fastMode = false
+
+    private var isRegularSurface: Bool {
+        LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
+    }
 
     private var server: AppServerSnapshot? {
         appModel.snapshot?.serverSnapshot(for: thread.key.serverId)
@@ -26,73 +31,14 @@ struct HeaderView: View {
         Button {
             appState.showModelSelector.toggle()
         } label: {
-            VStack(spacing: 2) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(statusDotColor)
-                        .frame(width: 6, height: 6)
-                        .opacity(shouldPulse ? (pulsing ? 0.3 : 1.0) : 1.0)
-                        .animation(shouldPulse ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default, value: pulsing)
-                        .onChange(of: shouldPulse) { _, pulse in
-                            pulsing = pulse
-                        }
-                    if fastMode {
-                        Image(systemName: "bolt.fill")
-                            .font(LitterFont.styled(size: 10, weight: .semibold))
-                            .foregroundColor(LitterTheme.warning)
-                    }
-                    Text(sessionModelLabel)
-                        .foregroundColor(LitterTheme.textPrimary)
-                    Text(sessionReasoningLabel)
-                        .foregroundColor(LitterTheme.textSecondary)
-                    Image(systemName: "chevron.down")
-                        .font(LitterFont.styled(size: 10, weight: .semibold))
-                        .foregroundColor(LitterTheme.textSecondary)
-                        .rotationEffect(.degrees(appState.showModelSelector ? 180 : 0))
-                }
-                .font(LitterFont.styled(size: 14, weight: .semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-
-                HStack(spacing: 6) {
-                    Text(sessionDirectoryLabel)
-                        .font(LitterFont.styled(size: 11, weight: .semibold))
-                        .foregroundColor(LitterTheme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    if thread.collaborationMode == .plan {
-                        Text("plan")
-                            .font(LitterFont.styled(size: 11, weight: .bold))
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(LitterTheme.accent)
-                            .clipShape(Capsule())
-                    }
-
-                    if headerPermissionPreset == .fullAccess {
-                        Image(systemName: "lock.open.fill")
-                            .font(LitterFont.styled(size: 10, weight: .semibold))
-                            .foregroundColor(LitterTheme.danger)
-                    }
-
-                    if server?.isIpcConnected == true, ExperimentalFeatures.shared.isEnabled(.ipc) {
-                        Text("IPC")
-                            .font(LitterFont.styled(size: 11, weight: .bold))
-                            .foregroundColor(LitterTheme.accentStrong)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(LitterTheme.accentStrong.opacity(0.14))
-                            .clipShape(Capsule())
-                    }
-                }
-            }
+            expandedHeaderLabel
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .frame(maxWidth: 240)
+            .frame(maxWidth: isRegularSurface ? 320 : 240, alignment: .center)
         }
+        .layoutPriority(-1)
         .buttonStyle(.plain)
+        .hoverEffect(.highlight)
         .accessibilityIdentifier("header.modelPickerButton")
         .popover(
             isPresented: Binding(
@@ -108,6 +54,89 @@ struct HeaderView: View {
         .task(id: thread.key) {
             await loadModelsIfNeeded()
         }
+    }
+
+    private var expandedHeaderLabel: some View {
+        VStack(spacing: 2) {
+            primaryHeaderRow
+            secondaryHeaderRow
+        }
+    }
+
+    private var primaryHeaderRow: some View {
+        HStack(spacing: 6) {
+            statusDot
+
+            if fastMode {
+                Image(systemName: "bolt.fill")
+                    .font(LitterFont.styled(size: 10, weight: .semibold))
+                    .foregroundColor(LitterTheme.warning)
+            }
+
+            Text(sessionModelLabel)
+                .foregroundColor(LitterTheme.textPrimary)
+                .allowsTightening(true)
+            Text(sessionReasoningLabel)
+                .foregroundColor(LitterTheme.textSecondary)
+                .allowsTightening(true)
+            Image(systemName: "chevron.down")
+                .font(LitterFont.styled(size: 10, weight: .semibold))
+                .foregroundColor(LitterTheme.textSecondary)
+                .rotationEffect(.degrees(appState.showModelSelector ? 180 : 0))
+        }
+        .font(LitterFont.styled(size: 14, weight: .semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(isRegularSurface ? 1.0 : 0.75)
+    }
+
+    private var secondaryHeaderRow: some View {
+        HStack(spacing: 6) {
+            Text(sessionDirectoryLabel)
+                .font(LitterFont.styled(size: 11, weight: .semibold))
+                .foregroundColor(LitterTheme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if thread.collaborationMode == .plan {
+                Text("plan")
+                    .font(LitterFont.styled(size: 11, weight: .bold))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(LitterTheme.accent)
+                    .clipShape(Capsule())
+            }
+
+            if headerPermissionPreset == .fullAccess {
+                Image(systemName: "lock.open.fill")
+                    .font(LitterFont.styled(size: 10, weight: .semibold))
+                    .foregroundColor(LitterTheme.danger)
+            }
+
+            if server?.isIpcConnected == true, ExperimentalFeatures.shared.isEnabled(.ipc) {
+                Text("IPC")
+                    .font(LitterFont.styled(size: 11, weight: .bold))
+                    .foregroundColor(LitterTheme.accentStrong)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(LitterTheme.accentStrong.opacity(0.14))
+                    .clipShape(Capsule())
+            }
+        }
+    }
+
+    private var statusDot: some View {
+        Circle()
+            .fill(statusDotColor)
+            .frame(width: 6, height: 6)
+            .opacity(shouldPulse ? (pulsing ? 0.3 : 1.0) : 1.0)
+            .animation(
+                shouldPulse ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true) : .default,
+                value: pulsing
+            )
+            .onChange(of: shouldPulse) { _, pulse in
+                pulsing = pulse
+            }
     }
 
     private var shouldPulse: Bool {
@@ -288,6 +317,7 @@ struct ConversationToolbarControls: View {
         .frame(width: 28, height: 28)
         .contentShape(Rectangle())
         .buttonStyle(.plain)
+        .hoverEffect(.highlight)
         .sheet(item: $remoteAuthSession) { session in
             InAppSafariView(url: session.url)
                 .ignoresSafeArea()

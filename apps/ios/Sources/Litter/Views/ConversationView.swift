@@ -459,6 +459,7 @@ struct RateLimitBadgeView: View, Equatable {
 
 
 private struct ConversationMessageList: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let items: [ConversationItem]
     let threadStatus: ConversationStatus
     let threadHasServerData: Bool
@@ -610,6 +611,8 @@ private struct ConversationMessageList: View {
                                 .turnDebugOverlay(turnId: turn.id)
                             }
                         }
+                        .frame(maxWidth: LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) ? 760 : .infinity)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.horizontal, 16)
                         .padding(.top, topInset + 56)
                         .animation(.spring(response: 0.22, dampingFraction: 0.9), value: textSizeStep)
@@ -1216,6 +1219,7 @@ private struct ConversationInputBar: View {
     @State private var showAttachMenu = false
     @State private var showPhotoPicker = false
     @State private var showCamera = false
+    @State private var showFileImporter = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var attachedImage: UIImage?
     @State private var showSlashPopup = false
@@ -1299,6 +1303,7 @@ private struct ConversationInputBar: View {
             showAttachMenu: $showAttachMenu,
             showPhotoPicker: $showPhotoPicker,
             showCamera: $showCamera,
+            showFileImporter: $showFileImporter,
             selectedPhoto: $selectedPhoto,
             attachedImage: $attachedImage,
             showModelSelector: $showModelSelector,
@@ -1312,6 +1317,9 @@ private struct ConversationInputBar: View {
             showMicPermissionAlert: $showMicPermissionAlert,
             onOpenSettings: openAppSettings,
             onLoadSelectedPhoto: loadSelectedPhoto,
+            onLoadSelectedFile: { url in
+                attachedImage = ConversationAttachmentSupport.loadImageFile(at: url)
+            },
             onLoadExperimentalFeatures: loadExperimentalFeatures,
             onIsExperimentalFeatureEnabled: { featureId, fallback in
                 isExperimentalFeatureEnabled(featureId, fallback: fallback)
@@ -1348,6 +1356,11 @@ private struct ConversationInputBar: View {
             hasLoggedKeyboardShown = true
             os_signpost(.event, log: conversationViewSignpostLog, name: "KeyboardShown")
         }
+        #if targetEnvironment(macCatalyst)
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandSendComposer)) { _ in
+            handleSend()
+        }
+        #endif
         .onDisappear {
             if voiceManager.isRecording { voiceManager.cancelRecording() }
             popupRefreshTask?.cancel()
@@ -1396,6 +1409,20 @@ private struct ConversationInputBar: View {
                     onApplySkillSuggestion: applySkillSuggestion
                 )
             }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let image = urls.lazy.compactMap({ ConversationAttachmentSupport.loadImageFile(at: $0) }).first else {
+                return false
+            }
+            attachedImage = image
+            return true
+        }
+        .dropDestination(for: Data.self) { items, _ in
+            guard let image = items.lazy.compactMap({ UIImage(data: $0) }).first else {
+                return false
+            }
+            attachedImage = image
+            return true
         }
     }
 

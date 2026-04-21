@@ -90,6 +90,7 @@ struct DiscoveryView: View {
                     Image(systemName: "gearshape")
                         .foregroundColor(LitterTheme.textSecondary)
                 }
+                .keyboardShortcut(",", modifiers: [.command])
             }
             ToolbarItem(placement: .principal) {
                 BrandLogo(size: 44)
@@ -103,6 +104,7 @@ struct DiscoveryView: View {
                 }
                 .accessibilityIdentifier("discovery.refreshButton")
                 .disabled(discovery.isScanning)
+                .keyboardShortcut("r", modifiers: [.command])
             }
         }
         .onAppear { handleAppear() }
@@ -363,6 +365,9 @@ struct DiscoveryView: View {
             }
             .accessibilityIdentifier("discovery.addServerButton")
             .listRowBackground(LitterTheme.surface.opacity(0.6))
+            #if !targetEnvironment(macCatalyst)
+            .keyboardShortcut("n", modifiers: [.command])
+            #endif
         }
     }
 

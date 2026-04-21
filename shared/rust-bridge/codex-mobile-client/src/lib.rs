@@ -3,11 +3,12 @@
 //! This crate owns the single public UniFFI surface for mobile. Keep shared
 //! business logic here so Swift/Kotlin only compile one binding set.
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
 mod aec;
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
 mod ios_exec;
 
+pub mod ambient_suggestions;
 pub mod conversation;
 pub mod conversation_uniffi;
 pub mod discovery;

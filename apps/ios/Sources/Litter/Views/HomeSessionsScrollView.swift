@@ -772,10 +772,19 @@ final class HomeRowContainer: UIView {
         // interpolated via `pinchBlurAnimator.fractionComplete` during
         // pinch. Starts with `effect = nil` (no blur) and scrubs up
         // to a thin material blur as zoom progresses.
+        //
+        // Catalyst skips this entirely: UIBlurEffect bridges to
+        // NSVisualEffectView on macOS and does not honor a paused
+        // animator at fractionComplete=0 — it renders the full
+        // material instead of nothing, so the blur sits over every
+        // row obscuring all content. No pinch gesture on Catalyst
+        // anyway, so the whole pipeline is unused there.
         pinchBlur.isUserInteractionEnabled = false
         pinchBlur.alpha = 1
+        #if !targetEnvironment(macCatalyst)
         addSubview(pinchBlur)
         _ = pinchBlurAnimator  // lazy-init so fractionComplete = 0 is applied early
+        #endif
 
         // Pinch highlight — subtle accent tint over the anchor row
         // while a pinch is live. Fades in on `.began`, tracks the
@@ -798,8 +807,10 @@ final class HomeRowContainer: UIView {
         // (running or paused). We hold it paused-active for
         // `fractionComplete` scrubbing, so terminate it explicitly here.
         fadeLink?.invalidate()
+        #if !targetEnvironment(macCatalyst)
         pinchBlurAnimator.stopAnimation(false)
         pinchBlurAnimator.finishAnimation(at: .current)
+        #endif
     }
 
     override func layoutSubviews() {
@@ -915,6 +926,10 @@ final class HomeRowContainer: UIView {
     private static let pinchBlurCeiling: CGFloat = 0.5
     private static let pinchBlurExponent: CGFloat = 2.8
     func setPinchBlurProgress(_ progress: CGFloat) {
+        #if targetEnvironment(macCatalyst)
+        // Catalyst doesn't install the pinch-blur view (see init).
+        return
+        #else
         let p = max(0, min(1, progress))
         // Symmetric ease-out curve: blur tracks zoom progress both
         // directions so a pinch-in that had slowly-building blur will
@@ -923,6 +938,7 @@ final class HomeRowContainer: UIView {
         // blur abruptly vanished.
         let eased = pow(p, Self.pinchBlurExponent) * Self.pinchBlurCeiling
         pinchBlurAnimator.fractionComplete = max(0, min(0.999, eased))
+        #endif
     }
 
     /// No-op kept for the scroll host's `.began` call site; the
@@ -933,6 +949,9 @@ final class HomeRowContainer: UIView {
     /// a CADisplayLink-driven tween because UIViewPropertyAnimator's
     /// `fractionComplete` can't be animated with `UIView.animate`.
     func fadeOutPinchBlur(duration: TimeInterval = 0.25) {
+        #if targetEnvironment(macCatalyst)
+        return
+        #else
         fadeLink?.invalidate()
         let start = CFAbsoluteTimeGetCurrent()
         let from = pinchBlurAnimator.fractionComplete
@@ -949,6 +968,7 @@ final class HomeRowContainer: UIView {
         }, selector: #selector(PinchBlurFadeTarget.tick))
         link.add(to: .main, forMode: .common)
         fadeLink = link
+        #endif
     }
 
     /// Set the highlight opacity directly (0–1). Used during a live

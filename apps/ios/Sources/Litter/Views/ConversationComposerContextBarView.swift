@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ConversationComposerContextBarView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let rateLimits: RateLimitSnapshot?
     let contextPercent: Int64?
 
@@ -31,7 +32,7 @@ struct ConversationComposerContextBarView: View {
         .frame(maxWidth: .infinity, minHeight: 16, alignment: .trailing)
         .padding(.horizontal, 12)
         .padding(.top, -2)
-        .padding(.trailing, 40)
+        .padding(.trailing, LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) ? 12 : 40)
     }
 
     private func normalizedPercent(_ raw: Int32) -> Int {

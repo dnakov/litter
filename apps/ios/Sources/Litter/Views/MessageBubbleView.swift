@@ -118,6 +118,12 @@ struct UserBubble: View {
                             .scaledToFit()
                             .frame(maxWidth: 200, maxHeight: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .draggable(Image(uiImage: uiImage)) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 120)
+                            }
                     }
                 }
                 if !text.isEmpty {
@@ -311,6 +317,12 @@ struct AssistantBlocksBubble: View {
                 .scaledToFit()
                 .frame(maxHeight: 300)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .draggable(Image(uiImage: uiImage)) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 120)
+                }
         }
     }
 

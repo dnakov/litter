@@ -70,6 +70,7 @@ struct ConversationComposerEntryRowView: View {
                         .frame(width: 36, height: 36)
                         .modifier(GlassCircleModifier())
                 }
+                .hoverEffect(.highlight)
                 .transition(.scale.combined(with: .opacity))
             }
 
@@ -78,7 +79,10 @@ struct ConversationComposerEntryRowView: View {
                     ConversationComposerTextView(
                         text: $inputText,
                         isFocused: $isComposerFocused,
-                        onPasteImage: onPasteImage
+                        onPasteImage: onPasteImage,
+                        onHardwareSubmit: {
+                            if canSend { onSendText() }
+                        }
                     )
 
                     if inputText.isEmpty {
@@ -90,6 +94,7 @@ struct ConversationComposerEntryRowView: View {
                             .allowsHitTesting(false)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 if canSend {
                     Button(action: onSendText) {
@@ -99,6 +104,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: 36, height: 36)
                             .contentShape(Rectangle())
                     }
+                    .hoverEffect(.highlight)
                     .padding(.trailing, 4)
                 } else if voiceManager.isRecording {
                     AudioWaveformView(level: voiceManager.audioLevel)
@@ -111,6 +117,7 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
+                    .hoverEffect(.highlight)
                     .padding(.trailing, 4)
                 } else if voiceManager.isTranscribing {
                     ProgressView()
@@ -124,10 +131,11 @@ struct ConversationComposerEntryRowView: View {
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
+                    .hoverEffect(.highlight)
                     .padding(.trailing, 4)
                 }
             }
-            .frame(minHeight: 36)
+            .frame(maxWidth: .infinity, minHeight: 36)
             .modifier(GlassRoundedRectModifier(cornerRadius: 20))
             .overlay(alignment: .topTrailing) {
                 if shouldShowExpand {
@@ -140,6 +148,7 @@ struct ConversationComposerEntryRowView: View {
                             .padding(6)
                             .contentShape(Rectangle())
                     }
+                    .hoverEffect(.highlight)
                     .padding(.top, 2)
                     .padding(.trailing, 6)
                     .accessibilityLabel("Expand composer")
@@ -159,8 +168,8 @@ struct ConversationComposerEntryRowView: View {
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
-
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: isTurnActive)
         .padding(.horizontal, 12)
         .padding(.top, 6)

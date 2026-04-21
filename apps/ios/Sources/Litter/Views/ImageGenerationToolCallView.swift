@@ -97,6 +97,12 @@ struct ImageGenerationToolCallView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(LitterTheme.border.opacity(0.4), lineWidth: 0.5)
                 )
+                .draggable(Image(uiImage: image)) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 120)
+                }
                 .contextMenu {
                     Button {
                         UIPasteboard.general.image = image

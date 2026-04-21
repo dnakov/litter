@@ -24,6 +24,14 @@ enum ConversationAttachmentSupport {
         return PreparedImageAttachment(data: encodedImage.data, mimeType: encodedImage.mimeType)
     }
 
+    static func loadImageFile(at url: URL) -> UIImage? {
+        guard let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
+
     static func buildTurnInputs(text: String, additionalInput: [AppUserInput]) -> [AppUserInput] {
         var inputs: [AppUserInput] = []
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

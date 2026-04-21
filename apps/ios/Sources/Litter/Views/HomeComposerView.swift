@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import UIKit
 import os
 
@@ -19,12 +20,14 @@ struct HomeComposerView: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var inputText = ""
     @State private var attachedImage: UIImage?
     @State private var showAttachMenu = false
     @State private var showPhotoPicker = false
     @State private var showCamera = false
+    @State private var showFileImporter = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var voiceManager = VoiceTranscriptionManager()
     @State private var isSubmitting = false
@@ -38,6 +41,13 @@ struct HomeComposerView: View {
     @State private var isComposerFocused: Bool = false
 
     private var isDisabled: Bool { project == nil }
+
+    private var attachSheetDetentHeight: CGFloat {
+        let showsFile = LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
+        let showsCamera = !LitterPlatform.isCatalyst
+        let count = 1 + (showsFile ? 1 : 0) + (showsCamera ? 1 : 0)
+        return count >= 3 ? 260 : 210
+    }
 
     private var isActive: Bool {
         isComposerFocused
@@ -104,21 +114,48 @@ struct HomeComposerView: View {
         .onChange(of: isActive) { _, active in
             onActiveChange?(active)
         }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let image = urls.lazy.compactMap({ ConversationAttachmentSupport.loadImageFile(at: $0) }).first else {
+                return false
+            }
+            attachedImage = image
+            return true
+        }
+        .dropDestination(for: Data.self) { items, _ in
+            guard let image = items.lazy.compactMap({ UIImage(data: $0) }).first else {
+                return false
+            }
+            attachedImage = image
+            return true
+        }
         .sheet(isPresented: $showAttachMenu) {
             ConversationComposerAttachSheet(
                 onPickPhotoLibrary: {
                     showAttachMenu = false
                     showPhotoPicker = true
                 },
-                onTakePhoto: {
+                onChooseFile: LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) ? {
+                    showAttachMenu = false
+                    showFileImporter = true
+                } : nil,
+                onTakePhoto: LitterPlatform.isCatalyst ? nil : {
                     showAttachMenu = false
                     showCamera = true
                 }
             )
-            .presentationDetents([.height(210)])
+            .presentationDetents([.height(attachSheetDetentHeight)])
             .presentationDragIndicator(.visible)
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case let .success(urls) = result,
+                  let url = urls.first else { return }
+            attachedImage = ConversationAttachmentSupport.loadImageFile(at: url)
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             Task { await loadSelectedPhoto(item) }

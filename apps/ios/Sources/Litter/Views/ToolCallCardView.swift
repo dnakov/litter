@@ -498,6 +498,12 @@ private struct ToolCallImagePreview: View {
                         .resizable()
                         .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .draggable(Image(uiImage: renderedImage)) {
+                            Image(uiImage: renderedImage)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 120)
+                        }
                 } else if isLoading {
                     ProgressView()
                         .tint(LitterTheme.accent)

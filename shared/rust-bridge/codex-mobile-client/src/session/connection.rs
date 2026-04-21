@@ -76,14 +76,14 @@ impl Default for InProcessConfig {
     }
 }
 
-#[cfg(any(target_os = "ios", test))]
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 static IOS_CACERT_PEM: &[u8] = include_bytes!("../../../codex-bridge/src/cacert.pem");
 
 #[allow(unused_mut)]
 fn prepare_in_process_config(
     mut config: InProcessConfig,
 ) -> Result<InProcessConfig, TransportError> {
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
     {
         config = prepare_ios_in_process_config(config)?;
     }
@@ -158,7 +158,7 @@ fn prepare_android_in_process_config(
     Ok(config)
 }
 
-#[cfg(any(target_os = "ios", test))]
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 #[cfg_attr(test, allow(dead_code))]
 fn prepare_ios_in_process_config(
     mut config: InProcessConfig,
@@ -207,7 +207,7 @@ fn prepare_ios_in_process_config(
     Ok(config)
 }
 
-#[cfg(any(target_os = "ios", test))]
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 #[cfg_attr(test, allow(dead_code))]
 fn resolve_ios_codex_home(home_dir: &Option<PathBuf>) -> Result<PathBuf, TransportError> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -249,7 +249,7 @@ fn resolve_ios_codex_home(home_dir: &Option<PathBuf>) -> Result<PathBuf, Transpo
     ))
 }
 
-#[cfg(any(target_os = "ios", test))]
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 fn prepare_ios_runtime_environment(
     codex_home: &std::path::Path,
 ) -> Result<PathBuf, TransportError> {
@@ -271,7 +271,7 @@ fn prepare_ios_runtime_environment(
     Ok(canonical)
 }
 
-#[cfg(any(target_os = "ios", test))]
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 fn init_ios_tls_roots(codex_home: &std::path::Path) -> Result<(), TransportError> {
     if let Some(existing) = std::env::var_os("SSL_CERT_FILE") {
         let existing_path = std::path::PathBuf::from(existing);
@@ -1080,7 +1080,7 @@ fn remote_connect_args(config: &ServerConfig) -> (String, RemoteAppServerConnect
 async fn connect_remote_client(
     args: &RemoteAppServerConnectArgs,
 ) -> Result<AppServerClient, TransportError> {
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
     {
         let home_dir = std::env::var_os("HOME").map(PathBuf::from);
         let codex_home = resolve_ios_codex_home(&home_dir)?;

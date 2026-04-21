@@ -148,7 +148,7 @@ ANDROID_RUST_SOURCES := $(shell find $(RUST_DIR) \
 
 $(shell mkdir -p $(STAMPS))
 
-.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project \
+.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project catalyst catalyst-run \
 	android android-fast android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
 	rust-ios rust-ios-package rust-ios-device-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
@@ -176,6 +176,28 @@ ios-sim: ios-build-sim
 ios-sim-fast: ios-build-sim-fast
 ios-device: ios-build-device
 ios-device-fast: ios-build-device-fast
+
+# Mac Catalyst build. Uses the same rust-ios-package (macabi arches)
+# + ios-frameworks + xcgen chain, but targets the `LitterMac` scheme
+# and writes into a separate DerivedData path so it doesn't collide
+# with the iOS sim build cache.
+CATALYST_DERIVED_DATA := $(IOS_DIR)/build/catalyst
+catalyst: rust-ios-package ios-frameworks xcgen
+	@echo "==> Building LitterMac for Mac Catalyst..."
+	@cd $(IOS_DIR) && xcodebuild \
+		-project Litter.xcodeproj \
+		-scheme LitterMac \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'platform=macOS,variant=Mac Catalyst' \
+		-derivedDataPath $(CATALYST_DERIVED_DATA) \
+		build \
+		| tail -6
+
+# Build + (kill any running copy) + launch the freshly-built Catalyst app.
+catalyst-run: catalyst
+	@echo "==> Launching Catalyst app..."
+	@pkill -9 -f "Debug-maccatalyst/Litter.app" 2>/dev/null; true
+	@open $(CATALYST_DERIVED_DATA)/Build/Products/Debug-maccatalyst/Litter.app
 ios-sim-run: ios-sim-fast
 	@echo "==> Installing and launching on booted simulator with saved logs/profile..."
 	@cd $(ROOT) && \
