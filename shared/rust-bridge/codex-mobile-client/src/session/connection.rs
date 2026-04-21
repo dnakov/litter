@@ -305,6 +305,35 @@ fn init_ios_tls_roots(codex_home: &std::path::Path) -> Result<(), TransportError
 // ---------------------------------------------------------------------------
 
 /// Configuration describing a Codex server endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum AppServerBackendKind {
+    Codex,
+    OpenCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum AppServerTransportKind {
+    Local,
+    Ssh,
+    Websocket,
+    Http,
+    Https,
+    TailscaleHttps,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum AppServerConnectionPath {
+    Local,
+    Lan,
+    Tailscale,
+    Ssh,
+    Unknown,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
@@ -322,6 +351,15 @@ pub struct ServerConfig {
     pub is_local: bool,
     /// Whether to use TLS for the WebSocket connection.
     pub tls: bool,
+    /// Backend family for the connected runtime.
+    pub backend_kind: AppServerBackendKind,
+    /// Normalized transport/protocol presentation kind for the connection.
+    pub transport_kind: AppServerTransportKind,
+    /// Normalized network path used to reach the server.
+    pub connection_path: AppServerConnectionPath,
+    /// Backend-owned known directories/workspace scopes.
+    #[serde(default)]
+    pub known_directories: Vec<String>,
 }
 
 #[derive(Default)]
@@ -1473,6 +1511,10 @@ mod tests {
             websocket_url: None,
             is_local: true,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Local,
+            connection_path: AppServerConnectionPath::Local,
+            known_directories: Vec::new(),
         };
         assert!(config.is_local);
         assert_eq!(config.server_id, "local-1");
@@ -1488,6 +1530,10 @@ mod tests {
             websocket_url: None,
             is_local: false,
             tls: true,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Websocket,
+            connection_path: AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         };
         assert!(!config.is_local);
         assert!(config.tls);
@@ -1775,6 +1821,10 @@ mod tests {
             websocket_url: None,
             is_local: false,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Websocket,
+            connection_path: AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         };
         let scheme = if config.tls { "wss" } else { "ws" };
         let url = format!("{scheme}://{}:{}", config.host, config.port);
@@ -1791,6 +1841,10 @@ mod tests {
             websocket_url: None,
             is_local: false,
             tls: true,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Websocket,
+            connection_path: AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         };
         let scheme = if config.tls { "wss" } else { "ws" };
         let url = format!("{scheme}://{}:{}", config.host, config.port);

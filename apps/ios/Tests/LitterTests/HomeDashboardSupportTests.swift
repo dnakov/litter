@@ -111,6 +111,47 @@ final class HomeDashboardSupportTests: XCTestCase {
         XCTAssertTrue(saved.openCodeKnownDirectories.isEmpty)
     }
 
+    func testSavedOpenCodeServerRehydratesIntoDiscoveredServer() throws {
+        let saved = SavedServer(
+            id: "opencode-ts",
+            name: "Franklin Mac",
+            hostname: "franklins-macbook-pro.tail22b856.ts.net",
+            port: 4187,
+            codexPorts: [],
+            sshPort: nil,
+            source: .tailscale,
+            hasCodexServer: false,
+            wakeMAC: nil,
+            preferredConnectionMode: nil,
+            preferredCodexPort: nil,
+            sshPortForwardingEnabled: nil,
+            websocketURL: nil,
+            rememberedByUser: true,
+            backendKind: .openCode,
+            openCodeBaseURL: "https://franklins-macbook-pro.tail22b856.ts.net:4187",
+            openCodeBasicAuthUsername: "opencode",
+            openCodeBasicAuthPassword: "secret",
+            openCodeKnownDirectories: ["/Users/franklin/Development/OpenSource/litter"]
+        )
+
+        let discovered = try XCTUnwrap(saved.toDiscoveredServer())
+
+        XCTAssertEqual(discovered.backendKind, .openCode)
+        XCTAssertEqual(discovered.source, .tailscale)
+        XCTAssertEqual(discovered.port, 4187)
+        XCTAssertEqual(
+            discovered.openCodeBaseURL,
+            "https://franklins-macbook-pro.tail22b856.ts.net:4187"
+        )
+        XCTAssertTrue(discovered.openCodeRequiresAuth)
+        XCTAssertEqual(
+            discovered.openCodeKnownDirectories,
+            ["/Users/franklin/Development/OpenSource/litter"]
+        )
+        XCTAssertFalse(discovered.hasCodexServer)
+        XCTAssertNil(discovered.sshPort)
+    }
+
     func testHomeDashboardModelRefreshesWhenObservedSnapshotChanges() async {
         let appModel = AppModel()
         let model = HomeDashboardModel()

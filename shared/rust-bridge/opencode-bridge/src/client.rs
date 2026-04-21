@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::IpAddr, time::Duration};
 
 use reqwest::{Method, RequestBuilder, Response, Url};
 use serde::de::DeserializeOwned;
@@ -27,8 +27,11 @@ pub struct OpenCodeClient {
 impl OpenCodeClient {
     pub fn new(config: OpenCodeServerConfig) -> Result<Self, OpenCodeBridgeError> {
         let request_timeout = DEFAULT_REQUEST_TIMEOUT;
-        let http = reqwest::Client::builder()
-            .timeout(request_timeout)
+        let mut builder = reqwest::Client::builder().timeout(request_timeout);
+        if allows_insecure_tailnet_https(&config.base_url) {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        let http = builder
             .build()
             .map_err(|source| OpenCodeBridgeError::transport("client.init", source))?;
 
@@ -428,6 +431,33 @@ impl OpenCodeClient {
             .and_then(extract_error_message)
             .unwrap_or_else(|| format!("request failed with status {status}"));
         OpenCodeBridgeError::status(endpoint, status, message, body)
+    }
+}
+
+fn allows_insecure_tailnet_https(base_url: &Url) -> bool {
+    if base_url.scheme() != "https" {
+        return false;
+    }
+
+    let Some(host) = base_url.host_str() else {
+        return false;
+    };
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    is_tailscale_ip(ip)
+}
+
+fn is_tailscale_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+        }
     }
 }
 

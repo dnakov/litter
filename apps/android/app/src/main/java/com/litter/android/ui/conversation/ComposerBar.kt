@@ -230,7 +230,7 @@ fun ComposerBar(
                         appModel.launchState.threadForkRequest(
                             sourceThreadId = threadKey.threadId,
                             cwdOverride = cwd,
-                            modelOverride = appModel.launchState.snapshot.value.selectedModel.trim().ifEmpty { null },
+                            modelOverride = appModel.launchState.selectedModel(threadKey.serverId).trim().ifEmpty { null },
                             threadKey = threadKey,
                         ),
                     )
@@ -556,8 +556,11 @@ fun ComposerBar(
                                     }
                                 }
                                 val launchState = appModel.launchState.snapshot.value
-                                val pendingModel = launchState.selectedModel.trim().ifEmpty { null }
-                                val effort = launchState.reasoningEffort.trim().ifEmpty { null }?.let(::reasoningEffortFromServerValue)
+                                val pendingModel = appModel.launchState.selectedModel(threadKey.serverId).trim().ifEmpty { null }
+                                val effort = appModel.launchState.selectedReasoningEffort(threadKey.serverId)
+                                    .trim()
+                                    .ifEmpty { null }
+                                    ?.let(::reasoningEffortFromServerValue)
                                 val tier = if (HeaderOverrides.pendingFastMode) ServiceTier.FAST else null
                                 val attachmentToSend = attachedImage
                                 val payload = AppComposerPayload(

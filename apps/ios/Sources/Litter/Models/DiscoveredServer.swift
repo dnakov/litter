@@ -31,6 +31,7 @@ struct DiscoveredServer: Identifiable, Hashable {
     let name: String
     let hostname: String
     let port: UInt16?
+    let backendKind: SavedServerBackendKind
     let codexPorts: [UInt16]
     let sshPort: UInt16?
     let source: ServerSource
@@ -42,12 +43,16 @@ struct DiscoveredServer: Identifiable, Hashable {
     let preferredCodexPort: UInt16?
     let os: String?
     let sshBanner: String?
+    let openCodeBaseURL: String?
+    let openCodeRequiresAuth: Bool
+    let openCodeKnownDirectories: [String]
 
     init(
         id: String,
         name: String,
         hostname: String,
         port: UInt16?,
+        backendKind: SavedServerBackendKind = .codex,
         codexPorts: [UInt16] = [],
         sshPort: UInt16? = nil,
         source: ServerSource,
@@ -58,13 +63,18 @@ struct DiscoveredServer: Identifiable, Hashable {
         preferredConnectionMode: PreferredConnectionMode? = nil,
         preferredCodexPort: UInt16? = nil,
         os: String? = nil,
-        sshBanner: String? = nil
+        sshBanner: String? = nil,
+        openCodeBaseURL: String? = nil,
+        openCodeRequiresAuth: Bool = false,
+        openCodeKnownDirectories: [String] = []
     ) {
-        let normalizedCodexPorts = Self.normalizedPorts(codexPorts, fallback: port)
+        let normalizedCodexPorts = backendKind == .codex
+            ? Self.normalizedPorts(codexPorts, fallback: port)
+            : []
         let resolvedPreferredMode = Self.resolvedPreferredConnectionMode(
             preferredConnectionMode,
             codexPorts: normalizedCodexPorts,
-            sshPort: sshPort,
+            sshPort: backendKind == .codex ? sshPort : nil,
             websocketURL: websocketURL
         )
         let resolvedPreferredCodexPort = Self.resolvedPreferredCodexPort(
@@ -73,26 +83,41 @@ struct DiscoveredServer: Identifiable, Hashable {
             codexPorts: normalizedCodexPorts
         )
 
+        let resolvedPort: UInt16?
+        if backendKind == .openCode {
+            resolvedPort = port
+        } else {
+            resolvedPort = resolvedPreferredCodexPort
+                ?? (normalizedCodexPorts.contains(port ?? 0) ? port : nil)
+                ?? normalizedCodexPorts.first
+        }
+
         self.id = id
         self.name = name
         self.hostname = hostname
-        self.port = resolvedPreferredCodexPort
-            ?? (normalizedCodexPorts.contains(port ?? 0) ? port : nil)
-            ?? normalizedCodexPorts.first
+        self.port = resolvedPort
+        self.backendKind = backendKind
         self.codexPorts = normalizedCodexPorts
-        self.sshPort = sshPort
+        self.sshPort = backendKind == .codex ? sshPort : nil
         self.source = source
-        self.hasCodexServer = hasCodexServer || !normalizedCodexPorts.isEmpty || websocketURL != nil
+        self.hasCodexServer = backendKind == .codex &&
+            (hasCodexServer || !normalizedCodexPorts.isEmpty || websocketURL != nil)
         self.wakeMAC = Self.normalizeWakeMAC(wakeMAC)
         self.sshPortForwardingEnabled = sshPortForwardingEnabled
-        self.websocketURL = websocketURL
+        self.websocketURL = backendKind == .codex ? websocketURL : nil
         self.preferredConnectionMode = resolvedPreferredMode
         self.preferredCodexPort = resolvedPreferredCodexPort
         self.os = os
         self.sshBanner = sshBanner
+        self.openCodeBaseURL = openCodeBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openCodeRequiresAuth = openCodeRequiresAuth
+        self.openCodeKnownDirectories = openCodeKnownDirectories
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     var connectionTarget: ConnectionTarget? {
+        if backendKind == .openCode { return nil }
         if source == .local { return .local }
         if let websocketURL, let url = URL(string: websocketURL) { return .remoteURL(url) }
         if preferredConnectionMode == .ssh {
@@ -123,7 +148,7 @@ struct DiscoveredServer: Identifiable, Hashable {
     }
 
     var canConnectViaSSH: Bool {
-        sshPort != nil
+        backendKind == .codex && sshPort != nil
     }
 
     var hasValidPreferredConnection: Bool {
@@ -131,6 +156,7 @@ struct DiscoveredServer: Identifiable, Hashable {
     }
 
     var requiresConnectionChoice: Bool {
+        guard backendKind == .codex else { return false }
         guard source != .local, websocketURL == nil else { return false }
         guard preferredConnectionMode == nil else { return false }
         let directCount = availableDirectCodexPorts.count
@@ -146,6 +172,7 @@ struct DiscoveredServer: Identifiable, Hashable {
             name: name,
             hostname: hostname,
             port: codexPort ?? port,
+            backendKind: backendKind,
             codexPorts: codexPorts,
             sshPort: sshPort,
             source: source,
@@ -156,22 +183,29 @@ struct DiscoveredServer: Identifiable, Hashable {
             preferredConnectionMode: mode,
             preferredCodexPort: mode == .directCodex ? (codexPort ?? resolvedDirectCodexPort) : nil,
             os: os,
-            sshBanner: sshBanner
+            sshBanner: sshBanner,
+            openCodeBaseURL: openCodeBaseURL,
+            openCodeRequiresAuth: openCodeRequiresAuth,
+            openCodeKnownDirectories: openCodeKnownDirectories
         )
     }
 
     var deduplicationKey: String {
+        if backendKind == .openCode {
+            let key = Self.normalizedOpenCodeKey(openCodeBaseURL ?? hostname)
+            return key.isEmpty ? "opencode:\(id)" : "opencode:\(key)"
+        }
         if source == .local {
             return "local"
         }
 
         if let websocketURL, let url = URL(string: websocketURL) {
             let host = Self.normalizedHostKey(url.host ?? hostname)
-            return host.isEmpty ? id : host
+            return host.isEmpty ? id : "codex:\(host)"
         }
 
         let host = Self.normalizedHostKey(hostname)
-        return host.isEmpty ? id : host
+        return host.isEmpty ? id : "codex:\(host)"
     }
 
     static func normalizeWakeMAC(_ raw: String?) -> String? {
@@ -242,5 +276,17 @@ struct DiscoveredServer: Identifiable, Hashable {
         }
 
         return normalized.lowercased()
+    }
+
+    private static func normalizedOpenCodeKey(_ raw: String) -> String {
+        if let url = URL(string: raw), let scheme = url.scheme, !scheme.isEmpty {
+            let host = (url.host ?? raw).lowercased()
+            if let port = url.port {
+                return "\(host):\(port)"
+            }
+            return host
+        }
+
+        return normalizedHostKey(raw)
     }
 }

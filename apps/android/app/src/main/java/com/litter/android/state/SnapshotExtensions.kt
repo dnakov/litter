@@ -1,10 +1,15 @@
 package com.litter.android.state
 
 import androidx.compose.ui.graphics.Color
+import uniffi.codex_mobile_client.AppServerBackendKind
+import uniffi.codex_mobile_client.AppServerConnectionPath
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerIpcState
+import uniffi.codex_mobile_client.AppServerModelCatalogState
 import uniffi.codex_mobile_client.AppServerSnapshot
+import uniffi.codex_mobile_client.AppServerStatusKind
 import uniffi.codex_mobile_client.AppServerTransportState
+import uniffi.codex_mobile_client.AppServerTransportKind
 import uniffi.codex_mobile_client.AppSessionSummary
 import uniffi.codex_mobile_client.AppThreadSnapshot
 import uniffi.codex_mobile_client.HydratedConversationItemContent
@@ -52,6 +57,49 @@ val AppServerTransportState.accentColor: Color
         AppServerTransportState.DISCONNECTED, AppServerTransportState.UNKNOWN -> SecondaryGray
     }
 
+val AppServerBackendKind.displayLabel: String
+    get() = when (this) {
+        AppServerBackendKind.CODEX -> "Codex"
+        AppServerBackendKind.OPEN_CODE -> "OpenCode"
+    }
+
+val AppServerTransportKind.displayLabel: String
+    get() = when (this) {
+        AppServerTransportKind.LOCAL -> "local"
+        AppServerTransportKind.SSH -> "SSH"
+        AppServerTransportKind.WEBSOCKET -> "WebSocket"
+        AppServerTransportKind.HTTP -> "HTTP"
+        AppServerTransportKind.HTTPS -> "HTTPS"
+        AppServerTransportKind.TAILSCALE_HTTPS -> "HTTPS/Tailscale"
+        AppServerTransportKind.UNKNOWN -> "unknown"
+    }
+
+val AppServerConnectionPath.displayLabel: String
+    get() = when (this) {
+        AppServerConnectionPath.LOCAL -> "local"
+        AppServerConnectionPath.LAN -> "LAN"
+        AppServerConnectionPath.TAILSCALE -> "Tailscale"
+        AppServerConnectionPath.SSH -> "SSH"
+        AppServerConnectionPath.UNKNOWN -> "unknown"
+    }
+
+val AppServerStatusKind.displayLabel: String
+    get() = when (this) {
+        AppServerStatusKind.CONNECTED -> "Connected"
+        AppServerStatusKind.RECONNECTING -> "Reconnecting…"
+        AppServerStatusKind.AUTH_REQUIRED -> "Auth required"
+        AppServerStatusKind.DISCONNECTED -> "Disconnected"
+        AppServerStatusKind.UNRESPONSIVE -> "Unresponsive"
+        AppServerStatusKind.UNKNOWN -> "Unknown"
+    }
+
+val AppServerStatusKind.accentColor: Color
+    get() = when (this) {
+        AppServerStatusKind.CONNECTED -> AccentGreen
+        AppServerStatusKind.RECONNECTING, AppServerStatusKind.AUTH_REQUIRED, AppServerStatusKind.UNRESPONSIVE -> WarningOrange
+        AppServerStatusKind.DISCONNECTED, AppServerStatusKind.UNKNOWN -> SecondaryGray
+    }
+
 // --- AppServerSnapshot extensions --------------------------------------------
 
 val AppServerSnapshot.isConnected: Boolean
@@ -70,12 +118,21 @@ val AppServerSnapshot.canResumeViaIpc: Boolean
     get() = capabilities.canResumeViaIpc
 
 val AppServerSnapshot.connectionModeLabel: String
-    get() = when {
-        isLocal -> "local"
-        ipcState == AppServerIpcState.READY -> "remote · ipc"
-        ipcState == AppServerIpcState.DISCONNECTED -> "remote · no ipc"
-        else -> "remote"
-    }
+    get() = "${backendKind.displayLabel} • ${transportKind.displayLabel}"
+
+val AppServerSnapshot.backendLabel: String
+    get() = backendKind.displayLabel
+
+val AppServerSnapshot.transportLabel: String
+    get() = transportKind.displayLabel
+
+val AppServerSnapshot.connectionPathLabel: String
+    get() = connectionPath.displayLabel
+
+val AppServerSnapshot.serverSubtitle: String
+    get() = listOf(backendLabel, transportLabel, connectionPathLabel)
+        .distinct()
+        .joinToString(" • ")
 
 val AppServerSnapshot.currentConnectionStep: AppConnectionStepSnapshot?
     get() = connectionProgress?.steps?.firstOrNull {
@@ -103,9 +160,7 @@ val AppServerSnapshot.connectionProgressDetail: String?
 val AppServerSnapshot.statusLabel: String
     get() = when {
         connectionProgressLabel != null -> connectionProgressLabel!!
-        transportState == AppServerTransportState.CONNECTED && !isLocal && account == null -> "Sign in required"
-        transportState == AppServerTransportState.CONNECTED && ipcState == AppServerIpcState.DISCONNECTED -> "Connected, IPC unavailable"
-        else -> transportState.displayLabel
+        else -> statusKind.displayLabel
     }
 
 val AppServerSnapshot.statusColor: Color
@@ -113,9 +168,22 @@ val AppServerSnapshot.statusColor: Color
         currentConnectionStep?.state == AppConnectionStepState.FAILED -> Color(0xFFFF6B6B)
         currentConnectionStep?.state == AppConnectionStepState.AWAITING_USER_INPUT -> WarningOrange
         connectionProgressLabel != null -> AccentGreen
-        transportState == AppServerTransportState.CONNECTED && !isLocal && account == null -> WarningOrange
-        transportState == AppServerTransportState.CONNECTED && ipcState == AppServerIpcState.DISCONNECTED -> WarningOrange
-        else -> transportState.accentColor
+        else -> statusKind.accentColor
+    }
+
+val AppServerSnapshot.defaultModelLabel: String?
+    get() = modelCatalog.defaultModelDisplayName?.takeIf { it.isNotBlank() }
+        ?: modelCatalog.defaultModelId?.takeIf { it.isNotBlank() }
+
+val AppServerSnapshot.hasLoadedModelCatalog: Boolean
+    get() = modelCatalog.state == AppServerModelCatalogState.LOADED
+
+val AppServerSnapshot.modelCatalogCountLabel: String
+    get() = when (modelCatalog.state) {
+        AppServerModelCatalogState.UNAVAILABLE -> "Unavailable"
+        AppServerModelCatalogState.IDLE -> "Not loaded"
+        AppServerModelCatalogState.LOADING -> "Loading…"
+        AppServerModelCatalogState.LOADED -> "${modelCatalog.availableModelCount} models"
     }
 
 // --- AppThreadSnapshot extensions --------------------------------------------

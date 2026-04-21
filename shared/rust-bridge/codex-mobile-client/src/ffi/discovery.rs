@@ -3,6 +3,9 @@ use crate::discovery_uniffi::{AppDiscoveredServer, AppMdnsSeed, AppProgressiveDi
 use crate::ffi::ClientError;
 use crate::ffi::shared::{blocking_async, shared_mobile_client, shared_runtime};
 use crate::mobile_client::opencode_connect_request_to_config;
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind,
+};
 use crate::session::connection::{InProcessConfig, ServerConfig};
 use crate::types::AppOpenCodeConnectRequest;
 use std::sync::Arc;
@@ -103,6 +106,10 @@ impl ServerBridge {
             websocket_url: None,
             is_local: true,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Local,
+            connection_path: AppServerConnectionPath::Local,
+            known_directories: Vec::new(),
         };
         blocking_async!(self.rt, self.inner, |c| {
             c.connect_local(config, InProcessConfig::default())
@@ -126,6 +133,10 @@ impl ServerBridge {
             websocket_url: None,
             is_local: false,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Websocket,
+            connection_path: AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         };
         blocking_async!(self.rt, self.inner, |c| {
             c.connect_remote(config)
@@ -150,6 +161,11 @@ impl ServerBridge {
             .port_or_known_default()
             .ok_or_else(|| ClientError::InvalidParams("websocket URL port missing".to_string()))?;
         let tls = matches!(parsed.scheme(), "wss" | "https");
+        let connection_path = if host.ends_with(".ts.net") {
+            AppServerConnectionPath::Tailscale
+        } else {
+            AppServerConnectionPath::Lan
+        };
         let config = ServerConfig {
             server_id,
             display_name,
@@ -158,6 +174,10 @@ impl ServerBridge {
             websocket_url: Some(websocket_url),
             is_local: false,
             tls,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Websocket,
+            connection_path,
+            known_directories: Vec::new(),
         };
         blocking_async!(self.rt, self.inner, |c| {
             c.connect_remote(config)

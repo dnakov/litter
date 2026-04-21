@@ -2,7 +2,7 @@
 
 ## Scope
 
-This matrix covers transport reliability and startup-path parity for Android websocket + bridge flows, including manual OpenCode server connectivity.
+This matrix covers backend-aware server selection, reconnect reliability, and startup-path parity for Android Codex/OpenCode flows.
 
 ## Automated Regression Scaffolding
 
@@ -30,10 +30,13 @@ Current automated checks:
 | Area | onDevice flavor | remoteOnly flavor |
 |---|---|---|
 | App launch | App launches and can start local bridge-backed session | App launches and does not auto-start local bridge |
-| Connect local/on-device | Success (`ServerConfig.local`) | Expected failure with clear "disabled" error |
-| Connect remote server | Success | Success |
-| Connect manual OpenCode server | Success with base URL, basic auth credentials, and directory saved after first successful connect | Success with base URL, basic auth credentials, and directory saved after first successful connect |
+| Connect Codex local/on-device | Success (`ServerConfig.local`) | Expected failure with clear "disabled" error |
+| Connect Codex direct remote | Success | Success |
+| Connect Codex over SSH | Success with SSH bootstrap, backend-aware status, and reconnect-safe server identity | Same |
+| Connect OpenCode local HTTP | Success with base URL, directory scopes, and backend-aware workspace picker | Success with base URL, directory scopes, and backend-aware workspace picker |
+| Connect OpenCode over Tailscale HTTPS | Discovery/manual row shows OpenCode + HTTPS/Tailscale + auth state before connect; connect succeeds with saved scopes | Same |
 | Relaunch reconnect to saved OpenCode server | Saved server reconnects, rehydrates thread list for saved directory scopes, and keeps disconnected/reconnected state coherent in UI | Same |
+| Relaunch reconnect to saved Codex server | Saved server reconnects with backend/transport labels preserved from the original connection path | Same |
 | OpenCode prompt lifecycle | Thread list, read/resume, start thread in selected directory, async prompt streaming, interrupt, approval response, and model refresh all work through Rust runtime state | Same |
 | SSH-discovered remote server | Prompts for SSH credentials, connects through SSH port forwarding, and never attempts `ws://host:22` directly | Same |
 | Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC | N/A (local startup disabled) |
@@ -46,9 +49,11 @@ Current automated checks:
 2. `onDeviceDebug`: kill local bridge process (or force stop app), relaunch, confirm initialize and thread list recover.
 3. `remoteOnlyDebug`: attempt local connect path, verify explicit disabled error; connect remote server and run thread/list + turn/start.
 4. Both flavors: verify account read/login status refresh still updates UI after reconnect.
-5. Start OpenCode with `litter-opencode-start`, inspect helper-managed credentials with `litter-opencode-creds`, then manually connect to `http://127.0.0.1:4187` using the OpenCode form.
-6. On both flavors, verify saved OpenCode credentials plus directory scope survive relaunch and reconnect to the same server.
-7. On both flavors, in the connected OpenCode directory, verify thread read/resume, new thread creation, async prompt streaming, interrupt, approval response, and model refresh.
+5. Start Codex local, Codex direct remote, and Codex over SSH; in each case verify the New Session flow starts with server choice, then workspace choice, and the selected server row shows backend + transport + status.
+6. Start OpenCode with `litter-opencode-start`, inspect helper-managed credentials with `litter-opencode-creds`, then verify both manual local connect to `http://127.0.0.1:4187` and Tailscale discovery/manual connect to the published `https://<device>.ts.net:4187` endpoint when the device is on the same tailnet.
+7. On both flavors, verify saved OpenCode credentials plus directory scope survive relaunch and reconnect to the same server, and that editing scopes forces a reconnect onto the updated scope list.
+8. On both flavors, in the connected OpenCode directory, verify thread read/resume, new thread creation, async prompt streaming, interrupt, approval response, and model refresh.
+9. With a large OpenCode model catalog, verify search, provider grouping, pin/unpin, recent models, default-model reset, and manual refresh all remain scoped to the selected server.
 
 ## Sidebar + Picker Parity Checklist (iOS + Android)
 
@@ -64,17 +69,15 @@ Current automated checks:
 - Notification-only placeholder rows disappear on next refresh once inactive.
 - No regressions in thread switching, forking, or session search after placeholder pruning.
 
-### Directory Picker
+### Launch Flow
 
+- New Session starts with an explicit server picker, not a combined server+directory sheet.
+- Server rows show backend, transport, connection path, status, and last-used workspace hint.
+- OpenCode rows show saved scope count and keep directory-scoped language explicit.
+- Workspace step is backend-specific:
+  - Codex: remote browse with breadcrumb + `Up one level`.
+  - OpenCode: saved directory scopes first, with add/edit/remove.
 - Primary action: one-tap `Continue in <last folder>` appears when recents exist.
-- Top controls remain visible while list scrolls: connected server chip/status + search.
-- Breadcrumb + `Up one level` navigation always reflects current path.
-- Bottom CTA is sticky and mirrors path state: `Select <path>` (or disabled helper text).
-- Error state exposes both `Retry` and `Change server`.
-- `Clear recent directories` requires destructive confirmation.
-- Back behavior parity:
-  - Android: `Back` navigates up before dismissing sheet.
-- iOS: dismiss is blocked while not at root; cancel navigates up first.
 
 ### Appearance
 

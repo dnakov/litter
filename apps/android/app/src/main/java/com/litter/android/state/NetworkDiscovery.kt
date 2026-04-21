@@ -3,6 +3,7 @@ package com.litter.android.state
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import com.litter.android.util.LLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,7 @@ import kotlin.coroutines.resume
  * NSD provides mDNS seeds, Rust handles Tailscale, LAN probing, merging, and dedup.
  */
 class NetworkDiscovery(private val discovery: DiscoveryBridge) {
+    private val logTag = "NetworkDiscovery"
 
     private val _servers = MutableStateFlow<List<AppDiscoveredServer>>(emptyList())
     val servers: StateFlow<List<AppDiscoveredServer>> = _servers.asStateFlow()
@@ -68,12 +70,45 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
                     _servers.value = update.servers
                     _scanProgress.value = update.progress
                     update.progressLabel?.let { _scanProgressLabel.value = it }
+                    LLog.d(
+                        logTag,
+                        "discovery update",
+                        fields = mapOf(
+                            "kind" to update.kind.name,
+                            "source" to update.source?.name,
+                            "progress" to update.progress,
+                            "servers" to update.servers.joinToString(" | ") { server ->
+                                buildString {
+                                    append(server.displayName)
+                                    append(' ')
+                                    append(server.backendKind.name)
+                                    append(' ')
+                                    append(server.transportKind.name)
+                                    append(' ')
+                                    append(server.connectionPath.name)
+                                    append(' ')
+                                    append(server.source.name)
+                                    append(' ')
+                                    append(server.host)
+                                    append(':')
+                                    append(server.port)
+                                    if (server.requiresAuth) {
+                                        append(" auth")
+                                    }
+                                    server.opencodeBaseUrl?.takeIf { it.isNotBlank() }?.let {
+                                        append(" baseUrl=")
+                                        append(it)
+                                    }
+                                }
+                            },
+                        ),
+                    )
                     if (update.kind == ProgressiveDiscoveryUpdateKind.SCAN_COMPLETE) {
                         break
                     }
                 }
-            } catch (_: Exception) {
-                // Best-effort discovery
+            } catch (error: Exception) {
+                LLog.e(logTag, "discovery scan failed", error)
             } finally {
                 _isScanning.value = false
             }
@@ -87,14 +122,14 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
     }
 
     /**
-     * Browse for _ssh._tcp. and _codex._tcp. services via Android NSD.
+     * Browse for _ssh._tcp., _codex._tcp., and _opencode._tcp. services via Android NSD.
      * Returns resolved seeds for Rust to process.
      */
     private suspend fun discoverMdnsSeeds(context: Context): List<AppMdnsSeed> {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
             ?: return emptyList()
 
-        val serviceTypes = listOf("_ssh._tcp.", "_codex._tcp.")
+        val serviceTypes = listOf("_ssh._tcp.", "_codex._tcp.", "_opencode._tcp.")
         return coroutineScope {
             serviceTypes.map { serviceType ->
                 async {
@@ -113,6 +148,10 @@ class NetworkDiscovery(private val discovery: DiscoveryBridge) {
                                     host = host,
                                     port = resolved.port.toUShort(),
                                     serviceType = serviceType,
+                                    txt = resolved.attributes.entries.associate { entry ->
+                                        val value = entry.value?.toString(Charsets.UTF_8).orEmpty()
+                                        entry.key to value
+                                    }.filterValues { it.isNotBlank() },
                                 )
                             }
                         }

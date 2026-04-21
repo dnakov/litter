@@ -34,7 +34,7 @@ Pi / `pi-mono` support is expected later, but it is not part of this OpenCode sl
 
 ## OpenCode Server Contract
 
-OpenCode already has a client/server model. For local repo work and manual validation in this repo, start it through the shell helper alias `litter-opencode-start` from `~/.zshrc`. That alias runs the repo-local `./opencode-start` helper in tmux, which wraps `opencode serve`, enables HTTP basic auth, and defaults to port `4187`. Use `litter-opencode-status`, `litter-opencode-stop`, and `litter-opencode-creds` alongside it when testing so the server process, listener state, and helper-managed basic auth credentials stay aligned. Raw `opencode serve` still exists upstream, but repo testing should use the Litter helper path. The server publishes an OpenAPI 3.1 spec at `/doc`.
+OpenCode already has a client/server model. For local repo work and manual validation in this repo, start it through the shell helper alias `litter-opencode-start` from `~/.zshrc`. That alias runs the repo-local `./opencode-start` helper in tmux, which wraps `opencode serve`, enables HTTP basic auth, defaults to port `4187`, and when Tailscale is available also publishes the localhost-only server through `tailscale serve` on the same port. Use `litter-opencode-status`, `litter-opencode-stop`, and `litter-opencode-creds` alongside it when testing so the server process, listener state, and helper-managed basic auth credentials stay aligned. Raw `opencode serve` still exists upstream, but repo testing should use the Litter helper path. The server publishes an OpenAPI 3.1 spec at `/doc`.
 
 Authentication has two layers:
 

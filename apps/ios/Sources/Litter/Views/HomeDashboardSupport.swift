@@ -18,25 +18,23 @@ struct HomeDashboardServer: Identifiable, Equatable {
     let displayName: String
     let host: String
     let port: UInt16
+    let backendKind: SavedServerBackendKind
+    let backendLabel: String
     let isLocal: Bool
     let hasIpc: Bool
     let health: AppServerHealth
     let sourceLabel: String
+    let subtitle: String
+    let lastUsedDirectoryHint: String?
+    let defaultModelLabel: String?
+    let modelCatalogCountLabel: String
+    let knownDirectories: [String]
+    let canBrowseDirectories: Bool
     let statusLabel: String
     let statusColor: Color
 
     var deduplicationKey: String {
-        if isLocal {
-            return "local"
-        }
-
-        let normalized = host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-            .replacingOccurrences(of: "%25", with: "%")
-            .lowercased()
-
-        return normalized.isEmpty ? id : normalized
+        id
     }
 
     static func == (lhs: HomeDashboardServer, rhs: HomeDashboardServer) -> Bool {
@@ -44,10 +42,18 @@ struct HomeDashboardServer: Identifiable, Equatable {
             lhs.displayName == rhs.displayName &&
             lhs.host == rhs.host &&
             lhs.port == rhs.port &&
+            lhs.backendKind == rhs.backendKind &&
+            lhs.backendLabel == rhs.backendLabel &&
             lhs.isLocal == rhs.isLocal &&
             lhs.hasIpc == rhs.hasIpc &&
             lhs.health == rhs.health &&
             lhs.sourceLabel == rhs.sourceLabel &&
+            lhs.subtitle == rhs.subtitle &&
+            lhs.lastUsedDirectoryHint == rhs.lastUsedDirectoryHint &&
+            lhs.defaultModelLabel == rhs.defaultModelLabel &&
+            lhs.modelCatalogCountLabel == rhs.modelCatalogCountLabel &&
+            lhs.knownDirectories == rhs.knownDirectories &&
+            lhs.canBrowseDirectories == rhs.canBrowseDirectories &&
             lhs.statusLabel == rhs.statusLabel
     }
 }
@@ -83,20 +89,45 @@ enum HomeDashboardSupport {
         from servers: [AppServerSnapshot],
         activeServerId: String?
     ) -> [HomeDashboardServer] {
-        var seenServerKeys: Set<String> = []
-
         return servers
             .filter { $0.health != .disconnected || $0.connectionProgress != nil }
             .map { server in
-                HomeDashboardServer(
+                let savedServer = SavedServerStore.server(id: server.serverId)
+                let backendKind = savedServer?.backendKind ?? .codex
+                let knownDirectories = savedServer?.openCodeKnownDirectories ?? []
+                let defaultModelLabel = server.availableModels?
+                    .first(where: \.isDefault)
+                    .flatMap { model -> String? in
+                        let trimmed = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmed.isEmpty ? nil : trimmed
+                    }
+                return HomeDashboardServer(
                     id: server.serverId,
                     displayName: server.displayName,
                     host: server.host,
                     port: server.port,
+                    backendKind: backendKind,
+                    backendLabel: backendKind == .openCode ? "OpenCode" : "Codex",
                     isLocal: server.isLocal,
                     hasIpc: server.hasIpc,
                     health: server.health,
                     sourceLabel: server.connectionModeLabel,
+                    subtitle: serverSubtitle(
+                        savedServer: savedServer,
+                        backendKind: backendKind,
+                        host: server.host,
+                        port: server.port,
+                        isLocal: server.isLocal,
+                        sourceLabel: server.connectionModeLabel
+                    ),
+                    lastUsedDirectoryHint: RecentDirectoryStore.shared
+                        .recentDirectories(for: server.serverId, limit: 1)
+                        .first?
+                        .path,
+                    defaultModelLabel: defaultModelLabel,
+                    modelCatalogCountLabel: server.availableModels.map { "\($0.count) models" } ?? "Not loaded",
+                    knownDirectories: knownDirectories,
+                    canBrowseDirectories: server.canBrowseDirectories,
                     statusLabel: server.statusLabel,
                     statusColor: server.statusColor
                 )
@@ -113,19 +144,16 @@ enum HomeDashboardSupport {
                     return byName == .orderedAscending
                 }
 
+                if lhs.backendLabel != rhs.backendLabel {
+                    return lhs.backendLabel < rhs.backendLabel
+                }
+
                 return lhs.id < rhs.id
-            }
-            .filter { server in
-                seenServerKeys.insert(server.deduplicationKey).inserted
             }
     }
 
     static func serverSubtitle(for server: HomeDashboardServer) -> String {
-        if server.isLocal {
-            return "In-process server"
-        }
-
-        return "\(server.host):\(server.port) | \(server.sourceLabel)"
+        server.subtitle
     }
 
     static func workspaceLabel(for cwd: String) -> String? {
@@ -137,5 +165,31 @@ enum HomeDashboardSupport {
 
     private static func sessionTitle(for session: AppSessionSummary) -> String {
         session.displayTitle
+    }
+
+    private static func serverSubtitle(
+        savedServer: SavedServer?,
+        backendKind: SavedServerBackendKind,
+        host: String,
+        port: UInt16,
+        isLocal: Bool,
+        sourceLabel: String
+    ) -> String {
+        if backendKind == .openCode {
+            var parts = [savedServer?.openCodeBaseURL ?? "\(host):\(port)", "OpenCode"]
+            if let directory = savedServer?.openCodeKnownDirectories.first, !directory.isEmpty {
+                parts.append(directory)
+                if let count = savedServer?.openCodeKnownDirectories.count, count > 1 {
+                    parts.append("+\(count - 1) more")
+                }
+            }
+            return parts.joined(separator: " • ")
+        }
+
+        if isLocal {
+            return "In-process server"
+        }
+
+        return "\(host):\(port) • \(sourceLabel)"
     }
 }

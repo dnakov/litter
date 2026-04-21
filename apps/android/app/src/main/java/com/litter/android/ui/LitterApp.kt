@@ -22,7 +22,6 @@ import androidx.compose.ui.platform.LocalContext
 import com.litter.android.state.AppModel
 import com.litter.android.state.NetworkDiscovery
 import com.litter.android.state.VoiceRuntimeController
-import com.litter.android.state.connectionModeLabel
 import kotlinx.coroutines.launch
 import com.litter.android.ui.conversation.ApprovalOverlay
 import com.litter.android.ui.conversation.ConversationInfoScreen
@@ -32,9 +31,9 @@ import com.litter.android.ui.home.HomeDashboardScreen
 import com.litter.android.ui.home.HomeDashboardSupport
 import com.litter.android.ui.settings.AccountSheet
 import com.litter.android.ui.settings.SettingsSheet
-import com.litter.android.ui.sessions.DirectoryPickerServerOption
 import com.litter.android.ui.sessions.DirectoryPickerSheet
 import com.litter.android.ui.sessions.SessionLaunchSupport
+import com.litter.android.ui.sessions.ServerPickerSheet
 import com.litter.android.ui.sessions.SessionsUiState
 import uniffi.codex_mobile_client.ThreadKey
 
@@ -78,7 +77,8 @@ fun LitterApp(appModel: AppModel) {
         var showDiscovery by remember { mutableStateOf(false) }
         var showSettings by remember { mutableStateOf(false) }
         var showAccountForServer by remember { mutableStateOf<String?>(null) }
-        var directoryPickerServerId by remember { mutableStateOf<String?>(null) }
+        var serverPickerServerId by remember { mutableStateOf<String?>(null) }
+        var workspacePickerServerId by remember { mutableStateOf<String?>(null) }
 
         // Network discovery
         val networkDiscovery = remember { NetworkDiscovery(appModel.discovery) }
@@ -96,20 +96,14 @@ fun LitterApp(appModel: AppModel) {
         }
         val connectedServerOptions = remember(snapshot) {
             snapshot?.let { snap ->
-                HomeDashboardSupport.sortedConnectedServers(snap).map { server ->
-                    DirectoryPickerServerOption(
-                        id = server.serverId,
-                        name = server.displayName,
-                        sourceLabel = server.connectionModeLabel,
-                    )
-                }
+                SessionLaunchSupport.serverPickerOptions(HomeDashboardSupport.sortedConnectedServers(snap))
             } ?: emptyList()
         }
 
         suspend fun startNewSession(serverId: String, cwd: String) {
             val startedKey = appModel.client.startThread(
                 serverId,
-                appModel.launchState.threadStartRequest(cwd),
+                appModel.launchState.threadStartRequest(cwd, serverId = serverId),
             )
             RecentDirectoryStore(context).record(serverId, cwd)
             appModel.store.setActiveThread(startedKey)
@@ -129,7 +123,7 @@ fun LitterApp(appModel: AppModel) {
             if (targetServerId == null) {
                 showDiscovery = true
             } else {
-                directoryPickerServerId = targetServerId
+                serverPickerServerId = targetServerId
             }
         }
 
@@ -137,13 +131,19 @@ fun LitterApp(appModel: AppModel) {
             showDiscovery ||
                 showSettings ||
                 showAccountForServer != null ||
-                directoryPickerServerId != null ||
+                serverPickerServerId != null ||
+                workspacePickerServerId != null ||
                 navStack.size > 1
 
         BackHandler(enabled = interceptSystemBack) {
             when {
                 showAccountForServer != null -> showAccountForServer = null
-                directoryPickerServerId != null -> directoryPickerServerId = null
+                workspacePickerServerId != null -> {
+                    val current = workspacePickerServerId
+                    workspacePickerServerId = null
+                    serverPickerServerId = current
+                }
+                serverPickerServerId != null -> serverPickerServerId = null
                 showSettings -> showSettings = false
                 showDiscovery -> {
                     showDiscovery = false
@@ -194,7 +194,8 @@ fun LitterApp(appModel: AppModel) {
                                 val threadKey = voiceController.preparePinnedLocalVoiceThread(
                                     appModel = appModel,
                                     cwd = launchState.currentCwd.ifBlank { "~" },
-                                    model = launchState.selectedModel.ifBlank { null },
+                                    model = appModel.launchState.selectedModel(VoiceRuntimeController.LOCAL_SERVER_ID)
+                                        .ifBlank { null },
                                 )
                                 if (threadKey != null) {
                                     navigate(Route.RealtimeVoice(threadKey))
@@ -375,23 +376,48 @@ fun LitterApp(appModel: AppModel) {
             }
         }
 
-        if (directoryPickerServerId != null) {
+        if (serverPickerServerId != null) {
             ModalBottomSheet(
-                onDismissRequest = { directoryPickerServerId = null },
+                onDismissRequest = { serverPickerServerId = null },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = LitterTheme.background,
+            ) {
+                ServerPickerSheet(
+                    servers = connectedServerOptions,
+                    initialServerId = serverPickerServerId!!,
+                    onSelect = { server ->
+                        serverPickerServerId = null
+                        workspacePickerServerId = server.id
+                    },
+                    onDismiss = { serverPickerServerId = null },
+                )
+            }
+        }
+
+        if (workspacePickerServerId != null) {
+            val workspaceServer = connectedServerOptions.firstOrNull { it.id == workspacePickerServerId }
+            if (workspaceServer != null) {
+            ModalBottomSheet(
+                onDismissRequest = { workspacePickerServerId = null },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
                 containerColor = LitterTheme.background,
             ) {
                 DirectoryPickerSheet(
-                    servers = connectedServerOptions,
-                    initialServerId = directoryPickerServerId!!,
-                    onSelect = { serverId, cwd ->
-                        directoryPickerServerId = null
+                    server = workspaceServer,
+                    onSelect = { cwd ->
+                        workspacePickerServerId = null
                         scope.launch {
-                            runCatching { startNewSession(serverId, cwd) }
+                            runCatching { startNewSession(workspaceServer.id, cwd) }
                         }
                     },
-                    onDismiss = { directoryPickerServerId = null },
+                    onBack = {
+                        val current = workspacePickerServerId
+                        workspacePickerServerId = null
+                        serverPickerServerId = current
+                    },
+                    onDismiss = { workspacePickerServerId = null },
                 )
+            }
             }
         }
 

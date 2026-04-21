@@ -54,6 +54,7 @@ This uses the same auth behavior as `./opencode-start`:
 - username defaults to `opencode` unless `OPENCODE_SERVER_USERNAME` is set
 - password comes from `OPENCODE_SERVER_PASSWORD`, `.local/opencode-server.env`, or `.local/opencode-server-password`
 - `.local/opencode-server-password` is created automatically if it does not exist
+- when Tailscale is installed and connected, the helper also publishes `https://<device>.ts.net:4187` with `tailscale serve`; set `OPENCODE_TAILSCALE_SERVE=0` to keep it local-only
 
 ## Repository Layout
 

@@ -152,7 +152,21 @@ struct SavedServer: Codable, Identifiable, Equatable {
     }
 
     func toDiscoveredServer() -> DiscoveredServer? {
-        guard backendKind == .codex else { return nil }
+        if backendKind == .openCode {
+            return DiscoveredServer(
+                id: id,
+                name: name,
+                hostname: hostname,
+                port: port,
+                backendKind: .openCode,
+                source: source,
+                hasCodexServer: false,
+                wakeMAC: wakeMAC,
+                openCodeBaseURL: openCodeBaseURL,
+                openCodeRequiresAuth: openCodeBasicAuthUsername != nil || openCodeBasicAuthPassword != nil,
+                openCodeKnownDirectories: openCodeKnownDirectories
+            )
+        }
 
         let codexPort = hasCodexServer ? (preferredCodexPort ?? port) : nil
         let resolvedSshPort = sshPort ?? (hasCodexServer ? nil : port)
@@ -161,6 +175,7 @@ struct SavedServer: Codable, Identifiable, Equatable {
             name: name,
             hostname: hostname,
             port: codexPort,
+            backendKind: .codex,
             codexPorts: resolvedCodexPorts,
             sshPort: resolvedSshPort,
             source: source,
@@ -213,7 +228,9 @@ struct SavedServer: Codable, Identifiable, Equatable {
             sshPortForwardingEnabled: nil,
             websocketURL: server.websocketURL,
             rememberedByUser: rememberedByUser,
-            backendKind: .codex
+            backendKind: server.backendKind,
+            openCodeBaseURL: server.openCodeBaseURL,
+            openCodeKnownDirectories: server.openCodeKnownDirectories
         )
     }
 

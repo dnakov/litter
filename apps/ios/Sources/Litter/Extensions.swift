@@ -338,6 +338,7 @@ private extension Font.TextStyle {
 
 func serverIconName(for server: DiscoveredServer) -> String {
     if server.source == .local { return "iphone" }
+    if server.backendKind == .openCode { return "point.3.connected.trianglepath.dotted" }
 
     if let os = server.os?.lowercased() {
         if os.contains("windows") { return "pc" }

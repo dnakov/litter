@@ -25,6 +25,8 @@ struct ConversationInfoView: View {
     @State private var isRenaming = false
     @State private var stats: ConversationStatistics = .init()
     @State private var serverUsage: ServerUsageData = .init()
+    @State private var isAddingWorkspace = false
+    @State private var newWorkspacePath = ""
 
     private var thread: AppThreadSnapshot? {
         guard let threadKey else { return nil }
@@ -39,6 +41,17 @@ struct ConversationInfoView: View {
     private var allServerThreads: [AppThreadSnapshot] {
         guard let snapshot = appModel.snapshot, let sid = resolvedServerId else { return [] }
         return snapshot.threads.filter { $0.key.serverId == sid }
+    }
+
+    private var savedOpenCodeServer: SavedServer? {
+        guard let sid = resolvedServerId else { return nil }
+        guard let saved = SavedServerStore.server(id: sid), saved.backendKind == .openCode else { return nil }
+        return saved
+    }
+
+    private var openCodeProviderGroups: [(String, [ModelInfo])] {
+        guard let models = server?.availableModels else { return [] }
+        return groupModelsByProvider(models)
     }
 
     var body: some View {
@@ -91,6 +104,19 @@ struct ConversationInfoView: View {
         }
         .onAppear { computeData() }
         .onChange(of: thread?.hydratedConversationItems.count) { computeData() }
+        .alert("Add Workspace", isPresented: $isAddingWorkspace) {
+            TextField("Directory", text: $newWorkspacePath)
+            Button("Save") {
+                guard let serverId = resolvedServerId else { return }
+                SavedServerStore.appendOpenCodeDirectory(serverId: serverId, directory: newWorkspacePath)
+                newWorkspacePath = ""
+            }
+            Button("Cancel", role: .cancel) {
+                newWorkspacePath = ""
+            }
+        } message: {
+            Text("Add another workspace for this OpenCode server.")
+        }
         .alert("Rename Thread", isPresented: $isRenaming) {
             TextField("Thread name", text: $renameText)
             Button("Save") { saveRename() }
@@ -591,6 +617,59 @@ struct ConversationInfoView: View {
                             Text("+\(models.count - 8) more")
                                 .litterFont(size: 11)
                                 .foregroundStyle(LitterTheme.textMuted)
+                        }
+                    }
+                }
+
+                if let savedOpenCodeServer {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Workspaces")
+                                .litterFont(size: 12)
+                                .foregroundStyle(LitterTheme.textMuted)
+                            Spacer()
+                            Button("Add") {
+                                newWorkspacePath = ""
+                                isAddingWorkspace = true
+                            }
+                            .litterFont(.caption)
+                            .foregroundColor(LitterTheme.accent)
+                        }
+
+                        ForEach(savedOpenCodeServer.openCodeKnownDirectories, id: \.self) { directory in
+                            Text(directory)
+                                .litterFont(size: 12)
+                                .foregroundStyle(LitterTheme.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Text("Provider auth and defaults stay managed on the OpenCode server.")
+                            .litterFont(.caption2)
+                            .foregroundStyle(LitterTheme.textMuted)
+                    }
+
+                    if !openCodeProviderGroups.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Providers")
+                                .litterFont(size: 12)
+                                .foregroundStyle(LitterTheme.textMuted)
+                            ForEach(openCodeProviderGroups, id: \.0) { provider, providerModels in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Text(provider)
+                                        .litterFont(size: 12, weight: .medium)
+                                        .foregroundStyle(LitterTheme.textPrimary)
+                                        .frame(width: 72, alignment: .leading)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(providerModels.first(where: \.isDefault)?.displayName ?? providerModels.first?.displayName ?? "")
+                                            .litterFont(size: 12)
+                                            .foregroundStyle(LitterTheme.textSecondary)
+                                        Text("\(providerModels.count) models")
+                                            .litterFont(size: 10)
+                                            .foregroundStyle(LitterTheme.textMuted)
+                                    }
+                                }
+                            }
                         }
                     }
                 }

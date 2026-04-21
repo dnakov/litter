@@ -64,12 +64,14 @@ struct ConversationView: View {
     }
 
     private var pendingModelOverride: String? {
-        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = appState.selectedModel(for: activeThreadKey.serverId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
     private var pendingReasoningOverride: String? {
-        let trimmed = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = appState.reasoningEffort(for: activeThreadKey.serverId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -1261,7 +1263,8 @@ private struct ConversationInputBar: View {
     }
 
     private var pendingModelOverride: String? {
-        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = appState.selectedModel(for: snapshot.threadKey.serverId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 

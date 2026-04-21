@@ -87,6 +87,139 @@ enum SavedServerStore {
         load().filter { $0.backendKind == .openCode }
     }
 
+    static func server(id: String) -> SavedServer? {
+        load().first { $0.id == id }
+    }
+
+    static func appendOpenCodeDirectory(serverId: String, directory: String) {
+        let normalizedDirectory = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedDirectory.isEmpty else { return }
+
+        var saved = load()
+        guard let index = saved.firstIndex(where: { $0.id == serverId }),
+              saved[index].backendKind == .openCode else {
+            return
+        }
+
+        let existing = saved[index]
+        let nextDirectories = (existing.openCodeKnownDirectories + [normalizedDirectory])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .removingDuplicates()
+
+        guard nextDirectories != existing.openCodeKnownDirectories else { return }
+
+        saved[index] = SavedServer(
+            id: existing.id,
+            name: existing.name,
+            hostname: existing.hostname,
+            port: existing.port,
+            codexPorts: existing.codexPorts,
+            sshPort: existing.sshPort,
+            source: existing.source,
+            hasCodexServer: existing.hasCodexServer,
+            wakeMAC: existing.wakeMAC,
+            preferredConnectionMode: existing.preferredConnectionMode,
+            preferredCodexPort: existing.preferredCodexPort,
+            sshPortForwardingEnabled: existing.sshPortForwardingEnabled,
+            websocketURL: existing.websocketURL,
+            rememberedByUser: existing.rememberedByUser,
+            backendKind: existing.backendKind,
+            openCodeBaseURL: existing.openCodeBaseURL,
+            openCodeBasicAuthUsername: existing.openCodeBasicAuthUsername,
+            openCodeBasicAuthPassword: existing.openCodeBasicAuthPassword,
+            openCodeKnownDirectories: nextDirectories
+        )
+        save(saved)
+    }
+
+    static func replaceOpenCodeDirectory(serverId: String, previousDirectory: String, nextDirectory: String) {
+        let normalizedPrevious = previousDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedNext = nextDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPrevious.isEmpty, !normalizedNext.isEmpty else { return }
+
+        var saved = load()
+        guard let index = saved.firstIndex(where: { $0.id == serverId }),
+              saved[index].backendKind == .openCode else {
+            return
+        }
+
+        let existing = saved[index]
+        let nextDirectories = existing.openCodeKnownDirectories
+            .map { directory in
+                let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed == normalizedPrevious ? normalizedNext : trimmed
+            }
+            .filter { !$0.isEmpty }
+            .removingDuplicates()
+
+        guard nextDirectories != existing.openCodeKnownDirectories else { return }
+
+        saved[index] = SavedServer(
+            id: existing.id,
+            name: existing.name,
+            hostname: existing.hostname,
+            port: existing.port,
+            codexPorts: existing.codexPorts,
+            sshPort: existing.sshPort,
+            source: existing.source,
+            hasCodexServer: existing.hasCodexServer,
+            wakeMAC: existing.wakeMAC,
+            preferredConnectionMode: existing.preferredConnectionMode,
+            preferredCodexPort: existing.preferredCodexPort,
+            sshPortForwardingEnabled: existing.sshPortForwardingEnabled,
+            websocketURL: existing.websocketURL,
+            rememberedByUser: existing.rememberedByUser,
+            backendKind: existing.backendKind,
+            openCodeBaseURL: existing.openCodeBaseURL,
+            openCodeBasicAuthUsername: existing.openCodeBasicAuthUsername,
+            openCodeBasicAuthPassword: existing.openCodeBasicAuthPassword,
+            openCodeKnownDirectories: nextDirectories
+        )
+        save(saved)
+    }
+
+    static func removeOpenCodeDirectory(serverId: String, directory: String) {
+        let normalizedDirectory = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedDirectory.isEmpty else { return }
+
+        var saved = load()
+        guard let index = saved.firstIndex(where: { $0.id == serverId }),
+              saved[index].backendKind == .openCode else {
+            return
+        }
+
+        let existing = saved[index]
+        let nextDirectories = existing.openCodeKnownDirectories
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != normalizedDirectory }
+
+        guard nextDirectories != existing.openCodeKnownDirectories else { return }
+
+        saved[index] = SavedServer(
+            id: existing.id,
+            name: existing.name,
+            hostname: existing.hostname,
+            port: existing.port,
+            codexPorts: existing.codexPorts,
+            sshPort: existing.sshPort,
+            source: existing.source,
+            hasCodexServer: existing.hasCodexServer,
+            wakeMAC: existing.wakeMAC,
+            preferredConnectionMode: existing.preferredConnectionMode,
+            preferredCodexPort: existing.preferredCodexPort,
+            sshPortForwardingEnabled: existing.sshPortForwardingEnabled,
+            websocketURL: existing.websocketURL,
+            rememberedByUser: existing.rememberedByUser,
+            backendKind: existing.backendKind,
+            openCodeBaseURL: existing.openCodeBaseURL,
+            openCodeBasicAuthUsername: existing.openCodeBasicAuthUsername,
+            openCodeBasicAuthPassword: existing.openCodeBasicAuthPassword,
+            openCodeKnownDirectories: nextDirectories
+        )
+        save(saved)
+    }
+
     static func reconnectRecords(
         localDisplayName: String,
         rememberedOnly: Bool = false
@@ -225,6 +358,13 @@ enum SavedServerStore {
     private static func shouldReplaceLegacyLocalPlaceholder(_ server: SavedServer) -> Bool {
         server.source == .local
             && server.name.trimmingCharacters(in: .whitespacesAndNewlines) == "This Device"
+    }
+}
+
+private extension Sequence where Element: Hashable {
+    func removingDuplicates() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
     }
 }
 

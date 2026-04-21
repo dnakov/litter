@@ -17,6 +17,12 @@ use tokio::task::JoinSet;
 
 /// Default ports to probe for Codex and SSH servers.
 const DEFAULT_SCAN_PORTS: &[u16] = &[8390, 9234, 22];
+const OPEN_CODE_PORT: u16 = 4187;
+const METADATA_BACKEND_KIND: &str = "backend_kind";
+const METADATA_OPENCODE_BASE_URL: &str = "opencode_base_url";
+const METADATA_OPENCODE_REQUIRES_AUTH: &str = "opencode_requires_auth";
+const BACKEND_KIND_CODEX: &str = "codex";
+const BACKEND_KIND_OPEN_CODE: &str = "openCode";
 
 /// Maximum concurrent TCP probes during subnet scans.
 const MAX_CONCURRENT_PROBES: usize = 64;
@@ -47,6 +53,13 @@ pub struct DiscoveredServer {
     #[serde(skip)]
     pub last_seen: Instant,
     pub reachable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TailscalePeer {
+    ip: String,
+    hostname: String,
+    dns_name: Option<String>,
 }
 
 /// A resolved mDNS/Bonjour service seed supplied by the platform layer.
@@ -626,37 +639,125 @@ impl DiscoveryService {
         let ports = self.config.scan_ports.clone();
 
         let mut handles = Vec::new();
-        for (ip, hostname) in peers {
+        for peer in peers {
             let ports = ports.clone();
             handles.push(tokio::spawn(async move {
+                let TailscalePeer {
+                    ip,
+                    hostname,
+                    dns_name,
+                } = peer;
+                let mut discovered = Vec::new();
                 let reachable_ports = all_reachable_ports(&ip, &ports, timeout).await;
-                if reachable_ports.is_empty() {
-                    return None;
-                }
                 let display = if hostname.is_empty() {
                     ip.clone()
                 } else {
                     hostname.clone()
                 };
-                let mut server = server_from_reachable_ports(
-                    &ip,
-                    &reachable_ports,
-                    DiscoverySource::Tailscale,
-                    timeout,
-                )
-                .await;
-                server.display_name = display;
-                if !hostname.is_empty() {
-                    server.metadata.insert("hostname".to_string(), hostname);
+                if !reachable_ports.is_empty() {
+                    let mut server = server_from_reachable_ports(
+                        &ip,
+                        &reachable_ports,
+                        DiscoverySource::Tailscale,
+                        timeout,
+                    )
+                    .await;
+                    server.display_name = display.clone();
+                    if !hostname.is_empty() {
+                        server
+                            .metadata
+                            .insert("hostname".to_string(), hostname.clone());
+                    }
+                    discovered.push(server);
                 }
-                Some(server)
+
+                if let Some(requires_auth) =
+                    probe_opencode_server(&ip, OPEN_CODE_PORT, timeout).await
+                {
+                    let mut server = opencode_server(
+                        &ip,
+                        OPEN_CODE_PORT,
+                        display.clone(),
+                        DiscoverySource::Tailscale,
+                        true,
+                        requires_auth,
+                    );
+                    if !hostname.is_empty() {
+                        server
+                            .metadata
+                            .insert("hostname".to_string(), hostname.clone());
+                    }
+                    discovered.push(server);
+                }
+
+                let mut found_https_endpoint = false;
+                for host in tailscale_opencode_https_hosts(&hostname, dns_name.as_deref()) {
+                    let base_url = format_https_base_url(&host, OPEN_CODE_PORT);
+                    if let Some(requires_auth) = probe_opencode_base_url(&base_url, timeout).await {
+                        let mut server = opencode_server_with_base_url(
+                            &host,
+                            OPEN_CODE_PORT,
+                            display.clone(),
+                            DiscoverySource::Tailscale,
+                            true,
+                            requires_auth,
+                            base_url,
+                        );
+                        server
+                            .metadata
+                            .insert("tailscale_ip".to_string(), ip.clone());
+                        if !hostname.is_empty() {
+                            server
+                                .metadata
+                                .insert("hostname".to_string(), hostname.clone());
+                        }
+                        if let Some(dns_name) = dns_name.as_ref() {
+                            server
+                                .metadata
+                                .insert("dns_name".to_string(), dns_name.clone());
+                        }
+                        discovered.push(server);
+                        found_https_endpoint = true;
+                        break;
+                    }
+                }
+
+                if !found_https_endpoint {
+                    let tailscale_ip_base_url = format_https_base_url(&ip, OPEN_CODE_PORT);
+                    if let Some(requires_auth) =
+                        probe_opencode_base_url(&tailscale_ip_base_url, timeout).await
+                    {
+                        let mut server = opencode_server_with_base_url(
+                            &ip,
+                            OPEN_CODE_PORT,
+                            display.clone(),
+                            DiscoverySource::Tailscale,
+                            true,
+                            requires_auth,
+                            tailscale_ip_base_url,
+                        );
+                        if !hostname.is_empty() {
+                            server
+                                .metadata
+                                .insert("hostname".to_string(), hostname.clone());
+                        }
+                        if let Some(dns_name) = dns_name.as_ref() {
+                            server
+                                .metadata
+                                .insert("dns_name".to_string(), dns_name.clone());
+                        }
+                        discovered.push(server);
+                    }
+                }
+
+                (!discovered.is_empty()).then_some(discovered)
             }));
         }
 
         let mut results = Vec::new();
         for handle in handles {
-            if let Ok(Some(server)) = handle.await {
-                results.push(server);
+            if let Ok(Some(servers)) = handle.await {
+                results.extend(servers);
             }
         }
         results
@@ -681,7 +782,7 @@ impl DiscoveryService {
     async fn collect_browser_mdns_seeds(&self) -> Vec<MdnsSeed> {
         let mut seeds = Vec::new();
 
-        for service_type in &["_codex._tcp.", "_ssh._tcp."] {
+        for service_type in &["_codex._tcp.", "_ssh._tcp.", "_opencode._tcp."] {
             let mut rx = self.mdns_browser.browse(service_type);
             let deadline = tokio::time::sleep(Duration::from_secs(5));
             tokio::pin!(deadline);
@@ -723,6 +824,117 @@ impl DiscoveryService {
             let display = clean_hostname(&seed.name);
             let is_codex_service = seed.service_type.starts_with("_codex.");
             let is_ssh_service = seed.service_type.starts_with("_ssh.");
+            let is_opencode_service = seed.service_type.starts_with("_opencode.");
+
+            if is_opencode_service {
+                let port = seed.port.unwrap_or(OPEN_CODE_PORT);
+                let display_name = if display.is_empty() {
+                    host.clone()
+                } else {
+                    display
+                };
+                let advertised_base_url = seed
+                    .txt
+                    .get("base_url")
+                    .or_else(|| seed.txt.get("url"))
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                let (reachable, requires_auth, mut server) =
+                    if let Some(base_url) = advertised_base_url {
+                        match probe_opencode_base_url(&base_url, self.config.probe_timeout).await {
+                            Some(requires_auth) => (
+                                true,
+                                requires_auth,
+                                opencode_server_with_base_url(
+                                    &host,
+                                    port,
+                                    display_name,
+                                    DiscoverySource::Bonjour,
+                                    true,
+                                    requires_auth,
+                                    base_url,
+                                ),
+                            ),
+                            None => {
+                                let reachable =
+                                    any_reachable_port(&host, &[port], self.config.probe_timeout)
+                                        .await;
+                                let requires_auth = if reachable {
+                                    probe_opencode_server(&host, port, self.config.probe_timeout)
+                                        .await
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                };
+                                (
+                                    reachable,
+                                    requires_auth,
+                                    opencode_server(
+                                        &host,
+                                        port,
+                                        display_name,
+                                        DiscoverySource::Bonjour,
+                                        reachable,
+                                        requires_auth,
+                                    ),
+                                )
+                            }
+                        }
+                    } else {
+                        let reachable =
+                            any_reachable_port(&host, &[port], self.config.probe_timeout).await;
+                        let requires_auth = if reachable {
+                            probe_opencode_server(&host, port, self.config.probe_timeout)
+                                .await
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        };
+                        (
+                            reachable,
+                            requires_auth,
+                            opencode_server(
+                                &host,
+                                port,
+                                display_name,
+                                DiscoverySource::Bonjour,
+                                reachable,
+                                requires_auth,
+                            ),
+                        )
+                    };
+                server
+                    .metadata
+                    .insert("service_type".to_string(), seed.service_type);
+                if let Some(service_name) = seed
+                    .txt
+                    .get("service_name")
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    server
+                        .metadata
+                        .insert("service_name".to_string(), service_name.to_string());
+                }
+                for (key, value) in seed.txt {
+                    if value.trim().is_empty() {
+                        continue;
+                    }
+                    server.metadata.entry(key).or_insert(value);
+                }
+                server.reachable = reachable;
+                if requires_auth {
+                    server.metadata.insert(
+                        METADATA_OPENCODE_REQUIRES_AUTH.to_string(),
+                        "true".to_string(),
+                    );
+                }
+                results.push(server);
+                continue;
+            }
 
             let mut codex_port = if is_codex_service { seed.port } else { None };
             let ssh_port = if is_ssh_service {
@@ -908,6 +1120,71 @@ async fn all_reachable_ports(host: &str, ports: &[u16], timeout: Duration) -> Ve
         .collect()
 }
 
+async fn probe_opencode_server(host: &str, port: u16, timeout: Duration) -> Option<bool> {
+    let addr = format!("{}:{}", host, port);
+    let mut stream = tokio::time::timeout(timeout, TcpStream::connect(&addr))
+        .await
+        .ok()?
+        .ok()?;
+
+    let request = format!(
+        "GET /global/health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: application/json\r\n\r\n",
+        host
+    );
+    tokio::time::timeout(timeout, stream.write_all(request.as_bytes()))
+        .await
+        .ok()?
+        .ok()?;
+
+    let mut buf = [0u8; 256];
+    let read_timeout = timeout.min(Duration::from_secs(1));
+    let n = tokio::time::timeout(read_timeout, stream.read(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    if n == 0 {
+        return None;
+    }
+
+    let response = String::from_utf8_lossy(&buf[..n]);
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())?;
+
+    match status {
+        200..=299 => Some(false),
+        401 | 403 => Some(true),
+        _ => None,
+    }
+}
+
+async fn probe_opencode_base_url(base_url: &str, timeout: Duration) -> Option<bool> {
+    let mut url = url::Url::parse(base_url).ok()?;
+    url.set_path("/global/health");
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if allows_insecure_tailnet_https(&url) {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    let client = builder.build().ok()?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .ok()?;
+
+    match response.status().as_u16() {
+        200..=299 => Some(false),
+        401 | 403 => Some(true),
+        _ => None,
+    }
+}
+
 /// Well-known SSH port.
 const SSH_PORT: u16 = 22;
 
@@ -951,6 +1228,62 @@ async fn server_from_reachable_ports(
         metadata,
         last_seen: Instant::now(),
         reachable: true,
+    }
+}
+
+fn opencode_server(
+    host: &str,
+    port: u16,
+    display_name: String,
+    source: DiscoverySource,
+    reachable: bool,
+    requires_auth: bool,
+) -> DiscoveredServer {
+    opencode_server_with_base_url(
+        host,
+        port,
+        display_name,
+        source,
+        reachable,
+        requires_auth,
+        format_http_base_url(host, port),
+    )
+}
+
+fn opencode_server_with_base_url(
+    host: &str,
+    port: u16,
+    display_name: String,
+    source: DiscoverySource,
+    reachable: bool,
+    requires_auth: bool,
+    base_url: String,
+) -> DiscoveredServer {
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        METADATA_BACKEND_KIND.to_string(),
+        BACKEND_KIND_OPEN_CODE.to_string(),
+    );
+    metadata.insert(METADATA_OPENCODE_BASE_URL.to_string(), base_url);
+    if requires_auth {
+        metadata.insert(
+            METADATA_OPENCODE_REQUIRES_AUTH.to_string(),
+            "true".to_string(),
+        );
+    }
+
+    DiscoveredServer {
+        id: format!("network-opencode-{}:{}", host, port),
+        display_name,
+        host: host.to_string(),
+        port,
+        codex_port: None,
+        codex_ports: Vec::new(),
+        ssh_port: None,
+        source,
+        metadata,
+        last_seen: Instant::now(),
+        reachable,
     }
 }
 
@@ -1024,7 +1357,83 @@ fn primary_port(codex_port: Option<u16>, ssh_port: Option<u16>) -> u16 {
 }
 
 fn discovery_identity_key(server: &DiscoveredServer) -> String {
-    normalized_host_key(&server.host).unwrap_or_else(|| server.id.clone())
+    let host = normalized_host_key(&server.host).unwrap_or_else(|| server.id.clone());
+    match backend_kind(server) {
+        BACKEND_KIND_OPEN_CODE => format!("opencode:{}:{}", host, server.port),
+        _ => format!("codex:{}", host),
+    }
+}
+
+fn backend_kind(server: &DiscoveredServer) -> &str {
+    server
+        .metadata
+        .get(METADATA_BACKEND_KIND)
+        .map(String::as_str)
+        .unwrap_or(BACKEND_KIND_CODEX)
+}
+
+fn format_http_base_url(host: &str, port: u16) -> String {
+    format_base_url("http", host, port)
+}
+
+fn format_https_base_url(host: &str, port: u16) -> String {
+    format_base_url("https", host, port)
+}
+
+fn allows_insecure_tailnet_https(base_url: &url::Url) -> bool {
+    if base_url.scheme() != "https" {
+        return false;
+    }
+
+    let Some(host) = base_url.host_str() else {
+        return false;
+    };
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    is_tailscale_ip(ip)
+}
+
+fn is_tailscale_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+        }
+    }
+}
+
+fn format_base_url(scheme: &str, host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') && !host.ends_with(']') {
+        format!("{scheme}://[{}]:{}", host, port)
+    } else {
+        format!("{scheme}://{}:{}", host, port)
+    }
+}
+
+fn tailscale_opencode_https_hosts(hostname: &str, dns_name: Option<&str>) -> Vec<String> {
+    let mut hosts = Vec::new();
+    for candidate in [dns_name, Some(hostname)] {
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let trimmed = candidate.trim().trim_end_matches('.');
+        if trimmed.is_empty() {
+            continue;
+        }
+        if hosts
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+        hosts.push(trimmed.to_string());
+    }
+    hosts
 }
 
 fn normalized_host_key(raw: &str) -> Option<String> {
@@ -1125,7 +1534,7 @@ fn parse_ipv4_hint(value: &str) -> Option<Ipv4Addr> {
 ///
 /// Talks raw HTTP/1.1 over a TCP connection to the Tailscale local API daemon.
 /// On macOS this is at 127.0.0.1:41112, on Linux/Android at 100.100.100.100:80.
-async fn fetch_tailscale_peers() -> Result<Vec<(String, String)>, String> {
+async fn fetch_tailscale_peers() -> Result<Vec<TailscalePeer>, String> {
     // Try both known endpoints.
     let endpoints = [
         ("100.100.100.100", 80), // Linux / Android
@@ -1143,7 +1552,7 @@ async fn fetch_tailscale_peers() -> Result<Vec<(String, String)>, String> {
 }
 
 /// Raw HTTP GET to the Tailscale local API, parsing peer list from JSON.
-async fn fetch_tailscale_status(host: &str, port: u16) -> Result<Vec<(String, String)>, String> {
+async fn fetch_tailscale_status(host: &str, port: u16) -> Result<Vec<TailscalePeer>, String> {
     let addr = format!("{}:{}", host, port);
     let mut stream = tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(&addr))
         .await
@@ -1174,56 +1583,78 @@ async fn fetch_tailscale_status(host: &str, port: u16) -> Result<Vec<(String, St
         .ok_or("no HTTP body")?;
     let body = &response[body_start..];
 
+    parse_tailscale_status(body)
+}
+
+fn parse_tailscale_status(body: &str) -> Result<Vec<TailscalePeer>, String> {
     let json: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("JSON parse error: {}", e))?;
+
+    let mut results = Vec::new();
 
     let peers_obj = json
         .get("Peer")
         .and_then(|v| v.as_object())
         .ok_or("no Peer object")?;
+    for peer in peers_obj.values() {
+        collect_tailscale_peer(peer, true, &mut results);
+    }
 
-    let mut results = Vec::new();
-    for (_key, peer) in peers_obj {
-        // Skip offline peers.
-        if let Some(false) = peer.get("Online").and_then(|v| v.as_bool()) {
-            continue;
-        }
-
-        let hostname = peer
-            .get("HostName")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        let hostname = if hostname.is_empty() {
-            peer.get("DNSName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .trim_end_matches('.')
-                .to_string()
-        } else {
-            hostname
-        };
-
-        let ips = match peer.get("TailscaleIPs").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
-            None => continue,
-        };
-
-        for ip_val in ips {
-            if let Some(ip_str) = ip_val.as_str() {
-                let ip_str = ip_str.trim();
-                if is_likely_ipv4(ip_str) {
-                    results.push((ip_str.to_string(), hostname.clone()));
-                    break;
-                }
-            }
-        }
+    if let Some(self_node) = json.get("Self") {
+        collect_tailscale_peer(self_node, false, &mut results);
     }
 
     Ok(results)
+}
+
+fn collect_tailscale_peer(
+    peer: &serde_json::Value,
+    skip_offline: bool,
+    results: &mut Vec<TailscalePeer>,
+) {
+    if skip_offline && matches!(peer.get("Online").and_then(|v| v.as_bool()), Some(false)) {
+        return;
+    }
+
+    let hostname = peer
+        .get("HostName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let dns_name = peer
+        .get("DNSName")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .map(|value| value.trim_end_matches('.'))
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let hostname = if hostname.is_empty() {
+        dns_name.clone().unwrap_or_default()
+    } else {
+        hostname
+    };
+
+    let ips = match peer.get("TailscaleIPs").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return,
+    };
+
+    for ip_val in ips {
+        if let Some(ip_str) = ip_val.as_str() {
+            let ip_str = ip_str.trim();
+            if is_likely_ipv4(ip_str) {
+                results.push(TailscalePeer {
+                    ip: ip_str.to_string(),
+                    hostname: hostname.clone(),
+                    dns_name: dns_name.clone(),
+                });
+                break;
+            }
+        }
+    }
 }
 
 /// Parse ARP table to find candidate IPs.
@@ -1491,6 +1922,68 @@ mod tests {
     async fn test_tailscale_peers_handles_unavailable() {
         let result = fetch_tailscale_peers().await;
         let _ = result;
+    }
+
+    #[test]
+    fn test_parse_tailscale_status_preserves_dns_name() {
+        let body = r#"{
+            "Peer": {
+                "peer-1": {
+                    "Online": true,
+                    "HostName": "franklins-macbook-pro",
+                    "DNSName": "franklins-macbook-pro.tail22b856.ts.net.",
+                    "TailscaleIPs": ["100.96.20.67"]
+                }
+            }
+        }"#;
+
+        let peers = parse_tailscale_status(body).expect("parse tailscale status");
+        assert_eq!(
+            peers,
+            vec![TailscalePeer {
+                ip: "100.96.20.67".to_string(),
+                hostname: "franklins-macbook-pro".to_string(),
+                dns_name: Some("franklins-macbook-pro.tail22b856.ts.net".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_tailscale_status_includes_self_node() {
+        let body = r#"{
+            "Self": {
+                "Online": true,
+                "HostName": "franklins-macbook-pro",
+                "DNSName": "franklins-macbook-pro.tail22b856.ts.net.",
+                "TailscaleIPs": ["100.96.20.67"]
+            },
+            "Peer": {}
+        }"#;
+
+        let peers = parse_tailscale_status(body).expect("parse tailscale status");
+        assert_eq!(
+            peers,
+            vec![TailscalePeer {
+                ip: "100.96.20.67".to_string(),
+                hostname: "franklins-macbook-pro".to_string(),
+                dns_name: Some("franklins-macbook-pro.tail22b856.ts.net".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_tailscale_https_hosts_prefers_dns_name_without_duplicates() {
+        let hosts = tailscale_opencode_https_hosts(
+            "franklins-macbook-pro",
+            Some("franklins-macbook-pro.tail22b856.ts.net."),
+        );
+        assert_eq!(
+            hosts,
+            vec![
+                "franklins-macbook-pro.tail22b856.ts.net".to_string(),
+                "franklins-macbook-pro".to_string(),
+            ]
+        );
     }
 
     #[test]

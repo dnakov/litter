@@ -8,7 +8,10 @@ use crate::reconnect::{
     ReconnectResult, SavedServerRecord, SshCredentialProvider, compute_reconnect_plan,
     execute_reconnect_plan,
 };
-use crate::session::connection::{InProcessConfig, ServerConfig};
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind, InProcessConfig,
+    ServerConfig,
+};
 use crate::store::ServerHealthSnapshot;
 use crate::store::snapshot::AppLifecyclePhaseSnapshot;
 use codex_app_server_protocol as upstream;
@@ -156,6 +159,10 @@ impl ReconnectController {
                 websocket_url: None,
                 is_local: true,
                 tls: false,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Local,
+                connection_path: AppServerConnectionPath::Local,
+                known_directories: Vec::new(),
             };
             match self
                 .inner
@@ -260,6 +267,10 @@ impl ReconnectController {
                 websocket_url: None,
                 is_local: true,
                 tls: false,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Local,
+                connection_path: AppServerConnectionPath::Local,
+                known_directories: Vec::new(),
             };
             // Disconnect existing first
             self.inner.disconnect_server(&server_id);
@@ -320,6 +331,10 @@ impl ReconnectController {
                 websocket_url: None,
                 is_local: false,
                 tls: false,
+                backend_kind: snap_server.backend_kind,
+                transport_kind: snap_server.transport_kind,
+                connection_path: snap_server.connection_path,
+                known_directories: snap_server.known_directories.clone(),
             };
             return match self.inner.connect_remote(config).await {
                 Ok(_) => ReconnectResult {

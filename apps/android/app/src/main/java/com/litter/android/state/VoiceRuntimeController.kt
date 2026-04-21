@@ -43,7 +43,7 @@ class VoiceRuntimeController {
 
     companion object {
         val shared: VoiceRuntimeController by lazy { VoiceRuntimeController() }
-        private const val LOCAL_SERVER_ID = "local"
+        const val LOCAL_SERVER_ID = "local"
         private const val VOICE_PREFS_NAME = "litter.voice"
         private const val PERSISTED_LOCAL_VOICE_THREAD_ID_KEY = "litter.voice.local.thread_id"
         private const val TARGET_SAMPLE_RATE = 24000
@@ -514,7 +514,7 @@ class VoiceRuntimeController {
         model: String? = null,
     ): ThreadKey? {
         val serverId = ensureLocalServerConnected(appModel) ?: return null
-        val launchConfig = appModel.launchState.launchConfig(modelOverride = model)
+        val launchConfig = appModel.launchState.launchConfig(modelOverride = model, serverId = serverId)
 
         persistedLocalVoiceThreadId(appModel)?.let { storedThreadId ->
             val key = ThreadKey(serverId = serverId, threadId = storedThreadId)
@@ -683,7 +683,7 @@ class VoiceRuntimeController {
                 try {
                     val key = appModel.client.startThread(
                         action.targetServerId,
-                        appModel.launchState.threadStartRequest(action.cwd),
+                        appModel.launchState.threadStartRequest(action.cwd, serverId = action.targetServerId),
                     )
                     handoffManager?.uniffiReportThreadCreated(action.handoffId, action.targetServerId, key.threadId)
                 } catch (e: Exception) {

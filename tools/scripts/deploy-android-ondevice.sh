@@ -6,7 +6,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 APP_ID="com.sigkitten.litter.android"
 MAIN_ACTIVITY="com.litter.android.MainActivity"
-APK_PATH="$REPO_DIR/apps/android/app/build/outputs/apk/onDevice/debug/app-onDevice-debug.apk"
+APK_PATH="$REPO_DIR/apps/android/app/build/outputs/apk/debug/app-debug.apk"
 
 SERIAL="${ANDROID_SERIAL:-}"
 SKIP_RUST=0
@@ -16,7 +16,7 @@ usage() {
   cat <<'EOF'
 Usage: ./tools/scripts/deploy-android-ondevice.sh [options]
 
-Builds Android Rust bridge libs, assembles onDevice debug APK, installs to a device,
+Builds Android Rust bridge libs, assembles the debug APK, installs to a device,
 and launches the app.
 
 Options:
@@ -138,8 +138,8 @@ if [ "$SKIP_RUST" -eq 0 ]; then
   "$REPO_DIR/tools/scripts/build-android-rust.sh"
 fi
 
-echo "==> Assembling onDevice debug APK..."
-gradle -p "$REPO_DIR/apps/android" :app:assembleOnDeviceDebug
+echo "==> Assembling debug APK..."
+gradle -p "$REPO_DIR/apps/android" :app:assembleDebug
 
 if [ ! -f "$APK_PATH" ]; then
   echo "error: APK not found at $APK_PATH" >&2

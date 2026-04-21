@@ -14,10 +14,8 @@ object HomeDashboardSupport {
 
     /**
      * Connected servers sorted by: active server first, then alphabetical.
-     * Deduplicates by normalized host.
      */
     fun sortedConnectedServers(snapshot: AppSnapshotRecord): List<AppServerSnapshot> {
-        val seen = mutableSetOf<String>()
         return snapshot.servers
             .filter { it.health != AppServerHealth.DISCONNECTED || it.connectionProgress != null }
             .sortedWith(compareBy<AppServerSnapshot> {
@@ -26,11 +24,7 @@ object HomeDashboardSupport {
                     key.serverId
                 }
                 if (it.serverId == activeServerId) 0 else 1
-            }.thenBy { it.displayName.lowercase() })
-            .filter { server ->
-                val hostKey = "${server.host.lowercase()}:${server.port}"
-                seen.add(hostKey)
-            }
+            }.thenBy { it.backendKind.name }.thenBy { it.displayName.lowercase() })
     }
 
     /**

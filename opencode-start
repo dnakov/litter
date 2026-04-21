@@ -38,7 +38,7 @@ ensure_password_file() {
 }
 
 usage() {
-  printf 'Usage: %s [--hostname HOST] [--port PORT] [--pure|--no-pure] [--print-logs]\n\n' "$PROGRAM_NAME"
+  printf 'Usage: %s [--hostname HOST] [--port PORT] [--pure|--no-pure] [--print-logs] [--tailscale-serve|--no-tailscale-serve] [--bonjour-advertise|--no-bonjour-advertise]\n\n' "$PROGRAM_NAME"
 
   cat <<'EOF'
 Starts `opencode serve` with HTTP basic auth enabled through
@@ -57,6 +57,9 @@ Optional env vars:
 - OPENCODE_HOSTNAME
 - OPENCODE_PORT
 - OPENCODE_PURE=0|1
+- OPENCODE_TAILSCALE_SERVE=auto|0|1
+- OPENCODE_BONJOUR_ADVERTISE=auto|0|1
+- OPENCODE_SERVICE_NAME
 
 EOF
 }
@@ -64,7 +67,16 @@ EOF
 HOSTNAME="${OPENCODE_HOSTNAME:-127.0.0.1}"
 PORT="${OPENCODE_PORT:-4187}"
 PURE_FLAG="${OPENCODE_PURE:-1}"
+TAILSCALE_SERVE_MODE="${OPENCODE_TAILSCALE_SERVE:-auto}"
+BONJOUR_ADVERTISE_MODE="${OPENCODE_BONJOUR_ADVERTISE:-auto}"
+SERVICE_NAME="${OPENCODE_SERVICE_NAME:-OpenCode $(hostname -s)}"
 PRINT_LOGS=0
+TAILSCALE_SERVE_ACTIVE=0
+TAILSCALE_PUBLISHED_URL=""
+BONJOUR_PUBLISH_ACTIVE=0
+BONJOUR_PUBLISH_PID=""
+BONJOUR_BASE_URL=""
+OPENCODE_PID=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -86,6 +98,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --print-logs)
       PRINT_LOGS=1
+      shift
+      ;;
+    --tailscale-serve)
+      TAILSCALE_SERVE_MODE=1
+      shift
+      ;;
+    --no-tailscale-serve)
+      TAILSCALE_SERVE_MODE=0
+      shift
+      ;;
+    --bonjour-advertise)
+      BONJOUR_ADVERTISE_MODE=1
+      shift
+      ;;
+    --no-bonjour-advertise)
+      BONJOUR_ADVERTISE_MODE=0
       shift
       ;;
     -h|--help)
@@ -114,6 +142,179 @@ OPENCODE_SERVER_USERNAME="${OPENCODE_SERVER_USERNAME:-opencode}"
 export OPENCODE_SERVER_PASSWORD
 export OPENCODE_SERVER_USERNAME
 
+is_tailscale_serve_enabled() {
+  case "$(printf '%s' "$TAILSCALE_SERVE_MODE" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on|auto)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      echo "Invalid OPENCODE_TAILSCALE_SERVE value: $TAILSCALE_SERVE_MODE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+tailscale_auto_mode() {
+  [[ "$(printf '%s' "$TAILSCALE_SERVE_MODE" | tr '[:upper:]' '[:lower:]')" == "auto" ]]
+}
+
+is_bonjour_advertise_enabled() {
+  case "$(printf '%s' "$BONJOUR_ADVERTISE_MODE" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on|auto)
+      return 0
+      ;;
+    0|false|no|off)
+      return 1
+      ;;
+    *)
+      echo "Invalid OPENCODE_BONJOUR_ADVERTISE value: $BONJOUR_ADVERTISE_MODE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+bonjour_auto_mode() {
+  [[ "$(printf '%s' "$BONJOUR_ADVERTISE_MODE" | tr '[:upper:]' '[:lower:]')" == "auto" ]]
+}
+
+tailscale_serve_url() {
+  local port="$1"
+  local python_bin
+  local status_json
+  python_bin="$(command -v python3 || true)"
+  [[ -n "$python_bin" ]] || return 1
+  status_json="$(tailscale serve status --json 2>/dev/null)" || return 1
+
+  "$python_bin" - "$port" "$status_json" <<'PY'
+import json
+import sys
+
+port = sys.argv[1]
+data = json.loads(sys.argv[2])
+target = f"http://127.0.0.1:{port}"
+
+for section in ("Web", "Foreground", "Background"):
+    entries = data.get(section) or {}
+    if not isinstance(entries, dict):
+        continue
+    for listener, config in entries.items():
+        handlers = config.get("Handlers") if isinstance(config, dict) else None
+        if not isinstance(handlers, dict):
+            continue
+        for handler in handlers.values():
+            if isinstance(handler, dict) and handler.get("Proxy") == target:
+                if listener.startswith(("http://", "https://")):
+                    print(listener)
+                else:
+                    print(f"https://{listener}")
+                raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+publish_tailscale_serve() {
+  is_tailscale_serve_enabled || return 0
+
+  if ! command -v tailscale >/dev/null 2>&1; then
+    if tailscale_auto_mode; then
+      return 0
+    fi
+    echo "tailscale not found; cannot publish OpenCode to the tailnet" >&2
+    return 1
+  fi
+
+  if ! tailscale ip -4 >/dev/null 2>&1; then
+    if tailscale_auto_mode; then
+      return 0
+    fi
+    echo "tailscale is not connected; cannot publish OpenCode to the tailnet" >&2
+    return 1
+  fi
+
+  local target="http://127.0.0.1:${PORT}"
+  if ! tailscale serve --bg --yes --https "$PORT" "$target" >/dev/null 2>&1; then
+    if tailscale_auto_mode; then
+      echo "Warning: failed to publish OpenCode with tailscale serve; continuing with local-only server." >&2
+      return 0
+    fi
+    echo "Failed to publish OpenCode with tailscale serve." >&2
+    return 1
+  fi
+
+  TAILSCALE_SERVE_ACTIVE=1
+  TAILSCALE_PUBLISHED_URL="$(tailscale_serve_url "$PORT" || true)"
+}
+
+bonjour_base_url() {
+  if [[ -n "$TAILSCALE_PUBLISHED_URL" ]]; then
+    printf '%s\n' "$TAILSCALE_PUBLISHED_URL"
+    return 0
+  fi
+
+  case "$HOSTNAME" in
+    127.0.0.1|localhost|::1)
+      return 1
+      ;;
+  esac
+
+  printf 'http://%s:%s\n' "$HOSTNAME" "$PORT"
+}
+
+publish_bonjour_service() {
+  is_bonjour_advertise_enabled || return 0
+
+  if ! command -v dns-sd >/dev/null 2>&1; then
+    if bonjour_auto_mode; then
+      return 0
+    fi
+    echo "dns-sd not found; cannot advertise OpenCode on Bonjour" >&2
+    return 1
+  fi
+
+  local base_url
+  if ! base_url="$(bonjour_base_url)"; then
+    if bonjour_auto_mode; then
+      return 0
+    fi
+    echo "No reachable OpenCode base URL is available for Bonjour advertisement." >&2
+    return 1
+  fi
+
+  dns-sd -R "$SERVICE_NAME" _opencode._tcp local "$PORT" \
+    "base_url=$base_url" \
+    "backend=openCode" \
+    "service_name=$SERVICE_NAME" \
+    "requires_auth=true" >/dev/null 2>&1 &
+  BONJOUR_PUBLISH_PID="$!"
+  BONJOUR_PUBLISH_ACTIVE=1
+  BONJOUR_BASE_URL="$base_url"
+}
+
+cleanup() {
+  local exit_code="${1:-0}"
+  trap - EXIT INT TERM
+
+  if [[ -n "$OPENCODE_PID" ]] && kill -0 "$OPENCODE_PID" >/dev/null 2>&1; then
+    kill "$OPENCODE_PID" >/dev/null 2>&1 || true
+    wait "$OPENCODE_PID" 2>/dev/null || true
+  fi
+
+  if [[ "$TAILSCALE_SERVE_ACTIVE" == "1" ]]; then
+    tailscale serve --https "$PORT" off >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$BONJOUR_PUBLISH_ACTIVE" == "1" ]] && [[ -n "$BONJOUR_PUBLISH_PID" ]]; then
+    kill "$BONJOUR_PUBLISH_PID" >/dev/null 2>&1 || true
+    wait "$BONJOUR_PUBLISH_PID" 2>/dev/null || true
+  fi
+
+  exit "$exit_code"
+}
+
 echo "Starting OpenCode server with HTTP basic auth enabled."
 echo "  URL: http://${HOSTNAME}:${PORT}"
 echo "  Username: ${OPENCODE_SERVER_USERNAME}"
@@ -133,4 +334,20 @@ if [[ "$PRINT_LOGS" == "1" ]]; then
   ARGS+=(--print-logs)
 fi
 
-exec opencode "${ARGS[@]}"
+publish_tailscale_serve
+publish_bonjour_service
+
+if [[ -n "$TAILSCALE_PUBLISHED_URL" ]]; then
+  echo "  Tailscale URL: ${TAILSCALE_PUBLISHED_URL}"
+fi
+if [[ -n "$BONJOUR_BASE_URL" ]]; then
+  echo "  Bonjour Base URL: ${BONJOUR_BASE_URL}"
+fi
+
+trap 'cleanup $?' EXIT
+trap 'cleanup 130' INT TERM
+
+opencode "${ARGS[@]}" &
+OPENCODE_PID="$!"
+wait "$OPENCODE_PID"
+cleanup "$?"

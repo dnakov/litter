@@ -37,26 +37,28 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
     private var selectedModelBinding: Binding<String> {
         Binding(
             get: {
-                let pending = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pending = appState.selectedModel(for: snapshot.threadKey.serverId)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty {
                     return pending
                 }
                 return snapshot.threadModel.trimmingCharacters(in: .whitespacesAndNewlines)
             },
-            set: { appState.selectedModel = $0 }
+            set: { appState.setSelectedModel($0, for: snapshot.threadKey.serverId) }
         )
     }
 
     private var reasoningEffortBinding: Binding<String> {
         Binding(
             get: {
-                let pending = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pending = appState.reasoningEffort(for: snapshot.threadKey.serverId)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !pending.isEmpty {
                     return pending
                 }
                 return snapshot.threadReasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             },
-            set: { appState.reasoningEffort = $0 }
+            set: { appState.setReasoningEffort($0, for: snapshot.threadKey.serverId) }
         )
     }
 

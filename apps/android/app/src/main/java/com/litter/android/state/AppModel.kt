@@ -327,6 +327,23 @@ class AppModel private constructor(context: android.content.Context) {
         }
     }
 
+    suspend fun refreshAvailableModels(serverId: String) {
+        val server = snapshot.value?.servers?.firstOrNull { it.serverId == serverId } ?: return
+        if (!server.isConnected) return
+        if (!loadingModelServerIds.add(serverId)) return
+        try {
+            client.refreshModels(
+                serverId,
+                AppRefreshModelsRequest(cursor = null, limit = null, includeHidden = false),
+            )
+            refreshSnapshot()
+        } catch (e: Exception) {
+            _lastError.value = e.message
+        } finally {
+            loadingModelServerIds.remove(serverId)
+        }
+    }
+
     suspend fun loadRateLimitsIfNeeded(serverId: String) {
         val server = snapshot.value?.servers?.firstOrNull { it.serverId == serverId } ?: return
         if (!server.isConnected) return

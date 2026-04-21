@@ -29,6 +29,8 @@ final class AppState {
     var showSettings = false
     var pendingThreadNavigation: ThreadKey?
     private var threadPermissionOverrides: [String: ThreadPermissionOverride] = [:]
+    private var modelOverridesByServerId: [String: String] = [:]
+    private var reasoningOverridesByServerId: [String: String] = [:]
     var approvalPolicy: String {
         didSet {
             UserDefaults.standard.set(approvalPolicy, forKey: Self.approvalPolicyKey)
@@ -55,6 +57,46 @@ final class AppState {
 
     func isSessionFolderCollapsed(_ folderPath: String) -> Bool {
         collapsedSessionFolders.contains(folderPath)
+    }
+
+    func selectedModel(for serverId: String?) -> String {
+        if let serverId = normalizedServerId(serverId),
+           let override = modelOverridesByServerId[serverId],
+           !override.isEmpty {
+            return override
+        }
+        return selectedModel
+    }
+
+    func reasoningEffort(for serverId: String?) -> String {
+        if let serverId = normalizedServerId(serverId),
+           let override = reasoningOverridesByServerId[serverId],
+           !override.isEmpty {
+            return override
+        }
+        return reasoningEffort
+    }
+
+    func setSelectedModel(_ model: String?, for serverId: String?) {
+        let normalizedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        selectedModel = normalizedModel
+        guard let serverId = normalizedServerId(serverId) else { return }
+        if normalizedModel.isEmpty {
+            modelOverridesByServerId.removeValue(forKey: serverId)
+        } else {
+            modelOverridesByServerId[serverId] = normalizedModel
+        }
+    }
+
+    func setReasoningEffort(_ effort: String?, for serverId: String?) {
+        let normalizedEffort = effort?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        reasoningEffort = normalizedEffort
+        guard let serverId = normalizedServerId(serverId) else { return }
+        if normalizedEffort.isEmpty {
+            reasoningOverridesByServerId.removeValue(forKey: serverId)
+        } else {
+            reasoningOverridesByServerId[serverId] = normalizedEffort
+        }
     }
 
     func approvalPolicy(for threadKey: ThreadKey?) -> String {
@@ -151,5 +193,11 @@ final class AppState {
     private func displayValue(for sandboxPolicy: AppSandboxPolicy?) -> String {
         guard let sandboxPolicy else { return Self.inheritPermissionValue }
         return sandboxPolicy.launchOverrideModeWireValue ?? Self.customPermissionValue
+    }
+
+    private func normalizedServerId(_ serverId: String?) -> String? {
+        guard let serverId else { return nil }
+        let trimmed = serverId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

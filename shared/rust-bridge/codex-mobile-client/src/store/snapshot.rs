@@ -4,6 +4,9 @@ use std::time::Instant;
 use codex_app_server_protocol as upstream;
 
 use crate::conversation_uniffi::HydratedConversationItem;
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind,
+};
 use crate::types::{
     Account, AppModeKind, AppPlanProgressSnapshot, ModelInfo, PendingApproval, PendingApprovalKey,
     PendingApprovalSeed, PendingUserInputRequest, RateLimitSnapshot, RateLimits, ThreadInfo,
@@ -43,6 +46,32 @@ pub struct AppConnectionProgressSnapshot {
     pub steps: Vec<AppConnectionStepSnapshot>,
     pub pending_install: bool,
     pub terminal_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AppServerStatusKind {
+    Connected,
+    Reconnecting,
+    AuthRequired,
+    Disconnected,
+    Unresponsive,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AppServerModelCatalogState {
+    Unavailable,
+    Idle,
+    Loading,
+    Loaded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AppServerModelCatalogSummary {
+    pub state: AppServerModelCatalogState,
+    pub available_model_count: u32,
+    pub default_model_id: Option<String>,
+    pub default_model_display_name: Option<String>,
 }
 
 impl AppConnectionProgressSnapshot {
@@ -213,6 +242,9 @@ pub struct ServerSnapshot {
     pub display_name: String,
     pub host: String,
     pub port: u16,
+    pub backend_kind: AppServerBackendKind,
+    pub transport_kind: AppServerTransportKind,
+    pub connection_path: AppServerConnectionPath,
     pub wake_mac: Option<String>,
     pub is_local: bool,
     pub supports_ipc: bool,
@@ -223,6 +255,7 @@ pub struct ServerSnapshot {
     pub rate_limits: Option<RateLimitSnapshot>,
     pub available_models: Option<Vec<ModelInfo>>,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
+    pub known_directories: Vec<String>,
     pub transport: ServerTransportDiagnostics,
 }
 

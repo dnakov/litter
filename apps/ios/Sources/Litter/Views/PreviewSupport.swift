@@ -342,11 +342,16 @@ enum LitterPreviewData {
         threads: [AppThreadSnapshot],
         activeThread: ThreadKey?
     ) -> AppSnapshotRecord {
+        let defaultModel = sampleModels.first(where: \.isDefault)
         let server = AppServerSnapshot(
             serverId: sampleServer.id,
             displayName: sampleServer.name,
             host: sampleServer.hostname,
             port: UInt16(sampleServer.port ?? 8390),
+            backendKind: .codex,
+            transportKind: .websocket,
+            connectionPath: .lan,
+            statusKind: .connected,
             wakeMac: sampleServer.wakeMAC,
             isLocal: false,
             supportsIpc: true,
@@ -365,6 +370,14 @@ enum LitterPreviewData {
             account: .chatgpt(email: "builder@example.com", planType: .plus),
             requiresOpenaiAuth: false,
             rateLimits: nil,
+            knownDirectories: [],
+            lastUsedDirectoryHint: nil,
+            modelCatalog: AppServerModelCatalogSummary(
+                state: .loaded,
+                availableModelCount: UInt32(sampleModels.count),
+                defaultModelId: defaultModel?.id,
+                defaultModelDisplayName: defaultModel?.displayName
+            ),
             availableModels: sampleModels,
             connectionProgress: nil
         )

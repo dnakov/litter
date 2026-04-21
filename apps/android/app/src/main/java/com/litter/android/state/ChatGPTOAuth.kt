@@ -3,8 +3,6 @@ package com.litter.android.state
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -266,14 +264,10 @@ object ChatGPTOAuth {
 }
 
 class ChatGPTOAuthTokenStore(context: Context) {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        PREFS_NAME,
-        MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    private val prefs = createRecoverableEncryptedPrefs(
+        context = context,
+        prefsName = PREFS_NAME,
+        logTag = "ChatGPTOAuthTokenStore",
     )
 
     fun load(): ChatGPTOAuthTokenBundle? {

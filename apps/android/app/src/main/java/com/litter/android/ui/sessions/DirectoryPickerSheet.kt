@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -21,18 +21,21 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,51 +53,61 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.litter.android.state.AppLifecycleController
+import com.litter.android.state.SavedServerStore
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.RecentDirectoryEntry
 import com.litter.android.ui.RecentDirectoryStore
-import com.litter.android.state.canBrowseDirectories
 import kotlinx.coroutines.launch
+import uniffi.codex_mobile_client.AppServerBackendKind
 import uniffi.codex_mobile_client.RemotePath
 
 @Composable
 fun DirectoryPickerSheet(
-    servers: List<DirectoryPickerServerOption>,
-    initialServerId: String,
-    onSelect: (serverId: String, cwd: String) -> Unit,
+    server: ServerPickerOption,
+    onSelect: (cwd: String) -> Unit,
+    onBack: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
     val recentStore = remember(context) { RecentDirectoryStore(context) }
+    val lifecycleController = remember { AppLifecycleController() }
     val scope = rememberCoroutineScope()
-    val serverIds = remember(servers) { servers.map { it.id } }
 
-    var selectedServerId by remember {
-        mutableStateOf(
-            servers.firstOrNull { it.id == initialServerId }?.id
-                ?: servers.firstOrNull()?.id
-                ?: "",
-        )
+    var currentPath by remember(server.id) { mutableStateOf(server.lastUsedDirectoryHint ?: "") }
+    var allEntries by remember(server.id) { mutableStateOf<List<String>>(emptyList()) }
+    var recentEntries by remember(server.id) { mutableStateOf<List<RecentDirectoryEntry>>(emptyList()) }
+    var knownDirectories by remember(server.id, server.knownDirectories) {
+        mutableStateOf(loadKnownDirectories(context, server))
     }
-    var currentPath by remember(selectedServerId) { mutableStateOf("") }
-    var allEntries by remember(selectedServerId) { mutableStateOf<List<String>>(emptyList()) }
-    var recentEntries by remember(selectedServerId) { mutableStateOf<List<RecentDirectoryEntry>>(emptyList()) }
-    var isLoading by remember(selectedServerId) { mutableStateOf(true) }
-    var errorMessage by remember(selectedServerId) { mutableStateOf<String?>(null) }
+    var isLoading by remember(server.id) { mutableStateOf(server.canBrowseDirectories) }
+    var errorMessage by remember(server.id) { mutableStateOf<String?>(null) }
     var showHiddenDirectories by remember { mutableStateOf(false) }
-    var searchQuery by remember(selectedServerId) { mutableStateOf("") }
-    var showServerMenu by remember { mutableStateOf(false) }
-    var showRecentsMenu by remember { mutableStateOf(false) }
+    var searchQuery by remember(server.id) { mutableStateOf("") }
+    var addDirectoryText by remember(server.id) { mutableStateOf("") }
+    var editTarget by remember(server.id) { mutableStateOf<String?>(null) }
+    var editDirectoryText by remember(server.id) { mutableStateOf("") }
 
-    fun refreshRecentEntries(serverId: String) {
-        recentEntries = recentStore.listForServer(serverId, limit = 8)
+    fun refreshRecentEntries() {
+        recentEntries = recentStore.listForServer(server.id, limit = 8)
     }
 
-    fun completeSelection(serverId: String, path: String) {
-        recentEntries = recentStore.record(serverId, path, limit = 8)
-        onSelect(serverId, path)
+    fun completeSelection(path: String) {
+        recentEntries = recentStore.record(server.id, path, limit = 8)
+        onSelect(path)
+    }
+
+    fun relativeTime(epochMillis: Long): String {
+        val deltaMinutes = ((System.currentTimeMillis() - epochMillis).coerceAtLeast(0L) / 60000L)
+        return when {
+            deltaMinutes < 1L -> "just now"
+            deltaMinutes < 60L -> "${deltaMinutes}m ago"
+            deltaMinutes < 1440L -> "${deltaMinutes / 60L}h ago"
+            deltaMinutes < 10080L -> "${deltaMinutes / 1440L}d ago"
+            else -> "${deltaMinutes / 10080L}w ago"
+        }
     }
 
     fun isDisconnectedError(error: Throwable): Boolean {
@@ -103,42 +116,15 @@ fun DirectoryPickerSheet(
             ("transport error" in message && "not connected" in message)
     }
 
-    suspend fun resolveHome(serverId: String): String {
-        val serverSnapshot = appModel.snapshot.value?.servers?.firstOrNull { it.serverId == serverId }
-        if (serverSnapshot?.canBrowseDirectories != true) {
-            errorMessage = "Selected server is not connected."
-            return "/"
-        }
-        return runCatching {
-            appModel.client.resolveRemoteHome(serverId)
-        }.getOrElse { error ->
-            if (isDisconnectedError(error)) {
-                errorMessage = "Selected server is not connected."
-            }
-            "/"
-        }
-    }
-
-    suspend fun listDirectory(serverId: String, path: String) {
-        val serverSnapshot = appModel.snapshot.value?.servers?.firstOrNull { it.serverId == serverId }
-        if (serverSnapshot?.canBrowseDirectories != true) {
+    suspend fun listDirectory(path: String) {
+        if (!server.canBrowseDirectories) {
             isLoading = false
-            allEntries = emptyList()
-            errorMessage = "Selected server is not connected."
             return
         }
         val normalizedPath = path.trim().ifEmpty { "/" }
         isLoading = true
         errorMessage = null
-
-        val response = runCatching {
-            appModel.client.listRemoteDirectory(serverId, normalizedPath)
-        }
-
-        if (serverId != selectedServerId) {
-            return
-        }
-
+        val response = runCatching { appModel.client.listRemoteDirectory(server.id, normalizedPath) }
         response.onSuccess { result ->
             allEntries = result.directories
             currentPath = result.path
@@ -153,15 +139,28 @@ fun DirectoryPickerSheet(
         isLoading = false
     }
 
-    suspend fun loadInitialPath(serverId: String) {
+    suspend fun loadInitialPath() {
+        if (!server.canBrowseDirectories) {
+            isLoading = false
+            return
+        }
         isLoading = true
         errorMessage = null
         allEntries = emptyList()
-        currentPath = ""
-        val home = resolveHome(serverId)
-        if (serverId != selectedServerId) return
+        val home = runCatching { appModel.client.resolveRemoteHome(server.id) }
+            .getOrElse { error ->
+                if (isDisconnectedError(error)) {
+                    errorMessage = "Selected server is not connected."
+                }
+                "/"
+            }
         currentPath = home
-        listDirectory(serverId, home)
+        listDirectory(home)
+    }
+
+    suspend fun reconnectOpenCodeScopes() {
+        lifecycleController.reconnectServer(context, appModel, server.id)
+        knownDirectories = loadKnownDirectories(context, server)
     }
 
     fun pathSegments(path: String): List<Pair<String, String>> {
@@ -172,50 +171,29 @@ fun DirectoryPickerSheet(
         }
     }
 
-    fun relativeTime(epochMillis: Long): String {
-        val deltaMinutes = ((System.currentTimeMillis() - epochMillis).coerceAtLeast(0L) / 60000L)
-        return when {
-            deltaMinutes < 1L -> "just now"
-            deltaMinutes < 60L -> "${deltaMinutes}m ago"
-            deltaMinutes < 1440L -> "${deltaMinutes / 60L}h ago"
-            deltaMinutes < 10080L -> "${deltaMinutes / 1440L}d ago"
-            else -> "${deltaMinutes / 10080L}w ago"
-        }
-    }
-
-    fun navigateInto(name: String) {
-        val nextPath = RemotePath.parse(currentPath).join(name).asString()
-        scope.launch { listDirectory(selectedServerId, nextPath) }
-    }
-
-    fun navigateUp() {
-        val nextPath = RemotePath.parse(currentPath).parent().asString()
-        scope.launch { listDirectory(selectedServerId, nextPath) }
-    }
-
-    val selectedServer = remember(servers, selectedServerId) {
-        servers.firstOrNull { it.id == selectedServerId }
-    }
     val filteredEntries = remember(allEntries, searchQuery, showHiddenDirectories) {
         val hiddenFiltered = if (showHiddenDirectories) allEntries else allEntries.filterNot { it.startsWith(".") }
         val query = searchQuery.trim()
         if (query.isEmpty()) hiddenFiltered else hiddenFiltered.filter { it.contains(query, ignoreCase = true) }
     }
-
-    LaunchedEffect(serverIds, initialServerId) {
-        val currentServerId = selectedServerId
-        if (currentServerId.isBlank() || !serverIds.contains(currentServerId)) {
-            selectedServerId = servers.firstOrNull { it.id == initialServerId }?.id
-                ?: servers.firstOrNull()?.id
-                ?: ""
+    val filteredKnownDirectories = remember(knownDirectories, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            knownDirectories
+        } else {
+            knownDirectories.filter { it.contains(query, ignoreCase = true) }
         }
     }
 
-    LaunchedEffect(selectedServerId) {
-        if (selectedServerId.isBlank()) return@LaunchedEffect
+    LaunchedEffect(server.id) {
         searchQuery = ""
-        refreshRecentEntries(selectedServerId)
-        loadInitialPath(selectedServerId)
+        refreshRecentEntries()
+        knownDirectories = loadKnownDirectories(context, server)
+        if (server.canBrowseDirectories) {
+            loadInitialPath()
+        } else {
+            isLoading = false
+        }
     }
 
     Column(
@@ -230,56 +208,41 @@ fun DirectoryPickerSheet(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                text = "Select Directory",
-                color = LitterTheme.textPrimary,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = selectedServer?.let { "Connected server: ${it.name} • ${it.sourceLabel}" } ?: "No server selected",
-                    color = if (selectedServer == null) LitterTheme.textMuted else LitterTheme.textSecondary,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-
-                Box {
-                    Text(
-                        text = "Change Server",
-                        color = LitterTheme.accent,
-                        fontSize = 12.sp,
-                        modifier = Modifier.clickable(enabled = servers.isNotEmpty()) { showServerMenu = true },
-                    )
-                    DropdownMenu(
-                        expanded = showServerMenu,
-                        onDismissRequest = { showServerMenu = false },
-                    ) {
-                        servers.forEach { server ->
-                            DropdownMenuItem(
-                                text = { Text("${server.name} • ${server.sourceLabel}") },
-                                onClick = {
-                                    showServerMenu = false
-                                    selectedServerId = server.id
-                                },
-                            )
-                        }
-                    }
-                }
-
-                IconButton(onClick = { showHiddenDirectories = !showHiddenDirectories }) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = if (showHiddenDirectories) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                        contentDescription = if (showHiddenDirectories) "Hide hidden folders" else "Show hidden folders",
-                        tint = if (showHiddenDirectories) LitterTheme.accent else LitterTheme.textSecondary,
+                        Icons.Default.KeyboardArrowLeft,
+                        contentDescription = "Back to server picker",
+                        tint = LitterTheme.textPrimary,
                     )
                 }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (server.backendKind == AppServerBackendKind.OPEN_CODE) {
+                            "Pick Workspace"
+                        } else {
+                            "Pick Directory"
+                        },
+                        color = LitterTheme.textPrimary,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "${server.name} • ${server.subtitle}",
+                        color = LitterTheme.textSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            if (server.backendKind == AppServerBackendKind.OPEN_CODE) {
+                Text(
+                    text = "OpenCode sessions stay bound to one saved directory scope.",
+                    color = LitterTheme.textSecondary,
+                    fontSize = 12.sp,
+                )
             }
 
             Row(
@@ -291,10 +254,18 @@ fun DirectoryPickerSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Default.Search, contentDescription = null, tint = LitterTheme.textMuted)
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.size(8.dp))
                 Box(modifier = Modifier.weight(1f)) {
                     if (searchQuery.isEmpty()) {
-                        Text("Search folders", color = LitterTheme.textMuted, fontSize = 13.sp)
+                        Text(
+                            if (server.backendKind == AppServerBackendKind.OPEN_CODE) {
+                                "Search saved scopes"
+                            } else {
+                                "Search folders"
+                            },
+                            color = LitterTheme.textMuted,
+                            fontSize = 13.sp,
+                        )
                     }
                     BasicTextField(
                         value = searchQuery,
@@ -304,40 +275,72 @@ fun DirectoryPickerSheet(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                if (searchQuery.isNotEmpty()) {
+                if (server.canBrowseDirectories) {
+                    IconButton(onClick = { showHiddenDirectories = !showHiddenDirectories }) {
+                        Icon(
+                            imageVector = if (showHiddenDirectories) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                            contentDescription = if (showHiddenDirectories) "Hide hidden folders" else "Show hidden folders",
+                            tint = if (showHiddenDirectories) LitterTheme.accent else LitterTheme.textSecondary,
+                        )
+                    }
+                } else if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { searchQuery = "" }) {
                         Icon(Icons.Default.Clear, contentDescription = "Clear search", tint = LitterTheme.textMuted)
                     }
                 }
             }
 
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item {
-                    Text(
-                        text = "Up one level",
-                        color = if (currentPath != "/" && currentPath.isNotEmpty()) LitterTheme.accent else LitterTheme.textMuted,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .background(LitterTheme.surface, RoundedCornerShape(8.dp))
-                            .clickable(enabled = currentPath != "/" && currentPath.isNotEmpty()) { navigateUp() }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
+            if (server.canBrowseDirectories) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        Text(
+                            text = "Up one level",
+                            color = if (currentPath != "/" && currentPath.isNotEmpty()) LitterTheme.accent else LitterTheme.textMuted,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .background(LitterTheme.surface, RoundedCornerShape(8.dp))
+                                .clickable(enabled = currentPath != "/" && currentPath.isNotEmpty()) {
+                                    scope.launch { listDirectory(RemotePath.parse(currentPath).parent().asString()) }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    items(pathSegments(currentPath)) { segment ->
+                        val isCurrent = segment.second == currentPath
+                        Text(
+                            text = segment.first,
+                            color = if (isCurrent) Color.Black else LitterTheme.textSecondary,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .background(
+                                    if (isCurrent) LitterTheme.accent else LitterTheme.surface,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .clickable { scope.launch { listDirectory(segment.second) } }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
                 }
-                items(pathSegments(currentPath)) { segment ->
-                    val isCurrent = segment.second == currentPath
-                    Text(
-                        text = segment.first,
-                        color = if (isCurrent) Color.Black else LitterTheme.textSecondary,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .background(
-                                if (isCurrent) LitterTheme.accent else LitterTheme.surface,
-                                RoundedCornerShape(8.dp),
-                            )
-                            .clickable { scope.launch { listDirectory(selectedServerId, segment.second) } }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-                }
+            } else {
+                OutlinedTextField(
+                    value = addDirectoryText,
+                    onValueChange = { addDirectoryText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Add directory scope") },
+                    singleLine = true,
+                    trailingIcon = {
+                        Text(
+                            text = "Save",
+                            color = if (addDirectoryText.isBlank()) LitterTheme.textMuted else LitterTheme.accent,
+                            modifier = Modifier.clickable(enabled = addDirectoryText.isNotBlank()) {
+                                val nextDirectory = addDirectoryText.trim()
+                                SavedServerStore.appendOpenCodeDirectory(context, server.id, nextDirectory)
+                                addDirectoryText = ""
+                                scope.launch { reconnectOpenCodeScopes() }
+                            },
+                        )
+                    },
+                )
             }
         }
 
@@ -362,7 +365,7 @@ fun DirectoryPickerSheet(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("Unable to load directory", color = LitterTheme.danger, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Text("Unable to load workspace", color = LitterTheme.danger, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = errorMessage ?: "",
@@ -371,20 +374,72 @@ fun DirectoryPickerSheet(
                         maxLines = 4,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (server.canBrowseDirectories) {
+                        Spacer(Modifier.height(12.dp))
                         Text(
                             text = "Retry",
                             color = LitterTheme.accent,
                             fontSize = 13.sp,
-                            modifier = Modifier.clickable { scope.launch { listDirectory(selectedServerId, currentPath.ifEmpty { "/" }) } },
+                            modifier = Modifier.clickable { scope.launch { listDirectory(currentPath.ifEmpty { "/" }) } },
                         )
+                    }
+                }
+            }
+
+            server.backendKind == AppServerBackendKind.OPEN_CODE -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(LitterTheme.background),
+                ) {
+                    val mostRecentEntry = recentEntries.firstOrNull()
+                    if (mostRecentEntry != null && searchQuery.isBlank()) {
+                        item("recent-continue") {
+                            PickerRow(
+                                icon = Icons.Default.CheckCircle,
+                                title = "Continue in ${(mostRecentEntry.path.substringAfterLast('/')).ifBlank { mostRecentEntry.path }}",
+                                subtitle = mostRecentEntry.path,
+                                accent = LitterTheme.accent,
+                                onClick = { completeSelection(mostRecentEntry.path) },
+                            )
+                        }
+                    }
+
+                    item("saved-header") {
                         Text(
-                            text = "Change Server",
-                            color = LitterTheme.accent,
-                            fontSize = 13.sp,
-                            modifier = Modifier.clickable { showServerMenu = true },
+                            text = "Saved directory scopes",
+                            color = LitterTheme.textSecondary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         )
+                    }
+
+                    if (filteredKnownDirectories.isEmpty()) {
+                        item("empty-open-code") {
+                            Text(
+                                text = "Add at least one directory scope for this OpenCode server.",
+                                color = LitterTheme.textMuted,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 20.dp),
+                            )
+                        }
+                    } else {
+                        items(filteredKnownDirectories, key = { "scope-$it" }) { directory ->
+                            ScopeRow(
+                                title = directory.substringAfterLast('/').ifBlank { directory },
+                                subtitle = directory,
+                                onSelect = { completeSelection(directory) },
+                                onEdit = {
+                                    editTarget = directory
+                                    editDirectoryText = directory
+                                },
+                                onRemove = {
+                                    SavedServerStore.removeOpenCodeDirectory(context, server.id, directory)
+                                    scope.launch { reconnectOpenCodeScopes() }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -404,39 +459,19 @@ fun DirectoryPickerSheet(
                                 title = "Continue in ${(mostRecentEntry.path.substringAfterLast('/')).ifBlank { mostRecentEntry.path }}",
                                 subtitle = mostRecentEntry.path,
                                 accent = LitterTheme.accent,
-                                onClick = { completeSelection(selectedServerId, mostRecentEntry.path) },
+                                onClick = { completeSelection(mostRecentEntry.path) },
                             )
                         }
                     }
 
                     if (recentEntries.isNotEmpty() && searchQuery.isBlank()) {
                         item("recent-header") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text("Recent Directories", color = LitterTheme.textSecondary, fontSize = 12.sp)
-                                Spacer(Modifier.weight(1f))
-                                Box {
-                                    IconButton(onClick = { showRecentsMenu = true }) {
-                                        Icon(Icons.Default.MoreHoriz, contentDescription = "Recent options", tint = LitterTheme.textMuted)
-                                    }
-                                    DropdownMenu(
-                                        expanded = showRecentsMenu,
-                                        onDismissRequest = { showRecentsMenu = false },
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Clear recent directories") },
-                                            onClick = {
-                                                showRecentsMenu = false
-                                                recentEntries = recentStore.clear(selectedServerId, limit = 8)
-                                            },
-                                        )
-                                    }
-                                }
-                            }
+                            Text(
+                                text = "Recent directories",
+                                color = LitterTheme.textSecondary,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
                         }
                         items(recentEntries, key = { "recent-${it.serverId}-${it.path}" }) { recent ->
                             PickerRow(
@@ -444,15 +479,7 @@ fun DirectoryPickerSheet(
                                 title = recent.path.substringAfterLast('/').ifBlank { recent.path },
                                 subtitle = "${recent.path} • ${relativeTime(recent.lastUsedAtEpochMillis)}",
                                 accent = LitterTheme.textSecondary,
-                                onClick = { completeSelection(selectedServerId, recent.path) },
-                            )
-                        }
-                        item("recent-footer") {
-                            Text(
-                                text = "Recent directories are saved per connected server.",
-                                color = LitterTheme.textMuted,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                onClick = { completeSelection(recent.path) },
                             )
                         }
                     }
@@ -473,7 +500,11 @@ fun DirectoryPickerSheet(
                                 title = entry,
                                 subtitle = null,
                                 accent = LitterTheme.accent,
-                                onClick = { navigateInto(entry) },
+                                onClick = {
+                                    scope.launch {
+                                        listDirectory(RemotePath.parse(currentPath).join(entry).asString())
+                                    }
+                                },
                             )
                         }
                     }
@@ -489,7 +520,13 @@ fun DirectoryPickerSheet(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                text = currentPath.ifBlank { "Choose a folder to start a new session." },
+                text = currentPath.ifBlank {
+                    if (server.backendKind == AppServerBackendKind.OPEN_CODE) {
+                        "Choose a saved directory scope to start an OpenCode session."
+                    } else {
+                        "Choose a folder to start a new session."
+                    }
+                },
                 color = if (currentPath.isBlank()) LitterTheme.textSecondary else LitterTheme.textMuted,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -507,7 +544,7 @@ fun DirectoryPickerSheet(
                     Text("Cancel")
                 }
                 Button(
-                    onClick = { completeSelection(selectedServerId, currentPath) },
+                    onClick = { completeSelection(currentPath) },
                     enabled = currentPath.isNotBlank(),
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
@@ -515,12 +552,57 @@ fun DirectoryPickerSheet(
                         contentColor = if (currentPath.isNotBlank()) Color.Black else LitterTheme.textMuted,
                     ),
                 ) {
-                    Text("Select Folder")
+                    Text(if (server.backendKind == AppServerBackendKind.OPEN_CODE) "Start Session" else "Select Folder")
                 }
             }
         }
     }
+
+    if (editTarget != null) {
+        AlertDialog(
+            onDismissRequest = {
+                editTarget = null
+                editDirectoryText = ""
+            },
+            title = { Text("Edit Directory Scope") },
+            text = {
+                OutlinedTextField(
+                    value = editDirectoryText,
+                    onValueChange = { editDirectoryText = it },
+                    label = { Text("Directory") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = editTarget ?: return@TextButton
+                    SavedServerStore.replaceOpenCodeDirectory(context, server.id, target, editDirectoryText)
+                    editTarget = null
+                    editDirectoryText = ""
+                    scope.launch { reconnectOpenCodeScopes() }
+                }) {
+                    Text("Save", color = LitterTheme.accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    editTarget = null
+                    editDirectoryText = ""
+                }) {
+                    Text("Cancel", color = LitterTheme.textSecondary)
+                }
+            },
+        )
+    }
 }
+
+private fun loadKnownDirectories(
+    context: android.content.Context,
+    server: ServerPickerOption,
+): List<String> = SavedServerStore.server(context, server.id)
+    ?.openCodeKnownDirectories
+    ?.ifEmpty { server.knownDirectories }
+    ?: server.knownDirectories
 
 @Composable
 private fun PickerRow(
@@ -538,13 +620,43 @@ private fun PickerRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, contentDescription = null, tint = accent)
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.size(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, color = LitterTheme.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             subtitle?.let {
                 Spacer(Modifier.height(2.dp))
                 Text(it, color = LitterTheme.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+        }
+    }
+}
+
+@Composable
+private fun ScopeRow(
+    title: String,
+    subtitle: String,
+    onSelect: () -> Unit,
+    onEdit: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Folder, contentDescription = null, tint = LitterTheme.accent)
+        Spacer(Modifier.size(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = LitterTheme.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = LitterTheme.textMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onClick = onEdit) {
+            Icon(Icons.Default.Edit, contentDescription = "Edit scope", tint = LitterTheme.textSecondary)
+        }
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Default.DeleteOutline, contentDescription = "Remove scope", tint = LitterTheme.danger)
         }
     }
 }

@@ -2,6 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     io,
+    net::IpAddr,
     time::Duration,
 };
 
@@ -34,12 +35,13 @@ impl OpenCodeEventStreamClient {
         config: OpenCodeServerConfig,
         stream_config: OpenCodeStreamConfig,
     ) -> Result<Self, OpenCodeBridgeError> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(stream_config.connect_timeout)
-            .build()
-            .map_err(|source| {
-                OpenCodeBridgeError::sse_connect_transport(DIRECTORY_EVENT_ENDPOINT, source)
-            })?;
+        let mut builder = reqwest::Client::builder().connect_timeout(stream_config.connect_timeout);
+        if allows_insecure_tailnet_https(&config.base_url) {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        let http = builder.build().map_err(|source| {
+            OpenCodeBridgeError::sse_connect_transport(DIRECTORY_EVENT_ENDPOINT, source)
+        })?;
 
         Ok(Self {
             config,
@@ -77,6 +79,33 @@ impl OpenCodeEventStreamClient {
             receiver,
             task: Some(task),
         })
+    }
+}
+
+fn allows_insecure_tailnet_https(base_url: &Url) -> bool {
+    if base_url.scheme() != "https" {
+        return false;
+    }
+
+    let Some(host) = base_url.host_str() else {
+        return false;
+    };
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    is_tailscale_ip(ip)
+}
+
+fn is_tailscale_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            octets[0] == 100 && (64..=127).contains(&octets[1])
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+        }
     }
 }
 

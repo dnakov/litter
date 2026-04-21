@@ -7,6 +7,7 @@ private struct BonjourDiscoverySeed: Hashable {
     let host: String
     let port: UInt16?
     let serviceType: String
+    let txt: [String: String]
 }
 
 struct TailscalePeerIdentity: Equatable {
@@ -214,7 +215,13 @@ final class NetworkDiscovery {
 
         let subscription = store.scanServersWithMdnsContextProgressive(
             seeds: seeds.map {
-                AppMdnsSeed(name: $0.name, host: $0.host, port: $0.port, serviceType: $0.serviceType)
+                AppMdnsSeed(
+                    name: $0.name,
+                    host: $0.host,
+                    port: $0.port,
+                    serviceType: $0.serviceType,
+                    txt: $0.txt
+                )
             },
             localIpv4: localIPv4
         )
@@ -254,7 +261,7 @@ final class NetworkDiscovery {
             existingByKey[server.deduplicationKey] = server
         }
         let resolved = discovered.compactMap { rust -> DiscoveredServer? in
-            let existing = existingByKey[Self.normalizedServerKey(for: rust.host)]
+            let existing = existingByKey[Self.normalizedServerKey(for: rust)]
             guard let server = Self.discoveredServer(from: rust, existing: existing) else {
                 return nil
             }
@@ -280,18 +287,22 @@ final class NetworkDiscovery {
             id: id.isEmpty ? "network-\(host)" : id,
             name: name.isEmpty ? host : name,
             hostname: host,
-            port: rust.codexPort,
+            port: rust.port,
+            backendKind: rust.backendKind == .openCode ? .openCode : .codex,
             codexPorts: rust.codexPorts,
-            sshPort: rust.sshPort,
+            sshPort: rust.backendKind == .openCode ? nil : rust.sshPort,
             source: ServerSource(rust.source),
-            hasCodexServer: rust.codexPort != nil || !rust.codexPorts.isEmpty,
+            hasCodexServer: rust.backendKind == .codex && (rust.codexPort != nil || !rust.codexPorts.isEmpty),
             wakeMAC: existing?.wakeMAC,
             sshPortForwardingEnabled: false,
             websocketURL: existing?.websocketURL,
             preferredConnectionMode: existing?.preferredConnectionMode,
             preferredCodexPort: existing?.preferredCodexPort,
             os: rust.sshBanner != nil ? rust.os : (rust.os ?? existing?.os),
-            sshBanner: rust.sshBanner ?? existing?.sshBanner
+            sshBanner: rust.sshBanner ?? existing?.sshBanner,
+            openCodeBaseURL: rust.opencodeBaseUrl ?? existing?.openCodeBaseURL,
+            openCodeRequiresAuth: rust.opencodeRequiresAuth,
+            openCodeKnownDirectories: existing?.openCodeKnownDirectories ?? []
         )
     }
 
@@ -309,7 +320,7 @@ final class NetworkDiscovery {
             .compactMap { rust in
                 Self.discoveredServer(
                     from: rust,
-                    existing: existingByKey[Self.normalizedServerKey(for: rust.host)]
+                    existing: existingByKey[Self.normalizedServerKey(for: rust)]
                 )
             }
     }
@@ -320,7 +331,18 @@ final class NetworkDiscovery {
             .filter { $0.source != .local }
     }
 
-    private static func normalizedServerKey(for host: String) -> String {
+    private static func normalizedServerKey(for rust: AppDiscoveredServer) -> String {
+        if rust.backendKind == .openCode {
+            let keySource = rust.opencodeBaseUrl ?? rust.host
+            let normalized = normalizedOpenCodeKey(keySource)
+            return normalized.isEmpty ? "opencode:\(rust.id)" : "opencode:\(normalized)"
+        }
+
+        let normalized = normalizedHostKey(rust.host)
+        return normalized.isEmpty ? rust.id : "codex:\(normalized)"
+    }
+
+    private static func normalizedHostKey(_ host: String) -> String {
         var normalized = host
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
@@ -333,15 +355,63 @@ final class NetworkDiscovery {
         return normalized.lowercased()
     }
 
+    private static func normalizedOpenCodeKey(_ raw: String) -> String {
+        if let url = URL(string: raw), let scheme = url.scheme, !scheme.isEmpty {
+            let host = (url.host ?? raw).lowercased()
+            if let port = url.port {
+                return "\(host):\(port)"
+            }
+            return host
+        }
+
+        return normalizedHostKey(raw)
+    }
+
     private static func ffiDiscoveredServer(from server: DiscoveredServer) -> AppDiscoveredServer {
-        AppDiscoveredServer(
+        let connectionPath: AppServerConnectionPath = {
+            switch server.source {
+            case .local:
+                return .local
+            case .tailscale:
+                return .tailscale
+            case .ssh:
+                return .ssh
+            case .bonjour, .manual:
+                return .lan
+            }
+        }()
+
+        let transportKind: AppServerTransportKind = {
+            guard server.backendKind == .openCode else {
+                switch server.source {
+                case .local:
+                    return .local
+                case .ssh:
+                    return .ssh
+                case .bonjour, .tailscale, .manual:
+                    return .websocket
+                }
+            }
+
+            if let baseURL = server.openCodeBaseURL,
+               let url = URL(string: baseURL),
+               url.scheme?.lowercased() == "https" {
+                return connectionPath == .tailscale ? .tailscaleHttps : .https
+            }
+            return .http
+        }()
+
+        return AppDiscoveredServer(
             id: server.id,
             displayName: server.name,
             host: server.hostname,
             port: server.port ?? server.resolvedSSHPort,
-            codexPort: server.port,
-            codexPorts: server.codexPorts,
-            sshPort: server.sshPort,
+            backendKind: server.backendKind == .openCode ? .openCode : .codex,
+            transportKind: transportKind,
+            connectionPath: connectionPath,
+            codexPort: server.backendKind == .codex ? server.port : nil,
+            codexPorts: server.backendKind == .codex ? server.codexPorts : [],
+            sshPort: server.backendKind == .codex ? server.sshPort : nil,
             source: {
                 switch server.source {
                 case .local:
@@ -356,9 +426,12 @@ final class NetworkDiscovery {
                     return .manual
                 }
             }(),
-            reachable: server.hasCodexServer || server.sshPort != nil,
+            reachable: server.backendKind == .openCode || server.hasCodexServer || server.sshPort != nil,
             os: server.os,
-            sshBanner: server.sshBanner
+            sshBanner: server.sshBanner,
+            requiresAuth: server.backendKind == .openCode ? server.openCodeRequiresAuth : false,
+            opencodeBaseUrl: server.openCodeBaseURL,
+            opencodeRequiresAuth: server.openCodeRequiresAuth
         )
     }
 
@@ -759,6 +832,7 @@ private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServi
     private struct ServiceRecord {
         let name: String
         let port: UInt16?
+        let txt: [String: String]
     }
 
     private let serviceType: String
@@ -824,7 +898,8 @@ private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServi
                 name: $0.value.name,
                 host: $0.key,
                 port: $0.value.port,
-                serviceType: serviceType
+                serviceType: serviceType,
+                txt: $0.value.txt
             )
         }
         continuation?.resume(returning: discovered)
@@ -860,9 +935,10 @@ private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServi
             guard sender.port > 0, sender.port <= Int(UInt16.max) else { return nil }
             return UInt16(sender.port)
         }()
+        let txt = Self.decodeTXTRecord(sender.txtRecordData())
         for address in addresses {
             guard let ip = NetworkDiscovery.ipv4Address(fromSockaddrData: address) else { continue }
-            results[ip] = ServiceRecord(name: sender.name, port: resolvedPort)
+            results[ip] = ServiceRecord(name: sender.name, port: resolvedPort, txt: txt)
             break
         }
         if requestedStop, pendingServices.isEmpty {
@@ -874,6 +950,18 @@ private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServi
         pendingServices.remove(ObjectIdentifier(sender))
         if requestedStop, pendingServices.isEmpty {
             finish()
+        }
+    }
+
+    private static func decodeTXTRecord(_ data: Data?) -> [String: String] {
+        guard let data else { return [:] }
+        return NetService.dictionary(fromTXTRecord: data).reduce(into: [:]) { partialResult, item in
+            guard let value = String(data: item.value, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else {
+                return
+            }
+            partialResult[item.key] = value
         }
     }
 }

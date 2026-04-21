@@ -30,6 +30,8 @@ data class AppLaunchStateSnapshot(
     val reasoningEffort: String = "",
     val approvalPolicy: String = DEFAULT_APPROVAL_POLICY,
     val sandboxMode: String = DEFAULT_SANDBOX_MODE,
+    val modelOverridesByServerId: Map<String, String> = emptyMap(),
+    val reasoningOverridesByServerId: Map<String, String> = emptyMap(),
     val threadPermissionOverrides: Map<String, ThreadPermissionOverride> = emptyMap(),
 )
 
@@ -71,10 +73,69 @@ class AppLaunchState(context: Context) {
         }
     }
 
+    fun updateSelectedModel(model: String?, serverId: String?) {
+        val normalized = model.normalizedOrEmpty()
+        val normalizedServerId = serverId.normalizedOrNull()
+        _snapshot.update { state ->
+            val nextOverrides = if (normalizedServerId == null) {
+                state.modelOverridesByServerId
+            } else if (normalized.isEmpty()) {
+                state.modelOverridesByServerId - normalizedServerId
+            } else {
+                state.modelOverridesByServerId + (normalizedServerId to normalized)
+            }
+            if (state.selectedModel == normalized && nextOverrides == state.modelOverridesByServerId) {
+                state
+            } else {
+                state.copy(selectedModel = normalized, modelOverridesByServerId = nextOverrides)
+            }
+        }
+    }
+
     fun updateReasoningEffort(effort: String?) {
         val normalized = effort.normalizedOrEmpty()
         _snapshot.update { state ->
             if (state.reasoningEffort == normalized) state else state.copy(reasoningEffort = normalized)
+        }
+    }
+
+    fun updateReasoningEffort(effort: String?, serverId: String?) {
+        val normalized = effort.normalizedOrEmpty()
+        val normalizedServerId = serverId.normalizedOrNull()
+        _snapshot.update { state ->
+            val nextOverrides = if (normalizedServerId == null) {
+                state.reasoningOverridesByServerId
+            } else if (normalized.isEmpty()) {
+                state.reasoningOverridesByServerId - normalizedServerId
+            } else {
+                state.reasoningOverridesByServerId + (normalizedServerId to normalized)
+            }
+            if (state.reasoningEffort == normalized && nextOverrides == state.reasoningOverridesByServerId) {
+                state
+            } else {
+                state.copy(reasoningEffort = normalized, reasoningOverridesByServerId = nextOverrides)
+            }
+        }
+    }
+
+    fun selectedModel(serverId: String?): String {
+        val normalizedServerId = serverId.normalizedOrNull()
+        val state = snapshot.value
+        return if (normalizedServerId != null) {
+            state.modelOverridesByServerId[normalizedServerId].normalizedOrEmpty().ifEmpty { state.selectedModel }
+        } else {
+            state.selectedModel
+        }
+    }
+
+    fun selectedReasoningEffort(serverId: String?): String {
+        val normalizedServerId = serverId.normalizedOrNull()
+        val state = snapshot.value
+        return if (normalizedServerId != null) {
+            state.reasoningOverridesByServerId[normalizedServerId].normalizedOrEmpty()
+                .ifEmpty { state.reasoningEffort }
+        } else {
+            state.reasoningEffort
         }
     }
 
@@ -129,9 +190,14 @@ class AppLaunchState(context: Context) {
         }
     }
 
-    fun launchConfig(modelOverride: String? = null, threadKey: ThreadKey? = null): AppThreadLaunchConfig {
+    fun launchConfig(
+        modelOverride: String? = null,
+        threadKey: ThreadKey? = null,
+        serverId: String? = threadKey?.serverId,
+    ): AppThreadLaunchConfig {
         val state = snapshot.value
-        val selectedModel = modelOverride.normalizedOrNull() ?: state.selectedModel.normalizedOrNull()
+        val selectedModel = modelOverride.normalizedOrNull()
+            ?: selectedModel(serverId).normalizedOrNull()
         return AppThreadLaunchConfig(
             model = selectedModel,
             approvalPolicy = approvalPolicyValue(threadKey),
@@ -169,8 +235,8 @@ class AppLaunchState(context: Context) {
             sandboxModeValue()?.toTurnSandboxPolicy()
         }
 
-    fun threadStartRequest(cwd: String, modelOverride: String? = null) =
-        launchConfig(modelOverride).toAppStartThreadRequest(
+    fun threadStartRequest(cwd: String, modelOverride: String? = null, serverId: String? = null) =
+        launchConfig(modelOverride = modelOverride, serverId = serverId).toAppStartThreadRequest(
             cwd = cwd.normalizedOrFallback("/"),
             dynamicTools = if (ExperimentalFeatures.isEnabled(LitterFeature.GENERATIVE_UI))
                 generativeUiDynamicToolSpecs() else null,

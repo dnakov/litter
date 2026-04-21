@@ -72,6 +72,10 @@ mod mobile_client_tests {
             websocket_url: Some("ws://127.0.0.1:0".to_string()),
             is_local: false,
             tls: false,
+            backend_kind: crate::session::connection::AppServerBackendKind::Codex,
+            transport_kind: crate::session::connection::AppServerTransportKind::Websocket,
+            connection_path: crate::session::connection::AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         }
     }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
+import uniffi.codex_mobile_client.AppDiscoveredBackendKind
 import uniffi.codex_mobile_client.AppDiscoveredServer
 import uniffi.codex_mobile_client.AppDiscoverySource
 import uniffi.codex_mobile_client.SavedOpenCodeDirectoryScopeRecord
@@ -82,9 +83,12 @@ data class SavedServer(
                     uri.scheme.equals("http", ignoreCase = true) -> 80
                     else -> -1
                 }
+                val path = uri.path?.trim()?.trimEnd('/').orEmpty()
                 when {
                     host.isBlank() -> ""
+                    port > 0 && path.isNotEmpty() -> "$host:$port$path"
                     port > 0 -> "$host:$port"
+                    path.isNotEmpty() -> "$host$path"
                     else -> host
                 }
             }
@@ -289,9 +293,17 @@ data class SavedServer(
             id = server.id,
             name = server.displayName,
             hostname = server.host,
-            port = server.codexPort?.toInt() ?: server.port.toInt(),
-            codexPorts = server.codexPorts.map { it.toInt() },
-            sshPort = server.sshPort?.toInt(),
+            port = server.port.toInt(),
+            codexPorts = if (server.backendKind == AppDiscoveredBackendKind.OPEN_CODE) {
+                emptyList()
+            } else {
+                server.codexPorts.map { it.toInt() }
+            },
+            sshPort = if (server.backendKind == AppDiscoveredBackendKind.OPEN_CODE) {
+                null
+            } else {
+                server.sshPort?.toInt()
+            },
             source = when (server.source) {
                 AppDiscoverySource.BONJOUR -> "bonjour"
                 AppDiscoverySource.TAILSCALE -> "tailscale"
@@ -300,10 +312,15 @@ data class SavedServer(
                 AppDiscoverySource.MANUAL -> "manual"
                 AppDiscoverySource.LOCAL -> "local"
             },
-            hasCodexServer = server.codexPort != null || server.codexPorts.isNotEmpty(),
+            hasCodexServer = server.backendKind != AppDiscoveredBackendKind.OPEN_CODE &&
+                (server.codexPort != null || server.codexPorts.isNotEmpty()),
             os = if (server.sshBanner != null) server.os else server.os,
             sshBanner = server.sshBanner,
-            backendKind = SavedServerBackendKind.CODEX,
+            backendKind = when (server.backendKind) {
+                AppDiscoveredBackendKind.OPEN_CODE -> SavedServerBackendKind.OPEN_CODE
+                AppDiscoveredBackendKind.CODEX -> SavedServerBackendKind.CODEX
+            },
+            openCodeBaseUrl = server.opencodeBaseUrl,
         )
     }
 }
@@ -383,6 +400,84 @@ object SavedServerStore {
         val existing = load(context).toMutableList()
         existing.removeAll { it.id == serverId }
         save(context, existing)
+    }
+
+    fun server(context: Context, serverId: String): SavedServer? =
+        load(context).firstOrNull { it.id == serverId }
+
+    fun appendOpenCodeDirectory(context: Context, serverId: String, directory: String) {
+        val normalizedDirectory = directory.trim()
+        if (normalizedDirectory.isEmpty()) return
+
+        val existing = load(context)
+        val updated = existing.map { server ->
+            if (server.id == serverId && server.backendKind == SavedServerBackendKind.OPEN_CODE) {
+                val nextDirectories = (server.openCodeKnownDirectories + normalizedDirectory)
+                    .map(String::trim)
+                    .filter(String::isNotEmpty)
+                    .distinct()
+                if (nextDirectories != server.openCodeKnownDirectories) {
+                    server.copy(openCodeKnownDirectories = nextDirectories)
+                } else {
+                    server
+                }
+            } else {
+                server
+            }
+        }
+        if (updated != existing) {
+            save(context, updated)
+        }
+    }
+
+    fun replaceOpenCodeDirectory(
+        context: Context,
+        serverId: String,
+        previousDirectory: String,
+        nextDirectory: String,
+    ) {
+        val normalizedPrevious = previousDirectory.trim()
+        val normalizedNext = nextDirectory.trim()
+        if (normalizedPrevious.isEmpty() || normalizedNext.isEmpty()) return
+
+        val existing = load(context)
+        val updated = existing.map { server ->
+            if (server.id == serverId && server.backendKind == SavedServerBackendKind.OPEN_CODE) {
+                val nextDirectories = server.openCodeKnownDirectories
+                    .map { directory ->
+                        if (directory.trim() == normalizedPrevious) normalizedNext else directory.trim()
+                    }
+                    .filter(String::isNotEmpty)
+                    .distinct()
+                server.copy(openCodeKnownDirectories = nextDirectories)
+            } else {
+                server
+            }
+        }
+        if (updated != existing) {
+            save(context, updated)
+        }
+    }
+
+    fun removeOpenCodeDirectory(context: Context, serverId: String, directory: String) {
+        val normalizedDirectory = directory.trim()
+        if (normalizedDirectory.isEmpty()) return
+
+        val existing = load(context)
+        val updated = existing.map { server ->
+            if (server.id == serverId && server.backendKind == SavedServerBackendKind.OPEN_CODE) {
+                server.copy(
+                    openCodeKnownDirectories = server.openCodeKnownDirectories
+                        .map(String::trim)
+                        .filter { it.isNotEmpty() && it != normalizedDirectory },
+                )
+            } else {
+                server
+            }
+        }
+        if (updated != existing) {
+            save(context, updated)
+        }
     }
 
     fun rename(context: Context, serverId: String, newName: String) {

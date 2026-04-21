@@ -149,6 +149,9 @@ impl AppStoreReducer {
                     display_name: config.display_name.clone(),
                     host: config.host.clone(),
                     port: config.port,
+                    backend_kind: config.backend_kind,
+                    transport_kind: config.transport_kind,
+                    connection_path: config.connection_path,
                     wake_mac: existing_wake_mac,
                     is_local: config.is_local,
                     supports_ipc: existing_supports_ipc || supports_ipc,
@@ -159,6 +162,7 @@ impl AppStoreReducer {
                     rate_limits: existing_rate_limits,
                     available_models: existing_available_models,
                     connection_progress: existing_connection_progress,
+                    known_directories: config.known_directories.clone(),
                     transport: existing_transport,
                 },
             );
@@ -2926,6 +2930,10 @@ mod tests {
             websocket_url: None,
             is_local: false,
             tls: false,
+            backend_kind: crate::session::connection::AppServerBackendKind::Codex,
+            transport_kind: crate::session::connection::AppServerTransportKind::Websocket,
+            connection_path: crate::session::connection::AppServerConnectionPath::Lan,
+            known_directories: Vec::new(),
         }
     }
 

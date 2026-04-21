@@ -1,6 +1,9 @@
 use std::hash::{Hash, Hasher};
 
 use crate::conversation_uniffi::HydratedConversationItem;
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind,
+};
 use crate::types::AppSubagentStatus;
 use crate::types::{
     AppModeKind, AppPlanImplementationPromptSnapshot, AppPlanProgressSnapshot, PendingApproval,
@@ -8,7 +11,8 @@ use crate::types::{
 };
 
 use super::snapshot::{
-    AppConnectionProgressSnapshot, AppQueuedFollowUpPreview, AppSnapshot, AppVoiceSessionSnapshot,
+    AppConnectionProgressSnapshot, AppQueuedFollowUpPreview, AppServerModelCatalogState,
+    AppServerModelCatalogSummary, AppServerStatusKind, AppSnapshot, AppVoiceSessionSnapshot,
     ServerHealthSnapshot, ServerIpcStateSnapshot, ServerSnapshot, ThreadSnapshot,
 };
 
@@ -18,6 +22,10 @@ pub struct AppServerSnapshot {
     pub display_name: String,
     pub host: String,
     pub port: u16,
+    pub backend_kind: AppServerBackendKind,
+    pub transport_kind: AppServerTransportKind,
+    pub connection_path: AppServerConnectionPath,
+    pub status_kind: AppServerStatusKind,
     pub wake_mac: Option<String>,
     pub is_local: bool,
     pub supports_ipc: bool,
@@ -29,6 +37,9 @@ pub struct AppServerSnapshot {
     pub account: Option<crate::types::Account>,
     pub requires_openai_auth: bool,
     pub rate_limits: Option<crate::types::RateLimitSnapshot>,
+    pub known_directories: Vec<String>,
+    pub last_used_directory_hint: Option<String>,
+    pub model_catalog: AppServerModelCatalogSummary,
     pub available_models: Option<Vec<crate::types::ModelInfo>>,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
 }
@@ -218,11 +229,20 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                 let can_use_ipc =
                     can_use_transport_actions && ipc_state == AppServerIpcState::Ready;
 
+                let last_used_directory_hint =
+                    last_used_directory_hint_for_server(&snapshot, server.server_id.as_str());
+                let model_catalog = model_catalog_summary(&server);
+                let status_kind = status_kind_for_server(&server);
+
                 AppServerSnapshot {
                     server_id: server.server_id,
                     display_name: server.display_name,
                     host: server.host,
                     port: server.port,
+                    backend_kind: server.backend_kind,
+                    transport_kind: server.transport_kind,
+                    connection_path: server.connection_path,
+                    status_kind,
                     wake_mac: server.wake_mac,
                     is_local: server.is_local,
                     supports_ipc: server.supports_ipc,
@@ -232,7 +252,8 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                     ipc_state,
                     capabilities: AppServerCapabilities {
                         can_use_transport_actions,
-                        can_browse_directories: can_use_transport_actions,
+                        can_browse_directories: can_use_transport_actions
+                            && server.backend_kind == AppServerBackendKind::Codex,
                         can_start_threads: can_use_transport_actions,
                         can_resume_threads: can_use_transport_actions,
                         can_use_ipc,
@@ -241,6 +262,9 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                     account: server.account,
                     requires_openai_auth: server.requires_openai_auth,
                     rate_limits: server.rate_limits,
+                    known_directories: server.known_directories,
+                    last_used_directory_hint,
+                    model_catalog,
                     available_models: server.available_models,
                     connection_progress: server.connection_progress,
                 }
@@ -266,6 +290,75 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
             voice_session: snapshot.voice_session,
         })
     }
+}
+
+fn status_kind_for_server(server: &ServerSnapshot) -> AppServerStatusKind {
+    if server.connection_progress.is_some() {
+        return AppServerStatusKind::Reconnecting;
+    }
+
+    match server.health {
+        ServerHealthSnapshot::Connected => {
+            if server.backend_kind == AppServerBackendKind::Codex
+                && !server.is_local
+                && server.account.is_none()
+            {
+                AppServerStatusKind::AuthRequired
+            } else {
+                AppServerStatusKind::Connected
+            }
+        }
+        ServerHealthSnapshot::Connecting => AppServerStatusKind::Reconnecting,
+        ServerHealthSnapshot::Disconnected => AppServerStatusKind::Disconnected,
+        ServerHealthSnapshot::Unresponsive => AppServerStatusKind::Unresponsive,
+        ServerHealthSnapshot::Unknown(_) => AppServerStatusKind::Unknown,
+    }
+}
+
+fn model_catalog_summary(server: &ServerSnapshot) -> AppServerModelCatalogSummary {
+    let default_model = server
+        .available_models
+        .as_ref()
+        .and_then(|models| models.iter().find(|model| model.is_default));
+    let state = if server.health != ServerHealthSnapshot::Connected {
+        AppServerModelCatalogState::Unavailable
+    } else if server.available_models.is_some() {
+        AppServerModelCatalogState::Loaded
+    } else if server.connection_progress.is_some() {
+        AppServerModelCatalogState::Loading
+    } else {
+        AppServerModelCatalogState::Idle
+    };
+
+    AppServerModelCatalogSummary {
+        state,
+        available_model_count: server
+            .available_models
+            .as_ref()
+            .map(|models| models.len() as u32)
+            .unwrap_or(0),
+        default_model_id: default_model.map(|model| model.id.clone()),
+        default_model_display_name: default_model.map(|model| model.display_name.clone()),
+    }
+}
+
+fn last_used_directory_hint_for_server(snapshot: &AppSnapshot, server_id: &str) -> Option<String> {
+    snapshot
+        .threads
+        .values()
+        .filter(|thread| thread.key.server_id == server_id)
+        .filter_map(|thread| {
+            let updated_at = thread.info.updated_at.unwrap_or(0);
+            let cwd = thread
+                .info
+                .cwd
+                .as_ref()
+                .map(|cwd| cwd.trim().to_string())
+                .filter(|cwd| !cwd.is_empty())?;
+            Some((updated_at, cwd))
+        })
+        .max_by_key(|(updated_at, _)| *updated_at)
+        .map(|(_, cwd)| cwd)
 }
 
 fn app_thread_snapshot_from_state(

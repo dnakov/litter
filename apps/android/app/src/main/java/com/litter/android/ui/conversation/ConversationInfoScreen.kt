@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -65,6 +66,8 @@ import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.contextPercent
 import com.litter.android.state.displayTitle
 import com.litter.android.state.resolvedModel
+import com.litter.android.state.SavedServerBackendKind
+import com.litter.android.state.SavedServerStore
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
 import com.litter.android.ui.LocalAppModel
@@ -800,6 +803,24 @@ private fun GaugeArc(
 
 @Composable
 private fun ServerInfoSection(server: AppServerSnapshot) {
+    val context = LocalContext.current
+    val isOpenCodeServer = remember(server.serverId) {
+        SavedServerStore.server(context, server.serverId)?.backendKind == SavedServerBackendKind.OPEN_CODE
+    }
+    var showAddWorkspaceDialog by remember(server.serverId) { mutableStateOf(false) }
+    var newWorkspacePath by remember(server.serverId) { mutableStateOf("") }
+    var openCodeDirectories by remember(server.serverId) {
+        mutableStateOf(
+            SavedServerStore.server(context, server.serverId)
+                ?.takeIf { it.backendKind == SavedServerBackendKind.OPEN_CODE }
+                ?.openCodeKnownDirectories
+                ?: emptyList(),
+        )
+    }
+    val providerGroups = remember(server.availableModels) {
+        groupModelsByProvider(server.availableModels ?: emptyList())
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -854,6 +875,98 @@ private fun ServerInfoSection(server: AppServerSnapshot) {
                 )
             }
         }
+
+        if (isOpenCodeServer) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Workspaces", color = LitterTheme.textMuted, fontSize = 10.sp)
+                TextButton(onClick = { showAddWorkspaceDialog = true }) {
+                    Text("Add", color = LitterTheme.accent)
+                }
+            }
+            openCodeDirectories.forEach { directory ->
+                Text(
+                    text = directory,
+                    color = LitterTheme.textSecondary,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = "Provider auth and defaults stay managed on the OpenCode server.",
+                color = LitterTheme.textMuted,
+                fontSize = 10.sp,
+            )
+
+            if (providerGroups.isNotEmpty()) {
+                Text("Providers", color = LitterTheme.textMuted, fontSize = 10.sp)
+                providerGroups.forEach { (provider, providerModels) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(provider, color = LitterTheme.textPrimary, fontSize = 11.sp)
+                        Text(
+                            text = providerModels.firstOrNull { it.isDefault }?.displayName
+                                ?: providerModels.firstOrNull()?.displayName
+                                ?: "",
+                            color = LitterTheme.textSecondary,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        text = "${providerModels.size} models",
+                        color = LitterTheme.textMuted,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAddWorkspaceDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showAddWorkspaceDialog = false
+                newWorkspacePath = ""
+            },
+            title = { Text("Add Workspace") },
+            text = {
+                OutlinedTextField(
+                    value = newWorkspacePath,
+                    onValueChange = { newWorkspacePath = it },
+                    label = { Text("Directory") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    SavedServerStore.appendOpenCodeDirectory(context, server.serverId, newWorkspacePath)
+                    openCodeDirectories = SavedServerStore.server(context, server.serverId)
+                        ?.takeIf { it.backendKind == SavedServerBackendKind.OPEN_CODE }
+                        ?.openCodeKnownDirectories
+                        ?: emptyList()
+                    showAddWorkspaceDialog = false
+                    newWorkspacePath = ""
+                }) {
+                    Text("Save", color = LitterTheme.accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showAddWorkspaceDialog = false
+                    newWorkspacePath = ""
+                }) {
+                    Text("Cancel", color = LitterTheme.textSecondary)
+                }
+            },
+        )
     }
 }
 
@@ -871,6 +984,26 @@ private fun InfoRow(label: String, value: String) {
             fontFamily = LitterTheme.monoFont,
         )
     }
+}
+
+private fun groupModelsByProvider(
+    models: List<uniffi.codex_mobile_client.ModelInfo>,
+): List<Pair<String, List<uniffi.codex_mobile_client.ModelInfo>>> =
+    models
+        .groupBy { modelProviderLabel(it.id) ?: "Other" }
+        .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        .map { (provider, providerModels) ->
+            provider to providerModels.sortedWith(
+                compareByDescending<uniffi.codex_mobile_client.ModelInfo> { it.isDefault }
+                    .thenBy { it.displayName.lowercase() },
+            )
+        }
+
+private fun modelProviderLabel(modelId: String): String? {
+    val trimmed = modelId.trim()
+    val separatorIndex = trimmed.indexOf(':')
+    if (separatorIndex <= 0) return null
+    return trimmed.substring(0, separatorIndex).trim().ifEmpty { null }
 }
 
 @Composable

@@ -62,14 +62,19 @@ import com.litter.android.state.SavedServerStore
 import com.litter.android.state.SavedSshCredential
 import com.litter.android.state.SshAuthMethod
 import com.litter.android.state.SshCredentialStore
+import com.litter.android.state.backendLabel
+import com.litter.android.state.connectionPathLabel
 import com.litter.android.state.connectionProgressDetail
 import com.litter.android.state.isIpcConnected
 import com.litter.android.state.isConnected
+import com.litter.android.state.serverSubtitle
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
+import com.litter.android.state.transportLabel
 import com.litter.android.ui.ExperimentalFeatures
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalAppModel
+import com.litter.android.ui.RecentDirectoryStore
 import com.litter.android.util.LLog
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -81,6 +86,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.codex_mobile_client.AppDiscoveredBackendKind
 import uniffi.codex_mobile_client.AppServerHealth
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppDiscoveredServer
@@ -106,6 +112,7 @@ fun DiscoveryScreen(
     val sshCredentialStore = remember(context) { SshCredentialStore(context.applicationContext) }
 
     var showManualEntry by remember { mutableStateOf(false) }
+    var manualEntryPrefill by remember { mutableStateOf<ManualEntryPrefill?>(null) }
     var pendingManualSshServer by remember { mutableStateOf<SavedServer?>(null) }
     var sshServer by remember { mutableStateOf<SavedServer?>(null) }
     var connectionChoiceServer by remember { mutableStateOf<SavedServer?>(null) }
@@ -143,9 +150,40 @@ fun DiscoveryScreen(
     val merged = remember(discoveredServers, savedServers) {
         mergeServers(discoveredServers, savedServers)
     }
+    val discoveredByKey = remember(discoveredServers) {
+        discoveredServers.associateBy { server -> SavedServer.from(server).deduplicationKey }
+    }
 
     suspend fun reloadSavedServers() {
         savedServers = SavedServerStore.load(context)
+    }
+
+    suspend fun activateOpenCodeSessionIfNeeded(server: SavedServer, serverId: String) {
+        val directory = server.openCodeKnownDirectories.firstOrNull()?.trim().orEmpty()
+        if (directory.isEmpty()) {
+            return
+        }
+
+        val existingKey = appModel.snapshot.value?.sessionSummaries
+            ?.asSequence()
+            ?.filter { summary -> summary.key.serverId == serverId && !summary.isSubagent }
+            ?.maxByOrNull { summary -> summary.updatedAt ?: 0L }
+            ?.key
+
+        val targetKey = existingKey ?: appModel.client.startThread(
+            serverId,
+            appModel.launchState.threadStartRequest(directory, serverId = serverId),
+        ).also {
+            RecentDirectoryStore(context).record(serverId, directory)
+        }
+
+        appModel.store.setActiveThread(targetKey)
+        appModel.refreshSnapshot()
+        val resolvedKey = appModel.ensureThreadLoaded(targetKey)
+            ?: appModel.snapshot.value?.threads?.firstOrNull { thread -> thread.key == targetKey }?.key
+            ?: targetKey
+        appModel.store.setActiveThread(resolvedKey)
+        appModel.refreshSnapshot()
     }
 
     suspend fun prepareServerForSelection(entry: SavedServer): SavedServer {
@@ -209,10 +247,16 @@ fun DiscoveryScreen(
                         return
                     }
                     if (prepared.openCodeKnownDirectories.isEmpty()) {
-                        connectError = "OpenCode directory is required."
+                        manualEntryPrefill = ManualEntryPrefill(
+                            mode = ManualConnectionMode.OPEN_CODE,
+                            openCodeBaseUrl = baseUrl,
+                            openCodeUsername = prepared.openCodeBasicAuthUsername.orEmpty(),
+                            openCodePassword = prepared.openCodeBasicAuthPassword.orEmpty(),
+                        )
+                        showManualEntry = true
                         return
                     }
-                    appModel.serverBridge.connectOpencodeServer(
+                    val connectedServerId = appModel.serverBridge.connectOpencodeServer(
                         uniffi.codex_mobile_client.AppOpenCodeConnectRequest(
                             serverId = prepared.id,
                             displayName = prepared.name,
@@ -227,6 +271,7 @@ fun DiscoveryScreen(
                     SavedServerStore.remember(context, prepared.normalizedForPersistence())
                     reloadSavedServers()
                     appModel.refreshSnapshot()
+                    activateOpenCodeSessionIfNeeded(prepared, connectedServerId)
                     onDismiss()
                 }
 
@@ -326,7 +371,12 @@ fun DiscoveryScreen(
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Default.Refresh, "Refresh", tint = LitterTheme.textSecondary)
             }
-            IconButton(onClick = { showManualEntry = true }) {
+            IconButton(
+                onClick = {
+                    manualEntryPrefill = null
+                    showManualEntry = true
+                },
+            ) {
                 Icon(Icons.Default.Add, "Add Server", tint = LitterTheme.textSecondary)
             }
         }
@@ -365,6 +415,7 @@ fun DiscoveryScreen(
             items(merged, key = { it.id }) { entry ->
                 ServerRow(
                     entry = entry,
+                    discoveredServer = discoveredByKey[entry.deduplicationKey],
                     connectedServer = connectedSnapshot(entry, snapshot?.servers ?: emptyList()),
                     isWaking = wakingServerId == entry.id,
                     enabled = wakingServerId == null || wakingServerId == entry.id,
@@ -411,17 +462,23 @@ fun DiscoveryScreen(
 
     if (showManualEntry) {
         ManualEntryDialog(
-            onDismiss = { showManualEntry = false },
+            prefill = manualEntryPrefill,
+            onDismiss = {
+                showManualEntry = false
+                manualEntryPrefill = null
+            },
             onSubmit = { action ->
                 when (action) {
                     is ManualEntryAction.Connect -> {
                         showManualEntry = false
+                        manualEntryPrefill = null
                         scope.launch { connectSelectedServer(action.server) }
                     }
 
                     is ManualEntryAction.ContinueWithSsh -> {
                         pendingManualSshServer = action.server
                         showManualEntry = false
+                        manualEntryPrefill = null
                     }
                 }
             },
@@ -681,6 +738,7 @@ fun DiscoveryScreen(
 @Composable
 private fun ServerRow(
     entry: SavedServer,
+    discoveredServer: AppDiscoveredServer?,
     connectedServer: AppServerSnapshot?,
     isWaking: Boolean,
     enabled: Boolean,
@@ -689,6 +747,29 @@ private fun ServerRow(
 ) {
     val displayHost = connectedServer?.host ?: entry.hostname
     val subtitle = connectedServer?.connectionProgressDetail
+        ?: connectedServer?.let { server ->
+            buildString {
+                append(server.serverSubtitle)
+                append(" - ")
+                append("${server.host}:${server.port}")
+                server.lastUsedDirectoryHint?.takeIf { it.isNotBlank() }?.let { directory ->
+                    append(" - ")
+                    append(directory)
+                }
+            }
+        }
+        ?: discoveredServer?.let { server ->
+            buildString {
+                append(discoveryTransportLabel(server))
+                append(" - ")
+                append(discoveryPathLabel(server))
+                append(" - ")
+                append(server.opencodeBaseUrl ?: "${server.host}:${server.port.toInt()}")
+                if (server.requiresAuth) {
+                    append(" - auth required")
+                }
+            }
+        }
         ?: buildString {
             if (entry.backendKind == SavedServerBackendKind.OPEN_CODE) {
                 append(entry.openCodeBaseUrl ?: displayHost)
@@ -747,6 +828,8 @@ private fun ServerRow(
             Text(subtitle, color = LitterTheme.textSecondary, fontSize = 11.sp)
         }
         val (sourceColor, sourceLabel) = when {
+            connectedServer != null -> LitterTheme.accent to connectedServer.backendLabel
+            discoveredServer != null -> LitterTheme.accent to discoveryBackendLabel(discoveredServer)
             entry.backendKind == SavedServerBackendKind.OPEN_CODE -> LitterTheme.accent to "OpenCode"
             else -> when (entry.source) {
             "bonjour" -> LitterTheme.info to "Bonjour"
@@ -776,6 +859,36 @@ private fun ServerRow(
                     .background(connectedServer.statusColor.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             )
+        } else if (discoveredServer != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = discoveryTransportLabel(discoveredServer),
+                color = LitterTheme.info,
+                fontSize = 10.sp,
+                modifier = Modifier
+                    .background(LitterTheme.info.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = discoveryPathLabel(discoveredServer),
+                color = LitterTheme.textSecondary,
+                fontSize = 10.sp,
+                modifier = Modifier
+                    .background(LitterTheme.textSecondary.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            if (discoveredServer.requiresAuth) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Auth",
+                    color = Color(0xFFFF9500),
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .background(Color(0xFFFF9500).copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
         }
         if (connectedServer?.isIpcConnected == true) {
             Spacer(Modifier.width(6.dp))
@@ -813,20 +926,47 @@ private fun ServerRow(
     }
 }
 
+private fun discoveryBackendLabel(server: AppDiscoveredServer): String =
+    when (server.backendKind) {
+        AppDiscoveredBackendKind.OPEN_CODE -> "OpenCode"
+        AppDiscoveredBackendKind.CODEX -> "Codex"
+    }
+
+private fun discoveryTransportLabel(server: AppDiscoveredServer): String =
+    when (server.transportKind.name) {
+        "LOCAL" -> "local"
+        "SSH" -> "SSH"
+        "WEBSOCKET" -> "WebSocket"
+        "HTTP" -> "HTTP"
+        "HTTPS" -> "HTTPS"
+        "TAILSCALE_HTTPS" -> "HTTPS/Tailscale"
+        else -> "unknown"
+    }
+
+private fun discoveryPathLabel(server: AppDiscoveredServer): String =
+    when (server.connectionPath.name) {
+        "LOCAL" -> "local"
+        "LAN" -> "LAN"
+        "TAILSCALE" -> "Tailscale"
+        "SSH" -> "SSH"
+        else -> "unknown"
+    }
+
 @Composable
 private fun ManualEntryDialog(
+    prefill: ManualEntryPrefill? = null,
     onDismiss: () -> Unit,
     onSubmit: (ManualEntryAction) -> Unit,
 ) {
-    var mode by remember { mutableStateOf(ManualConnectionMode.SSH) }
-    var codexUrl by remember { mutableStateOf("") }
-    var openCodeBaseUrl by remember { mutableStateOf("") }
-    var openCodeUsername by remember { mutableStateOf("") }
-    var openCodePassword by remember { mutableStateOf("") }
-    var openCodeDirectory by remember { mutableStateOf("") }
-    var host by remember { mutableStateOf("") }
-    var sshPort by remember { mutableStateOf("22") }
-    var wakeMac by remember { mutableStateOf("") }
+    var mode by remember(prefill) { mutableStateOf(prefill?.mode ?: ManualConnectionMode.SSH) }
+    var codexUrl by remember(prefill) { mutableStateOf(prefill?.codexUrl.orEmpty()) }
+    var openCodeBaseUrl by remember(prefill) { mutableStateOf(prefill?.openCodeBaseUrl.orEmpty()) }
+    var openCodeUsername by remember(prefill) { mutableStateOf(prefill?.openCodeUsername.orEmpty()) }
+    var openCodePassword by remember(prefill) { mutableStateOf(prefill?.openCodePassword.orEmpty()) }
+    var openCodeDirectory by remember(prefill) { mutableStateOf(prefill?.openCodeDirectory.orEmpty()) }
+    var host by remember(prefill) { mutableStateOf(prefill?.host.orEmpty()) }
+    var sshPort by remember(prefill) { mutableStateOf(prefill?.sshPort ?: "22") }
+    var wakeMac by remember(prefill) { mutableStateOf(prefill?.wakeMac.orEmpty()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -1219,7 +1359,15 @@ private fun connectedSnapshot(
     entry: SavedServer,
     servers: List<AppServerSnapshot>,
 ): AppServerSnapshot? = servers.firstOrNull { it.serverId == entry.id }
-    ?: servers.firstOrNull { it.host.lowercase().trim().trimStart('[').trimEnd(']') == entry.deduplicationKey }
+    ?: servers.firstOrNull { candidate ->
+        val sameBackend = when (entry.backendKind) {
+            SavedServerBackendKind.CODEX -> candidate.backendKind.name == "CODEX"
+            SavedServerBackendKind.OPEN_CODE -> candidate.backendKind.name == "OPEN_CODE"
+        }
+        val normalizedCandidateHost = candidate.host.lowercase().trim().trimStart('[').trimEnd(']')
+        val normalizedEntryHost = entry.hostname.lowercase().trim().trimStart('[').trimEnd(']')
+        sameBackend && normalizedCandidateHost == normalizedEntryHost && candidate.port.toInt() == entry.port
+    }
 
 private fun mergeServers(
     discovered: List<AppDiscoveredServer>,
@@ -1239,6 +1387,37 @@ private fun mergeServers(
     }
 
     fun mergeCandidate(existing: SavedServer, candidate: SavedServer): SavedServer {
+        if (
+            existing.backendKind == SavedServerBackendKind.OPEN_CODE &&
+            candidate.backendKind == SavedServerBackendKind.OPEN_CODE
+        ) {
+            val betterSource = sourceRank(candidate.source) < sourceRank(existing.source)
+            val betterName = existing.name == existing.hostname && candidate.name != candidate.hostname
+            val preferCandidate = betterSource || betterName
+            val mergedDirectories = (existing.openCodeKnownDirectories + candidate.openCodeKnownDirectories)
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+                .distinct()
+
+            return (if (preferCandidate) {
+                candidate.copy(
+                    id = existing.id,
+                    openCodeBasicAuthUsername = existing.openCodeBasicAuthUsername
+                        ?: candidate.openCodeBasicAuthUsername,
+                    openCodeBasicAuthPassword = existing.openCodeBasicAuthPassword
+                        ?: candidate.openCodeBasicAuthPassword,
+                    openCodeKnownDirectories = mergedDirectories,
+                )
+            } else {
+                existing.copy(
+                    source = existing.source.takeIf { it.isNotBlank() } ?: candidate.source,
+                    name = if (betterName) candidate.name else existing.name,
+                    openCodeBaseUrl = existing.openCodeBaseUrl ?: candidate.openCodeBaseUrl,
+                    openCodeKnownDirectories = mergedDirectories,
+                )
+            }).normalizedForPersistence()
+        }
+
         val betterSource = sourceRank(candidate.source) < sourceRank(existing.source)
         val hasCodexUpgrade = candidate.hasCodexServer && !existing.hasCodexServer
         val betterCodexPort = candidate.availableDirectCodexPorts.any { it !in existing.availableDirectCodexPorts }
@@ -1316,6 +1495,18 @@ private sealed interface ManualEntryBuild {
     data class Action(val action: ManualEntryAction) : ManualEntryBuild
     data class Error(val message: String) : ManualEntryBuild
 }
+
+private data class ManualEntryPrefill(
+    val mode: ManualConnectionMode,
+    val codexUrl: String = "",
+    val openCodeBaseUrl: String = "",
+    val openCodeUsername: String = "",
+    val openCodePassword: String = "",
+    val openCodeDirectory: String = "",
+    val host: String = "",
+    val sshPort: String = "22",
+    val wakeMac: String = "",
+)
 
 private enum class ManualConnectionMode(
     val label: String,

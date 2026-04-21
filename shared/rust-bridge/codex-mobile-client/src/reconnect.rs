@@ -4,7 +4,10 @@
 //! computation that previously lived in platform Swift/Kotlin code.
 
 use crate::mobile_client::MobileClient;
-use crate::session::connection::{InProcessConfig, ServerConfig};
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind, InProcessConfig,
+    ServerConfig,
+};
 use crate::ssh::{SshAuth, SshCredentials};
 use opencode_bridge::{OpenCodeDirectoryScope, OpenCodeServerConfig};
 use tracing::{info, warn};
@@ -400,6 +403,10 @@ pub(crate) async fn execute_reconnect_plan(
                 websocket_url: None,
                 is_local: false,
                 tls: false,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Ssh,
+                connection_path: AppServerConnectionPath::Ssh,
+                known_directories: Vec::new(),
             };
             match client
                 .connect_remote_over_ssh(config, ssh_creds, true, None, ipc_override)
@@ -438,6 +445,10 @@ pub(crate) async fn execute_reconnect_plan(
                 websocket_url: None,
                 is_local: true,
                 tls: false,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Local,
+                connection_path: AppServerConnectionPath::Local,
+                known_directories: Vec::new(),
             };
             match client
                 .connect_local(config, InProcessConfig::default())
@@ -481,6 +492,10 @@ pub(crate) async fn execute_reconnect_plan(
                 websocket_url: None,
                 is_local: false,
                 tls: false,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Websocket,
+                connection_path: AppServerConnectionPath::Lan,
+                known_directories: Vec::new(),
             };
             match client.connect_remote(config).await {
                 Ok(_) => ReconnectResult {
@@ -512,14 +527,32 @@ pub(crate) async fn execute_reconnect_plan(
                 "reconnect: executing RemoteUrl plan server_id={} url={}",
                 server_id, websocket_url
             );
+            let parsed = url::Url::parse(websocket_url).ok();
+            let host = parsed
+                .as_ref()
+                .and_then(|url| url.host_str())
+                .unwrap_or_default()
+                .to_string();
+            let tls = parsed
+                .as_ref()
+                .map(|url| matches!(url.scheme(), "wss" | "https"))
+                .unwrap_or(false);
             let config = ServerConfig {
                 server_id: server_id.clone(),
                 display_name: display_name.clone(),
-                host: String::new(),
+                host: host.clone(),
                 port: 0,
                 websocket_url: Some(websocket_url.clone()),
                 is_local: false,
-                tls: false,
+                tls,
+                backend_kind: AppServerBackendKind::Codex,
+                transport_kind: AppServerTransportKind::Websocket,
+                connection_path: if host.ends_with(".ts.net") {
+                    AppServerConnectionPath::Tailscale
+                } else {
+                    AppServerConnectionPath::Lan
+                },
+                known_directories: Vec::new(),
             };
             match client.connect_remote(config).await {
                 Ok(_) => ReconnectResult {

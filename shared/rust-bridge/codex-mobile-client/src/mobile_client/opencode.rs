@@ -5,6 +5,9 @@ use crate::conversation_uniffi::{
     HydratedFileChangeData, HydratedFileChangeEntryData, HydratedNoteData, HydratedReasoningData,
     HydratedUserMessageData,
 };
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind,
+};
 use crate::store::snapshot::ThreadSnapshot;
 use crate::types::{
     AppInterruptTurnRequest, AppListThreadsRequest, AppOpenCodeConnectRequest, AppOperationStatus,
@@ -780,14 +783,39 @@ fn model_info_from_projection(provider_name: &str, model: &OpenCodeModelProjecti
 }
 
 pub(crate) fn server_config_from_opencode(config: &OpenCodeServerConfig) -> ServerConfig {
+    let is_local = matches!(config.host.as_str(), "127.0.0.1" | "localhost");
+    let connection_path = if is_local {
+        AppServerConnectionPath::Local
+    } else if config.host.ends_with(".ts.net") {
+        AppServerConnectionPath::Tailscale
+    } else {
+        AppServerConnectionPath::Lan
+    };
+    let transport_kind = if config.tls {
+        if connection_path == AppServerConnectionPath::Tailscale {
+            AppServerTransportKind::TailscaleHttps
+        } else {
+            AppServerTransportKind::Https
+        }
+    } else {
+        AppServerTransportKind::Http
+    };
     ServerConfig {
         server_id: config.server_id.clone(),
         display_name: config.display_name.clone(),
         host: config.host.clone(),
         port: config.port,
         websocket_url: None,
-        is_local: matches!(config.host.as_str(), "127.0.0.1" | "localhost"),
+        is_local,
         tls: config.tls,
+        backend_kind: AppServerBackendKind::OpenCode,
+        transport_kind,
+        connection_path,
+        known_directories: config
+            .known_directories
+            .iter()
+            .map(|scope| scope.directory.clone())
+            .collect(),
     }
 }
 

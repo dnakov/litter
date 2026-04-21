@@ -8,6 +8,19 @@ struct DirectoryPickerServerOption: Identifiable, Hashable {
     let id: String
     let name: String
     let sourceLabel: String
+    let backendKind: SavedServerBackendKind
+    let backendLabel: String
+    let subtitle: String
+    let statusLabel: String
+    let lastUsedDirectoryHint: String?
+    let defaultModelLabel: String?
+    let modelCatalogCountLabel: String
+    let knownDirectories: [String]
+    let canBrowseDirectories: Bool
+
+    var isOpenCode: Bool {
+        backendKind == .openCode
+    }
 }
 
 private struct DirectoryPathBreadcrumb: Identifiable {
@@ -73,6 +86,7 @@ private final class DirectoryPickerSheetModel {
     var currentPath = ""
     var allEntries: [String] = []
     var recentEntries: [RecentDirectoryEntry] = []
+    var knownDirectories: [String] = []
     var isLoading = true
     var errorMessage: String?
     var showHiddenDirectories = false
@@ -117,19 +131,22 @@ private final class DirectoryPickerSheetModel {
         Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
-    func handleServerSelectionChanged(_ serverId: String) {
+    func handleServerSelectionChanged(_ server: DirectoryPickerServerOption) {
+        let serverId = server.id
         if lastLoadedServerId != serverId {
             searchQuery = ""
             lastLoadedServerId = serverId
         }
+        refreshKnownDirectories(server: server)
         refreshRecentEntries(serverId: serverId)
     }
 
     func loadInitialPath(
-        selectedServerId: String,
+        selectedServer: DirectoryPickerServerOption,
         appModel: AppModel,
         isLocalServer: Bool
     ) async {
+        let selectedServerId = selectedServer.id
         let signpostID = OSSignpostID(log: directoryPickerSignpostLog)
         os_signpost(
             .begin,
@@ -161,6 +178,14 @@ private final class DirectoryPickerSheetModel {
         errorMessage = nil
         allEntries = []
         currentPath = ""
+        refreshKnownDirectories(server: selectedServer)
+        refreshRecentEntries(serverId: targetServerId)
+
+        if selectedServer.isOpenCode {
+            currentPath = recentEntries.first?.path ?? knownDirectories.first ?? selectedServer.lastUsedDirectoryHint ?? ""
+            isLoading = false
+            return
+        }
 
         let home = await resolveHome(for: targetServerId, appModel: appModel, isLocalServer: isLocalServer)
         guard targetServerId == selectedServerId else { return }
@@ -193,14 +218,7 @@ private final class DirectoryPickerSheetModel {
             )
         }
 
-        guard appModel.snapshot?.servers.first(where: { $0.serverId == serverId })?.canBrowseDirectories == true else {
-            if serverId == lastLoadedServerId {
-                isLoading = false
-                allEntries = []
-                errorMessage = DirectoryPickerStrings.serverNotConnected
-            }
-            return
-        }
+        guard appModel.snapshot?.servers.first(where: { $0.serverId == serverId })?.canBrowseDirectories == true else { return }
 
         let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/" : path
         isLoading = true
@@ -299,6 +317,10 @@ private final class DirectoryPickerSheetModel {
         recentEntries = RecentDirectoryStore.shared.recentDirectories(for: serverId, limit: 3)
     }
 
+    private func refreshKnownDirectories(server: DirectoryPickerServerOption) {
+        knownDirectories = SavedServerStore.server(id: server.id)?.openCodeKnownDirectories ?? server.knownDirectories
+    }
+
     private func resolveHome(
         for serverId: String,
         appModel: AppModel,
@@ -332,6 +354,9 @@ struct DirectoryPickerView: View {
     @Environment(AppModel.self) private var appModel
     @State private var model = DirectoryPickerSheetModel()
     @State private var showClearRecentsConfirmation = false
+    @State private var newScopeDraft = ""
+    @State private var editingScope: String?
+    @State private var editingScopeDraft = ""
 
     private var selectedServerOption: DirectoryPickerServerOption? {
         servers.first { $0.id == selectedServerId }
@@ -346,9 +371,7 @@ struct DirectoryPickerView: View {
     }
 
     private var canSelectPath: Bool {
-        !model.currentPath.isEmpty &&
-            selectedServerSnapshot?.canBrowseDirectories == true &&
-            selectedServerOption != nil
+        !model.currentPath.isEmpty && selectedServerOption != nil
     }
 
     private var showRecentDirectories: Bool {
@@ -357,6 +380,12 @@ struct DirectoryPickerView: View {
 
     private var mostRecentEntry: RecentDirectoryEntry? {
         model.recentEntries.first
+    }
+
+    private var visibleKnownDirectories: [String] {
+        let query = model.trimmedSearchQuery
+        guard !query.isEmpty else { return model.knownDirectories }
+        return model.knownDirectories.filter { $0.localizedCaseInsensitiveContains(query) }
     }
 
     private var searchQueryBinding: Binding<String> {
@@ -378,14 +407,15 @@ struct DirectoryPickerView: View {
         .safeAreaInset(edge: .bottom) {
             bottomActionBar
         }
-        .navigationTitle(DirectoryPickerStrings.title)
+        .navigationTitle(selectedServerOption?.isOpenCode == true ? "Pick Workspace" : DirectoryPickerStrings.title)
         .navigationBarTitleDisplayMode(.inline)
-        .interactiveDismissDisabled(model.canNavigateUp)
+        .interactiveDismissDisabled((selectedServerOption?.canBrowseDirectories == true) && model.canNavigateUp)
         .task(id: selectedServerId) {
+            guard let selectedServerOption else { return }
             onServerChanged?(selectedServerId)
-            model.handleServerSelectionChanged(selectedServerId)
+            model.handleServerSelectionChanged(selectedServerOption)
             await model.loadInitialPath(
-                selectedServerId: selectedServerId,
+                selectedServer: selectedServerOption,
                 appModel: appModel,
                 isLocalServer: selectedServerIsLocal
             )
@@ -407,6 +437,32 @@ struct DirectoryPickerView: View {
         } message: {
             Text(DirectoryPickerStrings.clearRecentMessage)
         }
+        .alert("Edit Directory Scope", isPresented: Binding(
+            get: { editingScope != nil },
+            set: { if !$0 { editingScope = nil; editingScopeDraft = "" } }
+        )) {
+            TextField("Directory", text: $editingScopeDraft)
+            Button("Save") {
+                guard let selectedServerOption, let editingScope else { return }
+                SavedServerStore.replaceOpenCodeDirectory(
+                    serverId: selectedServerOption.id,
+                    previousDirectory: editingScope,
+                    nextDirectory: editingScopeDraft
+                )
+                model.handleServerSelectionChanged(selectedServerOption)
+                if model.currentPath == editingScope {
+                    model.currentPath = editingScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                self.editingScope = nil
+                editingScopeDraft = ""
+            }
+            Button("Cancel", role: .cancel) {
+                editingScope = nil
+                editingScopeDraft = ""
+            }
+        } message: {
+            Text("Update the saved scope for this OpenCode server.")
+        }
     }
 
     private var controls: some View {
@@ -414,7 +470,7 @@ struct DirectoryPickerView: View {
             HStack(spacing: 8) {
                 Text(
                     DirectoryPickerStrings.connectedServer(
-                        selectedServerOption.map { "\($0.name) • \($0.sourceLabel)" } ??
+                        selectedServerOption.map { "\($0.name) • \($0.backendLabel)" } ??
                             DirectoryPickerStrings.noServerSelected
                     )
                 )
@@ -427,7 +483,7 @@ struct DirectoryPickerView: View {
                 if !servers.isEmpty {
                     Menu(DirectoryPickerStrings.changeServer) {
                         ForEach(servers) { server in
-                            Button("\(server.name) • \(server.sourceLabel)") {
+                            Button("\(server.name) • \(server.backendLabel)") {
                                 selectedServerId = server.id
                             }
                         }
@@ -442,6 +498,7 @@ struct DirectoryPickerView: View {
                     Image(systemName: model.showHiddenDirectories ? "eye" : "eye.slash")
                         .foregroundColor(model.showHiddenDirectories ? LitterTheme.accent : LitterTheme.textSecondary)
                 }
+                .disabled(selectedServerOption?.canBrowseDirectories != true)
                 .accessibilityLabel(
                     model.showHiddenDirectories ?
                         String(localized: "directory_picker_hide_hidden_folders") :
@@ -453,7 +510,7 @@ struct DirectoryPickerView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(LitterTheme.textMuted)
                 TextField(
-                    DirectoryPickerStrings.searchFolders,
+                    selectedServerOption?.isOpenCode == true ? "Search saved scopes" : DirectoryPickerStrings.searchFolders,
                     text: searchQueryBinding
                 )
                 .litterFont(.caption)
@@ -480,45 +537,85 @@ struct DirectoryPickerView: View {
             )
             .cornerRadius(8)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button {
-                        Task {
-                            await model.navigateUp(
-                                selectedServerId: selectedServerId,
-                                appModel: appModel,
-                                isLocalServer: selectedServerIsLocal
-                            )
-                        }
-                    } label: {
-                        Label(DirectoryPickerStrings.upOneLevel, systemImage: "arrow.up.backward")
-                            .litterFont(.caption)
-                    }
-                    .disabled(!model.canNavigateUp)
+            if let selectedServerOption {
+                Text(selectedServerOption.subtitle)
+                    .litterFont(.caption)
+                    .foregroundColor(LitterTheme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
 
-                    ForEach(model.pathSegments()) { segment in
-                        Button {
-                            Task {
-                                await model.navigateToPath(
-                                    segment.path,
-                                    selectedServerId: selectedServerId,
-                                    appModel: appModel,
-                                    isLocalServer: selectedServerIsLocal
-                                )
+                if selectedServerOption.canBrowseDirectories {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            Button {
+                                Task {
+                                    await model.navigateUp(
+                                        selectedServerId: selectedServerId,
+                                        appModel: appModel,
+                                        isLocalServer: selectedServerIsLocal
+                                    )
+                                }
+                            } label: {
+                                Label(DirectoryPickerStrings.upOneLevel, systemImage: "arrow.up.backward")
+                                    .litterFont(.caption)
                             }
-                        } label: {
-                            Text(segment.label)
-                                .litterFont(.caption)
-                                .foregroundColor(segment.path == model.currentPath ? LitterTheme.textOnAccent : LitterTheme.textSecondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(segment.path == model.currentPath ? LitterTheme.accent : LitterTheme.surface.opacity(0.65))
-                                )
+                            .disabled(!model.canNavigateUp)
+
+                            ForEach(model.pathSegments()) { segment in
+                                Button {
+                                    Task {
+                                        await model.navigateToPath(
+                                            segment.path,
+                                            selectedServerId: selectedServerId,
+                                            appModel: appModel,
+                                            isLocalServer: selectedServerIsLocal
+                                        )
+                                    }
+                                } label: {
+                                    Text(segment.label)
+                                        .litterFont(.caption)
+                                        .foregroundColor(segment.path == model.currentPath ? LitterTheme.textOnAccent : LitterTheme.textSecondary)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(segment.path == model.currentPath ? LitterTheme.accent : LitterTheme.surface.opacity(0.65))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
+                } else if selectedServerOption.isOpenCode {
+                    HStack(spacing: 8) {
+                        TextField("Add directory scope", text: $newScopeDraft)
+                            .litterFont(.caption)
+                            .foregroundColor(LitterTheme.textPrimary)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+
+                        Button("Save") {
+                            let nextDirectory = newScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !nextDirectory.isEmpty else { return }
+                            SavedServerStore.appendOpenCodeDirectory(serverId: selectedServerOption.id, directory: nextDirectory)
+                            model.handleServerSelectionChanged(selectedServerOption)
+                            if model.currentPath.isEmpty {
+                                model.currentPath = nextDirectory
+                            }
+                            newScopeDraft = ""
+                        }
+                        .disabled(newScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .litterFont(.caption)
+                        .foregroundColor(LitterTheme.accent)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(LitterTheme.surface.opacity(0.65))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(LitterTheme.border.opacity(0.85), lineWidth: 1)
+                    )
+                    .cornerRadius(8)
                 }
             }
         }
@@ -561,9 +658,152 @@ struct DirectoryPickerView: View {
                 }
             }
             .frame(maxHeight: .infinity)
+        } else if selectedServerOption?.isOpenCode == true {
+            openCodeDirectoryList
         } else {
             directoryList
         }
+    }
+
+    private var openCodeDirectoryList: some View {
+        List {
+            if let recent = mostRecentEntry {
+                Section {
+                    Button {
+                        emitSuccessHaptic()
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            onDirectorySelected?(selectedServerId, recent.path)
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "play.fill")
+                                .foregroundColor(LitterTheme.accent)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(DirectoryPickerStrings.continueIn((recent.path as NSString).lastPathComponent))
+                                    .litterFont(.subheadline)
+                                    .foregroundColor(LitterTheme.textPrimary)
+                                    .lineLimit(1)
+                                Text(recent.path)
+                                    .litterFont(.caption2)
+                                    .foregroundColor(LitterTheme.textMuted)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+                .listRowBackground(LitterTheme.surface.opacity(0.6))
+            }
+
+            if showRecentDirectories {
+                Section {
+                    ForEach(model.recentEntries) { recent in
+                        Button {
+                            emitSuccessHaptic()
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                onDirectorySelected?(selectedServerId, recent.path)
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .foregroundColor(LitterTheme.textSecondary)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text((recent.path as NSString).lastPathComponent)
+                                        .litterFont(.subheadline)
+                                        .foregroundColor(LitterTheme.textPrimary)
+                                        .lineLimit(1)
+                                    Text(recent.path)
+                                        .litterFont(.caption2)
+                                        .foregroundColor(LitterTheme.textMuted)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Text(model.relativeDate(for: recent.lastUsedAt))
+                                    .litterFont(.caption2)
+                                    .foregroundColor(LitterTheme.textSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .listRowBackground(LitterTheme.surface.opacity(0.6))
+                    }
+                } header: {
+                    Text("Recent Workspaces")
+                        .litterFont(.caption)
+                        .foregroundColor(LitterTheme.textSecondary)
+                }
+            }
+
+            Section {
+                if visibleKnownDirectories.isEmpty {
+                    Text("Add at least one directory scope for this OpenCode server.")
+                        .litterFont(.caption)
+                        .foregroundColor(LitterTheme.textMuted)
+                } else {
+                    ForEach(visibleKnownDirectories, id: \.self) { directory in
+                        Button {
+                            model.currentPath = directory
+                            emitSuccessHaptic()
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                onDirectorySelected?(selectedServerId, directory)
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "folder.fill")
+                                    .foregroundColor(LitterTheme.accent)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text((directory as NSString).lastPathComponent)
+                                        .litterFont(.subheadline)
+                                        .foregroundColor(LitterTheme.textPrimary)
+                                        .lineLimit(1)
+                                    Text(directory)
+                                        .litterFont(.caption2)
+                                        .foregroundColor(LitterTheme.textMuted)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                            }
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                SavedServerStore.removeOpenCodeDirectory(serverId: selectedServerId, directory: directory)
+                                if model.currentPath == directory {
+                                    model.currentPath = ""
+                                }
+                                if let selectedServerOption {
+                                    model.handleServerSelectionChanged(selectedServerOption)
+                                }
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                editingScope = directory
+                                editingScopeDraft = directory
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(LitterTheme.accent)
+                        }
+                        .listRowBackground(LitterTheme.surface.opacity(0.6))
+                    }
+                }
+            } header: {
+                Text("Saved Directory Scopes")
+                    .litterFont(.caption)
+                    .foregroundColor(LitterTheme.textSecondary)
+            } footer: {
+                Text("OpenCode sessions stay bound to one saved directory scope.")
+                    .litterFont(.caption2)
+                    .foregroundColor(LitterTheme.textMuted)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .animation(.easeInOut(duration: 0.2), value: model.knownDirectories)
+        .accessibilityIdentifier("directoryPicker.list")
     }
 
     private var directoryList: some View {
@@ -709,7 +949,9 @@ struct DirectoryPickerView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if !canSelectPath {
-                Text(DirectoryPickerStrings.chooseFolderHelper)
+                Text(selectedServerOption?.isOpenCode == true
+                    ? "Choose a saved directory scope to start a session."
+                    : DirectoryPickerStrings.chooseFolderHelper)
                     .litterFont(.caption)
                     .foregroundColor(LitterTheme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -730,7 +972,7 @@ struct DirectoryPickerView: View {
                 )
                 .cornerRadius(8)
 
-                Button(DirectoryPickerStrings.selectFolder) {
+                Button(selectedServerOption?.isOpenCode == true ? "Start Session" : DirectoryPickerStrings.selectFolder) {
                     emitSuccessHaptic()
                     withAnimation(.easeInOut(duration: 0.16)) {
                         onDirectorySelected?(selectedServerId, model.currentPath)
@@ -780,8 +1022,23 @@ struct DirectoryPickerView: View {
 #Preview("Directory Picker") {
     NavigationStack {
         DirectoryPickerView(
-            servers: [],
-            selectedServerId: .constant(""),
+            servers: [
+                DirectoryPickerServerOption(
+                    id: "preview",
+                    name: "Preview Server",
+                    sourceLabel: "remote",
+                    backendKind: .codex,
+                    backendLabel: "Codex",
+                    subtitle: "127.0.0.1:8390 • remote",
+                    statusLabel: "Connected",
+                    lastUsedDirectoryHint: "/tmp/litter",
+                    defaultModelLabel: "gpt-5.4",
+                    modelCatalogCountLabel: "12 models",
+                    knownDirectories: [],
+                    canBrowseDirectories: true
+                )
+            ],
+            selectedServerId: .constant("preview"),
             onDismissRequested: {}
         )
         .environment(LitterPreviewData.makeDiscoveryAppModel())

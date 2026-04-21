@@ -417,6 +417,7 @@ private struct HomeNavigationView: View {
     @State private var experimentalFeatures = ExperimentalFeatures.shared
     @State private var homeDashboardModel = HomeDashboardModel()
     @State private var navigationPath: [HomeNavigationRoute] = []
+    @State private var serverPickerSheet: SessionLaunchSupport.ServerPickerSheetModel?
     @State private var directoryPickerSheet: SessionLaunchSupport.DirectoryPickerSheetModel?
     @State private var openingRecentSessionKey: ThreadKey?
     @State private var isStartingNewSession = false
@@ -446,7 +447,16 @@ private struct HomeNavigationView: View {
             DirectoryPickerServerOption(
                 id: server.id,
                 name: server.displayName,
-                sourceLabel: server.sourceLabel
+                sourceLabel: server.sourceLabel,
+                backendKind: server.backendKind,
+                backendLabel: server.backendLabel,
+                subtitle: server.subtitle,
+                statusLabel: server.statusLabel,
+                lastUsedDirectoryHint: server.lastUsedDirectoryHint,
+                defaultModelLabel: server.defaultModelLabel,
+                modelCatalogCountLabel: server.modelCatalogCountLabel,
+                knownDirectories: server.knownDirectories,
+                canBrowseDirectories: server.canBrowseDirectories
             )
         }
     }
@@ -640,6 +650,21 @@ private struct HomeNavigationView: View {
                 replaceTopConversation(with: newKey)
             }
         }
+        .sheet(item: $serverPickerSheet) { sheet in
+            NavigationStack {
+                ServerPickerView(
+                    servers: connectedServerOptions,
+                    selectedServerId: sheet.selectedServerId,
+                    onSelect: { server in
+                        serverPickerSheet = nil
+                        beginNewSessionFlow(serverId: server.id)
+                    },
+                    onDismiss: {
+                        serverPickerSheet = nil
+                    }
+                )
+            }
+        }
         .sheet(item: $directoryPickerSheet) { _ in
             NavigationStack {
                 DirectoryPickerView(
@@ -685,16 +710,23 @@ private struct HomeNavigationView: View {
         )
     }
 
+    private func beginNewSessionFlow(serverId: String) {
+        if let server = homeDashboardModel.connectedServers.first(where: { $0.id == serverId }),
+           server.isLocal {
+            let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+            Task { await startNewSession(serverId: serverId, cwd: cwd) }
+            return
+        }
+        directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: serverId)
+    }
+
     private func handleNewSessionTap() {
         if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
-            // For local on-device server, skip directory picker and use /home/codex.
-            if let server = homeDashboardModel.connectedServers.first(where: { $0.id == defaultServerId }),
-               server.isLocal {
-                let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
-                Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
-                return
+            if connectedServerOptions.count > 1 {
+                serverPickerSheet = SessionLaunchSupport.ServerPickerSheetModel(selectedServerId: defaultServerId)
+            } else {
+                beginNewSessionFlow(serverId: defaultServerId)
             }
-            directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
         } else {
             appState.showServerPicker = true
         }
@@ -722,8 +754,9 @@ private struct HomeNavigationView: View {
 
         Task {
             do {
-                let selectedModel = normalizedSelectedModel()
-                let selectedEffort = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+                let selectedModel = normalizedSelectedModel(serverId: VoiceRuntimeController.localServerID)
+                let selectedEffort = appState.reasoningEffort(for: VoiceRuntimeController.localServerID)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 voiceRuntime.handoffModel = selectedModel
                 voiceRuntime.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
                 voiceRuntime.handoffFastMode = false
@@ -750,8 +783,8 @@ private struct HomeNavigationView: View {
         }
     }
 
-    private func normalizedSelectedModel() -> String? {
-        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func normalizedSelectedModel(serverId: String? = nil) -> String? {
+        let trimmed = appState.selectedModel(for: serverId).trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -833,7 +866,7 @@ private struct HomeNavigationView: View {
         do {
             let key = try await appModel.client.startThread(
                 serverId: serverId,
-                params: launchConfig().threadStartRequest(
+                params: launchConfig(serverId: serverId).threadStartRequest(
                     cwd: cwd,
                     dynamicTools: ExperimentalFeatures.shared.isEnabled(.generativeUI)
                         ? generativeUiDynamicToolSpecs() : nil
@@ -876,8 +909,10 @@ private struct HomeNavigationView: View {
         }
     }
 
-    private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
-        let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func launchConfig(for threadKey: ThreadKey? = nil, serverId: String? = nil) -> AppThreadLaunchConfig {
+        let effectiveServerId = threadKey?.serverId ?? serverId
+        let selectedModel = appState.selectedModel(for: effectiveServerId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
             approvalPolicy: appState.launchApprovalPolicy(for: threadKey),

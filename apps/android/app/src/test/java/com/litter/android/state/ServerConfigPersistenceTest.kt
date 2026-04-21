@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import com.litter.android.state.SavedServerBackendKind as PersistedBackendKind
 
 class ServerConfigPersistenceTest {
     @Test
@@ -63,5 +64,25 @@ class ServerConfigPersistenceTest {
 
         assertEquals(first, second)
         assertNotEquals(first, third)
+    }
+
+    @Test
+    fun savedOpenCodeDeduplicationKeyKeepsPathSegments() {
+        val first =
+            SavedServer(
+                id = "one",
+                name = "OpenCode",
+                hostname = "example.com",
+                port = 443,
+                backendKind = PersistedBackendKind.OPEN_CODE,
+                openCodeBaseUrl = "https://example.com/base",
+            )
+        val second =
+            first.copy(id = "two", openCodeBaseUrl = "https://example.com/base/")
+        val third =
+            first.copy(id = "three", openCodeBaseUrl = "https://example.com/other")
+
+        assertEquals(first.deduplicationKey, second.deduplicationKey)
+        assertNotEquals(first.deduplicationKey, third.deduplicationKey)
     }
 }

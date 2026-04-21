@@ -6,6 +6,11 @@ enum SessionLaunchSupport {
         var selectedServerId: String
     }
 
+    struct ServerPickerSheetModel: Identifiable, Equatable {
+        let id = UUID()
+        var selectedServerId: String
+    }
+
     static func defaultConnectedServerId(
         connectedServerIds: [String],
         activeThreadKey: ThreadKey?,

@@ -82,7 +82,16 @@ final class SessionsModel {
                 DirectoryPickerServerOption(
                     id: $0.id,
                     name: $0.displayName,
-                    sourceLabel: $0.sourceLabel
+                    sourceLabel: $0.sourceLabel,
+                    backendKind: $0.backendKind,
+                    backendLabel: $0.backendLabel,
+                    subtitle: $0.subtitle,
+                    statusLabel: $0.statusLabel,
+                    lastUsedDirectoryHint: $0.lastUsedDirectoryHint,
+                    defaultModelLabel: $0.defaultModelLabel,
+                    modelCatalogCountLabel: $0.modelCatalogCountLabel,
+                    knownDirectories: $0.knownDirectories,
+                    canBrowseDirectories: $0.canBrowseDirectories
                 )
             }
 

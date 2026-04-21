@@ -14,6 +14,7 @@ struct SessionsScreen: View {
     @State private var isLoading: Bool
     @State private var resumingKey: ThreadKey?
     @State private var isStartingNewSession = false
+    @State private var serverPickerSheet: SessionLaunchSupport.ServerPickerSheetModel?
     @State private var directoryPickerSheet: SessionLaunchSupport.DirectoryPickerSheetModel?
     @State private var sessionSearchQuery = ""
     @State private var debouncedSessionSearchQuery = ""
@@ -74,33 +75,49 @@ struct SessionsScreen: View {
         let lifecycle = attachLifecycleHandlers(to: base, derived: derived)
         let alerts = attachSheetAndAlerts(to: lifecycle)
 
-        return alerts.sheet(item: $directoryPickerSheet) { _ in
-            NavigationStack {
-                DirectoryPickerView(
-                    servers: connectedServerOptions,
-                    selectedServerId: Binding(
-                        get: { directoryPickerSheet?.selectedServerId ?? defaultNewSessionServerId() ?? "" },
-                        set: { nextServerId in
+        return alerts
+            .sheet(item: $serverPickerSheet) { sheet in
+                NavigationStack {
+                    ServerPickerView(
+                        servers: connectedServerOptions,
+                        selectedServerId: sheet.selectedServerId,
+                        onSelect: { server in
+                            serverPickerSheet = nil
+                            beginNewSessionFlow(serverId: server.id)
+                        },
+                        onDismiss: {
+                            serverPickerSheet = nil
+                        }
+                    )
+                }
+            }
+            .sheet(item: $directoryPickerSheet) { _ in
+                NavigationStack {
+                    DirectoryPickerView(
+                        servers: connectedServerOptions,
+                        selectedServerId: Binding(
+                            get: { directoryPickerSheet?.selectedServerId ?? defaultNewSessionServerId() ?? "" },
+                            set: { nextServerId in
+                                guard var sheet = directoryPickerSheet else { return }
+                                sheet.selectedServerId = nextServerId
+                                directoryPickerSheet = sheet
+                            }
+                        ),
+                        onServerChanged: { nextServerId in
                             guard var sheet = directoryPickerSheet else { return }
                             sheet.selectedServerId = nextServerId
                             directoryPickerSheet = sheet
+                        },
+                        onDirectorySelected: { serverId, cwd in
+                            directoryPickerSheet = nil
+                            Task { await startNewSession(serverId: serverId, cwd: cwd) }
+                        },
+                        onDismissRequested: {
+                            directoryPickerSheet = nil
                         }
-                    ),
-                    onServerChanged: { nextServerId in
-                        guard var sheet = directoryPickerSheet else { return }
-                        sheet.selectedServerId = nextServerId
-                        directoryPickerSheet = sheet
-                    },
-                    onDirectorySelected: { serverId, cwd in
-                        directoryPickerSheet = nil
-                        Task { await startNewSession(serverId: serverId, cwd: cwd) }
-                    },
-                    onDismissRequested: {
-                        directoryPickerSheet = nil
-                    }
-                )
+                    )
+                }
             }
-        }
     }
 
     private func attachLifecycleHandlers<Content: View>(
@@ -121,6 +138,11 @@ struct SessionsScreen: View {
                 Task { await loadSessionsIfNeeded(force: true) }
                 scheduleActiveSessionScrollIfNeeded()
                 guard let pickerSheet = directoryPickerSheet else {
+                    if let serverPickerSheet,
+                       !ids.contains(serverPickerSheet.selectedServerId),
+                       let fallbackServerId = defaultNewSessionServerId() {
+                        self.serverPickerSheet = SessionLaunchSupport.ServerPickerSheetModel(selectedServerId: fallbackServerId)
+                    }
                     if let filterId = selectedServerFilterId, !ids.contains(filterId) {
                         selectedServerFilterId = nil
                     }
@@ -328,14 +350,22 @@ struct SessionsScreen: View {
         )
     }
 
+    private func beginNewSessionFlow(serverId: String) {
+        if connectedServers.first(where: { $0.id == serverId })?.isLocal == true {
+            let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+            Task { await startNewSession(serverId: serverId, cwd: cwd) }
+            return
+        }
+        directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: serverId)
+    }
+
     private var newSessionButton: some View {
         Button {
             if let defaultServerId = defaultNewSessionServerId(preferredServerId: appState.sessionsSelectedServerFilterId) {
-                if connectedServers.first(where: { $0.id == defaultServerId })?.isLocal == true {
-                    let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
-                    Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
+                if connectedServerOptions.count > 1 {
+                    serverPickerSheet = SessionLaunchSupport.ServerPickerSheetModel(selectedServerId: defaultServerId)
                 } else {
-                    directoryPickerSheet = SessionLaunchSupport.DirectoryPickerSheetModel(selectedServerId: defaultServerId)
+                    beginNewSessionFlow(serverId: defaultServerId)
                 }
             } else {
                 appState.showServerPicker = true
@@ -1108,7 +1138,7 @@ struct SessionsScreen: View {
         do {
             let startedKey = try await appModel.client.startThread(
                 serverId: serverId,
-                params: launchConfig().threadStartRequest(
+                params: launchConfig(serverId: serverId).threadStartRequest(
                     cwd: cwd,
                     dynamicTools: ExperimentalFeatures.shared.isEnabled(.generativeUI)
                         ? generativeUiDynamicToolSpecs() : nil
@@ -1153,8 +1183,10 @@ struct SessionsScreen: View {
         }
     }
 
-    private func launchConfig(for threadKey: ThreadKey? = nil) -> AppThreadLaunchConfig {
-        let selectedModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func launchConfig(for threadKey: ThreadKey? = nil, serverId: String? = nil) -> AppThreadLaunchConfig {
+        let effectiveServerId = threadKey?.serverId ?? serverId
+        let selectedModel = appState.selectedModel(for: effectiveServerId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return AppThreadLaunchConfig(
             model: selectedModel.isEmpty ? nil : selectedModel,
             approvalPolicy: appState.launchApprovalPolicy(for: threadKey),

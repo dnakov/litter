@@ -1,6 +1,8 @@
 use crate::ffi::ClientError;
 use crate::ffi::shared::{shared_mobile_client, shared_runtime};
-use crate::session::connection::ServerConfig;
+use crate::session::connection::{
+    AppServerBackendKind, AppServerConnectionPath, AppServerTransportKind, ServerConfig,
+};
 use crate::ssh::{RemoteShell, SshAuth, SshBootstrapResult, SshClient, SshCredentials, SshError};
 use crate::store::{
     AppConnectionProgressSnapshot, AppConnectionStepKind, AppConnectionStepState,
@@ -267,6 +269,10 @@ impl SshBridge {
             websocket_url: None,
             is_local: false,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Ssh,
+            connection_path: AppServerConnectionPath::Ssh,
+            known_directories: Vec::new(),
         };
         let mobile_client = shared_mobile_client();
         let (tx, rx) = oneshot::channel();
@@ -345,6 +351,10 @@ impl SshBridge {
             websocket_url: None,
             is_local: false,
             tls: false,
+            backend_kind: AppServerBackendKind::Codex,
+            transport_kind: AppServerTransportKind::Ssh,
+            connection_path: AppServerConnectionPath::Ssh,
+            known_directories: Vec::new(),
         };
 
         {
