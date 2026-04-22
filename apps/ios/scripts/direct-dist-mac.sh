@@ -20,7 +20,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/release-common.sh"
 
 SCHEME="${SCHEME:-LitterMac}"
-CONFIGURATION="${CONFIGURATION:-Release}"
+# `DeveloperID` is the unsandboxed Mac Catalyst configuration defined in
+# project.yml; it picks up Litter-Catalyst-DeveloperID.entitlements so the
+# notarized .dmg can spawn a local `codex app-server`. The Mac App Store
+# (TestFlight) lane uses Release, which keeps the sandbox.
+CONFIGURATION="${CONFIGURATION:-DeveloperID}"
 PROJECT_DIR="${PROJECT_DIR:-$IOS_DIR}"
 PROJECT_PATH="${PROJECT_PATH:-$PROJECT_DIR/Litter.xcodeproj}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.sigkitten.litter}"

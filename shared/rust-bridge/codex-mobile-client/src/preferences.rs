@@ -95,6 +95,26 @@ fn preferences_path(directory: &str) -> PathBuf {
     PathBuf::from(directory).join(PREFERENCES_FILE)
 }
 
+/// Guard used by cloud_sync to serialize its own read-modify-write cycles
+/// against the handwritten preferences API.
+pub(crate) fn acquire_write_guard() -> std::sync::MutexGuard<'static, ()> {
+    WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn preferences_path_for(directory: &str) -> PathBuf {
+    preferences_path(directory)
+}
+
+pub(crate) fn read_preferences_at(path: &Path) -> MobilePreferences {
+    read_preferences(path)
+}
+
+pub(crate) fn write_preferences_at(path: &Path, value: &MobilePreferences) {
+    write_preferences(path, value);
+}
+
 fn read_preferences(path: &Path) -> MobilePreferences {
     let bytes = match fs::read(path) {
         Ok(b) => b,

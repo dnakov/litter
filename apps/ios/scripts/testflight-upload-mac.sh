@@ -25,7 +25,12 @@ TEAM_ID="${TEAM_ID:-}"
 PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_SPECIFIER:-Litter Mac App Store}"
 APP_PROVISIONING_PROFILE_SPECIFIER="${APP_PROVISIONING_PROFILE_SPECIFIER:-$PROVISIONING_PROFILE_SPECIFIER}"
 APP_CODE_SIGN_IDENTITY="${APP_CODE_SIGN_IDENTITY:-Apple Distribution}"
-EXPORT_SIGNING_STYLE="${EXPORT_SIGNING_STYLE:-automatic}"
+INSTALLER_CODE_SIGN_IDENTITY="${INSTALLER_CODE_SIGN_IDENTITY:-3rd Party Mac Developer Installer}"
+# Manual signing is required here so xcodebuild doesn't auto-pick the iOS
+# `Litter` distribution profile (same bundle ID, no sandbox entitlement) and
+# strip `com.apple.security.app-sandbox` from the Mac binary at export time —
+# which is what caused ITMS-90296 on v1.0.4/build 20260226153278.
+EXPORT_SIGNING_STYLE="${EXPORT_SIGNING_STYLE:-manual}"
 MARKETING_VERSION="${MARKETING_VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 ASSIGN_BETA_GROUP="${ASSIGN_BETA_GROUP:-1}"
@@ -206,9 +211,25 @@ EOF
     if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
         /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
         /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $APP_PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+        # Without an explicit signingCertificate, xcodebuild auto-picks from
+        # the keychain and frequently picks the installer cert for app signing
+        # — which the Mac App Store profile doesn't authorize, producing:
+        #   "Provisioning profile doesn't include signing certificate
+        #    '3rd Party Mac Developer Installer'".
+        # Force the app signing cert; set the installer cert explicitly too
+        # so xcodebuild doesn't enumerate keychain identities and produce the
+        # same error while looking for a pkg installer cert.
+        /usr/libexec/PlistBuddy -c "Add :signingCertificate string $APP_CODE_SIGN_IDENTITY" "$EXPORT_OPTIONS_PLIST"
+        /usr/libexec/PlistBuddy -c "Add :installerSigningCertificate string $INSTALLER_CODE_SIGN_IDENTITY" "$EXPORT_OPTIONS_PLIST"
     fi
 
     echo "==> Exporting PKG (signing: $EXPORT_SIGNING_STYLE)"
+    # Purge any .pkg from an earlier run. xcodebuild's .pkg output name is
+    # driven by PRODUCT_NAME (→ "Litter.pkg") not by SCHEME ("LitterMac"),
+    # so re-runs leave a stale file behind that `find` would otherwise
+    # happily pick up in non-deterministic order — we were uploading a
+    # pre-fix .pkg from a prior run for several iterations because of this.
+    find "$BUILD_DIR" -maxdepth 1 -name "*.pkg" -delete
     export_cmd=(
         xcodebuild
         -exportArchive
@@ -235,6 +256,28 @@ EOF
     if [[ "$exported_pkg" != "$PKG_PATH" ]]; then
         cp "$exported_pkg" "$PKG_PATH"
     fi
+
+    # Sandbox-entitlement gate — catches ITMS-90296 before we waste a build
+    # slot on App Store Connect. The Mac App Store `.pkg` export wraps an
+    # already-signed .app, so inspect the .app inside the archive (that's
+    # where the code signature + entitlements were actually generated).
+    archived_app="$ARCHIVE_PATH/Products/Applications/Litter.app"
+    if [[ ! -d "$archived_app" ]]; then
+        echo "No Litter.app found at $archived_app — cannot verify entitlements." >&2
+        exit 1
+    fi
+    entitlements_xml="$(codesign -d --entitlements :- "$archived_app" 2>/dev/null || true)"
+    if ! grep -q "com\.apple\.security\.app-sandbox" <<<"$entitlements_xml"; then
+        echo "ERROR: signed $archived_app is missing com.apple.security.app-sandbox" >&2
+        echo "       ASC will reject this with ITMS-90296. Check that APP_PROVISIONING_PROFILE_SPECIFIER" >&2
+        echo "       points at the Mac App Store profile (not the iOS Litter distribution profile)." >&2
+        exit 1
+    fi
+    if ! grep -A1 "com\.apple\.security\.app-sandbox" <<<"$entitlements_xml" | grep -q "<true/>"; then
+        echo "ERROR: com.apple.security.app-sandbox is present but not <true/> on $archived_app" >&2
+        exit 1
+    fi
+    echo "==> Verified app-sandbox entitlement is present on signed binary"
 fi
 
 if [[ ! -f "$PKG_PATH" ]]; then

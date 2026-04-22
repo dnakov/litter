@@ -2032,6 +2032,9 @@ if command -v bun >/dev/null 2>&1; then
 fi"#;
 
 fn resolve_codex_binary_script_posix() -> String {
+    // Candidate list is shared with the Rust-native local resolver in
+    // `crate::local_server` so the two resolvers cannot drift.
+    let shared_lines = crate::local_server::shell_candidate_lines().join("\n");
     format!(
         r#"{profile_init}
 _litter_emit_candidate() {{
@@ -2050,24 +2053,14 @@ _litter_emit_from_dir() {{
     _litter_emit_candidate "$_litter_selector" "$_litter_dir/$_litter_name"
   fi
 }}
-_litter_emit_candidate codex "$HOME/.litter/bin/codex"
-_litter_emit_candidate codex "$HOME/.litter/codex/node_modules/.bin/codex"
-_litter_emit_candidate codex "$(command -v codex 2>/dev/null || true)"
-_litter_emit_candidate codex "${{BUN_INSTALL:-$HOME/.bun}}/bin/codex"
-_litter_emit_candidate codex "$HOME/.volta/bin/codex"
-_litter_emit_candidate codex "$HOME/.local/bin/codex"
-_litter_emit_from_dir codex codex "${{PNPM_HOME:-}}"
-_litter_emit_from_dir codex codex "${{NVM_BIN:-}}"
-_litter_emit_from_dir codex codex "${{VOLTA_HOME:+$VOLTA_HOME/bin}}"
-_litter_emit_from_dir codex codex "${{CARGO_HOME:-$HOME/.cargo}}/bin"
-_litter_emit_candidate codex "/opt/homebrew/bin/codex"
-_litter_emit_candidate codex "/usr/local/bin/codex"
+{shared_lines}
 {pkg_probe}
 _litter_emit_from_dir codex codex "$_litter_bun_global_bin"
 _litter_emit_from_dir codex codex "$_litter_npm_global_bin"
 _litter_emit_from_dir codex codex "$_litter_pnpm_global_bin""#,
         profile_init = PROFILE_INIT,
-        pkg_probe = PACKAGE_MANAGER_PROBE
+        pkg_probe = PACKAGE_MANAGER_PROBE,
+        shared_lines = shared_lines,
     )
 }
 

@@ -715,6 +715,95 @@ impl AppClient {
             Ok(())
         })
     }
+
+    // ── Local codex (direct-dist Mac) ────────────────────────────────────
+
+    /// Attach to an existing `codex app-server` on `127.0.0.1:{port}`, or
+    /// spawn one using the bundled binary resolver. The returned record
+    /// carries enough data to drive `connect_remote_server` on the Swift
+    /// side; if `handle` is present the caller must hold it (and call
+    /// `stop()` on app termination) to keep the child alive.
+    pub async fn attach_or_spawn_local_server(
+        &self,
+        port: u16,
+        codex_home: Option<String>,
+    ) -> Result<LocalServerConnection, ClientError> {
+        let rt = Arc::clone(&self.rt);
+        let codex_home = codex_home.map(std::path::PathBuf::from);
+        let attach = rt
+            .spawn(async move {
+                crate::local_server::attach_or_spawn_local_server(port, codex_home).await
+            })
+            .await
+            .map_err(|err| ClientError::Rpc(format!("task join error: {err}")))?
+            .map_err(|err| ClientError::Transport(err.to_string()))?;
+
+        let codex_path = attach
+            .codex_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned());
+        let handle = attach.handle.map(|h| Arc::new(LocalServerProcessHandle::new(h)));
+
+        Ok(LocalServerConnection {
+            host: "127.0.0.1".to_string(),
+            port: attach.port,
+            websocket_url: format!("ws://127.0.0.1:{}", attach.port),
+            attached_to_existing: attach.attached_to_existing,
+            codex_path,
+            handle,
+        })
+    }
+}
+
+/// Owning wrapper around a spawned `codex app-server` process. Exposed
+/// to Swift/Kotlin as a UniFFI Object so the platform can hold it for the
+/// lifetime of the app and call `stop()` on termination.
+#[derive(uniffi::Object)]
+pub struct LocalServerProcessHandle {
+    inner: tokio::sync::Mutex<Option<crate::local_server::LocalServerHandle>>,
+}
+
+impl LocalServerProcessHandle {
+    fn new(handle: crate::local_server::LocalServerHandle) -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(Some(handle)),
+        }
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl LocalServerProcessHandle {
+    /// Gracefully stop the spawned codex process. No-op if already stopped
+    /// or if the handle represents an attached (not spawned) connection.
+    pub async fn stop(&self) {
+        let maybe = {
+            let mut guard = self.inner.lock().await;
+            guard.take()
+        };
+        if let Some(handle) = maybe {
+            handle.stop().await;
+        }
+    }
+}
+
+/// Result of `AppClient::attach_or_spawn_local_server`.
+#[derive(uniffi::Record)]
+pub struct LocalServerConnection {
+    /// Always `127.0.0.1` for a local codex. Included for symmetry with
+    /// `connect_remote_server` on the Swift side.
+    pub host: String,
+    pub port: u16,
+    pub websocket_url: String,
+    /// `true` when we found an existing listener and did not spawn; in
+    /// that case `handle` is `None`.
+    pub attached_to_existing: bool,
+    /// Resolved path to the `codex` binary when we spawned; `None` when
+    /// we attached to an existing listener.
+    pub codex_path: Option<String>,
+    /// Lifetime handle for the spawned child. `None` when we attached.
+    /// The caller must hold this (e.g. in the AppDelegate) and invoke
+    /// `stop()` during `applicationWillTerminate`.
+    pub handle: Option<Arc<LocalServerProcessHandle>>,
 }
 
 /// Execute a simple one-shot command on a remote server.

@@ -12,6 +12,7 @@ mod ios_exec;
 pub mod android_exec;
 
 pub mod ambient_suggestions;
+pub mod cloud_sync;
 pub mod conversation;
 pub mod conversation_uniffi;
 pub mod discovery;
@@ -19,6 +20,7 @@ pub mod discovery_uniffi;
 pub mod ffi;
 pub mod hydration;
 pub mod immer_patch;
+pub mod local_server;
 pub mod logging;
 pub mod markdown_blocks;
 mod mobile_client;

@@ -8,6 +8,16 @@ enum LitterPlatform {
     static let isCatalyst = false
 #endif
 
+    /// `true` only on the unsandboxed Mac Catalyst lane (Developer ID
+    /// notarized .dmg). Sandboxed Catalyst (Mac App Store) always sets
+    /// `APP_SANDBOX_CONTAINER_ID`, so its absence on a Catalyst process
+    /// is a reliable indicator that the App Sandbox is off and we can
+    /// spawn child processes (codex app-server, etc.).
+    static let isDirectDistMac: Bool = {
+        guard isCatalyst else { return false }
+        return ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] == nil
+    }()
+
     static let supportsLocalRuntime = !isCatalyst
     static let supportsVoiceRuntime = !isCatalyst
 

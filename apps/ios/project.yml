@@ -10,6 +10,14 @@ options:
     icon:
       file: true
 
+# DeveloperID is a release-style configuration used by the Mac Catalyst
+# direct-distribution lane (notarized .dmg). It points the LitterMac target
+# at a separate, unsandboxed entitlements file so the app can spawn a local
+# `codex app-server`. The Mac App Store lane stays on Release with sandbox.
+configs:
+  Debug: debug
+  Release: release
+  DeveloperID: release
 
 settings:
   base:
@@ -45,6 +53,12 @@ targets:
       properties:
         aps-environment: production
         com.apple.developer.carplay-voice-based-conversation: true
+        # iCloud KVS sync (Feature C). Re-add when the iCloud container
+        # `iCloud.com.sigkitten.litter` exists in the Apple Developer Portal
+        # AND is enabled on the iOS app's provisioning profile. Without
+        # both, archive fails: "Provisioning profile doesn't include the
+        # iCloud capability."
+        # com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)iCloud.com.sigkitten.litter
         com.apple.security.application-groups:
           - group.com.sigkitten.litter
     attributes:
@@ -131,6 +145,12 @@ targets:
       path: Sources/Litter/Litter-Catalyst.entitlements
       properties:
         aps-environment: production
+        # iCloud KVS sync (Feature C). Re-add when the iCloud container
+        # `iCloud.com.sigkitten.litter` exists in the Apple Developer Portal
+        # AND the Mac App Store profile is regenerated to include the iCloud
+        # capability. Direct-dist (DeveloperID entitlements) keeps the key
+        # because Developer ID apps validate iCloud at runtime, not via profile.
+        # com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)iCloud.com.sigkitten.litter
         com.apple.security.application-groups:
           - group.com.sigkitten.litter
         com.apple.security.app-sandbox: true
@@ -146,6 +166,7 @@ targets:
           - Info.plist
           - Litter.entitlements
           - Litter-Catalyst.entitlements
+          - Litter-Catalyst-DeveloperID.entitlements
           - Models/AppLifecycleController.swift
           - Models/AppRuntimeController.swift
           - Models/CodexTurnAttributes.swift
@@ -204,6 +225,19 @@ targets:
           APP_CODE_SIGN_IDENTITY: ""
           PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
           APP_PROVISIONING_PROFILE_SPECIFIER: ""
+        # Direct-distribution (notarized .dmg) lane. Re-points
+        # CODE_SIGN_ENTITLEMENTS at the unsandboxed entitlements file so the
+        # Mac build can spawn a local `codex app-server`. Same automatic
+        # signing flow as Release; the actual cert is selected via the
+        # APP_CODE_SIGN_IDENTITY override the script passes through.
+        DeveloperID:
+          CODE_SIGN_STYLE: "$(APP_CODE_SIGN_STYLE)"
+          APP_CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(APP_CODE_SIGN_IDENTITY)"
+          APP_CODE_SIGN_IDENTITY: ""
+          PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
+          APP_PROVISIONING_PROFILE_SPECIFIER: ""
+          CODE_SIGN_ENTITLEMENTS: Sources/Litter/Litter-Catalyst-DeveloperID.entitlements
   LitterLiveActivity:
     type: app-extension
     platform: iOS
@@ -387,3 +421,20 @@ schemes:
     management:
       isShown: true
       orderHint: 1
+  LitterMac:
+    build:
+      targets:
+        LitterMac: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    # Default archive uses Release (sandboxed) for the App Store lane.
+    # The direct-distribution script overrides via `-configuration DeveloperID`.
+    archive:
+      config: Release
+    management:
+      isShown: true
+      orderHint: 3

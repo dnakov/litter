@@ -34,6 +34,22 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         LitterPlatform.bootstrapLocalRuntimeIfNeeded()
         LLog.bootstrap()
+
+        #if targetEnvironment(macCatalyst)
+        // On unsandboxed Mac Catalyst, send the spawned codex child a
+        // SIGTERM during termination so it does not outlive the app.
+        // willTerminate runs on the main thread and gives ~5s; the
+        // blocking variant detaches the actual stop off the main actor
+        // so awaiting it does not deadlock.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            LocalCodexBootstrap.shared.stopBlocking(timeout: 2.5)
+        }
+        #endif
+
         LLog.info("lifecycle", "application did finish launching")
         OpenAIApiKeyStore.shared.applyToEnvironment()
         // Pre-initialize Rust bridges (tokio runtime) on a background thread
@@ -45,6 +61,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         application.registerForRemoteNotifications()
         UNUserNotificationCenter.current().delegate = self
         OrientationResponder.shared.start()
+        DispatchQueue.main.async {
+            CloudKVSBridge.shared.start()
+        }
         showSplashWindow()
         scheduleKeyboardWarmup()
         // Start pushing state to the paired Apple Watch, gated behind the
@@ -270,6 +289,9 @@ struct LitterApp: App {
                     appRuntime.bind(appModel: appModel, voiceRuntime: voiceRuntime)
                     appDelegate.appRuntime = appRuntime
                     appRuntime.appDidBecomeActive()
+                    #if targetEnvironment(macCatalyst)
+                    LocalCodexBootstrap.shared.startIfNeeded(appModel: appModel)
+                    #endif
                 }
         }
         .onChange(of: scenePhase) { _, newPhase in

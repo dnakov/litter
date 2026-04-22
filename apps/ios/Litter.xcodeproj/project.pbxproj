@@ -13,6 +13,7 @@
 		024B36756A4031E4FD303028 /* vitesse-black.json in Resources */ = {isa = PBXBuildFile; fileRef = C7ADFC239B833D53726499FC /* vitesse-black.json */; };
 		0304FC5F7B0B88BF697AEDAD /* dracula.json in Resources */ = {isa = PBXBuildFile; fileRef = D93C0CB12BB32FF612C11AA9 /* dracula.json */; };
 		03587EF282BCD78673E5C90C /* LLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DD7A3A61A3B02E7E5BF0FBD /* LLog.swift */; };
+		040DA1C4B152364555F79660 /* LocalCodexBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = D330E51EBB1EC86C197A9296 /* LocalCodexBootstrap.swift */; };
 		04743D5A1900185832682235 /* SSHLoginSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9876F2929290D47ED57D77 /* SSHLoginSheet.swift */; };
 		04A9DBF10C6021392CB30528 /* ComputerUseToolCallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32A00D8BD24DF9E3C4F5EA2C /* ComputerUseToolCallView.swift */; };
 		055E4E6F482808FF3A6FE4AD /* LitterPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05E1F150502D4C5682EBBFD /* LitterPalette.swift */; };
@@ -139,6 +140,7 @@
 		437762E0F261BFCF3527A3CB /* ConversationComposerContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35815D57BE688636CDD27415 /* ConversationComposerContentView.swift */; };
 		439364114EC527898BA7FFD7 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1641427B3606638F140B4E9A /* SystemConfiguration.framework */; };
 		440A4A3D394AA1DE3D0BBFE3 /* SwiftSshCredentialProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDFBE3FA67F80834EAF1E3B /* SwiftSshCredentialProvider.swift */; };
+		4526C97E5DF2AA7D0E5E2412 /* CloudKVSBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F503F51C28F35CF80376D9FD /* CloudKVSBridge.swift */; };
 		45F288FF7E7BB030854C85B3 /* everforest-light.json in Resources */ = {isa = PBXBuildFile; fileRef = 88B886829FDF299DFFCC1A86 /* everforest-light.json */; };
 		46B24CBC2FD5FD3799BE207D /* ConversationAttachmentSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 347FEEBE4E54174740D93E9D /* ConversationAttachmentSupportTests.swift */; };
 		46C5F0B53F9EF54FE8F311A4 /* ChatGPTOAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33402D8F29D5CAA2DD07ED9F /* ChatGPTOAuthTests.swift */; };
@@ -290,6 +292,7 @@
 		8C573877188B1CF76579523A /* DiscoveredServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7779BD02F3B304F9C3AD32A1 /* DiscoveredServer.swift */; };
 		8C64101921FCB8587FFEBC33 /* DirectoryPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 318F2F8563E91AB97950F5DA /* DirectoryPickerView.swift */; };
 		8C6E24AFB90E5A740770F5C6 /* FormattedText.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C2B3DB9D57EA3A2A8608C6 /* FormattedText.swift */; };
+		8D5985E9F39401CDA4D9722F /* AmbientSuggestionsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3759125C1ED21FC24EE5C644 /* AmbientSuggestionsList.swift */; };
 		8EC08D1416B9EC288AC17079 /* WallpaperManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB4A268C8D43CA2144617DE /* WallpaperManager.swift */; };
 		8ED7EC56C6814E0B40673ADD /* ChatGPTOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77F28A803AA2BF325B0F88B9 /* ChatGPTOAuth.swift */; };
 		909A0CDCE6D9729A20D0DA43 /* OpenAIApiKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3374916FC10F81E9D1C0FCE5 /* OpenAIApiKeyStore.swift */; };
@@ -349,6 +352,7 @@
 		B1B8E5CDA90C78B954ADADCB /* ExperimentalFeaturesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77D950991BD0F0199209EB68 /* ExperimentalFeaturesView.swift */; };
 		B23DF0EC00DE8A4DE6390161 /* AnimatedSplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78076308EEAAE64BC3BFDC1F /* AnimatedSplashView.swift */; };
 		B2AFC54D3C1CE47C58453313 /* codex-light.json in Resources */ = {isa = PBXBuildFile; fileRef = FA7B1E3B542D557D080E913D /* codex-light.json */; };
+		B2E94DB79FAB25F0F5AB3C86 /* LocalCodexBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = D330E51EBB1EC86C197A9296 /* LocalCodexBootstrap.swift */; };
 		B40C5F8D4A2630356E518253 /* light-plus.json in Resources */ = {isa = PBXBuildFile; fileRef = CFF9DBA865CCBB3308B5667D /* light-plus.json */; };
 		B43EE7B581C0F03C3D26BAB9 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA4A8B1B0E48B3DDC9F44D90 /* Network.framework */; };
 		B4B7FDC4511BCAE9296770D3 /* VoiceSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DD97D143F733E99AE81276D /* VoiceSessionCoordinator.swift */; };
@@ -387,6 +391,7 @@
 		C632952310F5DDF9035C75DD /* LitterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359F3DCDC22C81682DAA7B0D /* LitterApp.swift */; };
 		C67F7D520DD9933074FC243E /* rose-pine-moon.json in Resources */ = {isa = PBXBuildFile; fileRef = E8ABCFE5B02E47BAA5599A8F /* rose-pine-moon.json */; };
 		C68B87BCE5AA3492ACA0D63D /* curl_ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4E2BBC2265A3D566D0069278 /* curl_ios.xcframework */; };
+		C6976583FC909AA0B55DFCA8 /* CloudKVSBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F503F51C28F35CF80376D9FD /* CloudKVSBridge.swift */; };
 		C7381D0F2B63D781225758BA /* material-theme-darker-D.json in Resources */ = {isa = PBXBuildFile; fileRef = 20596BA6184B72B07775A5E1 /* material-theme-darker-D.json */; };
 		C73FAE926376614380FFF2FC /* RustVoiceHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53996233F376F3B9C0387F37 /* RustVoiceHandoff.swift */; };
 		C7AD6C6C225FF4C139C81B89 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEDF2E1FEDF741D69062FDDD /* CodeBlockView.swift */; };
@@ -515,6 +520,7 @@
 		F9CBE40C2CA9C8B291A9FD9C /* github-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 87E1D2E7E6CB4DA678C6605E /* github-dark.json */; };
 		FA0BE6B1508ACD9FE2702834 /* ThreadSearchResultsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7B2873F09522FAE2FFFFC9B /* ThreadSearchResultsView.swift */; };
 		FA145BA6C8F374ABE9C7B924 /* linear-light.json in Resources */ = {isa = PBXBuildFile; fileRef = 9355F09B357618AB71A7C114 /* linear-light.json */; };
+		FA77FC0E7A7570062906E823 /* AmbientSuggestionsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3759125C1ED21FC24EE5C644 /* AmbientSuggestionsList.swift */; };
 		FA98FED0824E234BDFF458AC /* snazzy-light.json in Resources */ = {isa = PBXBuildFile; fileRef = FE2B786FCD5DBBFC5BBEB20E /* snazzy-light.json */; };
 		FCAE1D50167F5F4DB4287DEF /* WallpaperManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB4A268C8D43CA2144617DE /* WallpaperManager.swift */; };
 		FCC8E89D92F134E7BDB27068 /* ChatWallpaperBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4754654D5240E850C98AB85D /* ChatWallpaperBackground.swift */; };
@@ -664,6 +670,7 @@
 		35949923355BB19A7209FD65 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		359F3DCDC22C81682DAA7B0D /* LitterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LitterApp.swift; sourceTree = "<group>"; };
 		370F75B42793F9B35D8F4990 /* pierre-dark.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pierre-dark.json"; sourceTree = "<group>"; };
+		3759125C1ED21FC24EE5C644 /* AmbientSuggestionsList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmbientSuggestionsList.swift; sourceTree = "<group>"; };
 		384DA3FC92BDB0A50761B7FD /* IosSystemBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IosSystemBridge.m; sourceTree = "<group>"; };
 		3AF1303B192D17E47D3F9183 /* TipJarProducts.storekit */ = {isa = PBXFileReference; path = TipJarProducts.storekit; sourceTree = "<group>"; };
 		3BA392F9C2104B8B643C0F9E /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
@@ -799,6 +806,7 @@
 		9D216CEBFB1B4B71CFC2C0F8 /* AppearanceSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsView.swift; sourceTree = "<group>"; };
 		9DFE934B56ED67FA473EA25A /* MacCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacCommands.swift; sourceTree = "<group>"; };
 		9F39212507F7334160D127E8 /* CrossServerTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossServerTools.swift; sourceTree = "<group>"; };
+		A04260C52158186F6A4876AB /* Litter-Catalyst-DeveloperID.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Litter-Catalyst-DeveloperID.entitlements"; sourceTree = "<group>"; };
 		A062692D27F0F6966BBD1AE5 /* catppuccin-frappe.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "catppuccin-frappe.json"; sourceTree = "<group>"; };
 		A0BEC32BA18EED58DFB1D9D7 /* SessionReplySwipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReplySwipe.swift; sourceTree = "<group>"; };
 		A10240CEA11F064EBD138D97 /* vesper.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = vesper.json; sourceTree = "<group>"; };
@@ -860,6 +868,7 @@
 		D17EE3738B67D212C92E33E3 /* WatchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchModels.swift; sourceTree = "<group>"; };
 		D1E96C6677B2AA22A101A29C /* ContextBadgeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextBadgeView.swift; sourceTree = "<group>"; };
 		D2608C1F271D28BFEFBA5EFB /* kanagawa-lotus.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "kanagawa-lotus.json"; sourceTree = "<group>"; };
+		D330E51EBB1EC86C197A9296 /* LocalCodexBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCodexBootstrap.swift; sourceTree = "<group>"; };
 		D4BBEE5D22A050571A528EF0 /* catppuccin-mocha-Ry8aD-5u.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "catppuccin-mocha-Ry8aD-5u.json"; sourceTree = "<group>"; };
 		D5294396A986F27242D0F814 /* ProjectChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectChip.swift; sourceTree = "<group>"; };
 		D58FC0D181B46D56485C2AAB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -898,6 +907,7 @@
 		F05E1F150502D4C5682EBBFD /* LitterPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LitterPalette.swift; sourceTree = "<group>"; };
 		F3D4A4D1CF23CB67108386B5 /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = Frameworks/ios_system/libssh2.xcframework; sourceTree = "<group>"; };
 		F3E5EA401672455EF2B1B5F1 /* ssh_cmd.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ssh_cmd.xcframework; path = Frameworks/ios_system/ssh_cmd.xcframework; sourceTree = "<group>"; };
+		F503F51C28F35CF80376D9FD /* CloudKVSBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKVSBridge.swift; sourceTree = "<group>"; };
 		F8A12810E0889BDD245C2379 /* VoiceCallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCallView.swift; sourceTree = "<group>"; };
 		F8A5A95314CD68B7C7276BFD /* TipJarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TipJarStore.swift; sourceTree = "<group>"; };
 		F8DD00224660C58B4309972E /* tar.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = tar.xcframework; path = Frameworks/ios_system/tar.xcframework; sourceTree = "<group>"; };
@@ -1071,6 +1081,7 @@
 				101538FB7758F2441ED27F40 /* Extensions.swift */,
 				70F312C9FD1BA15F93DA8918 /* Info-Catalyst.plist */,
 				E518CD2A67CEB8B41545D0D2 /* Info.plist */,
+				A04260C52158186F6A4876AB /* Litter-Catalyst-DeveloperID.entitlements */,
 				519F6AEAD567269B99288339 /* Litter-Catalyst.entitlements */,
 				C06841C29AA3E42E7DB137C0 /* Litter.entitlements */,
 				359F3DCDC22C81682DAA7B0D /* LitterApp.swift */,
@@ -1123,18 +1134,10 @@
 				23AE60CA6B3DD70D4FC71FD0 /* LitterWatchApp.swift */,
 				DE1697324CFA0667FD517EFB /* Components */,
 				D807F7275D146FE16B978FCA /* Models */,
-				B434CE14D0C12A57A93950E8 /* Resources */,
 				CBC3CDF089B7E503076E5F57 /* Views */,
 			);
 			name = LitterWatch;
 			path = Sources/LitterWatch;
-			sourceTree = "<group>";
-		};
-		B434CE14D0C12A57A93950E8 /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Resources;
 			sourceTree = "<group>";
 		};
 		C8630CA3766937A8392F5635 /* LitterWatchComplications */ = {
@@ -1304,6 +1307,7 @@
 				3E1172327AFBD0CF0947468A /* CatalystRuntimeStubs.swift */,
 				77F28A803AA2BF325B0F88B9 /* ChatGPTOAuth.swift */,
 				125E05AE5CC346C8D2ED2FED /* ChatTypes.swift */,
+				F503F51C28F35CF80376D9FD /* CloudKVSBridge.swift */,
 				D887FC87082710CC7B75CC8A /* CodexTurnAttributes.swift */,
 				ACB2B7BC833F0EB556D8401A /* CodexVoiceCallAttributes.swift */,
 				4925417F70C546B80DBD9EFF /* ConnectionTarget.swift */,
@@ -1317,6 +1321,7 @@
 				F05E1F150502D4C5682EBBFD /* LitterPalette.swift */,
 				A1388480E7FFD4489CE617C6 /* LitterPlatform.swift */,
 				7DD7A3A61A3B02E7E5BF0FBD /* LLog.swift */,
+				D330E51EBB1EC86C197A9296 /* LocalCodexBootstrap.swift */,
 				2325BAE1FF0D41A4D5ADE3AD /* MessageRecorder.swift */,
 				A75C53171D642CD800C76553 /* MobilePreferencesDirectory.swift */,
 				E2C54AE62D2865D1C7750F7A /* NetworkDiscovery.swift */,
@@ -1353,6 +1358,7 @@
 			isa = PBXGroup;
 			children = (
 				818BC73F3855A9BA29C8E868 /* AccountView.swift */,
+				3759125C1ED21FC24EE5C644 /* AmbientSuggestionsList.swift */,
 				93966B780CB71371994F552D /* AnimatedLogo.swift */,
 				78076308EEAAE64BC3BFDC1F /* AnimatedSplashView.swift */,
 				9D216CEBFB1B4B71CFC2C0F8 /* AppearanceSettingsView.swift */,
@@ -1581,11 +1587,9 @@
 				TargetAttributes = {
 					3B991C03E72B1546CAD35698 = {
 						DevelopmentTeam = UH66Q8ZAYG;
-						ProvisioningStyle = "$(WATCH_CODE_SIGN_STYLE)";
 					};
 					4D58398238C075D3A3A3AB9B = {
 						DevelopmentTeam = UH66Q8ZAYG;
-						ProvisioningStyle = "$(LIVE_ACTIVITY_CODE_SIGN_STYLE)";
 					};
 					6EBBC661C017816B2D4245DF = {
 						DevelopmentTeam = UH66Q8ZAYG;
@@ -1597,12 +1601,10 @@
 					};
 					A3D84F588EDBC1EA550D6691 = {
 						DevelopmentTeam = UH66Q8ZAYG;
-						ProvisioningStyle = "$(APP_CODE_SIGN_STYLE)";
 						SystemCapabilities = "[\"com.apple.BackgroundModes\": [\"enabled\": true]]";
 					};
 					C0C98C6012493B73CDD5AD6E = {
 						DevelopmentTeam = UH66Q8ZAYG;
-						ProvisioningStyle = "$(WATCH_COMP_CODE_SIGN_STYLE)";
 					};
 					DA07A1EAC6173D09F6FB99D9 = {
 						DevelopmentTeam = UH66Q8ZAYG;
@@ -1911,6 +1913,7 @@
 				5128C7E1A7C94802C9F677BA /* AccountView.swift in Sources */,
 				3974B4B9784B064C9F818A20 /* AecBridge.swift in Sources */,
 				F6E1ABA46EFFCBFB4063598A /* AgentLabelFormatter.swift in Sources */,
+				FA77FC0E7A7570062906E823 /* AmbientSuggestionsList.swift in Sources */,
 				3940AC132FAD6B2D8ABB3EDD /* AnimatedLogo.swift in Sources */,
 				9AB96D93B2197412451A76F4 /* AnimatedSplashView.swift in Sources */,
 				09E6FE3F3D01DA918050822C /* AppLifecycleController.swift in Sources */,
@@ -1933,6 +1936,7 @@
 				BDC09E8F6B156DB1FD6A0059 /* ChatGPTOAuth.swift in Sources */,
 				5342E9DEE1FB318F01E27F7E /* ChatTypes.swift in Sources */,
 				93C87EABAC0D427BD6089349 /* ChatWallpaperBackground.swift in Sources */,
+				C6976583FC909AA0B55DFCA8 /* CloudKVSBridge.swift in Sources */,
 				8445E0A9CDF58E2E9A509018 /* CodeBlockView.swift in Sources */,
 				79979BB2F64E9429CB78709D /* CodexTurnAttributes.swift in Sources */,
 				3BEE4213B5E4E91944903E8C /* CodexTurnLiveActivity.swift in Sources */,
@@ -1988,6 +1992,7 @@
 				055E4E6F482808FF3A6FE4AD /* LitterPalette.swift in Sources */,
 				E34A60A9F5EC77C53120D390 /* LitterPlatform.swift in Sources */,
 				8162FA999156618F9B3D7ADF /* LiveActivityPreview.swift in Sources */,
+				040DA1C4B152364555F79660 /* LocalCodexBootstrap.swift in Sources */,
 				568C0B1181B1ACFFBD7B165D /* LockScreenCardView.swift in Sources */,
 				5380A526444F33B701903335 /* MacCommands.swift in Sources */,
 				31EB5932CBEDDB0E7FFB1158 /* MessageBubbleView.swift in Sources */,
@@ -2064,6 +2069,7 @@
 			files = (
 				E89D0FE23A3FBA385DAD1757 /* AccountView.swift in Sources */,
 				82E7F97F0BBB0EB0FE1B4362 /* AgentLabelFormatter.swift in Sources */,
+				8D5985E9F39401CDA4D9722F /* AmbientSuggestionsList.swift in Sources */,
 				7C98B25E0AB13E7D190C4513 /* AnimatedLogo.swift in Sources */,
 				B23DF0EC00DE8A4DE6390161 /* AnimatedSplashView.swift in Sources */,
 				317E6AAE38E3C6C8B43202F6 /* AppModel.swift in Sources */,
@@ -2082,6 +2088,7 @@
 				8ED7EC56C6814E0B40673ADD /* ChatGPTOAuth.swift in Sources */,
 				08E767CA249004713C3DD408 /* ChatTypes.swift in Sources */,
 				FCC8E89D92F134E7BDB27068 /* ChatWallpaperBackground.swift in Sources */,
+				4526C97E5DF2AA7D0E5E2412 /* CloudKVSBridge.swift in Sources */,
 				C7AD6C6C225FF4C139C81B89 /* CodeBlockView.swift in Sources */,
 				04A9DBF10C6021392CB30528 /* ComputerUseToolCallView.swift in Sources */,
 				818679028BC9D93AEBD01BF5 /* ConnectionTarget.swift in Sources */,
@@ -2129,6 +2136,7 @@
 				C632952310F5DDF9035C75DD /* LitterApp.swift in Sources */,
 				DDDBAC7DC8C46B69B63EC8F5 /* LitterPalette.swift in Sources */,
 				4DA3C30A27C7B36F36947F83 /* LitterPlatform.swift in Sources */,
+				B2E94DB79FAB25F0F5AB3C86 /* LocalCodexBootstrap.swift in Sources */,
 				BCA65492090DEDCFF7BB9A54 /* MacCommands.swift in Sources */,
 				5F8720FFBD0E99012B4921E0 /* MessageBubbleView.swift in Sources */,
 				1DD03D81C293562334BD1E4E /* MessageContentBridge.swift in Sources */,
@@ -2358,6 +2366,26 @@
 			};
 			name = Release;
 		};
+		39ACA41708A3AA72C2B5668A /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.litter.LitterTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Litter.app/Litter";
+			};
+			name = DeveloperID;
+		};
 		5CC6CA5F83CE6B02E2218A1F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2481,6 +2509,26 @@
 			};
 			name = Release;
 		};
+		6C3A700DE7343ED7B27FFC29 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.litter.LitterUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Litter;
+			};
+			name = DeveloperID;
+		};
 		748FBBF6ACB72E9852AC6554 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2576,6 +2624,74 @@
 			};
 			name = Release;
 		};
+		8FC6EA7F32376621CBBA9269 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_EXPLICIT_MODULES = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = UH66Q8ZAYG;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = "$(inherited) $(PROJECT_DIR)/GeneratedRust/Headers";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(PROJECT_DIR)/GeneratedRust/ios-device";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(PROJECT_DIR)/GeneratedRust/ios-sim";
+				MARKETING_VERSION = 1.0.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = "$(inherited) -lc++ -lz -lcodex_mobile_client";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_ENABLE_EXPLICIT_MODULES = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/GeneratedRust/Headers";
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/Litter/Bridge/codex_bridge_objc.h;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = targeted;
+				SWIFT_VERSION = 5.9;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = DeveloperID;
+		};
 		945281841F7969C7D5C0CCF6 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2595,6 +2711,49 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Litter.app/Litter";
 			};
 			name = Debug;
+		};
+		9C21AE03460C29D06CE689D0 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/LitterWatch/LitterWatch.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(inherited)";
+				INFOPLIST_FILE = Sources/LitterWatch/Info.plist;
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter.watchkitapp;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited)";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = DeveloperID;
+		};
+		A65C81A045878322F8C946E0 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Sources/LitterWatchComplications/LitterWatchComplications.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(inherited)";
+				INFOPLIST_FILE = Sources/LitterWatchComplications/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				OTHER_LDFLAGS = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter.watchkitapp.complications;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited)";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = DeveloperID;
 		};
 		B001383C13082EEF6C142363 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -2677,6 +2836,38 @@
 			};
 			name = Release;
 		};
+		CC8D07B088AF48B298AD3713 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APP_CODE_SIGN_IDENTITY = "";
+				APP_CODE_SIGN_STYLE = Automatic;
+				APP_PROVISIONING_PROFILE_SPECIFIER = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconMac;
+				CODE_SIGN_ENTITLEMENTS = "Sources/Litter/Litter-Catalyst.entitlements";
+				CODE_SIGN_IDENTITY = "$(APP_CODE_SIGN_IDENTITY)";
+				CODE_SIGN_STYLE = "$(APP_CODE_SIGN_STYLE)";
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				INFOPLIST_FILE = "Sources/Litter/Info-Catalyst.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=macosx*]" = "$(inherited) $(PROJECT_DIR)/GeneratedRust/ios-macabi";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter;
+				PRODUCT_NAME = Litter;
+				PROVISIONING_PROFILE_SPECIFIER = "$(APP_PROVISIONING_PROFILE_SPECIFIER)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MACCATALYST_OPTIMIZED_FOR_MAC = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/Litter/Bridge/codex_bridge_objc.h;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = DeveloperID;
+		};
 		CE4A8505D948694544FBD8E4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2703,6 +2894,47 @@
 				WATCH_COMP_PROVISIONING_PROFILE_SPECIFIER = "";
 			};
 			name = Debug;
+		};
+		D1DCFBB34EC8C2DF61DC0840 /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Sources/LitterLiveActivity/LitterLiveActivity.entitlements;
+				INFOPLIST_FILE = Sources/LitterLiveActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter.liveactivity;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = DeveloperID;
+		};
+		DD32B06FDD1622E19F18ABFD /* DeveloperID */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/Litter/Litter.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Frameworks/ios_system\"",
+				);
+				INFOPLIST_FILE = Sources/Litter/Info.plist;
+				INFOPLIST_KEY_UIBackgroundModes = "audio fetch remote-notification";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.sigkitten.litter;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/Litter/Bridge/codex_bridge_objc.h;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = DeveloperID;
 		};
 		F88FE20FA3CAAD23F7958710 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -2735,6 +2967,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				945281841F7969C7D5C0CCF6 /* Debug */,
+				39ACA41708A3AA72C2B5668A /* DeveloperID */,
 				1599136394CAC5FAC5717B89 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2744,6 +2977,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				247F85B8760F9B8322D63128 /* Debug */,
+				DD32B06FDD1622E19F18ABFD /* DeveloperID */,
 				37FFDFB4A6107A1E12337E82 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2753,6 +2987,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				30A48842A69D852D7C781886 /* Debug */,
+				D1DCFBB34EC8C2DF61DC0840 /* DeveloperID */,
 				68C18C3BAED7CD753348C026 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2762,6 +2997,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				748FBBF6ACB72E9852AC6554 /* Debug */,
+				8FC6EA7F32376621CBBA9269 /* DeveloperID */,
 				5CC6CA5F83CE6B02E2218A1F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2771,6 +3007,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F88FE20FA3CAAD23F7958710 /* Debug */,
+				9C21AE03460C29D06CE689D0 /* DeveloperID */,
 				184B8A7F9052A05FC3568A5D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2780,6 +3017,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				B001383C13082EEF6C142363 /* Debug */,
+				CC8D07B088AF48B298AD3713 /* DeveloperID */,
 				623F11064419FB763A1D53CD /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2789,6 +3027,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CE4A8505D948694544FBD8E4 /* Debug */,
+				A65C81A045878322F8C946E0 /* DeveloperID */,
 				CAC1F742DDAFD5919FF29205 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -2798,6 +3037,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BC355D5C0CA19EF1AB986130 /* Debug */,
+				6C3A700DE7343ED7B27FFC29 /* DeveloperID */,
 				8DA25B8CAA775EC6CFA63A8C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
