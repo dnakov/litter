@@ -4,6 +4,7 @@
 //! The scaffolding macro is invoked in lib.rs; this module holds additional
 //! FFI helper types and exported functions.
 
+mod android;
 mod app_store;
 mod client;
 mod discovery;

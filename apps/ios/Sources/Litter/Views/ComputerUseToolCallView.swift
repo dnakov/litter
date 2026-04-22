@@ -8,7 +8,13 @@ struct ComputerUseToolCallView: View {
     private let onExpandedChange: ((Bool) -> Void)?
     @State private var expanded: Bool
     @State private var a11yExpanded = false
-    private let contentFontSize = LitterFont.conversationBodyPointSize
+    /// Header row (icon + summary). A half-step smaller than body so tool
+    /// calls read as secondary to assistant messages.
+    private let summaryFontSize: CGFloat = 13
+    /// Expanded content size — matches the bash/command output size
+    /// (`ConversationCommandOutputViewport` renders at 12pt) so tool-call
+    /// details share a typographic baseline with terminal output.
+    private let contentFontSize: CGFloat = 12
 
     init(
         data: ConversationMcpToolCallData,
@@ -72,7 +78,7 @@ struct ComputerUseToolCallView: View {
                 .foregroundColor(LitterTheme.accent)
 
             Text(view.summary)
-                .litterFont(size: contentFontSize)
+                .litterFont(size: summaryFontSize)
                 .foregroundColor(LitterTheme.textSystem)
                 .lineLimit(1)
                 .truncationMode(.middle)

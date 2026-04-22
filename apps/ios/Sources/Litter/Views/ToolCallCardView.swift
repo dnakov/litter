@@ -8,7 +8,13 @@ struct ToolCallCardView: View {
     private let onExpandedChange: ((Bool) -> Void)?
     @State private var expanded: Bool
     @State private var collapsedDiffSections: Set<String> = []
-    private let contentFontSize = LitterFont.conversationBodyPointSize
+    /// Header row (icon + summary). A half-step smaller than body so tool
+    /// calls read as secondary to assistant messages.
+    private let summaryFontSize: CGFloat = 13
+    /// Expanded content size — matches the bash/command output size
+    /// (`ConversationCommandOutputViewport` renders at 12pt) so tool-call
+    /// details, diffs, and command output share a typographic baseline.
+    private let contentFontSize: CGFloat = 12
     private let terminalFontSize: CGFloat = 12
 
     init(
@@ -33,11 +39,11 @@ struct ToolCallCardView: View {
 
                 if let attributedSummary = model.attributedSummary {
                     Text(attributedSummary)
-                        .litterFont(size: contentFontSize)
+                        .litterFont(size: summaryFontSize)
                         .lineLimit(1)
                 } else {
                     Text(model.summary)
-                        .litterFont(size: contentFontSize)
+                        .litterFont(size: summaryFontSize)
                         .foregroundColor(LitterTheme.textSystem)
                         .lineLimit(1)
                 }
@@ -498,6 +504,12 @@ private struct ToolCallImagePreview: View {
                         .resizable()
                         .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .draggable(Image(uiImage: renderedImage)) {
+                            Image(uiImage: renderedImage)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 120)
+                        }
                 } else if isLoading {
                     ProgressView()
                         .tint(LitterTheme.accent)

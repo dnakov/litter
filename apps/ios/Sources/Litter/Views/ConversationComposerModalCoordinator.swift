@@ -1,10 +1,12 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import UIKit
 
 struct ConversationComposerModalCoordinator<Content: View>: View {
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     let snapshot: ConversationComposerSnapshot
     let experimentalFeatures: [ExperimentalFeature]
@@ -14,6 +16,7 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
     @Binding var showAttachMenu: Bool
     @Binding var showPhotoPicker: Bool
     @Binding var showCamera: Bool
+    @Binding var showFileImporter: Bool
     @Binding var selectedPhoto: PhotosPickerItem?
     @Binding var attachedImage: UIImage?
     @Binding var showModelSelector: Bool
@@ -27,6 +30,7 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
     @Binding var showMicPermissionAlert: Bool
     let onOpenSettings: () -> Void
     let onLoadSelectedPhoto: (PhotosPickerItem) async -> Void
+    let onLoadSelectedFile: (URL) -> Void
     let onLoadExperimentalFeatures: () async -> Void
     let onIsExperimentalFeatureEnabled: (String, Bool) -> Bool
     let onSetExperimentalFeature: (String, Bool) async -> Void
@@ -111,6 +115,13 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
             && selectedSandboxValue == ComposerSandboxOption.default.wireValue
     }
 
+    private var attachSheetDetentHeight: CGFloat {
+        let showsFile = LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
+        let showsCamera = !LitterPlatform.isCatalyst
+        let count = 1 + (showsFile ? 1 : 0) + (showsCamera ? 1 : 0)
+        return count >= 3 ? 260 : 210
+    }
+
     var body: some View {
         content
             .sheet(isPresented: $showAttachMenu) {
@@ -119,15 +130,28 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
                         showAttachMenu = false
                         showPhotoPicker = true
                     },
-                    onTakePhoto: {
+                    onChooseFile: LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) ? {
+                        showAttachMenu = false
+                        showFileImporter = true
+                    } : nil,
+                    onTakePhoto: LitterPlatform.isCatalyst ? nil : {
                         showAttachMenu = false
                         showCamera = true
                     }
                 )
-                .presentationDetents([.height(210)])
+                .presentationDetents([.height(attachSheetDetentHeight)])
                 .presentationDragIndicator(.visible)
             }
             .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case let .success(urls) = result,
+                      let url = urls.first else { return }
+                onLoadSelectedFile(url)
+            }
             .onChange(of: selectedPhoto) { _, item in
                 guard let item else { return }
                 Task { await onLoadSelectedPhoto(item) }

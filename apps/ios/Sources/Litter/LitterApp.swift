@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import UserNotifications
+import Combine
 import os
 
 class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -31,7 +32,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        codex_ios_system_init()
+        LitterPlatform.bootstrapLocalRuntimeIfNeeded()
         LLog.bootstrap()
         LLog.info("lifecycle", "application did finish launching")
         OpenAIApiKeyStore.shared.applyToEnvironment()
@@ -238,7 +239,24 @@ struct LitterApp: App {
     @State private var wallpaperManager = WallpaperManager.shared
     @Environment(\.scenePhase) private var scenePhase
 
+    @SceneBuilder
     var body: some Scene {
+        #if targetEnvironment(macCatalyst)
+        mainWindowGroup
+            .defaultSize(width: 1120, height: 760)
+            // NOTE: `.windowResizability` is a no-op on Catalyst.
+            // Actual resize bounds are set from
+            // `MacWindowTitleBarStyler` via
+            // `UIWindowScene.sizeRestrictions`.
+            .commands {
+                LitterCommands(appModel: appModel)
+            }
+        #else
+        mainWindowGroup
+        #endif
+    }
+
+    private var mainWindowGroup: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appModel)
@@ -376,6 +394,11 @@ struct ContentView: View {
         .environment(appState)
         .environment(conversationWarmup)
         .environment(\.textScale, textScale)
+        #if targetEnvironment(macCatalyst)
+        .background {
+            MacWindowTitleBarStyler()
+        }
+        #endif
         .onAppear {
             let forceDiscoveryForUITest =
                 ProcessInfo.processInfo.environment["CODEXIOS_UI_TEST_FORCE_DISCOVERY"] == "1"
@@ -405,6 +428,11 @@ struct ContentView: View {
                 .environment(appState)
                 .environment(\.textScale, textScale)
         }
+        #if targetEnvironment(macCatalyst)
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandShowSettings)) { _ in
+            appState.showSettings = true
+        }
+        #endif
     }
 }
 
@@ -423,6 +451,7 @@ private struct HomeNavigationView: View {
     @Environment(VoiceRuntimeController.self) private var voiceRuntime
     @Environment(AppState.self) private var appState
     @Environment(ConversationWarmupCoordinator.self) private var conversationWarmup
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @State private var experimentalFeatures = ExperimentalFeatures.shared
     @State private var homeDashboardModel = HomeDashboardModel()
@@ -451,6 +480,11 @@ private struct HomeNavigationView: View {
         case serverWallpaperSelection(serverId: String)
         case serverWallpaperAdjust(serverId: String)
         case replayRecording(URL)
+        /// Hero composer landing in the detail pane. Pushed by the sidebar
+        /// "+" button on regular-width surfaces. On send, replaces itself
+        /// with `.conversation(key)` so the bottom composer visually
+        /// inherits the hero composer's position.
+        case newThread
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
@@ -467,11 +501,47 @@ private struct HomeNavigationView: View {
         navigationPath.isEmpty
     }
 
-    var body: some View {
+    @ViewBuilder
+    private var rootNavigationContent: some View {
+        if LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) {
+            splitRoot
+        } else {
+            primaryNavigationStack
+        }
+    }
+
+    private var splitRoot: some View {
+        NavigationSplitView {
+            sidebarDashboard
+                // Apply Liquid Glass material explicitly to the sidebar
+                // column. Catalyst 26 doesn't automatically paint the
+                // sidebar with glass the way iPadOS does, so the column
+                // comes through flat unless we install the material
+                // ourselves. `.ultraThinMaterial` gives the proper
+                // sidebar frosted-glass look with subtle vibrancy.
+                .containerBackground(.ultraThinMaterial, for: .navigation)
+        } detail: {
+            primaryNavigationStack
+        }
+    }
+
+    /// Whether the primary navigation stack is embedded as the detail pane
+    /// of a `NavigationSplitView`. In that case the sidebar already hosts
+    /// `HomeDashboardView`, so the detail pane's root should be an empty
+    /// welcome surface instead of a second dashboard rendering.
+    private var isEmbeddedInSplit: Bool {
+        LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
+    }
+
+    private var primaryNavigationStack: some View {
         NavigationStack(path: $navigationPath) {
             Group {
                 if isHomeRouteActive {
-                    homeDashboard
+                    if isEmbeddedInSplit {
+                        splitDetailRoot
+                    } else {
+                        homeDashboard
+                    }
                 } else {
                     LitterTheme.backgroundGradient.ignoresSafeArea()
                 }
@@ -509,6 +579,25 @@ private struct HomeNavigationView: View {
                         onResumeSessions: { showSessions(for: $0) },
                         onOpenConversation: { replaceTopConversation(with: $0) },
                         onInfo: { navigationPath.append(.conversationInfo(threadKey)) }
+                    )
+                case .newThread:
+                    NewThreadHeroView(
+                        project: homeDashboardModel.selectedProject,
+                        connectedServers: homeDashboardModel.connectedServers,
+                        selectedServerId: homeDashboardModel.selectedServerId,
+                        onSelectServer: { serverId in
+                            homeDashboardModel.selectedServerId = serverId
+                        },
+                        onOpenProjectPicker: { showProjectPicker = true },
+                        onThreadCreated: { key in
+                            homeDashboardModel.pinThread(key)
+                            replaceHeroWithConversation(key: key)
+                        },
+                        onCancel: {
+                            if case .newThread = navigationPath.last {
+                                navigationPath.removeLast()
+                            }
+                        }
                     )
                 case let .replayRecording(recordingUrl):
                     ReplayDestinationScreen(
@@ -598,6 +687,10 @@ private struct HomeNavigationView: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        rootNavigationContent
         .task {
             homeDashboardModel.bind(appModel: appModel)
             updateHomeDashboardActivity()
@@ -615,6 +708,28 @@ private struct HomeNavigationView: View {
                 replaceTopConversation(with: newKey)
             }
         }
+        #if targetEnvironment(macCatalyst)
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandNewSession)) { _ in
+            handleNewSessionTap()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandNavigateBack)) { _ in
+            if !navigationPath.isEmpty { navigationPath.removeLast() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandNavigateForward)) { _ in
+            if let activeKey = appModel.snapshot?.activeThread,
+               navigationPath.last != .conversation(activeKey) {
+                navigationPath.append(.conversation(activeKey))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .litterCommandSelectSession)) { notification in
+            guard let index = notification.userInfo?["index"] as? Int,
+                  let summaries = appModel.snapshot?.sessionSummaries,
+                  summaries.indices.contains(index) else { return }
+            Task { @MainActor in
+                await openSessionAtIndex(summaries[index])
+            }
+        }
+        #endif
         .sheet(item: $directoryPickerSheet) { _ in
             NavigationStack {
                 DirectoryPickerView(
@@ -689,7 +804,7 @@ private struct HomeNavigationView: View {
             // For local on-device server, skip directory picker and use /home/codex.
             if let server = homeDashboardModel.connectedServers.first(where: { $0.id == defaultServerId }),
                server.isLocal {
-                let cwd = codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+                let cwd = LitterPlatform.defaultLocalWorkingDirectory()
                 Task { await startNewSession(serverId: defaultServerId, cwd: cwd) }
                 return
             }
@@ -773,6 +888,30 @@ private struct HomeNavigationView: View {
         appState.sessionsShowOnlyForks = false
         hasSeededInitialConversationRoute = true
         navigationPath.append(.sessions(serverId: server.id, title: server.displayName))
+    }
+
+    private func openSessionAtIndex(_ summary: AppSessionSummary) async {
+        guard openingRecentSessionKey == nil else { return }
+        openingRecentSessionKey = summary.key
+        actionErrorMessage = nil
+        defer { openingRecentSessionKey = nil }
+
+        await conversationWarmup.prewarmIfNeeded()
+        workDir = summary.cwd
+        appState.currentCwd = summary.cwd
+        do {
+            let resumeKey = await appModel.hydrateThreadPermissions(for: summary.key, appState: appState)
+                ?? summary.key
+            let nextKey = try await appModel.resumeThread(
+                key: resumeKey,
+                launchConfig: launchConfig(for: resumeKey),
+                cwdOverride: summary.cwd
+            )
+            appModel.activateThread(nextKey)
+            replaceTopConversation(with: nextKey)
+        } catch {
+            actionErrorMessage = error.localizedDescription
+        }
     }
 
     private func openRecentSession(_ thread: HomeDashboardRecentSession) async {
@@ -946,10 +1085,104 @@ private struct HomeNavigationView: View {
         openConversation(key)
     }
 
+    /// Ambient hero-composer rendering for the split-view detail root. No
+    /// auto-focus (so popping back from a conversation doesn't summon the
+    /// keyboard) and no Cancel toolbar (there's nothing to cancel to at the
+    /// root). On send it replaces itself with `.conversation(key)` via the
+    /// same path as the pushed hero, so the handoff is identical.
+    private var splitDetailRoot: some View {
+        NewThreadHeroView(
+            project: homeDashboardModel.selectedProject,
+            connectedServers: homeDashboardModel.connectedServers,
+            selectedServerId: homeDashboardModel.selectedServerId,
+            onSelectServer: { serverId in
+                homeDashboardModel.selectedServerId = serverId
+            },
+            onOpenProjectPicker: { showProjectPicker = true },
+            onThreadCreated: { key in
+                homeDashboardModel.pinThread(key)
+                // Root is already the hero; just push the conversation on top.
+                openConversation(key)
+            },
+            onCancel: nil,
+            autoFocus: false
+        )
+    }
+
+    /// Push the hero composer into the detail pane. On compact this pushes
+    /// `.newThread` as a destination; on split it's a no-op because the
+    /// detail root already *is* the hero view (just pop back to it).
+    private func openNewThread() {
+        if isEmbeddedInSplit {
+            if !navigationPath.isEmpty {
+                navigationPath.removeAll()
+            }
+            return
+        }
+        if case .newThread = navigationPath.last { return }
+        if case .conversation = navigationPath.last {
+            navigationPath.removeLast()
+        }
+        navigationPath.append(.newThread)
+    }
+
+    /// Swap the hero composer out for the freshly-created conversation in
+    /// a single animation frame so the composer's apparent position is
+    /// preserved by the glass morph.
+    private func replaceHeroWithConversation(key: ThreadKey) {
+        if case .newThread = navigationPath.last {
+            navigationPath.removeLast()
+        }
+        openConversation(key)
+    }
+
     private func popCurrentRoute() {
         guard !navigationPath.isEmpty else { return }
         appState.showModelSelector = false
         navigationPath.removeLast()
+    }
+
+    /// Sidebar projection of the home dashboard used inside
+    /// `NavigationSplitView`. Same data + callbacks as `homeDashboard`, but
+    /// renders with `.sidebar` chrome (no animated logo, no zoom, no bottom
+    /// composer) and exposes an `onNewThread` hook that pushes the hero
+    /// composer into the detail pane.
+    private var sidebarDashboard: some View {
+        HomeDashboardView(
+            chrome: .sidebar,
+            recentSessions: homeDashboardModel.recentSessions,
+            allSessions: homeDashboardModel.allSessions,
+            pinnedThreadKeys: homeDashboardModel.pinnedKeys,
+            connectedServers: homeDashboardModel.connectedServers,
+            projects: homeDashboardModel.projects,
+            selectedServerId: homeDashboardModel.selectedServerId,
+            selectedProject: homeDashboardModel.selectedProject,
+            openingRecentSessionKey: openingRecentSessionKey,
+            onOpenRecentSession: openRecentSession,
+            onSelectServer: handleSelectServer,
+            onAddServer: { appState.showServerPicker = true },
+            onOpenProjectPicker: { showProjectPicker = true },
+            onThreadCreated: { key in homeDashboardModel.pinThread(key) },
+            onShowSettings: { appState.showSettings = true },
+            onPinThread: pinThread,
+            onUnpinThread: unpinThread,
+            onHideThread: hideThread,
+            onNewThread: { openNewThread() },
+            onHydrateThread: hydrateThread,
+            onDeleteThread: deleteThread,
+            onReconnectServer: reconnectServer,
+            onDisconnectServer: disconnectServer,
+            onRenameServer: renameServer,
+            onOpenRecording: { url in
+                navigationPath.append(.replayRecording(url))
+            },
+            onSendReply: sendQuickReply,
+            onCancelThread: cancelThread,
+            onInputModeChange: { mode in
+                homeInputMode = mode
+            },
+            onLoadAllThreads: loadAllThreads
+        )
     }
 
     private var homeDashboard: some View {

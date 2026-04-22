@@ -36,6 +36,12 @@ shared/rust-bridge/generated/
 # Android JNI outputs (generated from Rust bridge)
 apps/android/core/bridge/src/main/jniLibs/*/*.so
 
+# Android bundled CLI binaries (downloaded by tools/scripts/download-android-tools.sh)
+apps/android/app/src/main/jniLibs/*/*.so
+
+# Kotlin compiler cache
+apps/android/.kotlin/
+
 # Logs and temp
 *.log
 *.tmp

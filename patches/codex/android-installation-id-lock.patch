@@ -1,0 +1,15 @@
+diff --git a/codex-rs/core/src/installation_id.rs b/codex-rs/core/src/installation_id.rs
+index e9e5445c8..5199e3a0c 100644
+--- a/codex-rs/core/src/installation_id.rs
++++ b/codex-rs/core/src/installation_id.rs
+@@ -29,6 +29,10 @@ pub(crate) async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Res
+         }
+ 
+         let mut file = options.open(&path)?;
++        // Rust std's File::lock is not implemented for target_os = "android"
++        // and returns Unsupported("lock() not supported"). The mobile app is a
++        // single-process consumer of app-private storage, so skip the lock there.
++        #[cfg(not(target_os = "android"))]
+         file.lock()?;
+ 
+         #[cfg(unix)]

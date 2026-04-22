@@ -7,7 +7,7 @@ static PLATFORM_INIT: OnceLock<()> = OnceLock::new();
 
 fn ensure_platform_init() {
     PLATFORM_INIT.get_or_init(|| {
-        #[cfg(target_os = "ios")]
+        #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
         crate::ios_exec::install();
     });
 }

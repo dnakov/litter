@@ -34,6 +34,7 @@ import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.AppListThreadsRequest
 import uniffi.codex_mobile_client.AppRefreshModelsRequest
 import uniffi.codex_mobile_client.AppReadThreadRequest
+import uniffi.codex_mobile_client.registerAndroidTools
 import uniffi.codex_mobile_client.threadPermissionsAreAuthoritative
 
 /**
@@ -79,6 +80,7 @@ class AppModel private constructor(context: android.content.Context) {
     val appContext: android.content.Context = context
     init {
         UniffiInit.ensure(context)
+        registerBundledCliTools(context)
         LLog.bootstrap(context)
         store = AppStore()
         client = AppClient()
@@ -1033,5 +1035,33 @@ class AppModel private constructor(context: android.content.Context) {
         }
 
         return snapshot.copy(threads = mergedThreads)
+    }
+}
+
+/**
+ * CLI tools we ship as ELF executables under `app/src/main/jniLibs/<abi>/lib<tool>.so`.
+ * Android packs these into `nativeLibraryDir`, which is the only execute-allowed
+ * directory in an app sandbox on Android 10+. Tools not present here fall through
+ * to PATH-based lookup (which finds `/system/bin/{ls,cat,grep,sed,awk,...}`).
+ */
+private val BUNDLED_CLI_TOOLS = listOf("git", "curl", "wget")
+
+private fun registerBundledCliTools(context: android.content.Context) {
+    val nativeDir = context.applicationInfo.nativeLibraryDir ?: return
+    val tools = HashMap<String, String>()
+    for (tool in BUNDLED_CLI_TOOLS) {
+        val candidate = java.io.File(nativeDir, "lib$tool.so")
+        if (candidate.exists() && candidate.canExecute()) {
+            tools[tool] = candidate.absolutePath
+        }
+    }
+    try {
+        registerAndroidTools(tools)
+        android.util.Log.i(
+            "AppModel",
+            "Registered ${tools.size} bundled CLI tools: ${tools.keys}",
+        )
+    } catch (e: Throwable) {
+        android.util.Log.w("AppModel", "registerAndroidTools failed: ${e.message}")
     }
 }

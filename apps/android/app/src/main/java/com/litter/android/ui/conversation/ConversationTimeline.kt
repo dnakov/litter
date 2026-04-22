@@ -14,6 +14,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,14 +38,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -245,10 +244,16 @@ private fun UserMessageRow(
     onFork: ((UInt) -> Unit)?,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // Right-aligned user bubble matching iOS `UserBubble`: accent-tinted
     // rounded rect that hugs content width, with a 60dp minimum gutter on
     // the left so long messages wrap before reaching that edge.
+    //
+    // Long-press opens an action menu (Edit / Fork / Copy). Text selection is
+    // disabled on user bubbles because Compose's SelectionContainer would
+    // consume the long-press gesture before our handler sees it; copy is
+    // exposed via the menu instead.
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
@@ -262,52 +267,17 @@ private fun UserMessageRow(
                         LitterTheme.accent.copy(alpha = 0.3f),
                         RoundedCornerShape(14.dp),
                     )
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = { showMenu = true },
+                    )
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             ) {
-                if (onEdit != null || onFork != null) {
-                    Row(
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        Box {
-                            IconButton(
-                                onClick = { showMenu = true },
-                                modifier = Modifier.size(28.dp),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MoreVert,
-                                    contentDescription = "Message actions",
-                                    tint = LitterTheme.textSecondary,
-                                )
-                            }
-
-                            DropdownMenu(
-                                expanded = showMenu,
-                                onDismissRequest = { showMenu = false },
-                            ) {
-                                if (onEdit != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("Edit Message") },
-                                        onClick = { showMenu = false; onEdit(turnIndex) },
-                                    )
-                                }
-                                if (onFork != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("Fork From Here") },
-                                        onClick = { showMenu = false; onFork(turnIndex) },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                SelectableConversationText {
-                    com.litter.android.ui.common.FormattedText(
-                        text = data.text,
-                        color = LitterTheme.textPrimary,
-                        fontSize = LitterTextStyle.callout.scaled,
-                    )
-                }
+                com.litter.android.ui.common.FormattedText(
+                    text = data.text,
+                    color = LitterTheme.textPrimary,
+                    fontSize = LitterTextStyle.callout.scaled,
+                )
                 // Inline images from data URIs
                 for (uri in data.imageDataUris) {
                     val bitmap = remember(uri) {
@@ -330,6 +300,32 @@ private fun UserMessageRow(
                         )
                     }
                 }
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                if (onEdit != null) {
+                    DropdownMenuItem(
+                        text = { Text("Edit Message") },
+                        onClick = { showMenu = false; onEdit(turnIndex) },
+                    )
+                }
+                if (onFork != null) {
+                    DropdownMenuItem(
+                        text = { Text("Fork From Here") },
+                        onClick = { showMenu = false; onFork(turnIndex) },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Copy") },
+                    onClick = {
+                        showMenu = false
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("message", data.text))
+                    },
+                )
             }
         }
     }

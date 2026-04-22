@@ -13,8 +13,10 @@ GENERATED_RUST_DIR="$IOS_DIR/GeneratedRust"
 GENERATED_HEADERS_DIR="$GENERATED_RUST_DIR/Headers"
 GENERATED_DEVICE_DIR="$GENERATED_RUST_DIR/ios-device"
 GENERATED_SIM_DIR="$GENERATED_RUST_DIR/ios-sim"
+GENERATED_MACABI_DIR="$GENERATED_RUST_DIR/ios-macabi"
 BINDINGS_HASH_FILE="$GENERATED_RUST_DIR/.swift-bindings.hash"
 IOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET:-18.0}"
+MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 SUBMODULE_DIR="$REPO_DIR/shared/third_party/codex"
 IOS_CLANGXX_WRAPPER="$SCRIPT_DIR/ios-clangxx-wrapper.sh"
 PATCH_FILES=(
@@ -29,6 +31,7 @@ DEVICE_ONLY=0
 FAST_DEVICE=0
 SIM_ONLY=0
 FAST_SIM=0
+MACABI_ONLY=0
 FORCE_BINDINGS=0
 SKIP_BINDINGS=0
 CARGO_FEATURES=""
@@ -61,6 +64,12 @@ for arg in "$@"; do
       PROFILE="ios-dev"
       CARGO_PROFILE_FLAG="--profile ios-dev"
       ;;
+    --macabi-only)
+      # Build only the Mac Catalyst (macabi) arches. Skips xcframework
+      # packaging — the LitterMac target links the raw macabi staticlib
+      # directly via LIBRARY_SEARCH_PATHS[sdk=macosx*].
+      MACABI_ONLY=1
+      ;;
     --force-bindings)
       FORCE_BINDINGS=1
       ;;
@@ -71,7 +80,7 @@ for arg in "$@"; do
       CARGO_FEATURES="--features rpc-trace"
       ;;
     *)
-      echo "usage: $(basename "$0") [--preserve-current|--recorded-gitlink] [--device-only] [--fast-device] [--fast-sim] [--force-bindings] [--skip-bindings] [--rpc-trace]" >&2
+      echo "usage: $(basename "$0") [--preserve-current|--recorded-gitlink] [--device-only] [--fast-device] [--fast-sim] [--macabi-only] [--force-bindings] [--skip-bindings] [--rpc-trace]" >&2
       exit 1
       ;;
   esac
@@ -102,7 +111,7 @@ cleanup_patch() {
 
 trap cleanup_patch EXIT
 
-mkdir -p "$FRAMEWORKS_DIR" "$GENERATED_HEADERS_DIR" "$GENERATED_DEVICE_DIR" "$GENERATED_SIM_DIR"
+mkdir -p "$FRAMEWORKS_DIR" "$GENERATED_HEADERS_DIR" "$GENERATED_DEVICE_DIR" "$GENERATED_SIM_DIR" "$GENERATED_MACABI_DIR"
 
 if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
   export RUSTC_WRAPPER="$(command -v sccache)"
@@ -110,7 +119,10 @@ fi
 
 export CXX_aarch64_apple_ios="$IOS_CLANGXX_WRAPPER"
 export CXX_aarch64_apple_ios_sim="$IOS_CLANGXX_WRAPPER"
+export CXX_aarch64_apple_ios_macabi="$IOS_CLANGXX_WRAPPER"
+export CXX_x86_64_apple_ios_macabi="$IOS_CLANGXX_WRAPPER"
 export IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
+export MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
 
 bindings_inputs() {
   cat <<EOF
@@ -189,6 +201,13 @@ copy_sim_artifact() {
   cp "$sim_lib" "$GENERATED_SIM_DIR/libcodex_mobile_client.a"
 }
 
+copy_macabi_artifact() {
+  local arm64_lib="$RUST_BRIDGE_DIR/target/aarch64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
+  local x86_64_lib="$RUST_BRIDGE_DIR/target/x86_64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
+  lipo -create "$arm64_lib" "$x86_64_lib" \
+    -output "$GENERATED_MACABI_DIR/libcodex_mobile_client.a"
+}
+
 echo "==> Preparing codex submodule..."
 "$SCRIPT_DIR/sync-codex.sh" "$SYNC_MODE"
 
@@ -200,7 +219,14 @@ if [ "$DEVICE_ONLY" -eq 1 ]; then
 elif [ "$SIM_ONLY" -eq 1 ]; then
   rustup target add aarch64-apple-ios-sim
 else
-  rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+  rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-ios-macabi x86_64-apple-ios-macabi
+fi
+
+# Only install macabi rustup targets when macabi is in scope (either
+# --macabi-only or the default "everything" path). SIM_ONLY / DEVICE_ONLY
+# skip the `else` branch above so those add their own targets.
+if [ "$MACABI_ONLY" -eq 1 ]; then
+  rustup target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 fi
 
 if [ "$DEVICE_ONLY" -eq 1 ]; then
@@ -211,9 +237,37 @@ elif [ "$SIM_ONLY" -eq 1 ]; then
   echo "==> Building codex-mobile-client for aarch64-apple-ios-sim ($PROFILE)..."
   cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-sim --crate-type staticlib $CARGO_FEATURES
   copy_sim_artifact "$RUST_BRIDGE_DIR/target/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
+elif [ "$MACABI_ONLY" -eq 1 ]; then
+  echo "==> Building codex-mobile-client for Mac Catalyst macabi targets ($PROFILE) in parallel..."
+
+  build_macabi_arm64() {
+    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+  }
+
+  build_macabi_x86_64() {
+    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target x86_64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+  }
+
+  build_macabi_arm64 &
+  MACABI_ARM64_PID=$!
+  build_macabi_x86_64 &
+  MACABI_X86_64_PID=$!
+
+  FAILED=0
+  if ! wait "$MACABI_ARM64_PID"; then
+    echo "ERROR: Catalyst build (aarch64-apple-ios-macabi) failed" >&2
+    FAILED=1
+  fi
+  if ! wait "$MACABI_X86_64_PID"; then
+    echo "ERROR: Catalyst build (x86_64-apple-ios-macabi) failed" >&2
+    FAILED=1
+  fi
+  [ "$FAILED" -eq 0 ] || exit 1
+
+  copy_macabi_artifact
 else
   # Build device and simulator targets in parallel
-  echo "==> Building codex-mobile-client for aarch64-apple-ios + aarch64-apple-ios-sim ($PROFILE) in parallel..."
+  echo "==> Building codex-mobile-client for device, simulator, and Catalyst macabi targets ($PROFILE) in parallel..."
 
   build_device() {
     cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios --crate-type staticlib $CARGO_FEATURES
@@ -223,10 +277,22 @@ else
     cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-sim --crate-type staticlib $CARGO_FEATURES
   }
 
+  build_macabi_arm64() {
+    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+  }
+
+  build_macabi_x86_64() {
+    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target x86_64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+  }
+
   build_device &
   DEVICE_PID=$!
   build_sim &
   SIM_PID=$!
+  build_macabi_arm64 &
+  MACABI_ARM64_PID=$!
+  build_macabi_x86_64 &
+  MACABI_X86_64_PID=$!
 
   FAILED=0
   if ! wait "$DEVICE_PID"; then
@@ -237,10 +303,19 @@ else
     echo "ERROR: simulator build (aarch64-apple-ios-sim) failed" >&2
     FAILED=1
   fi
+  if ! wait "$MACABI_ARM64_PID"; then
+    echo "ERROR: Catalyst build (aarch64-apple-ios-macabi) failed" >&2
+    FAILED=1
+  fi
+  if ! wait "$MACABI_X86_64_PID"; then
+    echo "ERROR: Catalyst build (x86_64-apple-ios-macabi) failed" >&2
+    FAILED=1
+  fi
   [ "$FAILED" -eq 0 ] || exit 1
 
   copy_device_artifact
   copy_sim_artifact "$RUST_BRIDGE_DIR/target/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
+  copy_macabi_artifact
 fi
 
 if [ "$FAST_DEVICE" -eq 1 ]; then
@@ -259,6 +334,16 @@ if [ "$FAST_SIM" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$MACABI_ONLY" -eq 1 ]; then
+  # LitterMac links the raw macabi staticlib via
+  # LIBRARY_SEARCH_PATHS[sdk=macosx*] — no xcframework needed.
+  echo "==> Mac Catalyst (macabi) build complete"
+  echo "==> Macabi staticlib: $GENERATED_MACABI_DIR/libcodex_mobile_client.a"
+  echo "==> Headers: $GENERATED_HEADERS_DIR"
+  echo "==> Swift bindings: $UNIFFI_OUT"
+  exit 0
+fi
+
 echo "==> Creating xcframework..."
 rm -rf "$FRAMEWORKS_DIR/codex_bridge.xcframework" "$FRAMEWORKS_DIR/codex_mobile_client.xcframework"
 if [ "$DEVICE_ONLY" -eq 1 ]; then
@@ -272,6 +357,8 @@ else
     -headers "$GENERATED_HEADERS_DIR" \
     -library "$GENERATED_SIM_DIR/libcodex_mobile_client.a" \
     -headers "$GENERATED_HEADERS_DIR" \
+    -library "$GENERATED_MACABI_DIR/libcodex_mobile_client.a" \
+    -headers "$GENERATED_HEADERS_DIR" \
     -output "$FRAMEWORKS_DIR/codex_mobile_client.xcframework"
 fi
 
@@ -279,6 +366,7 @@ echo "==> Done: $FRAMEWORKS_DIR/codex_mobile_client.xcframework"
 echo "==> Raw device staticlib: $GENERATED_DEVICE_DIR/libcodex_mobile_client.a"
 if [ "$DEVICE_ONLY" -eq 0 ]; then
   echo "==> Raw simulator staticlib: $GENERATED_SIM_DIR/libcodex_mobile_client.a"
+  echo "==> Raw Catalyst staticlib: $GENERATED_MACABI_DIR/libcodex_mobile_client.a"
 fi
 echo "==> Headers: $GENERATED_HEADERS_DIR"
 echo "==> Swift bindings: $UNIFFI_OUT"

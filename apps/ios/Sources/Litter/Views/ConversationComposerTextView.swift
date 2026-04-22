@@ -5,6 +5,9 @@ struct ConversationComposerTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let onPasteImage: (UIImage) -> Void
+    /// Invoked when the user presses hardware Return with no modifiers. Shift+Return
+    /// still inserts a newline via the standard text-view behavior.
+    var onHardwareSubmit: (() -> Void)? = nil
     /// When true, the view returns no preferred size from `sizeThatFits`, letting
     /// SwiftUI fill the parent frame. Scrolling kicks in against the actual
     /// bounds instead of the 5-line clamp.
@@ -32,6 +35,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
         textView.alwaysBounceVertical = false
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.onPasteImage = onPasteImage
+        textView.onHardwareSubmit = onHardwareSubmit
         textView.text = text
         context.coordinator.applyStyling(to: textView)
         context.coordinator.updateScrollState(for: textView)
@@ -41,6 +45,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
     func updateUIView(_ uiView: PasteAwareComposerUITextView, context: Context) {
         context.coordinator.parent = self
         uiView.onPasteImage = onPasteImage
+        uiView.onHardwareSubmit = onHardwareSubmit
         context.coordinator.applyStyling(to: uiView)
 
         if uiView.text != text, uiView.markedTextRange == nil {
@@ -171,6 +176,7 @@ struct ConversationComposerTextView: UIViewRepresentable {
 
 final class PasteAwareComposerUITextView: UITextView {
     var onPasteImage: ((UIImage) -> Void)?
+    var onHardwareSubmit: (() -> Void)?
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
@@ -185,5 +191,18 @@ final class PasteAwareComposerUITextView: UITextView {
             return
         }
         super.paste(sender)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        var commands = super.keyCommands ?? []
+        guard onHardwareSubmit != nil else { return commands }
+        let submit = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(handleHardwareSubmit(_:)))
+        submit.wantsPriorityOverSystemBehavior = true
+        commands.append(submit)
+        return commands
+    }
+
+    @objc private func handleHardwareSubmit(_ sender: UIKeyCommand) {
+        onHardwareSubmit?()
     }
 }

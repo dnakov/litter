@@ -72,7 +72,8 @@ enum SavedServerStore {
     ) -> [SavedServerRecord] {
         let saved = rememberedOnly ? rememberedServers() : load()
         var records = saved.map { $0.toRecord() }
-        if records.contains(where: { $0.id == "local" || $0.source == ServerSource.local.rawValue }) == false {
+        if LitterPlatform.supportsLocalRuntime,
+           records.contains(where: { $0.id == "local" || $0.source == ServerSource.local.rawValue }) == false {
             records.append(
                 SavedServerRecord(
                     id: "local",

@@ -7,7 +7,13 @@ struct ImageGenerationToolCallView: View {
     @State private var expanded: Bool
     @State private var promptExpanded = false
     @State private var showShareSheet = false
-    private let contentFontSize = LitterFont.conversationBodyPointSize
+    /// Header row (icon + summary). A half-step smaller than body so tool
+    /// calls read as secondary to assistant messages.
+    private let summaryFontSize: CGFloat = 13
+    /// Expanded content size — matches the bash/command output size
+    /// (`ConversationCommandOutputViewport` renders at 12pt) so tool-call
+    /// details share a typographic baseline with terminal output.
+    private let contentFontSize: CGFloat = 12
 
     init(
         data: ConversationImageGenerationData,
@@ -52,7 +58,7 @@ struct ImageGenerationToolCallView: View {
                 .foregroundColor(LitterTheme.accent)
 
             Text(summary)
-                .litterFont(size: contentFontSize)
+                .litterFont(size: summaryFontSize)
                 .foregroundColor(LitterTheme.textSystem)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -97,6 +103,12 @@ struct ImageGenerationToolCallView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(LitterTheme.border.opacity(0.4), lineWidth: 0.5)
                 )
+                .draggable(Image(uiImage: image)) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 120)
+                }
                 .contextMenu {
                     Button {
                         UIPasteboard.general.image = image

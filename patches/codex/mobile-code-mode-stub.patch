@@ -7,7 +7,7 @@ index 23b2ce2306..9c18050292 100644
  tokio-util = { workspace = true, features = ["rt"] }
  tracing = { workspace = true }
 +
-+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
++[target.'cfg(not(any(target_os = "ios", target_os = "android", target_os = "linux")))'.dependencies]
  v8 = { workspace = true }
  
  [dev-dependencies]
@@ -18,14 +18,14 @@ index bb27d99960..0240e2aa4a 100644
 @@ -1,6 +1,14 @@
  mod description;
  mod response;
-+#[cfg(not(any(target_os = "ios", target_os = "android")))]
++#[cfg(not(any(target_os = "ios", target_os = "android", target_os = "linux")))]
  mod runtime;
-+#[cfg(any(target_os = "ios", target_os = "android"))]
++#[cfg(any(target_os = "ios", target_os = "android", target_os = "linux"))]
 +#[path = "runtime_stub.rs"]
 +mod runtime;
-+#[cfg(not(any(target_os = "ios", target_os = "android")))]
++#[cfg(not(any(target_os = "ios", target_os = "android", target_os = "linux")))]
 +mod service;
-+#[cfg(any(target_os = "ios", target_os = "android"))]
++#[cfg(any(target_os = "ios", target_os = "android", target_os = "linux"))]
 +#[path = "service_stub.rs"]
  mod service;
  

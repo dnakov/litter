@@ -1,7 +1,23 @@
 import SwiftUI
 import UIKit
 
+/// Which chrome layer the dashboard renders with.
+///
+///  - `.full`: the app's landing page — animated logo in the principal
+///    toolbar item, zoom toggle, and the full `HomeBottomBar` composer
+///    docked along the bottom. This is what iPhone compact and Catalyst
+///    non-split use today.
+///  - `.sidebar`: the trimmed projection used in the iPad / Catalyst
+///    `NavigationSplitView` sidebar. Branding, zoom, and the bottom
+///    composer are stripped; toolbar trailing gains a "+" that fires
+///    `onNewThread` so the detail pane can host the hero composer.
+enum HomeDashboardChrome {
+    case full
+    case sidebar
+}
+
 struct HomeDashboardView: View {
+    var chrome: HomeDashboardChrome = .full
     let recentSessions: [HomeDashboardRecentSession]
     let allSessions: [HomeDashboardRecentSession]
     let pinnedThreadKeys: [SavedThreadsStore.PinnedKey]
@@ -19,6 +35,8 @@ struct HomeDashboardView: View {
     let onPinThread: (ThreadKey) -> Void
     let onUnpinThread: (ThreadKey) -> Void
     let onHideThread: (ThreadKey) -> Void
+    /// Sidebar-only: fired when the user taps the "+" in the toolbar.
+    var onNewThread: (() -> Void)? = nil
     /// Hydrate a single thread (load full conversation items). Dashboard
     /// orchestrates the parallel calls and tracks per-row state so the left
     /// indicator can reflect it.
@@ -131,7 +149,7 @@ struct HomeDashboardView: View {
                 hasLoadedThreadListing = true
                 isLoadingThreadListing = false
             }
-            .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+            .background(dashboardBackground)
             .alert("Delete Session?", isPresented: Binding(
                 get: { deleteTargetThread != nil },
                 set: { if !$0 { deleteTargetThread = nil } }
@@ -174,44 +192,88 @@ struct HomeDashboardView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onShowSettings) {
-                        Image(systemName: "gearshape")
-                            .foregroundColor(LitterTheme.textSecondary)
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    HStack(spacing: 4) {
-                        SupporterKittyBadges(tierIndices: 0..<2)
-                        AnimatedLogo(size: 64)
-                        SupporterKittyBadges(tierIndices: 2..<4)
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        // Three levels: 1, 2, 4 (level 3 intentionally
-                        // skipped). Bounce through them: 1→2→4→2→1.
-                        let ladder = [1, 2, 4]
-                        let currentIdx = ladder.firstIndex(of: zoomLevel) ?? 0
-                        var nextIdx = currentIdx + zoomDirection
-                        if nextIdx >= ladder.count {
-                            zoomDirection = -1
-                            nextIdx = currentIdx + zoomDirection
-                        } else if nextIdx < 0 {
-                            zoomDirection = 1
-                            nextIdx = currentIdx + zoomDirection
-                        }
-                        withAnimation(Self.zoomAnimation) {
-                            zoomLevel = ladder[max(0, min(ladder.count - 1, nextIdx))]
-                        }
-                    } label: {
-                        Image(systemName: zoomIcon)
-                            .foregroundColor(LitterTheme.textSecondary)
-                    }
+            .toolbar(sidebarNavBarVisibility, for: .navigationBar)
+            .toolbar { toolbarContent }
+    }
+
+    private var sidebarNavBarVisibility: Visibility { .visible }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button(action: onShowSettings) {
+                Image(systemName: "gearshape")
+                    .foregroundColor(LitterTheme.textSecondary)
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            if chrome == .sidebar {
+                AnimatedLogo(size: 44)
+            } else {
+                HStack(spacing: 4) {
+                    SupporterKittyBadges(tierIndices: 0..<2)
+                    AnimatedLogo(size: 64)
+                    SupporterKittyBadges(tierIndices: 2..<4)
                 }
             }
+        }
+        if chrome == .full {
+            ToolbarItem(placement: .topBarTrailing) {
+                zoomButton
+            }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    onNewThread?()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .foregroundColor(LitterTheme.accent)
+                }
+                .accessibilityLabel("New thread")
+            }
+        }
+    }
+
+    private var zoomButton: some View {
+        Button {
+            // Three levels: 1, 2, 4 (level 3 intentionally skipped).
+            // Bounce through them: 1→2→4→2→1.
+            let ladder = [1, 2, 4]
+            let currentIdx = ladder.firstIndex(of: zoomLevel) ?? 0
+            var nextIdx = currentIdx + zoomDirection
+            if nextIdx >= ladder.count {
+                zoomDirection = -1
+                nextIdx = currentIdx + zoomDirection
+            } else if nextIdx < 0 {
+                zoomDirection = 1
+                nextIdx = currentIdx + zoomDirection
+            }
+            withAnimation(Self.zoomAnimation) {
+                zoomLevel = ladder[max(0, min(ladder.count - 1, nextIdx))]
+            }
+        } label: {
+            Image(systemName: zoomIcon)
+                .foregroundColor(LitterTheme.textSecondary)
+        }
+        .accessibilityLabel("Zoom")
+    }
+
+    /// The sidebar chrome on Catalyst sits inside SwiftUI's
+    /// `NavigationSplitView` sidebar column, which renders Liquid Glass
+    /// automatically. Painting the gradient on top would clobber that
+    /// material, so we punch to `.clear` for that case only. Everywhere
+    /// else the dashboard owns its own gradient backdrop.
+    @ViewBuilder
+    private var dashboardBackground: some View {
+        #if targetEnvironment(macCatalyst)
+        if chrome == .sidebar {
+            Color.clear
+        } else {
+            LitterTheme.backgroundGradient.ignoresSafeArea()
+        }
+        #else
+        LitterTheme.backgroundGradient.ignoresSafeArea()
+        #endif
     }
 
     private var canvas: some View {
@@ -237,7 +299,7 @@ struct HomeDashboardView: View {
                         onRemove: { session in
                             onUnpinThread(session.key)
                         },
-                        contentInsets: EdgeInsets(top: 48, leading: 0, bottom: 140, trailing: 0)
+                        contentInsets: EdgeInsets(top: 48, leading: 0, bottom: chrome == .full ? 140 : 80, trailing: 0)
                     )
                 }
                 .transition(.opacity)
@@ -246,7 +308,14 @@ struct HomeDashboardView: View {
             }
         }
         .overlay(alignment: .top) { topChrome }
-        .overlay(alignment: .bottom) { bottomChrome }
+        .overlay(alignment: .bottom) {
+            switch chrome {
+            case .full:
+                bottomChrome
+            case .sidebar:
+                sidebarBottomChrome
+            }
+        }
     }
 
     // Search results are rendered directly in `canvas` as an inline
@@ -266,14 +335,30 @@ struct HomeDashboardView: View {
             onAdd: onAddServer
         )
         .frame(maxWidth: .infinity)
+    }
+
+    /// Sidebar chrome gets a compact search-only bar at the bottom —
+    /// tapping the magnifying glass morphs it into a search field, which
+    /// swaps the sessions list for `ThreadSearchResultsView` (the canvas
+    /// already keys on `isSearchExpanded` regardless of chrome). The
+    /// close button on the search field restores the sessions list.
+    private var sidebarBottomChrome: some View {
+        HomeBottomBar(
+            mode: $inputMode,
+            searchQuery: $searchQuery,
+            project: nil,
+            onThreadCreated: { _ in },
+            compact: true
+        )
+        .padding(.bottom, 4)
         .background(
             LinearGradient(
-                colors: LitterTheme.headerScrim,
+                colors: Array(LitterTheme.headerScrim.reversed()),
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .padding(.bottom, -30)
-            .ignoresSafeArea(.container, edges: .top)
+            .padding(.top, -30)
+            .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(false)
         )
     }
@@ -339,7 +424,7 @@ struct HomeDashboardView: View {
                     openingKey: openingRecentSessionKey,
                     zoomLevel: $zoomLevel,
                     topInset: 48,
-                    bottomInset: 140,
+                    bottomInset: chrome == .full ? 140 : 24,
                     callbacks: HomeSessionsScrollView.Callbacks(
                         onOpen: { session in
                             guard openingRecentSessionKey == nil else { return }

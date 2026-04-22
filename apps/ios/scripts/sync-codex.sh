@@ -12,6 +12,8 @@ PATCH_FILES=(
     "$REPO_DIR/patches/codex/thread-read-permissions.patch"
     "$REPO_DIR/patches/codex/mobile-shell-snapshot-timeout.patch"
     "$REPO_DIR/patches/codex/absolute-path-cross-platform.patch"
+    "$REPO_DIR/patches/codex/android-installation-id-lock.patch"
+    "$REPO_DIR/patches/codex/android-tool-resolver.patch"
 )
 
 patch_already_upstreamed() {
@@ -71,7 +73,7 @@ for PATCH_FILE in "${PATCH_FILES[@]}"; do
         while IFS= read -r pf; do
             [ -f "$SUBMODULE_DIR/$pf" ] && patch_targets+=("$SUBMODULE_DIR/$pf")
         done < <(grep '^diff --git' "$PATCH_FILE" | sed 's|.*b/||')
-        added_lines=$(grep '^+[^+]' "$PATCH_FILE" | sed 's/^+//' | head -5)
+        added_lines=$(grep -m 5 '^+[^+]' "$PATCH_FILE" | sed 's/^+//')
         all_present=true
         if [ "${#patch_targets[@]}" -eq 0 ]; then
             all_present=false

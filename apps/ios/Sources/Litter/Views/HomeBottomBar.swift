@@ -22,6 +22,10 @@ struct HomeBottomBar: View {
     @Binding var searchQuery: String
     let project: AppProject?
     let onThreadCreated: (ThreadKey) -> Void
+    /// When `true`, the plus/composer pool is omitted and only the search
+    /// button / search-row morph renders. Used by the iPad + Catalyst
+    /// sidebar chrome where there's no room (and no use) for a composer.
+    var compact: Bool = false
     @FocusState private var searchFocused: Bool
     @State private var composerOpenedAt: Date = .distantPast
     @State private var composerHasBeenActive = false
@@ -39,41 +43,54 @@ struct HomeBottomBar: View {
         // expanding leftward from `searchIconButton` visually absorbs the +
         // button's glass — reading as if the + is the one morphing.
         ZStack {
-            // Pool 1: plus button ↔ composer row
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                GlassMorphContainer(spacing: 14) {
-                    switch mode {
-                    case .collapsed:
-                        plusButton
-                    case .composer:
-                        composerRow
-                    case .search:
-                        EmptyView()
+            // Pool 1: plus button ↔ composer row. Omitted in compact mode.
+            if !compact {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    GlassMorphContainer(spacing: 14) {
+                        switch mode {
+                        case .collapsed:
+                            plusButton
+                        case .composer:
+                            composerRow
+                        case .search:
+                            EmptyView()
+                        }
+                    }
+                    .frame(maxWidth: mode == .composer ? .infinity : nil)
+                    if mode == .collapsed {
+                        // Reserve the search button's slot so the + stays put.
+                        Spacer().frame(width: buttonSize + 10 + 14)
                     }
                 }
-                .frame(maxWidth: mode == .composer ? .infinity : nil)
-                if mode == .collapsed {
-                    // Reserve the search button's slot so the + stays put.
-                    Spacer().frame(width: buttonSize + 10 + 14)
-                }
+                .padding(.horizontal, mode == .collapsed ? 14 : 0)
             }
-            .padding(.horizontal, mode == .collapsed ? 14 : 0)
 
-            // Pool 2: search button ↔ search row
+            // Pool 2: search button ↔ search row. In full-chrome mode the
+            // button sits on the right (sharing the trailing edge with the
+            // plus button); in compact/sidebar mode it anchors to the left
+            // since there's no plus to coexist with.
             HStack(spacing: 0) {
-                Spacer(minLength: 0)
+                if !compact {
+                    Spacer(minLength: 0)
+                }
                 GlassMorphContainer(spacing: 14) {
-                    switch mode {
-                    case .collapsed:
-                        searchIconButton
-                    case .composer:
-                        EmptyView()
-                    case .search:
+                    // In compact mode, `.composer` is unreachable via the
+                    // bar itself — but the bound `mode` can transiently
+                    // hold that value during chrome transitions. Treat it
+                    // like `.collapsed` so the search button stays put.
+                    if mode == .search {
                         searchRow
+                    } else if compact || mode == .collapsed {
+                        searchIconButton
+                    } else {
+                        EmptyView()
                     }
                 }
                 .frame(maxWidth: mode == .search ? .infinity : nil)
+                if compact {
+                    Spacer(minLength: 0)
+                }
             }
             .padding(.horizontal, mode == .collapsed ? 14 : 0)
         }

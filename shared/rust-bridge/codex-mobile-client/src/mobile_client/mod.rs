@@ -76,6 +76,7 @@ pub struct MobileClient {
     pub(crate) discovery: RwLock<DiscoveryService>,
     oauth_callback_tunnels: Arc<Mutex<HashMap<String, OAuthCallbackTunnel>>>,
     pub(crate) recorder: Arc<crate::recorder::MessageRecorder>,
+    pub(crate) ambient_cache: crate::ambient_suggestions::AmbientCache,
 }
 
 #[derive(Clone)]
@@ -389,6 +390,7 @@ impl MobileClient {
             discovery: RwLock::new(DiscoveryService::new(DiscoveryConfig::default())),
             oauth_callback_tunnels: Arc::new(Mutex::new(HashMap::new())),
             recorder: Arc::new(crate::recorder::MessageRecorder::new()),
+            ambient_cache: crate::ambient_suggestions::new_ambient_cache(),
         }
     }
 
@@ -2546,6 +2548,12 @@ impl MobileClient {
         });
 
         rx
+    }
+
+    /// Invalidate the in-memory ambient suggestions cache for a server.
+    /// If `project_root` is `None`, all entries for the server are cleared.
+    pub fn invalidate_ambient_suggestions(&self, server_id: &str, project_root: Option<&str>) {
+        crate::ambient_suggestions::invalidate_cache(&self.ambient_cache, server_id, project_root);
     }
 }
 

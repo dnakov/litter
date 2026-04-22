@@ -2,7 +2,8 @@ import SwiftUI
 
 struct ConversationComposerAttachSheet: View {
     let onPickPhotoLibrary: () -> Void
-    let onTakePhoto: () -> Void
+    let onChooseFile: (() -> Void)?
+    let onTakePhoto: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -15,8 +16,16 @@ struct ConversationComposerAttachSheet: View {
                 sheetButtonLabel("Photo Library", systemImage: "photo.on.rectangle")
             }
 
-            Button(action: onTakePhoto) {
-                sheetButtonLabel("Take Photo", systemImage: "camera")
+            if let onChooseFile {
+                Button(action: onChooseFile) {
+                    sheetButtonLabel("Choose File", systemImage: "folder")
+                }
+            }
+
+            if let onTakePhoto {
+                Button(action: onTakePhoto) {
+                    sheetButtonLabel("Take Photo", systemImage: "camera")
+                }
             }
 
             Spacer(minLength: 0)

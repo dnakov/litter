@@ -122,6 +122,88 @@ targets:
           APP_CODE_SIGN_IDENTITY: ""
           PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
           APP_PROVISIONING_PROFILE_SPECIFIER: ""
+  LitterMac:
+    type: application
+    platform: auto
+    supportedDestinations:
+      - macCatalyst
+    entitlements:
+      path: Sources/Litter/Litter-Catalyst.entitlements
+      properties:
+        aps-environment: production
+        com.apple.security.application-groups:
+          - group.com.sigkitten.litter
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+    sources:
+      - path: Sources/Litter
+        excludes:
+          - Bridge/AecBridge.swift
+          - Bridge/IosSystemBridge.m
+          - CarPlay/**
+          - Info.plist
+          - Litter.entitlements
+          - Litter-Catalyst.entitlements
+          - Models/AppLifecycleController.swift
+          - Models/AppRuntimeController.swift
+          - Models/CodexTurnAttributes.swift
+          - Models/CodexVoiceCallAttributes.swift
+          - Models/OrientationResponder.swift
+          - Models/StableSafeAreaInsets.swift
+          - Models/TurnLiveActivityController.swift
+          - Models/VoiceRuntimeController.swift
+          - Models/VoiceSessionControl.swift
+          - Models/VoiceSessionCoordinator.swift
+          - Models/VoiceSessionModels.swift
+          - Models/WatchCompanionBridge.swift
+          - Models/WatchProjection.swift
+          - Resources/ios_system/**
+          - Views/HomeVoiceOrbButton.swift
+          - Views/InlineVoiceButton.swift
+          - Views/InlineVoiceStatusStrip.swift
+          - Views/LiveActivityPreview.swift
+          - Views/LockScreenCardView.swift
+          - Views/RealtimeVoiceScreen.swift
+          - Views/VoiceCallView.swift
+          - "**/*.h"
+    resources:
+      - path: Sources/Litter/Resources/Fonts
+      - path: Sources/Litter/Resources/Themes
+      - path: Sources/Litter/Resources/TipJarProducts.storekit
+    dependencies:
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: Network.framework
+      - package: Hairball
+        product: HairballUI
+    settings:
+      base:
+        PRODUCT_NAME: Litter
+        PRODUCT_BUNDLE_IDENTIFIER: com.sigkitten.litter
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        INFOPLIST_FILE: Sources/Litter/Info-Catalyst.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIconMac
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
+        SUPPORTS_MACCATALYST: YES
+        SUPPORTS_MACCATALYST_OPTIMIZED_FOR_MAC: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        "LIBRARY_SEARCH_PATHS[sdk=macosx*]": "$(inherited) $(PROJECT_DIR)/GeneratedRust/ios-macabi"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: "$(APP_CODE_SIGN_STYLE)"
+          APP_CODE_SIGN_STYLE: Automatic
+          PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
+          APP_PROVISIONING_PROFILE_SPECIFIER: ""
+          OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lcodex_mobile_client"
+        Release:
+          CODE_SIGN_STYLE: "$(APP_CODE_SIGN_STYLE)"
+          APP_CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "$(APP_CODE_SIGN_IDENTITY)"
+          APP_CODE_SIGN_IDENTITY: ""
+          PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
+          APP_PROVISIONING_PROFILE_SPECIFIER: ""
   LitterLiveActivity:
     type: app-extension
     platform: iOS

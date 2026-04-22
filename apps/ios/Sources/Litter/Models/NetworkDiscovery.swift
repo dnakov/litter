@@ -142,14 +142,16 @@ final class NetworkDiscovery {
         isInitialLoad = true
         scanProgress = 0
         scanProgressLabel = "Discovering services…"
-        servers.append(DiscoveredServer(
-            id: "local",
-            name: UIDevice.current.name,
-            hostname: "127.0.0.1",
-            port: nil,
-            source: .local,
-            hasCodexServer: true
-        ))
+        if LitterPlatform.supportsLocalRuntime {
+            servers.append(DiscoveredServer(
+                id: "local",
+                name: UIDevice.current.name,
+                hostname: "127.0.0.1",
+                port: nil,
+                source: .local,
+                hasCodexServer: true
+            ))
+        }
 
         initialLoadTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))

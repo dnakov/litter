@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct ConversationComposerContentView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let attachedImage: UIImage?
     let collaborationMode: AppModeKind
     let activePlanProgress: AppPlanProgressSnapshot?
@@ -172,6 +173,8 @@ struct ConversationComposerContentView: View {
                 )
             }
         }
+        .frame(maxWidth: LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass) ? 760 : .infinity)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
