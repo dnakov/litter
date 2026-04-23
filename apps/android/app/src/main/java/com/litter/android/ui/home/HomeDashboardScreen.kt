@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material.icons.outlined.ViewList
@@ -402,7 +403,7 @@ fun HomeDashboardScreen(
                 }
                 IconButton(onClick = onShowApps, modifier = Modifier.size(32.dp)) {
                     Icon(
-                        androidx.compose.material.icons.Icons.Outlined.GridView,
+                        Icons.Outlined.GridView,
                         contentDescription = "Apps",
                         tint = LitterTheme.textSecondary,
                         modifier = Modifier.size(20.dp),
