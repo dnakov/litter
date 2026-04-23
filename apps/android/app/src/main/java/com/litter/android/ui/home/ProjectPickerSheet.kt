@@ -50,6 +50,7 @@ import uniffi.codex_mobile_client.projectDefaultLabel
 fun ProjectPickerSheet(
     projects: List<AppProject>,
     serverNamesById: Map<String, String>,
+    isLocalById: Map<String, Boolean>,
     onSelect: (AppProject) -> Unit,
     onCreateNew: () -> Unit,
     onDismiss: () -> Unit,
@@ -167,6 +168,7 @@ fun ProjectPickerSheet(
                     ProjectRow(
                         project = project,
                         serverName = serverNamesById[project.serverId],
+                        isLocal = isLocalById[project.serverId] == true,
                         onClick = {
                             onSelect(project)
                             onDismiss()
@@ -183,8 +185,10 @@ fun ProjectPickerSheet(
 private fun ProjectRow(
     project: AppProject,
     serverName: String?,
+    isLocal: Boolean,
     onClick: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -220,7 +224,7 @@ private fun ProjectRow(
                     )
                 }
                 Text(
-                    text = project.cwd,
+                    text = com.litter.android.state.PathDisplay.display(project.cwd, isLocal, context),
                     color = LitterTheme.textMuted,
                     fontSize = LitterTextStyle.caption2.scaled,
                     fontFamily = LitterTheme.monoFont,

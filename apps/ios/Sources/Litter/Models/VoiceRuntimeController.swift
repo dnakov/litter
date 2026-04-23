@@ -195,7 +195,10 @@ final class VoiceRuntimeController: VoiceActions {
                 sandbox: sandboxMode,
                 developerInstructions: nil,
                 persistExtendedHistory: true
-            ).threadStartRequest(cwd: preferredVoiceThreadCwd(for: nil, fallback: cwd))
+            ).threadStartRequest(
+                cwd: preferredVoiceThreadCwd(for: nil, fallback: cwd),
+                dynamicTools: appModel.localGenerativeUiToolSpecs(for: serverId)
+            )
         )
         SavedThreadsStore.add(.init(threadKey: key))
         appModel.store.setActiveThread(key: key)
@@ -479,7 +482,10 @@ final class VoiceRuntimeController: VoiceActions {
                     sandbox: nil,
                     developerInstructions: nil,
                     persistExtendedHistory: true
-                ).threadStartRequest(cwd: cwd)
+                ).threadStartRequest(
+                    cwd: cwd,
+                    dynamicTools: appModel.localGenerativeUiToolSpecs(for: serverId)
+                )
             )
             SavedThreadsStore.add(.init(threadKey: key))
             appModel.store.setActiveThread(key: key)

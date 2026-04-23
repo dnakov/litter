@@ -6,6 +6,8 @@ use std::ffi::c_void;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::mobile_exec_command::mobile_system_command;
+
 // Defined in apps/ios/Sources/Litter/Bridge/IosSystemBridge.m and linked by Xcode.
 unsafe extern "C" {
     fn codex_ios_system_run(
@@ -22,15 +24,8 @@ static IOS_EXEC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 pub(crate) fn install() {
     IOS_EXEC_HOOK_INSTALLED.get_or_init(|| {
         codex_core::exec::set_ios_exec_hook(run_command);
+        crate::shell_preflight::install();
     });
-}
-
-fn shell_quote(s: &str) -> String {
-    if s.contains(' ') || s.contains('\'') || s.contains('"') || s.contains('\\') {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    } else {
-        s.to_string()
-    }
 }
 
 pub(crate) fn run_command(
@@ -100,8 +95,7 @@ pub(crate) fn run_command(
         }
     }
 
-    let quoted_args: Vec<String> = argv.iter().map(|arg| shell_quote(arg)).collect();
-    let cmd = quoted_args.join(" ");
+    let cmd = mobile_system_command(argv);
     eprintln!("[ios-exec] run: {cmd} (cwd={})", cwd.display());
 
     let Ok(cmd_cstr) = CString::new(cmd.clone()) else {

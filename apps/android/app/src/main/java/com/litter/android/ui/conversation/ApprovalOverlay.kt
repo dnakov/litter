@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -96,6 +97,10 @@ private fun ApprovalCard(
     approval: PendingApproval,
     onDecision: (ApprovalDecisionValue) -> Unit,
 ) {
+    val appModel = com.litter.android.ui.LocalAppModel.current
+    val snap = appModel.snapshot.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isLocal = snap.value?.servers?.firstOrNull { it.serverId == approval.serverId }?.isLocal == true
     val title = when (approval.kind) {
         ApprovalKind.COMMAND -> "Run command?"
         ApprovalKind.FILE_CHANGE -> "File change?"
@@ -131,7 +136,7 @@ private fun ApprovalCard(
         // CWD
         approval.cwd?.let { cwd ->
             Text(
-                text = "in $cwd",
+                text = "in " + com.litter.android.state.PathDisplay.display(cwd, isLocal, context),
                 color = LitterTheme.textSecondary,
                 fontSize = LitterTextStyle.caption.scaled,
             )
@@ -140,7 +145,7 @@ private fun ApprovalCard(
         // Path (for file changes)
         approval.path?.let { path ->
             Text(
-                text = path,
+                text = com.litter.android.state.PathDisplay.display(path, isLocal, context),
                 color = LitterTheme.textSecondary,
                 fontFamily = LitterTheme.monoFont,
                 fontSize = LitterTextStyle.caption.scaled,

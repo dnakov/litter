@@ -14,6 +14,8 @@ final class AppState {
 
     private static let approvalPolicyKey = "litter.approvalPolicy"
     private static let sandboxModeKey = "litter.sandboxMode"
+    private static let preferredModelKey = "litter.preferredModel"
+    private static let preferredReasoningEffortKey = "litter.preferredReasoningEffort"
     private static let inheritPermissionValue = "inherit"
     private static let customPermissionValue = "custom"
 
@@ -25,6 +27,16 @@ final class AppState {
     var sessionsWorkspaceSortModeRaw = "mostRecent"
     var selectedModel = ""
     var reasoningEffort = ""
+    var preferredModel: String {
+        didSet {
+            UserDefaults.standard.set(preferredModel, forKey: Self.preferredModelKey)
+        }
+    }
+    var preferredReasoningEffort: String {
+        didSet {
+            UserDefaults.standard.set(preferredReasoningEffort, forKey: Self.preferredReasoningEffortKey)
+        }
+    }
     /// Collaboration mode the user picked before a thread exists (on the
     /// home composer). Applied to the first `startThread` via
     /// `setThreadCollaborationMode` immediately after creation.
@@ -47,6 +59,8 @@ final class AppState {
     init() {
         approvalPolicy = UserDefaults.standard.string(forKey: Self.approvalPolicyKey) ?? "inherit"
         sandboxMode = UserDefaults.standard.string(forKey: Self.sandboxModeKey) ?? "inherit"
+        preferredModel = UserDefaults.standard.string(forKey: Self.preferredModelKey) ?? ""
+        preferredReasoningEffort = UserDefaults.standard.string(forKey: Self.preferredReasoningEffortKey) ?? ""
     }
 
     func toggleSessionFolder(_ folderPath: String) {

@@ -291,6 +291,17 @@ struct LitterApp: App {
                     appRuntime.appDidBecomeActive()
                     #if targetEnvironment(macCatalyst)
                     LocalCodexBootstrap.shared.startIfNeeded(appModel: appModel)
+                    // Feature B (proximity pairing) is debug-only until
+                    // we've validated the Bonjour + NISession flow in the
+                    // wild. The Rust `pair` module still compiles in
+                    // Release; only the bootstrap call sites are gated.
+                    #if DEBUG
+                    MacPairingHost.shared.startIfNeeded()
+                    #endif
+                    #else
+                    #if DEBUG
+                    NearbyMacPairing.shared.startIfNeeded(appModel: appModel)
+                    #endif
                     #endif
                 }
         }
@@ -398,6 +409,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
 
+                #if !targetEnvironment(macCatalyst) && DEBUG
+                NearbyMacOnboardingOverlay()
+                #endif
             }
             .ignoresSafeArea(.container)
             .task {
@@ -507,6 +521,11 @@ private struct HomeNavigationView: View {
         /// with `.conversation(key)` so the bottom composer visually
         /// inherits the hero composer's position.
         case newThread
+        /// Saved apps list — always-visible.
+        case appsList
+        /// Saved-app detail, pushed when the user taps a home-screen thread
+        /// that has saved apps (or when routed from the AppsList).
+        case savedApp(appId: String)
     }
 
     private var connectedServerOptions: [DirectoryPickerServerOption] {
@@ -706,6 +725,10 @@ private struct HomeNavigationView: View {
                     )
                     .toolbar(.hidden, for: .navigationBar)
                     .background(LitterTheme.backgroundGradient.ignoresSafeArea())
+                case .appsList:
+                    AppsListView()
+                case .savedApp(let appId):
+                    SavedAppDetailView(appId: appId)
                 }
             }
         }
@@ -729,6 +752,18 @@ private struct HomeNavigationView: View {
                 appState.pendingThreadNavigation = nil
                 replaceTopConversation(with: newKey)
             }
+        }
+        .onChange(of: SavedAppsNavigation.shared.pendingConversationThreadId) { _, newThreadId in
+            guard let newThreadId else { return }
+            _ = SavedAppsNavigation.shared.consumeConversationRequest()
+            guard let key = appModel.snapshot?.threads.first(where: { $0.key.threadId == newThreadId })?.key else {
+                return
+            }
+            // Pop the saved-app detail off the stack, then push the conversation.
+            if case .savedApp = navigationPath.last {
+                navigationPath.removeLast()
+            }
+            openConversation(key)
         }
         #if targetEnvironment(macCatalyst)
         .onReceive(NotificationCenter.default.publisher(for: .litterCommandNewSession)) { _ in
@@ -857,8 +892,8 @@ private struct HomeNavigationView: View {
 
         Task {
             do {
-                let selectedModel = normalizedSelectedModel()
-                let selectedEffort = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+                let selectedModel = normalizedPreferredModel()
+                let selectedEffort = appState.preferredReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
                 voiceRuntime.handoffModel = selectedModel
                 voiceRuntime.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
                 voiceRuntime.handoffFastMode = false
@@ -885,8 +920,8 @@ private struct HomeNavigationView: View {
         }
     }
 
-    private func normalizedSelectedModel() -> String? {
-        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func normalizedPreferredModel() -> String? {
+        let trimmed = appState.preferredModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -938,6 +973,7 @@ private struct HomeNavigationView: View {
 
     private func openRecentSession(_ thread: HomeDashboardRecentSession) async {
         guard openingRecentSessionKey == nil else { return }
+
         openingRecentSessionKey = thread.key
         actionErrorMessage = nil
         defer { openingRecentSessionKey = nil }
@@ -994,8 +1030,7 @@ private struct HomeNavigationView: View {
                 serverId: serverId,
                 params: launchConfig().threadStartRequest(
                     cwd: cwd,
-                    dynamicTools: ExperimentalFeatures.shared.isEnabled(.generativeUI)
-                        ? generativeUiDynamicToolSpecs() : nil
+                    dynamicTools: appModel.localGenerativeUiToolSpecs(for: serverId)
                 )
             )
             startedKey = key
@@ -1186,6 +1221,7 @@ private struct HomeNavigationView: View {
             onOpenProjectPicker: { showProjectPicker = true },
             onThreadCreated: { key in homeDashboardModel.pinThread(key) },
             onShowSettings: { appState.showSettings = true },
+            onShowApps: { navigationPath.append(.appsList) },
             onPinThread: pinThread,
             onUnpinThread: unpinThread,
             onHideThread: hideThread,
@@ -1224,6 +1260,7 @@ private struct HomeNavigationView: View {
             onOpenProjectPicker: { showProjectPicker = true },
             onThreadCreated: { key in homeDashboardModel.pinThread(key) },
             onShowSettings: { appState.showSettings = true },
+            onShowApps: { navigationPath.append(.appsList) },
             onPinThread: pinThread,
             onUnpinThread: unpinThread,
             onHideThread: hideThread,
@@ -1511,7 +1548,14 @@ private struct ConversationDestinationScreen: View {
                     topInset: 0,
                     bottomInset: bottomInset,
                     onOpenConversation: onOpenConversation,
-                    onResumeSessions: onResumeSessions
+                    onResumeSessions: onResumeSessions,
+                    minigameOverlay: screenModel.minigameOverlay,
+                    onTypingTap: { screenModel.requestMinigame() },
+                    onMinigameDismiss: { screenModel.dismissMinigame() },
+                    onMinigameRetry: {
+                        screenModel.dismissMinigame()
+                        screenModel.requestMinigame()
+                    }
                 )
                 .onAppear {
                     bindScreenModel(for: conversationThread)
@@ -1800,3 +1844,59 @@ struct LaunchView: View {
         }
     }
 }
+
+#if !targetEnvironment(macCatalyst)
+/// Overlay that shows `NearbyMacOnboardingView` while `NearbyMacPairing`
+/// is driving the pair flow. On success, triggers a connect + dismisses.
+struct NearbyMacOnboardingOverlay: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var pairing = NearbyMacPairing.shared
+    @State private var isConnecting = false
+
+    var body: some View {
+        if pairing.isRunning || pairing.completedServer != nil {
+            NearbyMacOnboardingView(
+                state: pairing.state,
+                macName: pairing.discoveredMacName,
+                distance: pairing.lastDistance,
+                onCancel: { pairing.cancel() },
+                onRetry: { pairing.retry() }
+            )
+            .transition(.opacity)
+            .onChange(of: pairing.completedServer) { _, server in
+                guard let server, !isConnecting else { return }
+                isConnecting = true
+                Task { @MainActor in
+                    await connectPairedServer(server)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func connectPairedServer(_ server: SavedServer) async {
+        let host = server.hostname
+        let port = server.port ?? 0
+        guard port > 0 else {
+            LLog.warn("pair", "completed pair with no port — skipping connect")
+            return
+        }
+        do {
+            _ = try await appModel.serverBridge.connectRemoteServer(
+                serverId: server.id,
+                displayName: server.name,
+                host: host,
+                port: port
+            )
+            appModel.reconnectController.syncSavedServers(
+                servers: SavedServerStore.reconnectRecords(
+                    localDisplayName: appModel.resolvedLocalServerDisplayName()
+                )
+            )
+            await appModel.refreshSnapshot()
+        } catch {
+            LLog.error("pair", "connect after pair failed", error: error)
+        }
+    }
+}
+#endif

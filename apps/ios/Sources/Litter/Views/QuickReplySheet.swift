@@ -24,7 +24,7 @@ struct QuickReplySheet: View {
                     .foregroundStyle(LitterTheme.textPrimary)
                     .lineLimit(2)
 
-                Text(thread.serverDisplayName + " · " + (HomeDashboardSupport.workspaceLabel(for: thread.cwd) ?? thread.cwd))
+                Text(thread.serverDisplayName + " · " + (HomeDashboardSupport.workspaceLabel(for: thread.cwd) ?? PathDisplay.display(thread.cwd, isLocal: thread.isLocal)))
                     .litterFont(.caption)
                     .foregroundStyle(LitterTheme.textMuted)
                     .lineLimit(1)

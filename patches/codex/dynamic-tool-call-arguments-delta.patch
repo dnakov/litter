@@ -1,0 +1,347 @@
+diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
+index 3d8c2b2093..cb7cd5431f 100644
+--- a/codex-rs/app-server-protocol/src/protocol/common.rs
++++ b/codex-rs/app-server-protocol/src/protocol/common.rs
+@@ -1026,6 +1026,10 @@ server_notification_definitions! {
+     /// This event is internal-only. Used by Codex Cloud.
+     RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
+     AgentMessageDelta => "item/agentMessage/delta" (v2::AgentMessageDeltaNotification),
++    /// Streaming delta for a dynamic tool call's argument JSON. Clients
++    /// accumulate to render partial tool-call output (e.g. generative-UI
++    /// widgets) before the tool call finalizes.
++    DynamicToolCallArgumentsDelta => "item/dynamicToolCall/argumentsDelta" (v2::DynamicToolCallArgumentsDeltaNotification),
+     /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
+     PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
+     /// Stream base64-encoded stdout/stderr chunks for a running `command/exec` session.
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2.rs b/codex-rs/app-server-protocol/src/protocol/v2.rs
+index 3997fc0ecb..1fc72f41c1 100644
+--- a/codex-rs/app-server-protocol/src/protocol/v2.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2.rs
+@@ -5731,6 +5731,25 @@ pub struct AgentMessageDeltaNotification {
+     pub delta: String,
+ }
+ 
++/// Streaming delta for a dynamic (client-registered) tool call's argument
++/// JSON. Fires for tools without a server-side `ToolArgumentDiffConsumer`
++/// — e.g. the generative-UI `show_widget` tool. Clients accumulate the
++/// deltas to render partial tool-call output in real time.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct DynamicToolCallArgumentsDeltaNotification {
++    pub thread_id: String,
++    pub turn_id: String,
++    pub item_id: String,
++    /// Provider-assigned call id. May be absent on very early deltas
++    /// before the provider has confirmed the call id.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional = nullable)]
++    pub call_id: Option<String>,
++    pub delta: String,
++}
++
+ #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "camelCase")]
+ #[ts(export_to = "v2/")]
+diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
+index cca8c2335e..2b4062c23e 100644
+--- a/codex-rs/app-server/src/bespoke_event_handling.rs
++++ b/codex-rs/app-server/src/bespoke_event_handling.rs
+@@ -16,6 +16,7 @@ use codex_analytics::AnalyticsEventsClient;
+ use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
+ use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
+ use codex_app_server_protocol::AgentMessageDeltaNotification;
++use codex_app_server_protocol::DynamicToolCallArgumentsDeltaNotification;
+ use codex_app_server_protocol::ApplyPatchApprovalParams;
+ use codex_app_server_protocol::ApplyPatchApprovalResponse;
+ use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
+@@ -1393,6 +1394,26 @@ pub(crate) async fn apply_bespoke_event_handling(
+                 .send_server_notification(ServerNotification::AgentMessageDelta(notification))
+                 .await;
+         }
++        EventMsg::DynamicToolCallArgumentsDelta(event) => {
++            let codex_protocol::protocol::DynamicToolCallArgumentsDeltaEvent {
++                item_id,
++                call_id,
++                delta,
++                ..
++            } = event;
++            let notification = DynamicToolCallArgumentsDeltaNotification {
++                thread_id: conversation_id.to_string(),
++                turn_id: event_turn_id.clone(),
++                item_id,
++                call_id,
++                delta,
++            };
++            outgoing
++                .send_server_notification(ServerNotification::DynamicToolCallArgumentsDelta(
++                    notification,
++                ))
++                .await;
++        }
+         EventMsg::PlanDelta(event) => {
+             let notification = PlanDeltaNotification {
+                 thread_id: conversation_id.to_string(),
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 75d1bdea7f..fa8abca27f 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -83,6 +83,7 @@ use codex_protocol::models::ResponseInputItem;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::AgentMessageContentDeltaEvent;
+ use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
++use codex_protocol::protocol::DynamicToolCallArgumentsDeltaEvent;
+ use codex_protocol::protocol::AskForApproval;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::ErrorEvent;
+@@ -1531,6 +1532,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
+         | EventMsg::HookStarted(_)
+         | EventMsg::HookCompleted(_)
+         | EventMsg::AgentMessageContentDelta(_)
++        | EventMsg::DynamicToolCallArgumentsDelta(_)
+         | EventMsg::PlanDelta(_)
+         | EventMsg::ReasoningContentDelta(_)
+         | EventMsg::ReasoningRawContentDelta(_)
+@@ -1882,6 +1884,11 @@ async fn try_run_sampling_request(
+         String,
+         Box<dyn ToolArgumentDiffConsumer>,
+     )> = None;
++    // Tracks the active dynamic (client-registered) function call so
++    // argument deltas can be broadcast to the client in real time via
++    // `EventMsg::DynamicToolCallArgumentsDelta`. Reset on every
++    // `OutputItemAdded`/`OutputItemDone`. `(call_id, item_id)`.
++    let mut active_dynamic_tool_call: Option<(String, String)> = None;
+     let mut should_emit_turn_diff = false;
+     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
+     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
+@@ -1926,6 +1933,7 @@ async fn try_run_sampling_request(
+             ResponseEvent::Created => {}
+             ResponseEvent::OutputItemDone(item) => {
+                 active_tool_argument_diff_consumer = None;
++                active_dynamic_tool_call = None;
+                 let previously_active_item = active_item.take();
+                 if let Some(previous) = previously_active_item.as_ref()
+                     && matches!(previous, TurnItem::AgentMessage(_))
+@@ -2004,13 +2012,32 @@ async fn try_run_sampling_request(
+                 }
+             }
+             ResponseEvent::OutputItemAdded(item) => {
++                active_dynamic_tool_call = None;
+                 if let ResponseItem::CustomToolCall { call_id, name, .. } = &item {
+                     let tool_name = ToolName::plain(name.as_str());
+                     active_tool_argument_diff_consumer = tool_runtime
+                         .create_diff_consumer(&tool_name)
+                         .map(|consumer| (call_id.clone(), consumer));
+-                } else if matches!(&item, ResponseItem::FunctionCall { .. }) {
++                } else if let ResponseItem::FunctionCall {
++                    id,
++                    name,
++                    call_id,
++                    ..
++                } = &item
++                {
+                     active_tool_argument_diff_consumer = None;
++                    // Gate by tool kind: only emit streaming argument
++                    // deltas for client-registered dynamic tools. Built-in
++                    // function calls (codex exec, etc.) keep their
++                    // pre-existing behavior of no streaming deltas.
++                    if turn_context
++                        .dynamic_tools
++                        .iter()
++                        .any(|spec| spec.name == *name)
++                    {
++                        let item_id = id.clone().unwrap_or_default();
++                        active_dynamic_tool_call = Some((call_id.clone(), item_id));
++                    }
+                 }
+                 if let Some(turn_item) = handle_non_tool_response_item(
+                     sess.as_ref(),
+@@ -2144,17 +2171,37 @@ async fn try_run_sampling_request(
+                 call_id,
+                 delta,
+             } => {
+-                let Some((active_call_id, consumer)) = active_tool_argument_diff_consumer.as_mut()
+-                else {
+-                    continue;
+-                };
+-                let call_id = match call_id {
+-                    Some(call_id) if call_id.as_str() != active_call_id.as_str() => continue,
+-                    Some(call_id) => call_id,
+-                    None => active_call_id.clone(),
+-                };
+-                if let Some(event) = consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
+-                    sess.send_event(&turn_context, event).await;
++                if let Some((active_call_id, consumer)) =
++                    active_tool_argument_diff_consumer.as_mut()
++                {
++                    let call_id = match call_id {
++                        Some(call_id) if call_id.as_str() != active_call_id.as_str() => continue,
++                        Some(call_id) => call_id,
++                        None => active_call_id.clone(),
++                    };
++                    if let Some(event) =
++                        consumer.consume_diff(turn_context.as_ref(), call_id, &delta)
++                    {
++                        sess.send_event(&turn_context, event).await;
++                    }
++                } else if let Some((active_call_id, item_id)) = active_dynamic_tool_call.as_ref() {
++                    // No server-side consumer for this tool (most dynamic
++                    // tools): forward the raw JSON delta to the client
++                    // so it can progressively build up the call arguments.
++                    let matched_call_id = match call_id {
++                        Some(call_id) if call_id.as_str() != active_call_id.as_str() => continue,
++                        Some(call_id) => Some(call_id),
++                        None => Some(active_call_id.clone()),
++                    };
++                    let event = DynamicToolCallArgumentsDeltaEvent {
++                        thread_id: sess.conversation_id.to_string(),
++                        turn_id: turn_context.sub_id.clone(),
++                        item_id: item_id.clone(),
++                        call_id: matched_call_id,
++                        delta,
++                    };
++                    sess.send_event(&turn_context, EventMsg::DynamicToolCallArgumentsDelta(event))
++                        .await;
+                 }
+             }
+             ResponseEvent::ReasoningSummaryDelta {
+diff --git a/codex-rs/mcp-server/src/codex_tool_runner.rs b/codex-rs/mcp-server/src/codex_tool_runner.rs
+index 9c9680017f..f62efabd0b 100644
+--- a/codex-rs/mcp-server/src/codex_tool_runner.rs
++++ b/codex-rs/mcp-server/src/codex_tool_runner.rs
+@@ -367,6 +367,7 @@ async fn run_codex_tool_session_inner(
+                     | EventMsg::HookStarted(_)
+                     | EventMsg::HookCompleted(_)
+                     | EventMsg::AgentMessageContentDelta(_)
++                    | EventMsg::DynamicToolCallArgumentsDelta(_)
+                     | EventMsg::ReasoningContentDelta(_)
+                     | EventMsg::ReasoningRawContentDelta(_)
+                     | EventMsg::SkillsUpdateAvailable
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index abe8fcc006..441352fa7a 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -1611,6 +1611,12 @@ pub enum EventMsg {
+     HookCompleted(HookCompletedEvent),
+ 
+     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
++    /// Streaming delta for a dynamic (client-registered) tool call's
++    /// argument JSON. Emitted as the model streams `response.function_call_arguments.delta`
++    /// events for tools that don't have a server-side `ToolArgumentDiffConsumer`
++    /// registered (e.g. `show_widget`). Lets clients render streaming
++    /// widget output in real time.
++    DynamicToolCallArgumentsDelta(DynamicToolCallArgumentsDeltaEvent),
+     PlanDelta(PlanDeltaEvent),
+     ReasoningContentDelta(ReasoningContentDeltaEvent),
+     ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
+@@ -1987,6 +1993,22 @@ impl HasLegacyEvent for AgentMessageContentDeltaEvent {
+     }
+ }
+ 
++/// Streaming chunk of a dynamic tool call's JSON argument payload.
++/// Emitted for tools that don't have a dedicated `ToolArgumentDiffConsumer`
++/// on the server side — see `EventMsg::DynamicToolCallArgumentsDelta`.
++#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
++pub struct DynamicToolCallArgumentsDeltaEvent {
++    pub thread_id: String,
++    pub turn_id: String,
++    pub item_id: String,
++    /// Provider-assigned call id. May be absent on early deltas before
++    /// the provider has confirmed the call id.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional)]
++    pub call_id: Option<String>,
++    pub delta: String,
++}
++
+ #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+ pub struct PlanDeltaEvent {
+     pub thread_id: String,
+@@ -5287,4 +5309,53 @@ mod tests {
+ 
+         assert_eq!(info.model_context_window, Some(258_400));
+     }
++
++    #[test]
++    fn dynamic_tool_call_arguments_delta_round_trips() {
++        let event = EventMsg::DynamicToolCallArgumentsDelta(DynamicToolCallArgumentsDeltaEvent {
++            thread_id: "thr_1".to_string(),
++            turn_id: "turn_1".to_string(),
++            item_id: "item_1".to_string(),
++            call_id: Some("call_1".to_string()),
++            delta: "{\"widget_code\":\"<svg".to_string(),
++        });
++
++        let json = serde_json::to_value(&event).expect("serialize");
++        assert_eq!(
++            json,
++            json!({
++                "type": "dynamic_tool_call_arguments_delta",
++                "thread_id": "thr_1",
++                "turn_id": "turn_1",
++                "item_id": "item_1",
++                "call_id": "call_1",
++                "delta": "{\"widget_code\":\"<svg"
++            })
++        );
++
++        let round_tripped: EventMsg = serde_json::from_value(json).expect("deserialize");
++        match round_tripped {
++            EventMsg::DynamicToolCallArgumentsDelta(payload) => {
++                assert_eq!(payload.thread_id, "thr_1");
++                assert_eq!(payload.turn_id, "turn_1");
++                assert_eq!(payload.item_id, "item_1");
++                assert_eq!(payload.call_id.as_deref(), Some("call_1"));
++                assert_eq!(payload.delta, "{\"widget_code\":\"<svg");
++            }
++            other => panic!("expected DynamicToolCallArgumentsDelta, got {other:?}"),
++        }
++    }
++
++    #[test]
++    fn dynamic_tool_call_arguments_delta_omits_call_id_when_none() {
++        let event = EventMsg::DynamicToolCallArgumentsDelta(DynamicToolCallArgumentsDeltaEvent {
++            thread_id: "thr_1".to_string(),
++            turn_id: "turn_1".to_string(),
++            item_id: "item_1".to_string(),
++            call_id: None,
++            delta: "abc".to_string(),
++        });
++        let json = serde_json::to_value(&event).expect("serialize");
++        assert!(json.get("call_id").is_none(), "got {json}");
++    }
+ }
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index 86fc950a24..3fa3ab3674 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -173,6 +173,7 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
+         | EventMsg::HookStarted(_)
+         | EventMsg::HookCompleted(_)
+         | EventMsg::AgentMessageContentDelta(_)
++        | EventMsg::DynamicToolCallArgumentsDelta(_)
+         | EventMsg::PlanDelta(_)
+         | EventMsg::ReasoningContentDelta(_)
+         | EventMsg::ReasoningRawContentDelta(_)
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index da7e87461e..9d2fb8b37f 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -263,6 +263,17 @@ pub fn process_responses_event(
+                 }));
+             }
+         }
++        "response.function_call_arguments.delta" => {
++            if let (Some(delta), Some(item_id)) =
++                (event.delta, event.item_id.clone().or(event.call_id.clone()))
++            {
++                return Ok(Some(ResponseEvent::ToolCallInputDelta {
++                    item_id,
++                    call_id: event.call_id,
++                    delta,
++                }));
++            }
++        }
+         "response.reasoning_summary_text.delta" => {
+             if let (Some(delta), Some(summary_index)) = (event.delta, event.summary_index) {
+                 return Ok(Some(ResponseEvent::ReasoningSummaryDelta {

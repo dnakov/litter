@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -116,6 +117,7 @@ import uniffi.codex_mobile_client.AppLoginAccountRequest
 fun SettingsSheet(
     onDismiss: () -> Unit,
     onOpenAccount: (serverId: String) -> Unit,
+    onOpenApps: (() -> Unit)? = null,
 ) {
     // Sub-screen navigation
     var subScreen by remember { mutableStateOf<SettingsSubScreen?>(null) }
@@ -132,6 +134,7 @@ fun SettingsSheet(
             onOpenTipJar = { subScreen = SettingsSubScreen.TipJar },
             onOpenDebug = { subScreen = SettingsSubScreen.Debug },
             onOpenAccount = onOpenAccount,
+            onOpenApps = onOpenApps,
         )
     }
 }
@@ -146,6 +149,7 @@ private fun SettingsTopLevel(
     onOpenTipJar: () -> Unit,
     onOpenDebug: () -> Unit,
     onOpenAccount: (serverId: String) -> Unit,
+    onOpenApps: (() -> Unit)?,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
@@ -212,6 +216,21 @@ private fun SettingsTopLevel(
                     )
                 },
             )
+        }
+
+        // ── Apps ──
+        if (onOpenApps != null) {
+            item { SectionHeader("Apps") }
+            item {
+                NavRow(
+                    icon = Icons.Default.Widgets,
+                    label = "Saved Apps",
+                    onClick = {
+                        onDismiss()
+                        onOpenApps()
+                    },
+                )
+            }
         }
 
         // ── Experimental ──

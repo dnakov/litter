@@ -103,7 +103,13 @@ fun DirectoryPickerSheet(
             ("transport error" in message && "not connected" in message)
     }
 
+    fun isLocalServer(serverId: String): Boolean =
+        appModel.snapshot.value?.servers?.firstOrNull { it.serverId == serverId }?.isLocal == true
+
     suspend fun resolveHome(serverId: String): String {
+        if (isLocalServer(serverId)) {
+            return com.litter.android.state.HomeAnchor.path(context)
+        }
         val serverSnapshot = appModel.snapshot.value?.servers?.firstOrNull { it.serverId == serverId }
         if (serverSnapshot?.canBrowseDirectories != true) {
             errorMessage = "Selected server is not connected."
@@ -120,6 +126,25 @@ fun DirectoryPickerSheet(
     }
 
     suspend fun listDirectory(serverId: String, path: String) {
+        val normalizedPath = path.trim().ifEmpty { "/" }
+        isLoading = true
+        errorMessage = null
+
+        if (isLocalServer(serverId)) {
+            val dir = java.io.File(normalizedPath)
+            val entries = runCatching { dir.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList() }
+            if (serverId != selectedServerId) return
+            entries.onSuccess { names ->
+                allEntries = names.sortedWith(String.CASE_INSENSITIVE_ORDER)
+                currentPath = normalizedPath
+            }.onFailure { err ->
+                allEntries = emptyList()
+                errorMessage = err.message ?: "Failed to list directory."
+            }
+            isLoading = false
+            return
+        }
+
         val serverSnapshot = appModel.snapshot.value?.servers?.firstOrNull { it.serverId == serverId }
         if (serverSnapshot?.canBrowseDirectories != true) {
             isLoading = false
@@ -127,9 +152,6 @@ fun DirectoryPickerSheet(
             errorMessage = "Selected server is not connected."
             return
         }
-        val normalizedPath = path.trim().ifEmpty { "/" }
-        isLoading = true
-        errorMessage = null
 
         val response = runCatching {
             appModel.client.listRemoteDirectory(serverId, normalizedPath)
@@ -167,9 +189,15 @@ fun DirectoryPickerSheet(
     fun pathSegments(path: String): List<Pair<String, String>> {
         val normalized = path.trim()
         if (normalized.isEmpty()) return listOf("/" to "/")
-        return RemotePath.parse(normalized).segments().map { seg ->
-            seg.label to seg.fullPath
-        }
+        val raw = RemotePath.parse(normalized).segments().map { seg -> seg.label to seg.fullPath }
+        if (!isLocalServer(selectedServerId)) return raw
+        // On local, hide every breadcrumb above `~` and relabel the anchor
+        // itself as "~" so the trail reads `~ / projects / foo` rather than
+        // `data / user / 0 / com.sigkitten.litter / files / codex-home / workspace / projects / foo`.
+        val home = com.litter.android.state.HomeAnchor.path(context)
+        val homeRoot = "~" to home
+        val suffix = raw.dropWhile { it.second != home }.drop(1)
+        return listOf(homeRoot) + suffix
     }
 
     fun relativeTime(epochMillis: Long): String {
@@ -311,15 +339,19 @@ fun DirectoryPickerSheet(
                 }
             }
 
+            val homeAnchorLocal = remember(selectedServerId, context) {
+                if (isLocalServer(selectedServerId)) com.litter.android.state.HomeAnchor.path(context) else null
+            }
+            val canGoUp = currentPath != "/" && currentPath.isNotEmpty() && currentPath != homeAnchorLocal
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text(
                         text = "Up one level",
-                        color = if (currentPath != "/" && currentPath.isNotEmpty()) LitterTheme.accent else LitterTheme.textMuted,
+                        color = if (canGoUp) LitterTheme.accent else LitterTheme.textMuted,
                         fontSize = 12.sp,
                         modifier = Modifier
                             .background(LitterTheme.surface, RoundedCornerShape(8.dp))
-                            .clickable(enabled = currentPath != "/" && currentPath.isNotEmpty()) { navigateUp() }
+                            .clickable(enabled = canGoUp) { navigateUp() }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
@@ -402,7 +434,11 @@ fun DirectoryPickerSheet(
                             PickerRow(
                                 icon = Icons.Default.CheckCircle,
                                 title = "Continue in ${(mostRecentEntry.path.substringAfterLast('/')).ifBlank { mostRecentEntry.path }}",
-                                subtitle = mostRecentEntry.path,
+                                subtitle = com.litter.android.state.PathDisplay.display(
+                                    mostRecentEntry.path,
+                                    isLocalServer(selectedServerId),
+                                    context,
+                                ),
                                 accent = LitterTheme.accent,
                                 onClick = { completeSelection(selectedServerId, mostRecentEntry.path) },
                             )
@@ -439,10 +475,15 @@ fun DirectoryPickerSheet(
                             }
                         }
                         items(recentEntries, key = { "recent-${it.serverId}-${it.path}" }) { recent ->
+                            val pretty = com.litter.android.state.PathDisplay.display(
+                                recent.path,
+                                isLocalServer(selectedServerId),
+                                context,
+                            )
                             PickerRow(
                                 icon = Icons.Default.Folder,
                                 title = recent.path.substringAfterLast('/').ifBlank { recent.path },
-                                subtitle = "${recent.path} • ${relativeTime(recent.lastUsedAtEpochMillis)}",
+                                subtitle = "$pretty • ${relativeTime(recent.lastUsedAtEpochMillis)}",
                                 accent = LitterTheme.textSecondary,
                                 onClick = { completeSelection(selectedServerId, recent.path) },
                             )

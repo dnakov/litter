@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import UIKit
 
-private struct BonjourDiscoverySeed: Hashable {
+struct BonjourDiscoverySeed: Hashable {
     let name: String
     let host: String
     let port: UInt16?
@@ -757,7 +757,16 @@ final class NetworkDiscovery {
 }
 
 @MainActor
-private final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
+/// Resolved Bonjour service — name, host (first IPv4), and port. Shared
+/// shape for `_codex._tcp`, `_ssh._tcp`, and `_litter-pair._tcp.` clients.
+struct BonjourResolvedService: Hashable {
+    let name: String
+    let host: String
+    let port: UInt16
+    let serviceType: String
+}
+
+final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     private struct ServiceRecord {
         let name: String
         let port: UInt16?

@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="widget_webview_document" type="id" />
+    <item name="widget_webview_shell_ready" type="id" />
+    <item name="widget_webview_pending_html" type="id" />
+    <item name="widget_webview_last_escaped" type="id" />
 </resources>

@@ -25,6 +25,7 @@ struct ConversationTurnTimeline: View {
     let items: [ConversationItem]
     let isLive: Bool
     let serverId: String
+    let originThreadId: String?
     let agentDirectoryVersion: UInt64
     let messageActionsDisabled: Bool
     let onStreamingSnapshotRendered: (() -> Void)?
@@ -92,6 +93,7 @@ struct ConversationTurnTimeline: View {
                 ConversationTimelineItemRow(
                     item: item,
                     serverId: serverId,
+                    originThreadId: originThreadId,
                     agentDirectoryVersion: agentDirectoryVersion,
                     isPreferredExpandedCommandRow: isPreferredExpandedCommandRow,
                     isLiveTurn: isLive,
@@ -360,6 +362,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
 
     let item: ConversationItem
     let serverId: String
+    let originThreadId: String?
     let agentDirectoryVersion: UInt64
     let isPreferredExpandedCommandRow: Bool
     let isLiveTurn: Bool
@@ -386,6 +389,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
             (isAssistant || lhs.shouldPreserveRichDetail == rhs.shouldPreserveRichDetail) &&
             (isAssistant || lhs.isStreamingMessage == rhs.isStreamingMessage) &&
             lhs.serverId == rhs.serverId &&
+            lhs.originThreadId == rhs.originThreadId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
             lhs.isPreferredExpandedCommandRow == rhs.isPreferredExpandedCommandRow &&
             lhs.isLiveTurn == rhs.isLiveTurn &&
@@ -457,6 +461,7 @@ private struct ConversationTimelineItemRow: View, Equatable {
             return AnyView(
                 WidgetContainerView(
                     widget: data.widgetState,
+                    originThreadId: originThreadId,
                     onMessage: handleWidgetMessage
                 )
             )

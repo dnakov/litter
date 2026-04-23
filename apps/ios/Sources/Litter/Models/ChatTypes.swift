@@ -129,6 +129,7 @@ struct WidgetState: Equatable {
     var width: CGFloat
     var height: CGFloat
     var isFinalized: Bool = false
+    var appId: String? = nil
 
     static func fromArguments(_ args: [String: Any], callId: String, widgetHTML: String = "", isFinalized: Bool = false) -> WidgetState {
         WidgetState(
@@ -137,9 +138,14 @@ struct WidgetState: Equatable {
             widgetHTML: (args["widget_code"] as? String) ?? widgetHTML,
             width: CGFloat((args["width"] as? Double) ?? 800),
             height: CGFloat((args["height"] as? Double) ?? 600),
-            isFinalized: isFinalized
+            isFinalized: isFinalized,
+            appId: (args["app_id"] as? String)?.nilIfEmpty
         )
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 struct ChatImage: Identifiable, Equatable {

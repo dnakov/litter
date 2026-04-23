@@ -1,4 +1,5 @@
 use super::*;
+use super::{WidgetFinalizedPayload, WidgetWaiter};
 
 #[derive(Clone)]
 pub(super) struct DynamicToolSessionTarget {
@@ -11,9 +12,21 @@ pub(super) async fn handle_dynamic_tool_call_request(
     session: Arc<ServerSession>,
     sessions: Arc<RwLock<HashMap<String, Arc<ServerSession>>>>,
     app_store: Arc<AppStoreReducer>,
+    widget_waiters: Arc<StdMutex<HashMap<String, WidgetWaiter>>>,
+    saved_apps_directory: Arc<StdMutex<Option<String>>>,
     request_id: upstream::RequestId,
     params: upstream::DynamicToolCallParams,
 ) -> Result<(), RpcError> {
+    // `show_widget` routing: if a `widget_waiter` is registered for the
+    // thread (the Update-overlay path), fulfill it and skip auto-save —
+    // the waiter owns this call. Otherwise, run the auto-save upsert so
+    // every finalized generative widget persists as a saved app.
+    if params.tool.eq_ignore_ascii_case("show_widget") {
+        let fulfilled = try_fulfill_widget_waiter(&widget_waiters, &params);
+        if !fulfilled {
+            auto_upsert_saved_app(&saved_apps_directory, &params);
+        }
+    }
     let response = match execute_dynamic_tool_call(sessions, Arc::clone(&app_store), &params).await
     {
         Ok(text) => upstream::DynamicToolCallResponse {
@@ -368,4 +381,149 @@ where
         .map_err(|error| format!("{method} request failed: {error}"))?;
     serde_json::from_value(response)
         .map_err(|error| format!("deserialize {method} response: {error}"))
+}
+
+/// If a waiter is registered for the thread that emitted this
+/// `show_widget` call, extract its HTML/title/dimensions and send them
+/// over the oneshot. Used by `AppClient::update_saved_app` to block until
+/// the model emits a new widget. Returns `true` when a waiter was
+/// actually fulfilled — callers use this to skip the auto-save upsert
+/// on the overlay update path.
+fn try_fulfill_widget_waiter(
+    widget_waiters: &Arc<StdMutex<HashMap<String, WidgetWaiter>>>,
+    params: &upstream::DynamicToolCallParams,
+) -> bool {
+    let thread_id = params.thread_id.clone();
+    let arguments = &params.arguments;
+    let Some(object) = arguments.as_object() else {
+        return false;
+    };
+    let widget_html = object
+        .get("widget_code")
+        .or_else(|| object.get("widgetCode"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let Some(widget_html) = widget_html else {
+        return false;
+    };
+    if widget_html.is_empty() {
+        return false;
+    }
+    let title = object
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Saved App")
+        .to_string();
+    let width = object
+        .get("width")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(800.0);
+    let height = object
+        .get("height")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(600.0);
+
+    let waiter = {
+        let mut guard = widget_waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.remove(&thread_id)
+    };
+    if let Some(waiter) = waiter {
+        let _ = waiter.sender.send(WidgetFinalizedPayload {
+            widget_html,
+            width,
+            height,
+            title,
+        });
+        true
+    } else {
+        false
+    }
+}
+
+/// Auto-save path: when a `show_widget` call lands on a thread with no
+/// active update-overlay waiter, upsert the app under
+/// `(thread_id, app_id)`. Requires the platform to have set the saved
+/// apps directory via `AppClient::set_saved_apps_directory`; if unset,
+/// this is a no-op (pre-R2 environments, tests).
+fn auto_upsert_saved_app(
+    saved_apps_directory: &Arc<StdMutex<Option<String>>>,
+    params: &upstream::DynamicToolCallParams,
+) {
+    let directory = {
+        let guard = saved_apps_directory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match guard.clone() {
+            Some(d) if !d.is_empty() => d,
+            _ => return,
+        }
+    };
+    let Some(object) = params.arguments.as_object() else {
+        return;
+    };
+    // Require a non-empty `app_id` slug. Pre-R2 widgets without a slug
+    // won't auto-save — they can still be promoted manually.
+    let Some(app_id) = object
+        .get("app_id")
+        .or_else(|| object.get("appId"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let Some(widget_html) = object
+        .get("widget_code")
+        .or_else(|| object.get("widgetCode"))
+        .and_then(|v| v.as_str())
+    else {
+        return;
+    };
+    if widget_html.is_empty() {
+        return;
+    }
+    let title = object
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let width = object
+        .get("width")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(800.0);
+    let height = object
+        .get("height")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(600.0);
+    // The widget's JS owns `schema_version`; we default to 1 when
+    // creating because the `show_widget` tool call doesn't carry it.
+    // Subsequent `saveAppState` calls will bump it via the standard
+    // persistence path.
+    let schema_version: u32 = 1;
+
+    match crate::saved_apps::saved_app_upsert(
+        directory,
+        params.thread_id.clone(),
+        app_id.to_string(),
+        title,
+        widget_html.to_string(),
+        width,
+        height,
+        schema_version,
+    ) {
+        Ok(app) => {
+            debug!(
+                "saved_app auto-upsert ok thread={} slug={} uuid={}",
+                params.thread_id, app.app_id, app.id
+            );
+        }
+        Err(error) => {
+            warn!(
+                "saved_app auto-upsert failed thread={} slug={}: {}",
+                params.thread_id, app_id, error
+            );
+        }
+    }
 }

@@ -28,6 +28,7 @@ CONSOLE_LOG_PATH="${RUN_DIR}/device-console.log"
 LAUNCH_JSON_PATH="${RUN_DIR}/launch.json"
 TRACE_PATH="${RUN_DIR}/profile.trace"
 PROFILE_LOG_PATH="${RUN_DIR}/profile.log"
+DEVICECTL_PID_FILE="${RUN_DIR}/devicectl.pid"
 CONSOLE_PID=""
 PROFILE_PID=""
 PROFILE_ATTACH_RETRY_LIMIT="${IOS_DEVICE_PROFILE_ATTACH_RETRY_LIMIT:-15}"
@@ -469,6 +470,16 @@ cleanup() {
     disown "${PROFILE_PID}" 2>/dev/null || true
   fi
 
+  # devicectl --console does not exit on SIGINT when its stdout is piped,
+  # so the tee/perl filters alone can't unblock the wait. Kill devicectl
+  # explicitly; the pipe then closes and the filters drain.
+  if [[ -f "${DEVICECTL_PID_FILE}" ]]; then
+    devicectl_pid="$(cat "${DEVICECTL_PID_FILE}" 2>/dev/null || true)"
+    if [[ -n "${devicectl_pid}" ]]; then
+      kill -TERM "${devicectl_pid}" 2>/dev/null || true
+    fi
+  fi
+
   if [[ -n "${CONSOLE_PID}" ]]; then
     kill "${CONSOLE_PID}" 2>/dev/null || true
     # Console pipe is quick to close — safe to wait briefly.
@@ -554,9 +565,14 @@ if [[ "${PROFILE_ENABLED}" == "1" && "${PROFILE_LAUNCH_MODE}" == "1" ]]; then
   fi
 else
   echo "==> Launching app and attaching console (Ctrl+C stops console streaming)..."
-  xcrun devicectl device process launch --device "${DEVICE_ID}" --terminate-existing \
-    --console --json-output "${LAUNCH_JSON_PATH}" "${BUNDLE_ID}" \
-    2>&1 | tee >(
+  # Spawn devicectl inside a subshell so its PID can be captured before the
+  # pipeline consumes $!. Needed because devicectl --console ignores SIGINT
+  # when its stdout is piped; the cleanup trap kills it by PID instead.
+  { xcrun devicectl device process launch --device "${DEVICE_ID}" --terminate-existing \
+      --console --json-output "${LAUNCH_JSON_PATH}" "${BUNDLE_ID}" 2>&1 &
+    echo $! > "${DEVICECTL_PID_FILE}"
+    wait
+  } | tee >(
       perl -MPOSIX=strftime -ne 'BEGIN { $| = 1 } print strftime("[%Y-%m-%d %H:%M:%S] ", localtime), $_' > "${CONSOLE_LOG_PATH}"
     ) | perl -MPOSIX=strftime -ne 'BEGIN { $| = 1 } print strftime("[%Y-%m-%d %H:%M:%S] ", localtime), $_' &
   CONSOLE_PID=$!

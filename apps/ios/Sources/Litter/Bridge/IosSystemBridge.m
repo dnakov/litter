@@ -5,9 +5,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
-#include <spawn.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <TargetConditionals.h>
 #include <Foundation/Foundation.h>
 
@@ -16,23 +14,20 @@
 // trying to spawn host shells from the app sandbox.
 
 extern int ios_system(const char *cmd);
-extern FILE *ios_popen(const char *command, const char *type);
 extern void ios_setStreams(FILE *in_stream, FILE *out_stream, FILE *err_stream);
-extern void ios_waitpid(pid_t pid);
-extern pid_t ios_currentPid(void);
-extern int ios_getCommandStatus(void);
 extern bool joinMainThread;
 extern void initializeEnvironment(void);
 extern void ios_switchSession(const void *sessionid);
 extern void ios_setDirectoryURL(NSURL *workingDirectoryURL);
 extern void ios_setContext(const void *context);
+extern NSArray *commandsAsArray(void);
 extern __thread void *thread_context;
+extern __thread FILE *thread_stdout;
 extern NSError *addCommandList(NSString *fileLocation);
-extern char **environ;
 
-static NSString *codex_ios_single_quote(NSString *value);
 static const size_t CODEX_IOS_OUTPUT_CAPTURE_LIMIT = 1024 * 1024;
 static const size_t CODEX_IOS_COMMAND_LENGTH_LIMIT = 32 * 1024;
+static const char *kCodexSessionName = "codex_local";
 
 static NSString *codex_find_command_plist(NSString *name) {
     NSBundle *mainBundle = [NSBundle mainBundle];
@@ -74,121 +69,6 @@ static void codex_load_command_list(NSString *name) {
     } else {
         NSLog(@"[codex-ios] loaded %@.plist", name);
     }
-}
-
-static NSSet<NSString *> *codex_registered_command_names(void) {
-    static NSSet<NSString *> *names = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSMutableSet<NSString *> *collected = [NSMutableSet set];
-        for (NSString *plistName in @[ @"commandDictionary", @"extraCommandsDictionary" ]) {
-            NSString *path = codex_find_command_plist(plistName);
-            if (path.length == 0) {
-                continue;
-            }
-            NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:path];
-            if ([plist isKindOfClass:[NSDictionary class]]) {
-                [collected addObjectsFromArray:plist.allKeys];
-            }
-        }
-        names = [collected copy] ?: [NSSet set];
-    });
-    return names ?: [NSSet set];
-}
-
-static NSString *codex_ios_strip_matching_quotes(NSString *value) {
-    if (value.length >= 2) {
-        unichar first = [value characterAtIndex:0];
-        unichar last = [value characterAtIndex:value.length - 1];
-        if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
-            return [value substringWithRange:NSMakeRange(1, value.length - 2)];
-        }
-    }
-    return value;
-}
-
-static NSArray<NSString *> *codex_ios_command_tokens(NSString *command) {
-    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-    for (NSString *part in [command componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
-        if (part.length == 0) {
-            continue;
-        }
-        [tokens addObject:codex_ios_strip_matching_quotes(part)];
-    }
-    return tokens;
-}
-
-static BOOL codex_ios_is_simple_lookup_command(NSString *command) {
-    NSCharacterSet *unsupported = [NSCharacterSet characterSetWithCharactersInString:@"|&;<>`$(){}[]"];
-    return [command rangeOfCharacterFromSet:unsupported].location == NSNotFound;
-}
-
-static BOOL codex_ios_handle_lookup_probe(
-    NSString *command,
-    char **output,
-    size_t *output_len,
-    int *exit_code
-) {
-    NSString *trimmed = [command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (trimmed.length == 0 || !codex_ios_is_simple_lookup_command(trimmed)) {
-        return NO;
-    }
-
-    NSArray<NSString *> *tokens = codex_ios_command_tokens(trimmed);
-    if (tokens.count == 0) {
-        return NO;
-    }
-
-    NSString *mode = nil;
-    NSArray<NSString *> *requested = nil;
-    if (tokens.count >= 3 && [tokens[0] isEqualToString:@"command"] && [tokens[1] isEqualToString:@"-v"]) {
-        mode = @"command-v";
-        requested = [tokens subarrayWithRange:NSMakeRange(2, tokens.count - 2)];
-    } else if (tokens.count >= 3 && [tokens[0] isEqualToString:@"command"] && [tokens[1] isEqualToString:@"-V"]) {
-        mode = @"command-V";
-        requested = [tokens subarrayWithRange:NSMakeRange(2, tokens.count - 2)];
-    } else if (tokens.count >= 2 && [tokens[0] isEqualToString:@"which"]) {
-        mode = @"which";
-        requested = [tokens subarrayWithRange:NSMakeRange(1, tokens.count - 1)];
-    } else if (tokens.count >= 2 && [tokens[0] isEqualToString:@"type"]) {
-        mode = @"type";
-        requested = [tokens subarrayWithRange:NSMakeRange(1, tokens.count - 1)];
-    } else {
-        return NO;
-    }
-
-    NSSet<NSString *> *registered = codex_registered_command_names();
-    NSMutableString *rendered = [NSMutableString string];
-    BOOL foundAll = YES;
-    for (NSString *name in requested) {
-        if (name.length == 0) {
-            continue;
-        }
-        if (![registered containsObject:name]) {
-            foundAll = NO;
-            continue;
-        }
-        if ([mode isEqualToString:@"type"]) {
-            [rendered appendFormat:@"%@ is %@\n", name, name];
-        } else if ([mode isEqualToString:@"command-V"]) {
-            [rendered appendFormat:@"%@ is available in ios_system\n", name];
-        } else {
-            [rendered appendFormat:@"%@\n", name];
-        }
-    }
-
-    NSData *data = [rendered dataUsingEncoding:NSUTF8StringEncoding];
-    if (data.length > 0) {
-        char *buf = malloc(data.length + 1);
-        if (buf != NULL) {
-            memcpy(buf, data.bytes, data.length);
-            buf[data.length] = '\0';
-            *output = buf;
-            *output_len = data.length;
-        }
-    }
-    *exit_code = foundAll ? 0 : 1;
-    return YES;
 }
 
 /// Returns the sandbox root (~/Documents), creating a Unix-like directory layout inside it.
@@ -344,165 +224,17 @@ static BOOL codex_ios_read_output_file_limited(
     return YES;
 }
 
-static NSString *codex_ios_decode_wrapped_shell_argument(NSString *value) {
-    NSString *trimmed = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (trimmed.length < 2) {
-        return nil;
-    }
-
-    if ([trimmed hasPrefix:@"'"] && [trimmed hasSuffix:@"'"]) {
-        NSString *placeholder = @"__CODEX_SQUOTE__";
-        NSString *decoded = [trimmed stringByReplacingOccurrencesOfString:@"'\\''" withString:placeholder];
-        decoded = [decoded stringByReplacingOccurrencesOfString:@"'" withString:@""];
-        decoded = [decoded stringByReplacingOccurrencesOfString:placeholder withString:@"'"];
-        return decoded;
-    }
-
-    if ([trimmed hasPrefix:@"\""] && [trimmed hasSuffix:@"\""]) {
-        NSString *decoded = [trimmed substringWithRange:NSMakeRange(1, trimmed.length - 2)];
-        decoded = [decoded stringByReplacingOccurrencesOfString:@"\\\"" withString:@"\""];
-        decoded = [decoded stringByReplacingOccurrencesOfString:@"\\\\" withString:@"\\"];
-        return decoded;
-    }
-
-    return nil;
-}
-
-static BOOL codex_ios_requires_shell_wrapper(NSString *command) {
-    BOOL inSingle = NO;
-    BOOL inDouble = NO;
-    BOOL escaped = NO;
-    NSUInteger length = command.length;
-    for (NSUInteger i = 0; i < length; i++) {
-        unichar ch = [command characterAtIndex:i];
-        if (escaped) {
-            escaped = NO;
-            continue;
-        }
-        if (ch == '\\') {
-            escaped = YES;
-            continue;
-        }
-        if (!inDouble && ch == '\'') {
-            inSingle = !inSingle;
-            continue;
-        }
-        if (!inSingle && ch == '"') {
-            inDouble = !inDouble;
-            continue;
-        }
-        if (inSingle || inDouble) {
-            continue;
-        }
-        if (ch == '\n' || ch == ';' || ch == '|' || ch == '<' || ch == '>') {
-            return YES;
-        }
-        if ((ch == '&' || ch == '|') && (i + 1 < length) && [command characterAtIndex:i + 1] == ch) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-static NSString *codex_ios_normalize_shell_command(const char *cmd) {
+static NSString *codex_ios_command_string(const char *cmd) {
     NSString *command = cmd ? [NSString stringWithUTF8String:cmd] : @"";
-    if (command.length == 0) {
-        return command;
-    }
-
-    NSArray<NSString *> *prefixes = @[
-        @"/bin/bash -lc ",
-        @"/bin/bash -c ",
-        @"/bin/zsh -lc ",
-        @"/bin/zsh -c ",
-        @"/bin/sh -lc ",
-        @"bash -lc ",
-        @"bash -c ",
-        @"zsh -lc ",
-        @"zsh -c ",
-        @"sh -lc ",
-    ];
-    BOOL changed = YES;
-    while (changed) {
-        changed = NO;
-
-        for (NSString *prefix in prefixes) {
-            if ([command hasPrefix:prefix]) {
-                NSString *body = [command substringFromIndex:prefix.length];
-                NSString *decoded = codex_ios_decode_wrapped_shell_argument(body);
-                NSString *script = decoded.length > 0 ? decoded : body;
-                command = [@"sh -c " stringByAppendingString:codex_ios_single_quote(script)];
-                changed = YES;
-                break;
-            }
-        }
-        if (changed) {
-            continue;
-        }
-
-        if ([command hasPrefix:@"sh -c "]) {
-            NSString *body = [command substringFromIndex:6];
-            NSString *decoded = codex_ios_decode_wrapped_shell_argument(body);
-            if (decoded.length > 0) {
-                NSString *normalized = [@"sh -c " stringByAppendingString:codex_ios_single_quote(decoded)];
-                if (![command isEqualToString:normalized]) {
-                    command = normalized;
-                    changed = YES;
-                    continue;
-                }
-            }
-        }
-
-        if ([command isEqualToString:@"/bin/bash"]
-            || [command isEqualToString:@"/bin/zsh"]
-            || [command isEqualToString:@"/bin/sh"]
-            || [command isEqualToString:@"bash"]
-            || [command isEqualToString:@"zsh"]) {
-            command = @"sh";
-            changed = YES;
-        }
-    }
-
-    if (codex_ios_requires_shell_wrapper(command) && ![command hasPrefix:@"sh -c "]) {
-        command = [@"sh -c " stringByAppendingString:codex_ios_single_quote(command)];
-    }
-
     return [command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
-static NSString *codex_ios_host_shell_script(NSString *command) {
-    NSString *trimmed = [command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([trimmed hasPrefix:@"sh -c "]) {
-        NSString *body = [trimmed substringFromIndex:6];
-        NSString *decoded = codex_ios_decode_wrapped_shell_argument(body);
-        if (decoded.length > 0) {
-            return decoded;
-        }
-    }
-    return trimmed;
-}
-
-static const char *codex_ios_session_name(void) {
-    static __thread char *sessionName = NULL;
-    if (sessionName == NULL) {
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "codex_session_%p", (void *)pthread_self());
-        sessionName = strdup(buffer);
-    }
-    return sessionName;
-}
-
-static NSString *codex_ios_single_quote(NSString *value) {
-    return [NSString stringWithFormat:@"'%@'", [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
-}
-
 static void codex_ios_prepare_session(const char *cwd) {
-    const char *sessionName = codex_ios_session_name();
     ios_setContext(NULL);
     thread_context = NULL;
-    ios_switchSession(sessionName);
-    ios_setContext(sessionName);
-    thread_context = (void *)sessionName;
+    ios_switchSession(kCodexSessionName);
+    ios_setContext(kCodexSessionName);
+    thread_context = (void *)kCodexSessionName;
 
     if (cwd == NULL || cwd[0] == '\0') {
         return;
@@ -516,260 +248,119 @@ static void codex_ios_prepare_session(const char *cwd) {
     ios_setDirectoryURL([NSURL fileURLWithPath:cwdString isDirectory:YES]);
 }
 
-static int codex_ios_popen_run(const char *cmd, const char *cwd, char **output, size_t *output_len) {
-    NSLog(@"[ios-popen] run cmd='%s' cwd='%s'", cmd, cwd ? cwd : "(null)");
+// MARK: - which / command shims
+//
+// ios_system doesn't ship these as _main symbols. Register them through
+// extraCommandsDictionary.plist with framework name "MAIN" so ios_system's
+// regular dispatcher can invoke them, which routes stdout/stderr through
+// thread_stdout/thread_stderr like any other bundled command.
 
+static FILE *codex_ios_out(void) {
+    return thread_stdout ? thread_stdout : stdout;
+}
+
+__attribute__((used))
+int which_main(int argc, char **argv) {
+    if (argc <= 1) {
+        return 0;
+    }
+    NSArray *known = commandsAsArray() ?: @[];
+    int allFound = 1;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i] == NULL) continue;
+        NSString *name = [NSString stringWithUTF8String:argv[i]];
+        if ([known containsObject:name]) {
+            fprintf(codex_ios_out(), "%s\n", argv[i]);
+        } else {
+            allFound = 0;
+        }
+    }
+    return allFound ? 0 : 1;
+}
+
+__attribute__((used))
+int command_main(int argc, char **argv) {
+    if (argc <= 1) {
+        return 0;
+    }
+    int mode = 0; // 0 = pass-through, 1 = -v, 2 = -V
+    int first = 1;
+    while (first < argc && argv[first] != NULL && argv[first][0] == '-' && argv[first][1] != '\0') {
+        if (strcmp(argv[first], "-v") == 0) {
+            mode = 1;
+        } else if (strcmp(argv[first], "-V") == 0) {
+            mode = 2;
+        } else if (strcmp(argv[first], "--") == 0) {
+            first++;
+            break;
+        } else {
+            break;
+        }
+        first++;
+    }
+
+    if (mode == 0) {
+        // `command foo arg1 ...` — run `foo arg1 ...` directly. ios_system is
+        // its own dispatcher, so re-entering it is cheap; we just need to
+        // re-quote argv tokens that contain shell metacharacters.
+        NSCharacterSet *special = [NSCharacterSet characterSetWithCharactersInString:@" \t\n'\"\\|&;<>()$`!*?[]{}#"];
+        NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:argc - first];
+        for (int i = first; i < argc; i++) {
+            if (argv[i] == NULL) continue;
+            NSString *token = [NSString stringWithUTF8String:argv[i]];
+            if (token.length == 0 || [token rangeOfCharacterFromSet:special].location != NSNotFound) {
+                NSString *escaped = [token stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+                token = [NSString stringWithFormat:@"'%@'", escaped];
+            }
+            [parts addObject:token];
+        }
+        NSString *rebuilt = [parts componentsJoinedByString:@" "];
+        return ios_system(rebuilt.UTF8String);
+    }
+
+    NSArray *known = commandsAsArray() ?: @[];
+    int allFound = 1;
+    for (int i = first; i < argc; i++) {
+        if (argv[i] == NULL) continue;
+        NSString *name = [NSString stringWithUTF8String:argv[i]];
+        if ([known containsObject:name]) {
+            if (mode == 2) {
+                fprintf(codex_ios_out(), "%s is available in ios_system\n", argv[i]);
+            } else {
+                fprintf(codex_ios_out(), "%s\n", argv[i]);
+            }
+        } else {
+            allFound = 0;
+        }
+    }
+    return allFound ? 0 : 1;
+}
+
+// MARK: - exec
+
+static int codex_ios_run_captured(const char *cmd, const char *cwd, char **output, size_t *output_len) {
     codex_ios_prepare_session(cwd);
 
-    bool savedJoin = joinMainThread;
-    joinMainThread = false;
-    FILE *rf = ios_popen(cmd, "r");
-    pid_t pid = ios_currentPid();
-    joinMainThread = savedJoin;
-
-    if (rf == NULL) {
-        NSLog(@"[ios-popen] ios_popen FAILED for cmd='%s'", cmd);
-        return -1;
-    }
-
-    NSMutableData *data = [NSMutableData data];
-    char chunk[4096];
-    while (!feof(rf)) {
-        size_t count = fread(chunk, 1, sizeof(chunk), rf);
-        if (count > 0) {
-            [data appendBytes:chunk length:count];
-        }
-        if (count == 0 && ferror(rf)) {
-            NSLog(@"[ios-popen] fread FAILED errno=%d (%s)", errno, strerror(errno));
-            break;
-        }
-    }
-    fclose(rf);
-
-    if (pid > 0) {
-        ios_waitpid(pid);
-    }
-    int code = ios_getCommandStatus();
-
-    size_t total = data.length;
-    char *buf = NULL;
-    if (total > 0) {
-        buf = malloc(total + 1);
-        if (buf != NULL) {
-            memcpy(buf, data.bytes, total);
-        } else {
-            total = 0;
-        }
-    }
-
-    NSLog(@"[ios-popen] code=%d output_len=%zu for cmd='%s'", code, total, cmd);
-
-    if (buf && total > 0) {
-        buf[total] = '\0';
-        *output = buf;
-        *output_len = total;
-    } else {
-        free(buf);
-    }
-
-    return code;
-}
-
-static int codex_ios_host_spawn_run(const char *cmd, const char *cwd, char **output, size_t *output_len) {
-    NSLog(@"[ios-spawn] run cmd='%s' cwd='%s'", cmd, cwd ? cwd : "(null)");
-
-    int pipefd[2] = {-1, -1};
-    if (pipe(pipefd) != 0) {
-        NSLog(@"[ios-spawn] pipe FAILED errno=%d (%s)", errno, strerror(errno));
-        return -1;
-    }
-    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-    fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
-
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
-    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDERR_FILENO);
-    posix_spawn_file_actions_addclose(&actions, pipefd[0]);
-    posix_spawn_file_actions_addclose(&actions, pipefd[1]);
-
-    NSString *scriptString = codex_ios_host_shell_script([NSString stringWithUTF8String:cmd]);
-    const char *scriptArg = scriptString.UTF8String;
-    const char *cwdArg = (cwd != NULL && cwd[0] != '\0') ? cwd : ".";
-    const char *script = "cd \"$1\" && exec /bin/sh -c \"$2\"";
-    char *const argv[] = {
-        "sh",
-        "-c",
-        (char *)script,
-        "sh",
-        (char *)cwdArg,
-        (char *)scriptArg,
-        NULL
-    };
-
-    pid_t pid = 0;
-    int spawnErr = posix_spawn(&pid, "/bin/sh", &actions, NULL, argv, environ);
-    posix_spawn_file_actions_destroy(&actions);
-    close(pipefd[1]);
-
-    if (spawnErr != 0) {
-        close(pipefd[0]);
-        NSLog(@"[ios-spawn] posix_spawn FAILED errno=%d (%s)", spawnErr, strerror(spawnErr));
-        return -1;
-    }
-
-    NSMutableData *data = [NSMutableData data];
-    char chunk[4096];
-    for (;;) {
-        ssize_t count = read(pipefd[0], chunk, sizeof(chunk));
-        if (count > 0) {
-            [data appendBytes:chunk length:(NSUInteger)count];
-            continue;
-        }
-        if (count == 0) {
-            break;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        NSLog(@"[ios-spawn] read FAILED errno=%d (%s)", errno, strerror(errno));
-        break;
-    }
-    close(pipefd[0]);
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) {
-            NSLog(@"[ios-spawn] waitpid FAILED errno=%d (%s)", errno, strerror(errno));
-            status = -1;
-            break;
-        }
-    }
-
-    int code = -1;
-    if (status == -1) {
-        code = -1;
-    } else if (WIFEXITED(status)) {
-        code = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        code = 128 + WTERMSIG(status);
-    }
-
-    size_t total = data.length;
-    char *buf = NULL;
-    if (total > 0) {
-        buf = malloc(total + 1);
-        if (buf != NULL) {
-            memcpy(buf, data.bytes, total);
-        } else {
-            total = 0;
-        }
-    }
-
-    NSLog(@"[ios-spawn] code=%d output_len=%zu for cmd='%s'", code, total, cmd);
-
-    if (buf && total > 0) {
-        buf[total] = '\0';
-        *output = buf;
-        *output_len = total;
-    } else {
-        free(buf);
-    }
-
-    return code;
-}
-
-/// Returns the default working directory for codex sessions (/home/codex inside the sandbox).
-NSString *codex_ios_default_cwd(void) {
-    NSString *root = codex_sandbox_root();
-    if (!root) return nil;
-    return [root stringByAppendingPathComponent:@"home/codex"];
-}
-
-void codex_ios_system_init(void) {
-    initializeEnvironment();
-    codex_load_command_list(@"commandDictionary");
-    codex_load_command_list(@"extraCommandsDictionary");
-
-    // Set up the sandbox filesystem layout.
-    NSString *root = codex_sandbox_root();
-
-    // Configure environment for bundled tools.
-    NSString *home = NSHomeDirectory();
-    if (home) {
-        // SSH/curl config directories.
-        setenv("SSH_HOME", [root stringByAppendingPathComponent:@"home/codex"].UTF8String, 0);
-        setenv("CURL_HOME", [root stringByAppendingPathComponent:@"home/codex"].UTF8String, 0);
-    }
-}
-
-int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t *output_len) {
-    *output = NULL;
-    *output_len = 0;
-
-    NSString *normalizedCmd = codex_ios_normalize_shell_command(cmd);
-    size_t normalizedLen = [normalizedCmd lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-    if (normalizedLen > CODEX_IOS_COMMAND_LENGTH_LIMIT) {
-        NSString *message = [NSString stringWithFormat:
-            @"command rejected on iOS: %zu bytes exceeds limit of %zu bytes\n",
-            normalizedLen,
-            CODEX_IOS_COMMAND_LENGTH_LIMIT
-        ];
-        codex_ios_copy_string_output(message, output, output_len);
-        NSLog(
-            @"[ios-system] rejected oversized cmd len=%zu limit=%zu cwd='%s'",
-            normalizedLen,
-            CODEX_IOS_COMMAND_LENGTH_LIMIT,
-            cwd ? cwd : "(null)"
-        );
-        return 64;
-    }
-
-    const char *runCmd = normalizedCmd.UTF8String;
-    int builtinExit = 0;
-    if (codex_ios_handle_lookup_probe(normalizedCmd, output, output_len, &builtinExit)) {
-        if (cmd != NULL && strcmp(cmd, runCmd) != 0) {
-            NSLog(@"[ios-system] normalized cmd from '%s' to '%s'", cmd, runCmd);
-        }
-        NSLog(@"[ios-system] handled lookup probe cmd='%s' code=%d output_len=%zu", runCmd, builtinExit, *output_len);
-        return builtinExit;
-    }
-
-    int code = -1;
-    pthread_mutex_lock(codex_ios_exec_mutex());
-    if (cmd != NULL && strcmp(cmd, runCmd) != 0) {
-        NSLog(@"[ios-system] normalized cmd from '%s' to '%s'", cmd, runCmd);
-    }
-
-    NSLog(@"[ios-system] run cmd='%s' cwd='%s'", runCmd, cwd ? cwd : "(null)");
-
-    // ios_system uses process-global streams/session state, so all shell work
-    // is serialized through a process-wide mutex while staying on the caller thread.
-    codex_ios_prepare_session(cwd);
-
-    // Capture output via a temp file. We intentionally NEVER fclose the FILE* —
-    // ios_system's background thread cleanup may still reference it.
     NSString *tmpDir = NSTemporaryDirectory();
     NSString *tmpPath = [tmpDir stringByAppendingPathComponent:
         [NSString stringWithFormat:@"codex_exec_%u.tmp", arc4random()]];
     FILE *wf = fopen(tmpPath.UTF8String, "w");
     if (!wf) {
-        NSLog(@"[ios-system] tmpfile FAILED for cmd='%s'", runCmd);
-        pthread_mutex_unlock(codex_ios_exec_mutex());
+        NSLog(@"[ios-system] tmpfile FAILED for cmd='%s'", cmd);
         return -1;
     }
 
     bool savedJoin = joinMainThread;
     joinMainThread = true;
     ios_setStreams(codex_ios_command_stdin(), wf, wf);
-    code = ios_system(runCmd);
+    int code = ios_system(cmd);
     joinMainThread = savedJoin;
     fflush(wf);
+    // Swap streams back to libc defaults before closing wf so no part of
+    // ios_system is still holding onto it.
     ios_setStreams(stdin, stdout, stderr);
+    fclose(wf);
 
-    // Read captured output with a hard cap so a noisy local command cannot
-    // blow up the app's RSS by being copied through NSData -> malloc -> Vec.
     size_t originalLen = 0;
     BOOL truncated = NO;
     BOOL readOK = codex_ios_read_output_file_limited(
@@ -782,17 +373,84 @@ int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t
     );
     unlink(tmpPath.UTF8String);
     if (!readOK) {
-        NSLog(@"[ios-system] failed to read captured output for cmd='%s'", runCmd);
+        NSLog(@"[ios-system] failed to read captured output for cmd='%s'", cmd);
     }
 
     NSLog(
         @"[ios-system] code=%d output_len=%zu original_len=%zu truncated=%d for cmd='%s'",
         code,
-        *output_len,
+        output_len != NULL ? *output_len : 0,
         originalLen,
         truncated,
-        runCmd
+        cmd
     );
+    return code;
+}
+
+/// Returns the default working directory for codex sessions (/home/codex inside the sandbox).
+NSString *codex_ios_default_cwd(void) {
+    NSString *root = codex_sandbox_root();
+    if (!root) return nil;
+    return [root stringByAppendingPathComponent:@"home/codex"];
+}
+
+void codex_ios_system_init(void) {
+    // Keep the MAIN-dispatched shims reachable so neither the compiler nor the
+    // linker drops them before ios_system's dlsym(RTLD_MAIN_ONLY) can find them.
+    volatile void *keep[] = { (void *)&which_main, (void *)&command_main };
+    (void)keep;
+
+    initializeEnvironment();
+    codex_load_command_list(@"commandDictionary");
+    codex_load_command_list(@"extraCommandsDictionary");
+
+    NSString *root = codex_sandbox_root();
+    if (root.length > 0) {
+        NSString *home = [root stringByAppendingPathComponent:@"home/codex"];
+        setenv("HOME", home.UTF8String, 1);
+        setenv("SSH_HOME", home.UTF8String, 0);
+        setenv("CURL_HOME", home.UTF8String, 0);
+        // Note: deliberately NOT calling ios_setMiniRoot — it retargets `~`
+        // to the mini-root instead of $HOME, which double-prefixes any path
+        // the model writes as `~/…` (observed as `Documents/Documents/...`).
+    }
+
+    // Point TMPDIR at the real iOS temp dir so tools that honor $TMPDIR
+    // (mktemp, etc.) land in a writable location. The Rust shell preflight
+    // reads $TMPDIR and rewrites literal `/tmp/...` argv/script paths to this.
+    NSString *tmpdir = NSTemporaryDirectory();
+    if (tmpdir.length > 0) {
+        setenv("TMPDIR", tmpdir.UTF8String, 1);
+    }
+}
+
+int codex_ios_system_run(const char *cmd, const char *cwd, char **output, size_t *output_len) {
+    *output = NULL;
+    *output_len = 0;
+
+    NSString *command = codex_ios_command_string(cmd);
+    size_t commandLen = [command lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+    if (commandLen > CODEX_IOS_COMMAND_LENGTH_LIMIT) {
+        NSString *message = [NSString stringWithFormat:
+            @"command rejected on iOS: %zu bytes exceeds limit of %zu bytes\n",
+            commandLen,
+            CODEX_IOS_COMMAND_LENGTH_LIMIT
+        ];
+        codex_ios_copy_string_output(message, output, output_len);
+        NSLog(
+            @"[ios-system] rejected oversized cmd len=%zu limit=%zu cwd='%s'",
+            commandLen,
+            CODEX_IOS_COMMAND_LENGTH_LIMIT,
+            cwd ? cwd : "(null)"
+        );
+        return 64;
+    }
+
+    const char *runCmd = command.UTF8String;
+
+    pthread_mutex_lock(codex_ios_exec_mutex());
+    NSLog(@"[ios-system] run cmd='%s' cwd='%s'", runCmd, cwd ? cwd : "(null)");
+    int code = codex_ios_run_captured(runCmd, cwd, output, output_len);
     pthread_mutex_unlock(codex_ios_exec_mutex());
     return code;
 }

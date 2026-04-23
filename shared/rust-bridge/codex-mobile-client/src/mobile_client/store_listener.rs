@@ -197,7 +197,8 @@ pub(super) fn websocket_stream_event_key(event: &UiEvent) -> Option<&ThreadKey> 
         UiEvent::MessageDelta { key, .. }
         | UiEvent::ReasoningDelta { key, .. }
         | UiEvent::PlanDelta { key, .. }
-        | UiEvent::CommandOutputDelta { key, .. } => Some(key),
+        | UiEvent::CommandOutputDelta { key, .. }
+        | UiEvent::DynamicToolCallArgumentsDelta { key, .. } => Some(key),
         _ => None,
     }
 }

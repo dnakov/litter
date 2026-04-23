@@ -96,6 +96,7 @@ import uniffi.codex_mobile_client.AppProject
 import uniffi.codex_mobile_client.AppServerSnapshot
 import uniffi.codex_mobile_client.AppSessionSummary
 import uniffi.codex_mobile_client.PinnedThreadKey
+import uniffi.codex_mobile_client.SavedApp
 import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.deriveProjects
 import uniffi.codex_mobile_client.projectIdFor
@@ -112,6 +113,7 @@ fun HomeDashboardScreen(
     onSelectServer: (AppServerSnapshot) -> Unit,
     onThreadCreated: (ThreadKey) -> Unit,
     onStartVoice: (() -> Unit)? = null,
+    onOpenSavedApp: ((String) -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
     val context = LocalContext.current
@@ -150,6 +152,22 @@ fun HomeDashboardScreen(
     val recentSessions = remember(homeSessions, scopedServerId) {
         if (scopedServerId.isNullOrEmpty()) homeSessions
         else homeSessions.filter { it.key.serverId == scopedServerId }
+    }
+
+    // Saved apps by origin thread id. The store's `.apps` StateFlow is kept
+    // fresh by AppModel's handleUpdate on SavedAppsChanged (R3), plus a
+    // best-effort reload on home re-entry to catch any changes that arrived
+    // while we were off-screen.
+    LaunchedEffect(Unit) {
+        try { com.litter.android.state.SavedAppsStore.reload(context) } catch (_: Exception) {}
+    }
+    val savedAppsAll by com.litter.android.state.SavedAppsStore.apps.collectAsState()
+    val savedAppsByThread = remember(savedAppsAll) {
+        savedAppsAll
+            .asSequence()
+            .filter { it.originThreadId != null }
+            .groupBy { it.originThreadId!! }
+            .mapValues { (_, v) -> v.sortedByDescending { it.updatedAtMs } }
     }
 
     var confirmAction by remember { mutableStateOf<ConfirmAction?>(null) }
@@ -263,6 +281,7 @@ fun HomeDashboardScreen(
                     // QuickReplySheet. Nesting `SwipeToHideRow` inside
                     // `SessionReplySwipe` would have the two pointer handlers
                     // fighting over the same drag stream.
+                    val sessionApps = savedAppsByThread[session.key.threadId].orEmpty()
                     SessionReplySwipe(
                         session = session,
                         appModel = appModel,
@@ -289,6 +308,7 @@ fun HomeDashboardScreen(
                             session = session,
                             zoomLevel = zoomLevel,
                             isHydrating = isHydrating,
+                            isLocal = snap?.servers?.firstOrNull { it.serverId == session.key.serverId }?.isLocal == true,
                             onClick = {
                                 appModel.launchState.updateCurrentCwd(session.cwd)
                                 onOpenConversation(session.key)
@@ -870,5 +890,56 @@ private sealed class ConfirmAction {
     data class ReplyError(val reason: String) : ConfirmAction() {
         override val title = "Reply Failed"
         override val message = reason
+    }
+}
+
+@Composable
+private fun HomeAppTakeoverRow(
+    app: SavedApp,
+    extraCount: Int,
+    onClick: () -> Unit,
+) {
+    val monogram = app.title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+    val subtitle = buildString {
+        append(app.appId.ifBlank { "app" })
+        if (extraCount > 0) append(" · +$extraCount more")
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(LitterTheme.surface, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(LitterTheme.accent.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = monogram,
+                color = LitterTheme.accent,
+                fontSize = LitterTextStyle.headline.scaled,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = app.title.ifBlank { "Saved App" },
+                color = LitterTheme.textPrimary,
+                fontSize = LitterTextStyle.callout.scaled,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = subtitle,
+                color = LitterTheme.textMuted,
+                fontSize = LitterTextStyle.caption2.scaled,
+                fontFamily = LitterTheme.monoFont,
+            )
+        }
     }
 }

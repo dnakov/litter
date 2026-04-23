@@ -42,6 +42,7 @@ use codex_ipc::{
 mod dynamic_tools;
 mod event_loop;
 mod ipc_attach;
+pub(crate) mod minigame;
 mod store_listener;
 #[cfg(test)]
 mod tests;
@@ -69,6 +70,31 @@ pub struct MobileClient {
     oauth_callback_tunnels: Arc<Mutex<HashMap<String, OAuthCallbackTunnel>>>,
     pub(crate) recorder: Arc<crate::recorder::MessageRecorder>,
     pub(crate) ambient_cache: crate::ambient_suggestions::AmbientCache,
+    /// One-shot hooks that fulfill when the next `show_widget` dynamic tool
+    /// call finalizes on a specific thread. Keyed by `thread_id`.
+    /// Used by `AppClient::update_saved_app`.
+    pub(crate) widget_waiters: Arc<StdMutex<HashMap<String, WidgetWaiter>>>,
+    /// Directory where `saved_apps.rs` persists the app index + per-app
+    /// HTML/state files. Set once at process start by the platform
+    /// (iOS/Android) via `AppClient::set_saved_apps_directory`. When
+    /// `Some`, the `show_widget` auto-upsert hook is enabled; when
+    /// `None`, the hook is skipped (pre-R2 callers / tests).
+    pub(crate) saved_apps_directory: Arc<StdMutex<Option<String>>>,
+}
+
+/// A waiter registered by `update_saved_app` to receive the next
+/// finalized `show_widget` on a specific thread. See
+/// `MobileClient::widget_waiters` and `dynamic_tools::try_fulfill_widget_waiter`.
+pub struct WidgetWaiter {
+    pub sender: tokio::sync::oneshot::Sender<WidgetFinalizedPayload>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WidgetFinalizedPayload {
+    pub widget_html: String,
+    pub width: f64,
+    pub height: f64,
+    pub title: String,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +352,8 @@ impl MobileClient {
             oauth_callback_tunnels: Arc::new(Mutex::new(HashMap::new())),
             recorder: Arc::new(crate::recorder::MessageRecorder::new()),
             ambient_cache: crate::ambient_suggestions::new_ambient_cache(),
+            widget_waiters: Arc::new(StdMutex::new(HashMap::new())),
+            saved_apps_directory: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -860,6 +888,7 @@ impl MobileClient {
                     limit: None,
                     cursor: None,
                     sort_key: None,
+                    sort_direction: None,
                     model_providers: None,
                     source_kinds: None,
                     archived: None,

@@ -168,6 +168,8 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+                .presentationBackground(LitterTheme.surface)
             }
             .sheet(isPresented: $showPermissionsSheet) {
                 permissionsSheetContent

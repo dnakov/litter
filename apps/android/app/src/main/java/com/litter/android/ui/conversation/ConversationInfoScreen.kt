@@ -160,7 +160,7 @@ fun ConversationInfoScreen(
             // Section A: Thread Details (thread mode only)
             if (!isServerOnly) {
                 item {
-                    ThreadDetailsSection(thread = thread)
+                    ThreadDetailsSection(thread = thread, isLocal = server?.isLocal == true)
                 }
             }
 
@@ -322,7 +322,7 @@ private fun SectionHeader(title: String) {
 }
 
 @Composable
-private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
+private fun ThreadDetailsSection(thread: AppThreadSnapshot?, isLocal: Boolean) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -362,8 +362,13 @@ private fun ThreadDetailsSection(thread: AppThreadSnapshot?) {
             Spacer(Modifier.height(6.dp))
 
             thread.info.cwd?.let { cwd ->
-                val abbreviated = cwd.replace(Regex("^/home/[^/]+"), "~")
-                    .replace(Regex("^/Users/[^/]+"), "~")
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val abbreviated = if (isLocal) {
+                    com.litter.android.state.PathDisplay.display(cwd, true, context)
+                } else {
+                    cwd.replace(Regex("^/home/[^/]+"), "~")
+                        .replace(Regex("^/Users/[^/]+"), "~")
+                }
                 Text(
                     text = abbreviated,
                     color = LitterTheme.textSecondary,

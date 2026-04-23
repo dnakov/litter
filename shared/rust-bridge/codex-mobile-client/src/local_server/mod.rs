@@ -277,7 +277,9 @@ pub enum LocalServerError {
     Install(String),
     #[error("failed to spawn codex app-server: {0}")]
     Spawn(String),
-    #[error("codex app-server did not become ready on 127.0.0.1:{port} within {timeout_ms}ms: {reason}")]
+    #[error(
+        "codex app-server did not become ready on 127.0.0.1:{port} within {timeout_ms}ms: {reason}"
+    )]
     ReadinessTimeout {
         port: u16,
         timeout_ms: u64,

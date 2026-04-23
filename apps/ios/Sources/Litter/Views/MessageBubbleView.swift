@@ -425,8 +425,10 @@ struct StreamingAssistantBubble: View {
 
 struct MessageBubbleView: View {
     private let renderCache = MessageRenderCache.shared
+    @Environment(\.activeThreadKey) private var activeThreadKey
     let message: ChatMessage
     let serverId: String?
+    let originThreadId: String?
     let agentDirectoryVersion: UInt64
     let isStreamingMessage: Bool
     let actionsDisabled: Bool
@@ -440,6 +442,7 @@ struct MessageBubbleView: View {
     init(
         message: ChatMessage,
         serverId: String? = nil,
+        originThreadId: String? = nil,
         agentDirectoryVersion: UInt64 = 0,
         isStreamingMessage: Bool = false,
         actionsDisabled: Bool = false,
@@ -451,6 +454,7 @@ struct MessageBubbleView: View {
     ) {
         self.message = message
         self.serverId = serverId
+        self.originThreadId = originThreadId
         self.agentDirectoryVersion = agentDirectoryVersion
         self.isStreamingMessage = isStreamingMessage
         self.actionsDisabled = actionsDisabled
@@ -488,6 +492,10 @@ struct MessageBubbleView: View {
             agentDirectoryVersion: agentDirectoryVersion,
             isStreaming: isStreamingMessage
         )
+    }
+
+    private var resolvedOriginThreadId: String? {
+        originThreadId ?? activeThreadKey?.threadId
     }
 
     private var isReasoning: Bool {
@@ -560,6 +568,7 @@ struct MessageBubbleView: View {
         if let widget = message.widgetState {
             WidgetContainerView(
                 widget: widget,
+                originThreadId: resolvedOriginThreadId,
                 onMessage: handleWidgetMessage
             )
         } else {

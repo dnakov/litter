@@ -15,9 +15,30 @@ const UI_COMPONENTS: &str = include_str!("widget_guidelines/ui_components.md");
 const COLOR_PALETTE: &str = include_str!("widget_guidelines/color_palette.md");
 const CHARTS_CHART_JS: &str = include_str!("widget_guidelines/charts_chart_js.md");
 const DIAGRAM_TYPES: &str = include_str!("widget_guidelines/diagram_types.md");
+const APP: &str = include_str!("widget_guidelines/app.md");
 
 /// Available module names for the `visualize_read_me` tool schema.
-pub const AVAILABLE_MODULES: &[&str] = &["art", "mockup", "interactive", "chart", "diagram"];
+pub const AVAILABLE_MODULES: &[&str] = &["art", "mockup", "interactive", "chart", "diagram", "app"];
+
+/// Developer-instructions preamble prepended to local-server thread
+/// starts when the generative-UI dynamic tools are registered. Tells the
+/// model when to use `show_widget` / `visualize_read_me` — without it,
+/// coding-agent defaults steer the model toward file operations.
+pub const GENERATIVE_UI_PREAMBLE: &str = concat!(
+    "Use the `show_widget` tool when the user asks for an app, game, ",
+    "dashboard, tracker, calculator, simulator, chart, diagram, ",
+    "illustration, mockup, form, timer, or anything visual or ",
+    "interactive. It renders HTML/CSS/JS inline in the conversation — ",
+    "no files, no build step, no setup.\n",
+    "\n",
+    "Each widget takes an `app_id` slug (lowercase kebab-case, e.g. ",
+    "`fitness-tracker`). Reuse an existing slug to update an app in ",
+    "place; use a fresh slug for a new app. Apps already saved in this ",
+    "thread, if any, are listed below — prefer updating when the user ",
+    "asks for a change to something you already built. Use the `app` ",
+    "module of `visualize_read_me` for anything stateful (trackers, ",
+    "notes, game saves)."
+);
 
 /// Sections required by each module.
 fn sections_for_module(module: &str) -> &'static [&'static str] {
@@ -27,6 +48,7 @@ fn sections_for_module(module: &str) -> &'static [&'static str] {
         "interactive" => &["ui_components", "color_palette"],
         "chart" => &["ui_components", "color_palette", "charts_chart_js"],
         "diagram" => &["color_palette", "svg_setup", "diagram_types"],
+        "app" => &["ui_components", "color_palette", "app"],
         _ => &[],
     }
 }
@@ -39,6 +61,7 @@ fn section_content(name: &str) -> &'static str {
         "color_palette" => COLOR_PALETTE,
         "charts_chart_js" => CHARTS_CHART_JS,
         "diagram_types" => DIAGRAM_TYPES,
+        "app" => APP,
         _ => "",
     }
 }
@@ -143,7 +166,7 @@ fn read_me_tool_spec() -> AppDynamicToolSpec {
     }
 }
 
-fn show_widget_tool_spec() -> AppDynamicToolSpec {
+pub(crate) fn show_widget_tool_spec() -> AppDynamicToolSpec {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -151,9 +174,21 @@ fn show_widget_tool_spec() -> AppDynamicToolSpec {
                 "type": "boolean",
                 "description": "Confirm you have already called visualize_read_me in this conversation."
             },
+            "app_id": {
+                "type": "string",
+                "description": concat!(
+                    "Short slug identifying this app across regenerations in the CURRENT thread. ",
+                    "Lowercase, hyphen-separated, alphanumerics only (e.g. 'fitness-tracker', ",
+                    "'todo-list', 'budget-calculator'). Reuse the SAME app_id to update an existing ",
+                    "app in this thread — its persistent JSON state will survive the rewrite. Pick ",
+                    "a fresh slug to create a new app. Slugs are scoped per-thread: the same slug in ",
+                    "another thread is a different app. Check the developer instructions at the top ",
+                    "of this conversation for apps already saved in this thread."
+                )
+            },
             "title": {
                 "type": "string",
-                "description": "Short snake_case identifier for this widget (used as widget title)."
+                "description": "Human-facing title (used in the Apps list). 1-5 words."
             },
             "widget_code": {
                 "type": "string",
@@ -171,25 +206,34 @@ fn show_widget_tool_spec() -> AppDynamicToolSpec {
                 "description": "Widget height in pixels. Default: 600."
             }
         },
-        "required": ["i_have_seen_read_me", "title", "widget_code"]
+        "required": ["i_have_seen_read_me", "app_id", "title", "widget_code"]
     });
 
     AppDynamicToolSpec {
         name: "show_widget".to_string(),
         description: concat!(
-            "Show visual content — SVG graphics, diagrams, charts, or interactive HTML ",
-            "widgets — rendered inline in the conversation. Use for flowcharts, dashboards, ",
-            "forms, calculators, data tables, games, illustrations, or any visual content. ",
-            "The HTML is rendered in a native WKWebView with full CSS/JS support including ",
-            "Canvas and CDN libraries. IMPORTANT: Call visualize_read_me once before your ",
-            "first show_widget call. Structure HTML as fragments: no DOCTYPE/<html>/<head>/<body>. ",
-            "Style first (<style> block under ~15 lines), then HTML content, then <script> ",
-            "tags last. Scripts execute after streaming completes. Load libraries via ",
-            "<script src=\"https://cdnjs.cloudflare.com/ajax/libs/...\"> (UMD globals). ",
-            "CDN allowlist: cdnjs.cloudflare.com, esm.sh, cdn.jsdelivr.net, unpkg.com. ",
-            "Dark mode is mandatory — use CSS variables for all colors. Background is ",
-            "transparent (host provides bg). Keep widgets focused. Default size is 800x600 ",
-            "but adjust to fit content. For SVG: start code with <svg> tag directly."
+            "Render an app, game, dashboard, tracker, calculator, simulator, ",
+            "chart, diagram, illustration, or any interactive/visual content ",
+            "inline in the conversation (native WebView with full HTML/CSS/JS, ",
+            "Canvas, and CDN libraries). Use this whenever the user asks for ",
+            "something visual or interactive.\n\n",
+            "Setup: call `visualize_read_me` once first — use the `app` module ",
+            "for anything that needs to persist user data, otherwise ",
+            "`interactive`, `chart`, `mockup`, `art`, or `diagram`.\n\n",
+            "Identity: `app_id` is a lowercase-kebab-case slug (e.g. ",
+            "`fitness-tracker`). Reusing an existing slug updates that saved ",
+            "app in place and preserves its state; a fresh slug creates a new ",
+            "app.\n\n",
+            "Structure HTML as a fragment: no DOCTYPE/<html>/<head>/<body>. ",
+            "Style first (<style> block under ~15 lines), then HTML content, ",
+            "then <script> tags last. Scripts execute after streaming ",
+            "completes. Load libraries via <script src=\"https://cdnjs.cloudflare.com/ajax/libs/...\"> ",
+            "(UMD globals). CDN allowlist: cdnjs.cloudflare.com, esm.sh, ",
+            "cdn.jsdelivr.net, unpkg.com. Dark mode mandatory — use CSS ",
+            "variables for all colors. Background is transparent (host ",
+            "provides bg). Widget sizes fluidly to its container; the ",
+            "`width`/`height` params are hints only. For SVG: start code ",
+            "with <svg> directly."
         )
         .to_string(),
         input_schema_json: serde_json::to_string(&schema).unwrap_or_default(),

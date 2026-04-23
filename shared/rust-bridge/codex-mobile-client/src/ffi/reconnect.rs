@@ -174,37 +174,52 @@ impl ReconnectController {
     }
 
     pub async fn probe_active_remote_servers(&self) {
-        let snapshot = self.inner.app_snapshot();
-        let remote_connected: Vec<String> = snapshot
-            .servers
-            .values()
-            .filter(|s| !s.is_local && s.health == ServerHealthSnapshot::Connected)
-            .map(|s| s.server_id.clone())
-            .collect();
+        let inner = Arc::clone(&self.inner);
 
-        for server_id in &remote_connected {
-            let request = upstream::ClientRequest::GetAccount {
-                request_id: upstream::RequestId::Integer(next_request_id()),
-                params: upstream::GetAccountParams {
-                    refresh_token: false,
-                },
-            };
-            match self
-                .inner
-                .request_typed_for_server::<upstream::GetAccountResponse>(server_id, request)
-                .await
-            {
-                Ok(response) => {
-                    self.inner.apply_account_response(server_id, &response);
+        // Run the probe body on the shared tokio runtime: the probe awaits
+        // session.request_client(...), which uses tokio primitives and would
+        // panic ("no reactor running") when polled from the Swift/Kotlin
+        // foreign async executor.
+        let _ = self
+            .rt
+            .spawn(async move {
+                let snapshot = inner.app_snapshot();
+                let remote_connected: Vec<String> = snapshot
+                    .servers
+                    .values()
+                    .filter(|s| !s.is_local && s.health == ServerHealthSnapshot::Connected)
+                    .map(|s| s.server_id.clone())
+                    .collect();
+
+                for server_id in &remote_connected {
+                    let request = upstream::ClientRequest::GetAccount {
+                        request_id: upstream::RequestId::Integer(next_request_id()),
+                        params: upstream::GetAccountParams {
+                            refresh_token: false,
+                        },
+                    };
+                    match inner
+                        .request_typed_for_server::<upstream::GetAccountResponse>(
+                            server_id, request,
+                        )
+                        .await
+                    {
+                        Ok(response) => {
+                            inner.apply_account_response(server_id, &response);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "ReconnectController: probe failed server_id={} error={}",
+                                server_id, e
+                            );
+                        }
+                    }
                 }
-                Err(e) => {
-                    warn!(
-                        "ReconnectController: probe failed server_id={} error={}",
-                        server_id, e
-                    );
-                }
-            }
-        }
+            })
+            .await
+            .inspect_err(|error| {
+                warn!("ReconnectController: probe_active_remote_servers task failed: {error}");
+            });
     }
 
     pub async fn on_app_became_active(&self) -> Vec<ReconnectResult> {

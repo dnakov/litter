@@ -44,6 +44,10 @@ struct ConversationView: View {
     var bottomInset: CGFloat = 0
     var onOpenConversation: ((ThreadKey) -> Void)? = nil
     var onResumeSessions: ((String) -> Void)? = nil
+    var minigameOverlay: MinigameOverlayState = .idle
+    var onTypingTap: (() -> Void)? = nil
+    var onMinigameDismiss: (() -> Void)? = nil
+    var onMinigameRetry: (() -> Void)? = nil
     @AppStorage("workDir") private var workDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "/"
     @AppStorage("conversationTextSizeStep") private var conversationTextSizeStep = ConversationTextSize.large.rawValue
     @AppStorage("fastMode") private var fastMode = false
@@ -91,6 +95,16 @@ struct ConversationView: View {
             onForkFromUserItem: forkFromMessage,
             onOpenConversation: onOpenConversation
         )
+        .overlay(alignment: .bottomLeading) {
+            if let onTypingTap,
+               minigameOverlay == .idle,
+               ExperimentalFeatures.shared.isEnabled(.thinkingMinigame) {
+                MinigameLaunchButton(action: onTypingTap)
+                    .padding(.leading, 12)
+                    .padding(.bottom, 8)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
         .activeThreadKey(activeThreadKey)
         .background { ChatWallpaperBackground(threadKey: activeThreadKey) }
         .overlay(alignment: .top) {
@@ -112,15 +126,27 @@ struct ConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ConversationBottomChrome(
-                pinnedContextItems: pinnedContextItems,
-                composer: composer,
-                onSend: sendMessage,
-                onFileSearch: searchComposerFiles,
-                bottomInset: bottomInset,
-                onOpenConversation: onOpenConversation,
-                onResumeSessions: onResumeSessions
-            )
+            if minigameOverlay == .idle {
+                ConversationBottomChrome(
+                    pinnedContextItems: pinnedContextItems,
+                    composer: composer,
+                    onSend: sendMessage,
+                    onFileSearch: searchComposerFiles,
+                    bottomInset: bottomInset,
+                    onOpenConversation: onOpenConversation,
+                    onResumeSessions: onResumeSessions
+                )
+            } else {
+                MinigameOverlayView(
+                    state: minigameOverlay,
+                    onClose: { onMinigameDismiss?() },
+                    onRetry: { onMinigameRetry?() }
+                )
+                .frame(height: UIScreen.main.bounds.height * 0.4)
+                .padding(.horizontal, 8)
+                .padding(.bottom, max(bottomInset, 8))
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .alert("Conversation Action Error", isPresented: Binding(
             get: { messageActionError != nil },
@@ -595,6 +621,7 @@ private struct ConversationMessageList: View {
                                         return false
                                     }(),
                                     serverId: activeThreadKey.serverId,
+                                    originThreadId: activeThreadKey.threadId,
                                     agentDirectoryVersion: agentDirectoryVersion,
                                     messageActionsDisabled: messageActionsDisabled,
                                     onToggleExpansion: {
@@ -960,6 +987,7 @@ private struct ConversationTurnRow: View, Equatable {
     let viewportHeight: CGFloat
     let showTypingIndicator: Bool
     let serverId: String
+    let originThreadId: String?
     let agentDirectoryVersion: UInt64
     @Environment(\.textScale) private var textScale
     let messageActionsDisabled: Bool
@@ -981,6 +1009,7 @@ private struct ConversationTurnRow: View, Equatable {
             lhs.viewportHeight == rhs.viewportHeight &&
             lhs.showTypingIndicator == rhs.showTypingIndicator &&
             lhs.serverId == rhs.serverId &&
+            lhs.originThreadId == rhs.originThreadId &&
             lhs.agentDirectoryVersion == rhs.agentDirectoryVersion &&
             lhs.messageActionsDisabled == rhs.messageActionsDisabled
     }
@@ -999,6 +1028,7 @@ private struct ConversationTurnRow: View, Equatable {
                 items: turn.items,
                 isLive: turn.isLive,
                 serverId: serverId,
+                originThreadId: originThreadId,
                 agentDirectoryVersion: agentDirectoryVersion,
                 messageActionsDisabled: messageActionsDisabled,
                 onStreamingSnapshotRendered: onStreamingSnapshotRendered,
@@ -1537,17 +1567,28 @@ private struct ConversationInputBar: View {
     }
 
     private func interruptActiveTurn() {
-        guard let activeTurnId else { return }
+        guard let activeTurnId else {
+            LLog.warn("conversation", "interrupt requested but no activeTurnId")
+            return
+        }
+        let threadKey = snapshot.threadKey
+        LLog.info(
+            "conversation",
+            "interrupt turn",
+            fields: ["serverId": threadKey.serverId, "threadId": threadKey.threadId, "turnId": activeTurnId]
+        )
         Task {
             do {
                 _ = try await appModel.client.interruptTurn(
-                    serverId: snapshot.threadKey.serverId,
+                    serverId: threadKey.serverId,
                     params: AppInterruptTurnRequest(
-                        threadId: snapshot.threadKey.threadId,
+                        threadId: threadKey.threadId,
                         turnId: activeTurnId
                     )
                 )
+                LLog.info("conversation", "interrupt turn rpc ok")
             } catch {
+                LLog.warn("conversation", "interrupt turn failed", fields: ["error": String(describing: error)])
                 slashErrorMessage = error.localizedDescription
             }
         }
@@ -2900,6 +2941,30 @@ private struct ConversationLoadingIndicator: View {
             .onAppear {
                 shimmerOffset = 2
             }
+    }
+}
+
+private struct MinigameLaunchButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "gamecontroller.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(LitterTheme.accent)
+                .frame(width: 36, height: 36)
+                .background(
+                    Circle()
+                        .fill(LitterTheme.surface.opacity(0.9))
+                        .overlay(
+                            Circle()
+                                .stroke(LitterTheme.accent.opacity(0.3), lineWidth: 0.5)
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.15), radius: 4, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Play a minigame while waiting")
     }
 }
 

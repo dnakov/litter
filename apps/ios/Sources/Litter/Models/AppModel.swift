@@ -108,6 +108,11 @@ final class AppModel {
         self.serverBridge = serverBridge ?? bridges.serverBridge
         self.ssh = ssh ?? bridges.ssh
         self.reconnectController = reconnectController ?? bridges.reconnectController
+
+        // Register the saved-apps directory with the Rust client so the
+        // dynamic-tool finalize hook can auto-upsert on `show_widget` calls.
+        // Without this, auto-save silently no-ops.
+        self.client.setSavedAppsDirectory(directory: SavedAppsDirectory.path)
     }
 
     deinit {
@@ -320,6 +325,21 @@ final class AppModel {
         return false
     }
 
+    /// True if the given `serverId` resolves to a local-server snapshot
+    /// entry. Used at every `startThread` call site to gate the generative-UI
+    /// dynamic tools (show_widget / visualize_read_me) so remote servers
+    /// never see them.
+    func isLocalServer(serverId: String) -> Bool {
+        snapshot?.servers.first(where: { $0.serverId == serverId })?.isLocal == true
+    }
+
+    /// `generativeUiDynamicToolSpecs()` when `serverId` is a local server,
+    /// otherwise `nil`. Use this to construct the `dynamicTools` field on
+    /// any thread-start request.
+    func localGenerativeUiToolSpecs(for serverId: String) -> [AppDynamicToolSpec]? {
+        isLocalServer(serverId: serverId) ? generativeUiDynamicToolSpecs() : nil
+    }
+
     func resolvedLocalServerDisplayName() -> String {
         let connectedLocalName = snapshot?.servers
             .first(where: \.isLocal)
@@ -482,7 +502,58 @@ final class AppModel {
             await refreshSnapshot()
         case .realtimeClosed:
             await refreshSnapshot()
+        case .savedAppsChanged:
+            SavedAppsStore.shared.reload()
+        case .dynamicWidgetStreaming(let key, let itemId, _, let widget):
+            applyStreamingWidget(key: key, itemId: itemId, widget: widget)
         }
+    }
+
+    /// Mutate an in-flight widget bubble's `HydratedWidgetData` so the
+    /// timeline `WidgetWebView` picks up the growing HTML via its existing
+    /// `Coordinator.scheduleUpdate` debounce. The reducer guarantees
+    /// `is_finalized == false` on these; the finalized update arrives
+    /// separately as `.threadItemChanged` and must win.
+    private func applyStreamingWidget(
+        key: ThreadKey,
+        itemId: String,
+        widget: HydratedWidgetData
+    ) {
+        guard var snapshot else {
+            LLog.warn("streaming", "applyStreamingWidget: no snapshot")
+            return
+        }
+        guard let threadIndex = snapshot.threads.firstIndex(where: { $0.key == key }) else {
+            LLog.warn("streaming", "applyStreamingWidget: thread not in snapshot",
+                      fields: ["threadId": key.threadId, "htmlLen": widget.widgetHtml.count])
+            return
+        }
+        var thread = snapshot.threads[threadIndex]
+        if let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == itemId }) {
+            var item = thread.hydratedConversationItems[itemIndex]
+            if case .widget(let existing) = item.content, existing.isFinalized { return }
+            if case .widget(let existing) = item.content, existing == widget { return }
+            item.content = .widget(widget)
+            thread.hydratedConversationItems[itemIndex] = item
+            LLog.info("streaming", "widget delta mutated existing",
+                      fields: ["itemId": itemId, "htmlLen": widget.widgetHtml.count])
+        } else {
+            let placeholder = HydratedConversationItem(
+                id: itemId,
+                content: .widget(widget),
+                sourceTurnId: thread.activeTurnId,
+                sourceTurnIndex: nil,
+                timestamp: nil,
+                isFromUserTurnBoundary: false
+            )
+            thread.hydratedConversationItems.append(placeholder)
+            LLog.info("streaming", "widget delta inserted placeholder",
+                      fields: ["itemId": itemId, "htmlLen": widget.widgetHtml.count,
+                               "sourceTurnId": thread.activeTurnId ?? "nil"])
+        }
+        snapshot.threads[threadIndex] = thread
+        self.snapshot = snapshot
+        cacheThreadSnapshot(thread)
     }
 
     private func refreshThreadSnapshot(key: ThreadKey) async {

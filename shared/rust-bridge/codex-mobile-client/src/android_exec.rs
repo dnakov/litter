@@ -35,5 +35,6 @@ pub fn install(tools: HashMap<String, String>) {
     let _ = TOOL_PATHS.set(tools);
     HOOK_INSTALLED.get_or_init(|| {
         codex_core::exec::set_android_tool_resolver(resolve);
+        crate::shell_preflight::install();
     });
 }

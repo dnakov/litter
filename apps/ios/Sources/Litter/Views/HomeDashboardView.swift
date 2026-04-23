@@ -32,6 +32,9 @@ struct HomeDashboardView: View {
     let onOpenProjectPicker: () -> Void
     let onThreadCreated: (ThreadKey) -> Void
     let onShowSettings: () -> Void
+    /// Optional: surface an "Apps" button alongside Settings. Wired by the
+    /// hosting navigation when a "Saved Apps" launcher should be exposed.
+    var onShowApps: (() -> Void)? = nil
     let onPinThread: (ThreadKey) -> Void
     let onUnpinThread: (ThreadKey) -> Void
     let onHideThread: (ThreadKey) -> Void
@@ -202,9 +205,18 @@ struct HomeDashboardView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button(action: onShowSettings) {
-                Image(systemName: "gearshape")
-                    .foregroundColor(LitterTheme.textSecondary)
+            HStack(spacing: 12) {
+                Button(action: onShowSettings) {
+                    Image(systemName: "gearshape")
+                        .foregroundColor(LitterTheme.textSecondary)
+                }
+                if let onShowApps {
+                    Button(action: onShowApps) {
+                        Image(systemName: "square.grid.2x2")
+                            .foregroundColor(LitterTheme.textSecondary)
+                    }
+                    .accessibilityLabel("Apps")
+                }
             }
         }
         ToolbarItem(placement: .principal) {
@@ -599,7 +611,7 @@ struct SessionCanvasLine: View {
                     responsePreview
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .visibleWhen(zoomLevel >= 3)
-                    Text(session.cwd)
+                    Text(PathDisplay.display(session.cwd, isLocal: session.isLocal))
                         .litterMonoFont(size: 10, weight: .regular)
                         .foregroundStyle(LitterTheme.textMuted.opacity(0.7))
                         .lineLimit(2)

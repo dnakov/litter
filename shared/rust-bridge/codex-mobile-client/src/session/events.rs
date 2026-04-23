@@ -50,6 +50,7 @@ pub(crate) enum UiEvent {
     TurnCompleted {
         key: ThreadKey,
         turn_id: String,
+        error: Option<String>,
     },
     TurnDiffUpdated {
         key: ThreadKey,
@@ -95,6 +96,22 @@ pub(crate) enum UiEvent {
     CommandOutputDelta {
         key: ThreadKey,
         item_id: String,
+        delta: String,
+    },
+    /// Streaming chunk of a `show_widget` (or other client-dynamic-tool)
+    /// call's argument JSON. The reducer accumulates deltas in a
+    /// per-`(thread, call_id)` buffer, synthesizes a partial
+    /// `show_widget` arguments object, re-hydrates it as an in-flight
+    /// `DynamicToolCall` item, and emits the update through the existing
+    /// `AppStoreUpdateRecord::ThreadItemChanged` path — same shape as
+    /// the finalized render, no new variant required.
+    DynamicToolCallArgumentsDelta {
+        key: ThreadKey,
+        item_id: String,
+        /// Provider-assigned call id. May be absent on very early deltas
+        /// before the provider has confirmed the call id. In that case
+        /// the reducer falls back to the item_id as the buffer key.
+        call_id: Option<String>,
         delta: String,
     },
 
@@ -270,9 +287,11 @@ impl EventProcessor {
             }
             ServerNotification::TurnCompleted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
+                let error = n.turn.error.as_ref().map(|e| e.message.clone());
                 self.emit(UiEvent::TurnCompleted {
                     key,
                     turn_id: n.turn.id.clone(),
+                    error,
                 });
             }
             ServerNotification::TurnDiffUpdated(n) => {
@@ -358,6 +377,15 @@ impl EventProcessor {
                 self.emit(UiEvent::CommandOutputDelta {
                     key,
                     item_id: n.item_id.clone(),
+                    delta: n.delta.clone(),
+                });
+            }
+            ServerNotification::DynamicToolCallArgumentsDelta(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::DynamicToolCallArgumentsDelta {
+                    key,
+                    item_id: n.item_id.clone(),
+                    call_id: n.call_id.clone(),
                     delta: n.delta.clone(),
                 });
             }
@@ -780,6 +808,11 @@ mod tests {
     use codex_app_server_protocol::{self as proto};
     use serde_json::json;
 
+    fn test_abs_path(path: &str) -> codex_utils_absolute_path::AbsolutePathBuf {
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(path)
+            .expect("test path must be absolute")
+    }
+
     /// Helper: create processor, subscribe, process notification, return received event.
     fn process_and_recv(server_id: &str, notification: &ServerNotification) -> Option<UiEvent> {
         let proc = EventProcessor::new();
@@ -802,6 +835,9 @@ mod tests {
             items: Vec::new(),
             status: proto::TurnStatus::Completed,
             error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
@@ -862,6 +898,7 @@ mod tests {
         let notification = ServerNotification::ThreadStarted(proto::ThreadStartedNotification {
             thread: proto::Thread {
                 id: "thr_1".to_string(),
+                forked_from_id: None,
                 preview: "Preview".to_string(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -869,7 +906,7 @@ mod tests {
                 updated_at: 2,
                 status: proto::ThreadStatus::Idle,
                 path: None,
-                cwd: std::path::PathBuf::from("/tmp"),
+                cwd: test_abs_path("/tmp"),
                 cli_version: "1.0.0".to_string(),
                 source: proto::SessionSource::Cli,
                 agent_nickname: Some("builder".to_string()),
@@ -944,9 +981,10 @@ mod tests {
         });
         let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
         match evt {
-            UiEvent::TurnCompleted { key, turn_id } => {
+            UiEvent::TurnCompleted { key, turn_id, error } => {
                 assert_eq!(key.thread_id, "thr_2");
                 assert_eq!(turn_id, "turn_2");
+                assert!(error.is_none());
             }
             other => panic!("expected TurnCompleted, got {other:?}"),
         }
@@ -1365,6 +1403,7 @@ mod tests {
                         balance: Some("5.00".to_string()),
                     }),
                     plan_type: Some(codex_protocol::account::PlanType::Plus),
+                    rate_limit_reached_type: None,
                 },
             },
         );
@@ -1415,6 +1454,7 @@ mod tests {
             ServerNotification::ThreadStarted(proto::ThreadStartedNotification {
                 thread: proto::Thread {
                     id: "thr_1".to_string(),
+                    forked_from_id: None,
                     preview: String::new(),
                     ephemeral: false,
                     model_provider: "openai".to_string(),
@@ -1422,7 +1462,7 @@ mod tests {
                     updated_at: 1,
                     status: proto::ThreadStatus::Idle,
                     path: None,
-                    cwd: std::path::PathBuf::from("/tmp"),
+                    cwd: test_abs_path("/tmp"),
                     cli_version: "1.0.0".to_string(),
                     source: proto::SessionSource::Cli,
                     agent_nickname: None,
@@ -1550,7 +1590,6 @@ mod tests {
                 cwd: None,
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,
@@ -1747,7 +1786,6 @@ mod tests {
                 cwd: None,
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,
@@ -1784,7 +1822,6 @@ mod tests {
                 cwd: None,
                 command_actions: None,
                 additional_permissions: None,
-                skill_metadata: None,
                 proposed_execpolicy_amendment: None,
                 proposed_network_policy_amendments: None,
                 available_decisions: None,

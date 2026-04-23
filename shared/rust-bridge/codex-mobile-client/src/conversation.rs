@@ -850,6 +850,13 @@ fn widget_data_from_dynamic_tool_call(
         .to_string();
     let width = json_number_field(object, &["width"]).unwrap_or(800.0);
     let height = json_number_field(object, &["height"]).unwrap_or(600.0);
+    let app_id = object
+        .get("app_id")
+        .or_else(|| object.get("appId"))
+        .and_then(|value| value.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
 
     Some(HydratedWidgetData {
         title,
@@ -858,6 +865,7 @@ fn widget_data_from_dynamic_tool_call(
         height,
         status: status_label.to_string(),
         is_finalized,
+        app_id,
     })
 }
 
@@ -872,6 +880,311 @@ fn json_number_field(
             _ => None,
         })
     })
+}
+
+/// Tolerant "best-effort" parse of a partially-streamed `show_widget`
+/// tool-call argument blob. The model streams JSON one chunk at a time;
+/// we want to surface as much of `widget_code` as we have so far so the
+/// platform can render a partial widget. Falls through gracefully when
+/// the buffer isn't a complete object yet.
+///
+/// Policy:
+/// - If the buffer parses as a complete JSON object, delegate to
+///   `widget_data_from_dynamic_tool_call` for full extraction.
+/// - Otherwise, run a streaming extractor that finds the
+///   `widget_code`/`widgetCode` key and returns the longest safe string
+///   prefix we can see (handling `\\` escapes, stopping at an unescaped
+///   closing quote or end-of-buffer). `title`/`app_id` default to
+///   placeholders. `width`/`height` default to the standard 800x600.
+///
+/// Returns `None` when we can't find enough to render anything yet
+/// (e.g. we haven't seen `widget_code` opened yet).
+pub(crate) fn streaming_widget_data_from_partial_arguments(
+    partial: &str,
+) -> Option<HydratedWidgetData> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(partial) {
+        return widget_data_from_dynamic_tool_call(
+            "show_widget",
+            &value,
+            &DynamicToolCallStatus::InProgress,
+            None,
+        );
+    }
+
+    let widget_html = extract_streaming_string_field(partial, &["widget_code", "widgetCode"])?;
+    if widget_html.is_empty() {
+        return None;
+    }
+    let title =
+        extract_streaming_string_field(partial, &["title"]).unwrap_or_else(|| "Widget".to_string());
+    let app_id = extract_streaming_string_field(partial, &["app_id", "appId"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let width = extract_streaming_number_field(partial, &["width"]).unwrap_or(800.0);
+    let height = extract_streaming_number_field(partial, &["height"]).unwrap_or(600.0);
+
+    Some(HydratedWidgetData {
+        title,
+        widget_html,
+        width,
+        height,
+        status: "inProgress".to_string(),
+        is_finalized: false,
+        app_id,
+    })
+}
+
+/// Synthesize a valid `show_widget` arguments JSON object from a
+/// partially-streamed buffer. Unlike
+/// `streaming_widget_data_from_partial_arguments` (which produces the
+/// hydrated boundary type directly), this returns a `serde_json::Value`
+/// suitable for round-tripping through the upstream
+/// `ThreadItem::DynamicToolCall { arguments, .. }` → hydration path.
+///
+/// Policy: if the raw buffer parses as JSON, pass it through unchanged.
+/// Otherwise, run the streaming extractor and build a fresh object from
+/// whatever fields were pulled. Returns `None` when we don't yet have
+/// enough to render — specifically, when `widget_code` hasn't been
+/// opened yet.
+pub(crate) fn synthesize_streaming_show_widget_arguments(
+    partial: &str,
+) -> Option<serde_json::Value> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(partial) {
+        return Some(value);
+    }
+
+    let widget_html = extract_streaming_string_field(partial, &["widget_code", "widgetCode"])?;
+    if widget_html.is_empty() {
+        return None;
+    }
+    let title =
+        extract_streaming_string_field(partial, &["title"]).unwrap_or_else(|| "Widget".to_string());
+    let app_id = extract_streaming_string_field(partial, &["app_id", "appId"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let width = extract_streaming_number_field(partial, &["width"]).unwrap_or(800.0);
+    let height = extract_streaming_number_field(partial, &["height"]).unwrap_or(600.0);
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("title".to_string(), serde_json::Value::String(title));
+    obj.insert(
+        "widget_code".to_string(),
+        serde_json::Value::String(widget_html),
+    );
+    obj.insert(
+        "width".to_string(),
+        serde_json::Number::from_f64(width)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    obj.insert(
+        "height".to_string(),
+        serde_json::Number::from_f64(height)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    if let Some(slug) = app_id {
+        obj.insert("app_id".to_string(), serde_json::Value::String(slug));
+    }
+    Some(serde_json::Value::Object(obj))
+}
+
+/// Scan `buffer` for `"<key>"\s*:\s*"<value-prefix>` and return the
+/// longest safe UTF-8 prefix of the value. Returns whatever's been
+/// streamed so far — an unclosed string gives a prefix, a closed
+/// string gives the final value. Handles `\\`, `\"`, `\n` and standard
+/// JSON escape sequences. Incomplete trailing escape sequences are
+/// dropped from the prefix.
+pub(crate) fn extract_streaming_string_field(buffer: &str, keys: &[&str]) -> Option<String> {
+    let bytes = buffer.as_bytes();
+    for key in keys {
+        if let Some(value) = scan_string_field(bytes, key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn scan_string_field(bytes: &[u8], key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let mut pos = 0usize;
+    // Find the key, then a `:`, then the opening `"`.
+    while let Some(idx) = find_at(bytes, needle.as_bytes(), pos) {
+        // Verify this is actually a key (followed eventually by `:`),
+        // not a substring inside some other string value.
+        let mut cursor = idx + needle.len();
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b':' {
+            pos = idx + 1;
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b'"' {
+            return None;
+        }
+        cursor += 1;
+        return Some(decode_partial_json_string(&bytes[cursor..]));
+    }
+    None
+}
+
+/// Decode a JSON string starting just after the opening `"`. Stops at
+/// an unescaped `"` or end of input (streaming case). Returns the
+/// decoded value; if an escape sequence is incomplete at the end of
+/// input, drops the trailing backslash.
+fn decode_partial_json_string(src: &[u8]) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    while i < src.len() {
+        let b = src[i];
+        if b == b'"' {
+            break;
+        }
+        if b == b'\\' {
+            if i + 1 >= src.len() {
+                // Dangling escape — drop it until the next delta fills
+                // in the escaped character.
+                break;
+            }
+            let esc = src[i + 1];
+            match esc {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'b' => out.push('\u{0008}'),
+                b'f' => out.push('\u{000C}'),
+                b'u' => {
+                    if i + 6 > src.len() {
+                        // Incomplete \uXXXX — wait for next delta.
+                        break;
+                    }
+                    let hex = &src[i + 2..i + 6];
+                    let hex_str = match std::str::from_utf8(hex) {
+                        Ok(s) => s,
+                        Err(_) => break,
+                    };
+                    let code = match u32::from_str_radix(hex_str, 16) {
+                        Ok(c) => c,
+                        Err(_) => break,
+                    };
+                    if let Some(c) = char::from_u32(code) {
+                        out.push(c);
+                    }
+                    i += 6;
+                    continue;
+                }
+                // Unknown escape — copy literally rather than drop.
+                other => {
+                    out.push('\\');
+                    out.push(other as char);
+                }
+            }
+            i += 2;
+            continue;
+        }
+        // Walk a full UTF-8 sequence so we don't split a multi-byte
+        // char across deltas. If the buffer cuts in the middle of a
+        // multi-byte code point, stop before it.
+        let width = utf8_char_width(b);
+        if width == 0 {
+            // Invalid leading byte — skip it.
+            i += 1;
+            continue;
+        }
+        if i + width > src.len() {
+            break;
+        }
+        match std::str::from_utf8(&src[i..i + width]) {
+            Ok(s) => out.push_str(s),
+            Err(_) => break,
+        }
+        i += width;
+    }
+    out
+}
+
+fn utf8_char_width(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xC0 {
+        0
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else if b < 0xF8 {
+        4
+    } else {
+        0
+    }
+}
+
+/// Extract a numeric-valued field from a partial/complete JSON buffer.
+/// Only returns when the number is fully terminated (by whitespace,
+/// `,`, or `}`). Streaming midway through a number yields `None` so
+/// callers fall back to the default.
+pub(crate) fn extract_streaming_number_field(buffer: &str, keys: &[&str]) -> Option<f64> {
+    let bytes = buffer.as_bytes();
+    for key in keys {
+        if let Some(value) = scan_number_field(bytes, key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn scan_number_field(bytes: &[u8], key: &str) -> Option<f64> {
+    let needle = format!("\"{key}\"");
+    let mut pos = 0usize;
+    while let Some(idx) = find_at(bytes, needle.as_bytes(), pos) {
+        let mut cursor = idx + needle.len();
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b':' {
+            pos = idx + 1;
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len()
+            && matches!(
+                bytes[cursor],
+                b'-' | b'+' | b'0'..=b'9' | b'.' | b'e' | b'E'
+            )
+        {
+            cursor += 1;
+        }
+        if cursor == start || cursor == bytes.len() {
+            // No digits, or reached end of buffer without a terminator —
+            // treat as not-yet-parseable.
+            return None;
+        }
+        let slice = std::str::from_utf8(&bytes[start..cursor]).ok()?;
+        return slice.parse::<f64>().ok();
+    }
+    None
+}
+
+fn find_at(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || start > haystack.len() {
+        return None;
+    }
+    haystack[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|i| i + start)
 }
 
 fn build_computer_use_view(
@@ -1142,12 +1455,20 @@ mod tests {
     use codex_app_server_protocol::TurnStatus;
     use std::collections::HashMap;
 
+    fn test_abs_path(path: &str) -> codex_utils_absolute_path::AbsolutePathBuf {
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(path)
+            .expect("test path must be absolute")
+    }
+
     fn make_turn(id: &str, items: Vec<ThreadItem>) -> Turn {
         Turn {
             id: id.to_string(),
             items,
             status: TurnStatus::Completed,
             error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
         }
     }
 
@@ -1309,14 +1630,14 @@ diff --git a/parser.rs b/parser.rs\n\
             vec![ThreadItem::CommandExecution {
                 id: "c1".into(),
                 command: "ls -la".into(),
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_abs_path("/tmp"),
                 process_id: Some("p1".into()),
                 source: Default::default(),
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Read {
                     command: "cat foo.rs".into(),
                     name: "foo.rs".into(),
-                    path: PathBuf::from("/src/foo.rs"),
+                    path: test_abs_path("/src/foo.rs"),
                 }],
                 aggregated_output: Some("file contents".into()),
                 exit_code: Some(0),
@@ -1365,7 +1686,7 @@ diff --git a/parser.rs b/parser.rs\n\
             vec![ThreadItem::CommandExecution {
                 id: "c1".into(),
                 command: "/bin/zsh -lc 'npm test'".into(),
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_abs_path("/tmp"),
                 process_id: None,
                 source: Default::default(),
                 status: CommandExecutionStatus::InProgress,
@@ -1484,10 +1805,12 @@ diff --git a/parser.rs b/parser.rs\n\
                     tool: "read_file".into(),
                     status: McpToolCallStatus::Completed,
                     arguments: serde_json::json!({ "path": "/tmp/file.txt" }),
-                    result: Some(codex_app_server_protocol::McpToolCallResult {
+                    mcp_app_resource_uri: None,
+                    result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
                         content: vec![serde_json::json!("contents")],
                         structured_content: None,
-                    }),
+                        meta: None,
+                    })),
                     error: None,
                     duration_ms: Some(250),
                 },
@@ -1525,7 +1848,7 @@ diff --git a/parser.rs b/parser.rs\n\
                 },
                 ThreadItem::ImageView {
                     id: "img-1".into(),
-                    path: "/tmp/screenshot.png".into(),
+                    path: test_abs_path("/tmp/screenshot.png"),
                 },
             ],
         )];
@@ -1569,7 +1892,8 @@ diff --git a/parser.rs b/parser.rs\n\
                         "app": "com.google.Chrome",
                         "element_index": "634"
                     }),
-                    result: Some(codex_app_server_protocol::McpToolCallResult {
+                    mcp_app_resource_uri: None,
+                    result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
                         content: vec![
                             serde_json::json!({
                                 "type": "image",
@@ -1582,7 +1906,8 @@ diff --git a/parser.rs b/parser.rs\n\
                             }),
                         ],
                         structured_content: None,
-                    }),
+                        meta: None,
+                    })),
                     error: None,
                     duration_ms: Some(1700),
                 },
@@ -1593,6 +1918,7 @@ diff --git a/parser.rs b/parser.rs\n\
                     tool: "read_file".into(),
                     status: McpToolCallStatus::Completed,
                     arguments: serde_json::json!({ "path": "/tmp/file.txt" }),
+                    mcp_app_resource_uri: None,
                     result: None,
                     error: None,
                     duration_ms: None,
@@ -1646,7 +1972,7 @@ diff --git a/parser.rs b/parser.rs\n\
                     status: "completed".into(),
                     revised_prompt: Some("a grumpy pirate kitty".into()),
                     result: png_base64.into(),
-                    saved_path: Some("/tmp/ig-1.png".into()),
+                    saved_path: Some(test_abs_path("/tmp/ig-1.png")),
                 },
                 // A still-streaming item should stay InProgress with no bytes.
                 ThreadItem::ImageGeneration {
@@ -1664,7 +1990,7 @@ diff --git a/parser.rs b/parser.rs\n\
                     status: "generating".into(),
                     revised_prompt: None,
                     result: png_base64.into(),
-                    saved_path: Some("/tmp/ig-3.png".into()),
+                    saved_path: Some(test_abs_path("/tmp/ig-3.png")),
                 },
             ],
         )];
@@ -1708,7 +2034,8 @@ diff --git a/parser.rs b/parser.rs\n\
             vec![ThreadItem::CommandExecution {
                 id: "cmd-1".into(),
                 command: long_command,
-                cwd: PathBuf::from("/tmp"),
+                cwd: test_abs_path("/tmp"),
+                source: Default::default(),
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Search {
                     command: "find . -name '*.swift'".into(),
@@ -1738,5 +2065,88 @@ diff --git a/parser.rs b/parser.rs\n\
                 .as_ref()
                 .is_some_and(|value| value.contains("[truncated on mobile]"))
         );
+    }
+
+    // ── Streaming partial-JSON extractor (SW-R3) ──────────────────────
+
+    #[test]
+    fn streaming_extractor_yields_growing_widget_html_prefix() {
+        // Simulate the model streaming a show_widget argument JSON one
+        // chunk at a time. Each intermediate buffer should surface the
+        // longest safe `widget_code` prefix we can see.
+        let chunks = [
+            r#"{"app_id":"fit-tracker","title":"Fit","widget_code":"<div"#,
+            r#" class=\"app\">"#,
+            r#"<h2>Workouts</h2>"#,
+            r#"</div>"}"#,
+        ];
+        let mut buffer = String::new();
+        let mut seen_htmls: Vec<String> = Vec::new();
+        for chunk in chunks {
+            buffer.push_str(chunk);
+            let widget = streaming_widget_data_from_partial_arguments(&buffer)
+                .expect("partial parse should yield a widget once widget_code is open");
+            seen_htmls.push(widget.widget_html);
+        }
+
+        // Each subsequent HTML prefix is a superset of the previous one.
+        for pair in seen_htmls.windows(2) {
+            assert!(
+                pair[1].starts_with(&pair[0]),
+                "expected growing prefix, got {pair:?}"
+            );
+        }
+        // And the final (complete JSON) pass gives us the fully closed HTML.
+        assert_eq!(
+            seen_htmls.last().unwrap(),
+            "<div class=\"app\"><h2>Workouts</h2></div>"
+        );
+    }
+
+    #[test]
+    fn streaming_extractor_returns_none_before_widget_code_opens() {
+        let buffer = r#"{"app_id":"fit","title":"Fit","widget_"#;
+        assert!(streaming_widget_data_from_partial_arguments(buffer).is_none());
+    }
+
+    #[test]
+    fn streaming_extractor_handles_escape_sequences() {
+        // Incomplete escape at the cut → trailing backslash dropped
+        // until the next delta arrives.
+        let buffer = r#"{"widget_code":"<a href=\"#;
+        let widget = streaming_widget_data_from_partial_arguments(buffer).unwrap();
+        assert_eq!(widget.widget_html, "<a href=");
+
+        // Complete escape → properly decoded.
+        let buffer = r#"{"widget_code":"<a href=\"https\""#;
+        let widget = streaming_widget_data_from_partial_arguments(buffer).unwrap();
+        assert_eq!(widget.widget_html, "<a href=\"https\"");
+    }
+
+    #[test]
+    fn streaming_extractor_defaults_missing_fields() {
+        let buffer = r#"{"widget_code":"<svg/>"#;
+        let widget = streaming_widget_data_from_partial_arguments(buffer).unwrap();
+        assert_eq!(widget.widget_html, "<svg/>");
+        assert_eq!(widget.title, "Widget");
+        assert_eq!(widget.width, 800.0);
+        assert_eq!(widget.height, 600.0);
+        assert_eq!(widget.app_id, None);
+        assert!(!widget.is_finalized);
+    }
+
+    #[test]
+    fn streaming_extractor_reads_dimensions_when_complete() {
+        let buffer = r#"{"width":400,"height":240,"widget_code":"<svg/>"#;
+        let widget = streaming_widget_data_from_partial_arguments(buffer).unwrap();
+        assert_eq!(widget.width, 400.0);
+        assert_eq!(widget.height, 240.0);
+    }
+
+    #[test]
+    fn streaming_extractor_handles_camel_case_alias() {
+        let buffer = r#"{"widgetCode":"<svg/>"#;
+        let widget = streaming_widget_data_from_partial_arguments(buffer).unwrap();
+        assert_eq!(widget.widget_html, "<svg/>");
     }
 }

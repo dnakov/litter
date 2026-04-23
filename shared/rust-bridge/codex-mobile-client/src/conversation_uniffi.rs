@@ -287,6 +287,11 @@ pub struct HydratedWidgetData {
     pub height: f64,
     pub status: String,
     pub is_finalized: bool,
+    /// Model-chosen slug identifying this app across regenerations in
+    /// the origin thread. `None` when the `show_widget` call omitted it
+    /// (pre-R2 widgets still in the timeline). Platforms use this to
+    /// surface the "Saved as <slug>" chip on finalized bubbles.
+    pub app_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, uniffi::Record)]

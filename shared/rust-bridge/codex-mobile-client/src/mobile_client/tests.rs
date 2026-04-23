@@ -656,6 +656,7 @@ mod mobile_client_tests {
         let non_stream_event = UiEvent::TurnCompleted {
             key,
             turn_id: "turn-1".to_string(),
+            error: None,
         };
         assert!(!should_suppress_websocket_stream_event(
             &non_stream_event,
@@ -1098,6 +1099,9 @@ mod mobile_client_tests {
                                 items: Vec::new(),
                                 status: upstream::TurnStatus::InProgress,
                                 error: None,
+                                started_at: None,
+                                completed_at: None,
+                                duration_ms: None,
                             },
                         })
                         .map_err(|error| RpcError::Deserialization(error.to_string()))
@@ -1131,6 +1135,7 @@ mod mobile_client_tests {
                         text: "hello".to_string(),
                         text_elements: Vec::new(),
                     }],
+                    responsesapi_client_metadata: None,
                     cwd: None,
                     approval_policy: None,
                     approvals_reviewer: None,
@@ -1221,6 +1226,9 @@ mod mobile_client_tests {
                                 items: Vec::new(),
                                 status: upstream::TurnStatus::InProgress,
                                 error: None,
+                                started_at: None,
+                                completed_at: None,
+                                duration_ms: None,
                             },
                         })
                         .map_err(|error| RpcError::Deserialization(error.to_string()))
@@ -1254,6 +1262,7 @@ mod mobile_client_tests {
                         text: "hello".to_string(),
                         text_elements: Vec::new(),
                     }],
+                    responsesapi_client_metadata: None,
                     cwd: None,
                     approval_policy: None,
                     approvals_reviewer: None,

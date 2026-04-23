@@ -33,8 +33,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::preferences::{
-    HomeSelection, MobilePreferences, PinnedThreadKey, acquire_write_guard,
-    preferences_path_for, read_preferences_at, write_preferences_at,
+    HomeSelection, MobilePreferences, PinnedThreadKey, acquire_write_guard, preferences_path_for,
+    read_preferences_at, write_preferences_at,
 };
 
 /// Envelope version. Bump when the layout changes incompatibly.
@@ -189,7 +189,10 @@ pub fn export_snapshot(directory: &str, device_id: &str) -> Result<Vec<u8>, Clou
 /// Merge policy: last-write-wins per key by `updated_at_ms`. Ties favor the
 /// remote side so an equal-timestamp broadcast eventually converges (the
 /// local side will pick the winning value up on its next export).
-pub fn apply_snapshot(directory: &str, bytes: &[u8]) -> Result<Vec<PlatformWriteback>, CloudSyncError> {
+pub fn apply_snapshot(
+    directory: &str,
+    bytes: &[u8],
+) -> Result<Vec<PlatformWriteback>, CloudSyncError> {
     let remote = decode_envelope(bytes)?;
     if remote.version != ENVELOPE_VERSION {
         // Future: handle version migrations. For v1 we ignore unknown
@@ -226,23 +229,18 @@ pub fn apply_snapshot(directory: &str, bytes: &[u8]) -> Result<Vec<PlatformWrite
             continue;
         }
 
-        let should_apply = with_platform_table(|table| {
-            match table.get(&key) {
-                Some(existing) if existing.updated_at_ms > remote_entry.updated_at_ms => false,
-                _ => {
-                    table.insert(key.clone(), remote_entry.clone());
-                    true
-                }
+        let should_apply = with_platform_table(|table| match table.get(&key) {
+            Some(existing) if existing.updated_at_ms > remote_entry.updated_at_ms => false,
+            _ => {
+                table.insert(key.clone(), remote_entry.clone());
+                true
             }
         });
 
         if should_apply {
             let value_json = serde_json::to_string(&remote_entry.value)
                 .map_err(|e| CloudSyncError::Encode(e.to_string()))?;
-            writebacks.push(PlatformWriteback {
-                key,
-                value_json,
-            });
+            writebacks.push(PlatformWriteback { key, value_json });
         }
     }
 
@@ -264,13 +262,11 @@ fn merge_rust_key(
     // We don't persist per-field timestamps in `mobile_prefs.json`, so
     // compare against the platform_table entry (which tracks the last time
     // a value was observed from either a local export or a remote apply).
-    let is_newer = with_platform_table(|table| {
-        match table.get(key) {
-            Some(existing) if existing.updated_at_ms >= remote_entry.updated_at_ms => false,
-            _ => {
-                table.insert(key.to_string(), remote_entry.clone());
-                true
-            }
+    let is_newer = with_platform_table(|table| match table.get(key) {
+        Some(existing) if existing.updated_at_ms >= remote_entry.updated_at_ms => false,
+        _ => {
+            table.insert(key.to_string(), remote_entry.clone());
+            true
         }
     });
 
@@ -380,8 +376,8 @@ pub fn update_platform_value(key: &str, value_json: &str) -> Result<(), CloudSyn
     if !is_platform_key(key) {
         return Ok(());
     }
-    let value: serde_json::Value = serde_json::from_str(value_json)
-        .map_err(|e| CloudSyncError::InvalidJson(e.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(value_json).map_err(|e| CloudSyncError::InvalidJson(e.to_string()))?;
     let entry = CloudEntry {
         value,
         updated_at_ms: now_ms(),

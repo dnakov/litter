@@ -201,9 +201,9 @@ struct HomeComposerView: View {
         Task {
             defer { isSubmitting = false }
             do {
-                let pendingModel = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pendingModel = appState.preferredModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 let modelOverride = pendingModel.isEmpty ? nil : pendingModel
-                let pendingEffort = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pendingEffort = appState.preferredReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
                 let effortOverride = ReasoningEffort(wireValue: pendingEffort.isEmpty ? nil : pendingEffort)
                 let launchConfig = AppThreadLaunchConfig(
                     model: modelOverride,
@@ -214,7 +214,10 @@ struct HomeComposerView: View {
                 )
                 let threadKey = try await appModel.client.startThread(
                     serverId: project.serverId,
-                    params: launchConfig.threadStartRequest(cwd: project.cwd)
+                    params: launchConfig.threadStartRequest(
+                        cwd: project.cwd,
+                        dynamicTools: appModel.localGenerativeUiToolSpecs(for: project.serverId)
+                    )
                 )
                 RecentDirectoryStore.shared.record(path: project.cwd, for: project.serverId)
                 let preparedAttachment = image.flatMap(ConversationAttachmentSupport.prepareImage)

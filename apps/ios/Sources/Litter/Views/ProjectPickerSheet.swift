@@ -6,6 +6,7 @@ struct ProjectPickerSheet: View {
     let onSelect: (AppProject) -> Void
     let onCreateNew: () -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var appModel
     @State private var query = ""
 
     private var filtered: [AppProject] {
@@ -107,7 +108,7 @@ struct ProjectPickerSheet: View {
                             Text(serverName)
                                 .foregroundStyle(LitterTheme.accent.opacity(0.75))
                         }
-                        Text(project.cwd)
+                        Text(PathDisplay.display(project.cwd, isLocal: appModel.isLocalServer(serverId: project.serverId)))
                             .foregroundStyle(LitterTheme.textMuted)
                     }
                     .litterMonoFont(size: 11, weight: .regular)

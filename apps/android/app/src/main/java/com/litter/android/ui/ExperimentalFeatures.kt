@@ -23,10 +23,10 @@ enum class LitterFeature(
         description = "Attach to desktop IPC over SSH for faster sync, approvals, and resume. Requires reconnecting the server.",
         defaultEnabled = false,
     ),
-    GENERATIVE_UI(
-        id = "generative_ui",
-        displayName = "Generative UI",
-        description = "Show interactive widgets, diagrams, and charts inline in conversations. Requires starting a new thread.",
+    THINKING_MINIGAME(
+        id = "thinking_minigame",
+        displayName = "Thinking minigame",
+        description = "Tap the Thinking shimmer while the assistant generates to play a tiny generated minigame.",
         defaultEnabled = false,
     ),
 }

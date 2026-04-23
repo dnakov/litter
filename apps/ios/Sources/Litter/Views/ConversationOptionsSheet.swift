@@ -29,6 +29,7 @@ struct ConversationOptionsSheet: View {
             effectiveSandboxPolicy: effectiveSandboxPolicy,
             onDismiss: { dismiss() }
         )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(LitterTheme.surface.ignoresSafeArea())
     }
 }

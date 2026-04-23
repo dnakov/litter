@@ -11,10 +11,12 @@ enum SavedThreadsStore {
 
     static func add(_ key: PinnedThreadKey) {
         _ = preferencesAddPinnedThread(directory: MobilePreferencesDirectory.path, key: key)
+        CloudKVSBridge.shared.notifyRustPreferencesChanged()
     }
 
     static func remove(_ key: PinnedThreadKey) {
         _ = preferencesRemovePinnedThread(directory: MobilePreferencesDirectory.path, key: key)
+        CloudKVSBridge.shared.notifyRustPreferencesChanged()
     }
 
     static func contains(_ key: PinnedThreadKey) -> Bool {
@@ -27,10 +29,12 @@ enum SavedThreadsStore {
 
     static func hide(_ key: PinnedThreadKey) {
         _ = preferencesAddHiddenThread(directory: MobilePreferencesDirectory.path, key: key)
+        CloudKVSBridge.shared.notifyRustPreferencesChanged()
     }
 
     static func unhide(_ key: PinnedThreadKey) {
         _ = preferencesRemoveHiddenThread(directory: MobilePreferencesDirectory.path, key: key)
+        CloudKVSBridge.shared.notifyRustPreferencesChanged()
     }
 
     /// Compatibility shim for the old `PinnedKey` type used elsewhere in the

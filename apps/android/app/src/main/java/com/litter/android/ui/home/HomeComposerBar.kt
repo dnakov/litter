@@ -162,9 +162,16 @@ fun HomeComposerBar(
             errorMessage = null
             scope.launch {
                 try {
+                    val serverIsLocal = appModel.snapshot.value
+                        ?.servers
+                        ?.firstOrNull { it.serverId == currentProject.serverId }
+                        ?.isLocal == true
                     val threadKey = appModel.client.startThread(
                         currentProject.serverId,
-                        appModel.launchState.threadStartRequest(currentProject.cwd),
+                        appModel.launchState.threadStartRequest(
+                            currentProject.cwd,
+                            serverIsLocal = serverIsLocal,
+                        ),
                     )
                     com.litter.android.ui.RecentDirectoryStore(context)
                         .record(currentProject.serverId, currentProject.cwd)

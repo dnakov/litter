@@ -148,7 +148,7 @@ ANDROID_RUST_SOURCES := $(shell find $(RUST_DIR) \
 
 $(shell mkdir -p $(STAMPS))
 
-.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project catalyst catalyst-run \
+.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project catalyst catalyst-run mac-direct mac-direct-run \
 	android android-fast android-tools android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
 	rust-ios rust-ios-package rust-ios-device-release rust-mac-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
@@ -198,6 +198,28 @@ catalyst-run: catalyst
 	@echo "==> Launching Catalyst app..."
 	@pkill -9 -f "Debug-maccatalyst/Litter.app" 2>/dev/null; true
 	@open $(CATALYST_DERIVED_DATA)/Build/Products/Debug-maccatalyst/Litter.app
+
+# Direct (unsandboxed) Mac Catalyst build — same binary the DMG
+# distribution lane ships, but built with `DeveloperID` configuration
+# and launched in-place so you can iterate without the archive →
+# export → hdiutil → notarize → staple cycle. Use `make mac-direct-dist`
+# for the signed + notarized DMG.
+MAC_DIRECT_DERIVED := $(IOS_DIR)/build/mac-direct
+mac-direct: rust-ios-package ios-frameworks xcgen
+	@echo "==> Building LitterMac (DeveloperID — unsandboxed)..."
+	@cd $(IOS_DIR) && xcodebuild \
+		-project Litter.xcodeproj \
+		-scheme LitterMac \
+		-configuration DeveloperID \
+		-destination 'platform=macOS,variant=Mac Catalyst' \
+		-derivedDataPath $(MAC_DIRECT_DERIVED) \
+		build \
+		| tail -6
+
+mac-direct-run: mac-direct
+	@echo "==> Launching unsandboxed Mac Catalyst app..."
+	@pkill -9 -f "DeveloperID-maccatalyst/Litter.app" 2>/dev/null; true
+	@open $(MAC_DIRECT_DERIVED)/Build/Products/DeveloperID-maccatalyst/Litter.app
 ios-sim-run: ios-sim-fast
 	@echo "==> Installing and launching on booted simulator with saved logs/profile..."
 	@cd $(ROOT) && \

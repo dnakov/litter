@@ -200,7 +200,7 @@ struct ConversationInfoView: View {
     }
 
     private func abbreviatePath(_ path: String) -> String {
-        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        PathDisplay.display(path, isLocal: server?.isLocal == true)
     }
 
     // MARK: - Action Buttons Row (Telegram-style)

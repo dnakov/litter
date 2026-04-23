@@ -4,8 +4,8 @@ import Observation
 enum LitterFeature: String, CaseIterable, Identifiable {
     case realtimeVoice = "realtime_voice"
     case ipc = "ipc"
-    case generativeUI = "generative_ui"
     case appleWatch = "apple_watch"
+    case thinkingMinigame = "thinking_minigame"
 
     var id: String { rawValue }
 
@@ -13,8 +13,8 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         switch self {
         case .realtimeVoice: return "Realtime"
         case .ipc: return "IPC"
-        case .generativeUI: return "Generative UI"
         case .appleWatch: return "Apple Watch"
+        case .thinkingMinigame: return "Thinking minigame"
         }
     }
 
@@ -22,8 +22,8 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         switch self {
         case .realtimeVoice: return "Show the realtime voice launcher on the home screen."
         case .ipc: return "Attach to desktop IPC over SSH for faster sync, approvals, and resume. Requires reconnecting the server."
-        case .generativeUI: return "Show interactive widgets, diagrams, and charts inline in conversations. Requires starting a new thread."
         case .appleWatch: return "Push server, task, and approval state to a paired Apple Watch. Requires the Litter watch app to be installed."
+        case .thinkingMinigame: return "Tap the Thinking shimmer while the assistant generates to play a tiny generated minigame."
         }
     }
 
@@ -31,7 +31,7 @@ enum LitterFeature: String, CaseIterable, Identifiable {
         switch self {
         case .realtimeVoice: return true
         case .ipc: return false
-        case .generativeUI: return false
+        case .thinkingMinigame: return false
         case .appleWatch:
             // Off by default in both Debug and Release. The projection pipeline
             // polls `AppModel.shared.snapshot` every 250ms on the main actor and

@@ -13,7 +13,7 @@ PATCH_FILES=(
     "$REPO_DIR/patches/codex/mobile-shell-snapshot-timeout.patch"
     "$REPO_DIR/patches/codex/absolute-path-cross-platform.patch"
     "$REPO_DIR/patches/codex/android-installation-id-lock.patch"
-    "$REPO_DIR/patches/codex/android-tool-resolver.patch"
+    "$REPO_DIR/patches/codex/dynamic-tool-call-arguments-delta.patch"
 )
 
 patch_already_upstreamed() {
@@ -70,9 +70,14 @@ for PATCH_FILE in "${PATCH_FILES[@]}"; do
         # if the patch is applied.  Fall back to checking whether the added lines
         # are already present in the files the patch actually touches.
         patch_targets=()
+        # Pick up both `diff --git a/... b/...` style and bare `--- a/...`
+        # style hunks. Some hand-crafted patches omit the `diff --git` line
+        # for their first file; without the `--- a/` fallback those files
+        # get dropped from the content-check and cause false negatives.
         while IFS= read -r pf; do
             [ -f "$SUBMODULE_DIR/$pf" ] && patch_targets+=("$SUBMODULE_DIR/$pf")
-        done < <(grep '^diff --git' "$PATCH_FILE" | sed 's|.*b/||')
+        done < <({ grep '^diff --git' "$PATCH_FILE" | sed 's|.*b/||'; \
+                    grep '^--- a/' "$PATCH_FILE" | sed 's|^--- a/||'; } | sort -u)
         added_lines=$(grep -m 5 '^+[^+]' "$PATCH_FILE" | sed 's/^+//')
         all_present=true
         if [ "${#patch_targets[@]}" -eq 0 ]; then

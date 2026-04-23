@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use sha1::{Digest, Sha1};
 use serde::Deserialize;
+use sha1::{Digest, Sha1};
 
 use crate::ffi::ClientError;
 
@@ -77,8 +77,11 @@ pub(crate) fn ambient_bucket(project_root: &str) -> String {
 pub(crate) fn build_snapshot_from_wire(
     wire: WireSnapshot,
 ) -> Result<AmbientSuggestionsSnapshot, ClientError> {
-    let id_map: HashMap<&str, &WireSuggestion> =
-        wire.suggestions.iter().map(|s| (s.id.as_str(), s)).collect();
+    let id_map: HashMap<&str, &WireSuggestion> = wire
+        .suggestions
+        .iter()
+        .map(|s| (s.id.as_str(), s))
+        .collect();
 
     let suggestions = wire
         .current_suggestion_ids

@@ -95,8 +95,15 @@ private final class DirectoryPickerSheetModel {
         searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    var isLocal: Bool = false
+
     var canNavigateUp: Bool {
-        !currentPath.isEmpty && !RemotePath.parse(path: currentPath).isRoot()
+        guard !currentPath.isEmpty, !RemotePath.parse(path: currentPath).isRoot() else { return false }
+        // Clamp the local picker at the user-facing `~` anchor. Everything
+        // above it is iOS container internals the user has no business
+        // poking at.
+        if isLocal, currentPath == HomeAnchor.path { return false }
+        return true
     }
 
     func visibleEntries() -> [String] {
@@ -113,9 +120,17 @@ private final class DirectoryPickerSheetModel {
     }
 
     func pathSegments() -> [DirectoryPathBreadcrumb] {
-        RemotePath.parse(path: currentPath).segments().map {
+        let raw = RemotePath.parse(path: currentPath).segments().map {
             DirectoryPathBreadcrumb(id: $0.fullPath, label: $0.label, path: $0.fullPath)
         }
+        guard isLocal else { return raw }
+        // Hide every breadcrumb above the user-facing `~` anchor and
+        // relabel the anchor segment itself to "~" so the trail reads
+        // `~ / projects / foo` instead of `var / mobile / … / codex / projects / foo`.
+        let home = HomeAnchor.path
+        let homeRoot = DirectoryPathBreadcrumb(id: home, label: "~", path: home)
+        let suffix = raw.drop { $0.path != home }.dropFirst()
+        return [homeRoot] + Array(suffix)
     }
 
     func relativeDate(for date: Date) -> String {
@@ -135,6 +150,7 @@ private final class DirectoryPickerSheetModel {
         appModel: AppModel,
         isLocalServer: Bool
     ) async {
+        self.isLocal = isLocalServer
         let signpostID = OSSignpostID(log: directoryPickerSignpostLog)
         os_signpost(
             .begin,
@@ -354,7 +370,7 @@ private final class DirectoryPickerSheetModel {
             return "/"
         }
         if isLocalServer {
-            return NSHomeDirectory()
+            return HomeAnchor.path
         }
         do {
             return try await appModel.client.resolveRemoteHome(serverId: serverId)
@@ -478,7 +494,7 @@ struct DirectoryPickerView: View {
                 }
             }
         } message: {
-            Text(model.currentPath)
+            Text(PathDisplay.display(model.currentPath, isLocal: selectedServerIsLocal))
         }
         .alert(DirectoryPickerStrings.createFolderFailed, isPresented: Binding(
             get: { newFolderError != nil },
@@ -675,7 +691,7 @@ struct DirectoryPickerView: View {
                                     .litterFont(.subheadline)
                                     .foregroundColor(LitterTheme.textPrimary)
                                     .lineLimit(1)
-                                Text(recent.path)
+                                Text(PathDisplay.display(recent.path, isLocal: selectedServerIsLocal))
                                     .litterFont(.caption2)
                                     .foregroundColor(LitterTheme.textMuted)
                                     .lineLimit(1)
@@ -705,7 +721,7 @@ struct DirectoryPickerView: View {
                                         .litterFont(.subheadline)
                                         .foregroundColor(LitterTheme.textPrimary)
                                         .lineLimit(1)
-                                    Text(recent.path)
+                                    Text(PathDisplay.display(recent.path, isLocal: selectedServerIsLocal))
                                         .litterFont(.caption2)
                                         .foregroundColor(LitterTheme.textMuted)
                                         .lineLimit(1)
@@ -792,7 +808,7 @@ struct DirectoryPickerView: View {
     private var bottomActionBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !model.currentPath.isEmpty {
-                Text(model.currentPath)
+                Text(PathDisplay.display(model.currentPath, isLocal: selectedServerIsLocal))
                     .litterFont(.caption)
                     .foregroundColor(LitterTheme.textMuted)
                     .lineLimit(1)

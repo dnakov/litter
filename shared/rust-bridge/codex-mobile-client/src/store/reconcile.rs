@@ -364,9 +364,15 @@ mod tests {
     use codex_app_server_protocol as upstream;
     use std::path::PathBuf;
 
+    fn test_abs_path(path: &str) -> codex_utils_absolute_path::AbsolutePathBuf {
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(path)
+            .expect("test path must be absolute")
+    }
+
     fn test_upstream_thread(id: &str) -> upstream::Thread {
         upstream::Thread {
             id: id.to_string(),
+            forked_from_id: None,
             preview: "hello".to_string(),
             ephemeral: false,
             model_provider: "openai".to_string(),
@@ -374,7 +380,7 @@ mod tests {
             updated_at: 2,
             status: upstream::ThreadStatus::Idle,
             path: Some(PathBuf::from("/tmp/thread.jsonl")),
-            cwd: PathBuf::from("/tmp"),
+            cwd: test_abs_path("/tmp"),
             cli_version: "1.0.0".to_string(),
             source: upstream::SessionSource::default(),
             agent_nickname: None,
@@ -457,6 +463,7 @@ mod tests {
                     balance: Some("5.00".to_string()),
                 }),
                 plan_type: Some(codex_protocol::account::PlanType::Plus),
+                rate_limit_reached_type: None,
             },
             rate_limits_by_limit_id: None,
         };
@@ -514,6 +521,7 @@ mod tests {
                 default_reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                 input_modalities: vec![codex_protocol::openai_models::InputModality::Text],
                 supports_personality: true,
+                additional_speed_tiers: Vec::new(),
                 is_default: true,
                 availability_nux: None,
                 upgrade_info: None,
@@ -557,6 +565,7 @@ mod tests {
         let list_response = upstream::ThreadListResponse {
             data: vec![test_upstream_thread("thread-1")],
             next_cursor: None,
+            backwards_cursor: None,
         };
 
         client

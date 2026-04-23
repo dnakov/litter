@@ -770,7 +770,8 @@ private extension HydratedConversationItemContent {
                         widgetHTML: data.widgetHtml,
                         width: CGFloat(data.width),
                         height: CGFloat(data.height),
-                        isFinalized: data.isFinalized
+                        isFinalized: data.isFinalized,
+                        appId: data.appId.flatMap { $0.isEmpty ? nil : $0 }
                     ),
                     status: data.status
                 )

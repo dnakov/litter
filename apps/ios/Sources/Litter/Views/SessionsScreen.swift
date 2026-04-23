@@ -1150,8 +1150,7 @@ struct SessionsScreen: View {
                 serverId: serverId,
                 params: launchConfig().threadStartRequest(
                     cwd: cwd,
-                    dynamicTools: ExperimentalFeatures.shared.isEnabled(.generativeUI)
-                        ? generativeUiDynamicToolSpecs() : nil
+                    dynamicTools: appModel.localGenerativeUiToolSpecs(for: serverId)
                 )
             )
             RecentDirectoryStore.shared.record(path: cwd, for: serverId)

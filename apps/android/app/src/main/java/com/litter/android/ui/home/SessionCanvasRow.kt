@@ -65,10 +65,12 @@ fun SessionCanvasRow(
     session: AppSessionSummary,
     zoomLevel: Int,
     isHydrating: Boolean,
+    isLocal: Boolean,
     onClick: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     // Rust's reducer already derives every field this card displays — last
     // response text, recent tool log, last-turn bounds — into `session`.
     // Reading `appModel.threadSnapshot(session.key)` here used to create a
@@ -211,7 +213,7 @@ fun SessionCanvasRow(
                     exit = fadeOut(tween(120)) + shrinkVertically(animationSpec = layerSpring),
                 ) {
                     Text(
-                        text = session.cwd.orEmpty(),
+                        text = com.litter.android.state.PathDisplay.display(session.cwd.orEmpty(), isLocal, context),
                         color = LitterTheme.textMuted.copy(alpha = 0.7f),
                         fontFamily = LitterTheme.monoFont,
                         fontSize = 10f.scaled,

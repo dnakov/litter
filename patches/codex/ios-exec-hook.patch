@@ -1,12 +1,12 @@
 diff --git a/codex-rs/core/src/exec.rs b/codex-rs/core/src/exec.rs
-index a4399ddc4..0ec92221b 100644
+index 396b7701be..a40731cbe3 100644
 --- a/codex-rs/core/src/exec.rs
 +++ b/codex-rs/core/src/exec.rs
-@@ -46,6 +46,21 @@ use codex_utils_absolute_path::AbsolutePathBuf;
+@@ -47,6 +47,57 @@ use codex_utils_absolute_path::AbsolutePathBuf;
  use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
  use codex_utils_pty::process_group::kill_child_process_group;
-
-+#[cfg(target_os = "ios")]
+ 
++#[cfg(any(target_os = "ios", target_os = "android"))]
 +use std::sync::OnceLock;
 +
 +/// Pluggable executor for platforms that cannot fork/exec (e.g. iOS).
@@ -21,13 +21,63 @@ index a4399ddc4..0ec92221b 100644
 +    let _ = IOS_EXEC_HOOK.set(f);
 +}
 +
++/// Resolve a CLI tool name (e.g. "git") to an absolute path on Android.
++///
++/// Android's app sandbox can fork/exec freely, but the only writable+executable
++/// location is the app's `nativeLibraryDir`, which the package installer
++/// populates from `jniLibs/<abi>/`. Bundled binaries are therefore named
++/// `lib<tool>.so` and must be looked up explicitly — they are not on PATH.
++///
++/// The resolver returns the resolved absolute path or `None` if the tool name
++/// is not bundled (in which case the original argv[0] is used unchanged and
++/// the standard PATH-based lookup runs).
++#[cfg(target_os = "android")]
++pub(crate) static ANDROID_TOOL_RESOLVER: OnceLock<fn(&str) -> Option<String>> = OnceLock::new();
++
++/// Register the Android tool resolver. Should be called once during platform
++/// init from the mobile client before any exec call is dispatched.
++#[cfg(target_os = "android")]
++pub fn set_android_tool_resolver(f: fn(&str) -> Option<String>) {
++    let _ = ANDROID_TOOL_RESOLVER.set(f);
++}
++
++/// Preflight mutator for mobile shell exec. Mutates `command` (argv) in
++/// place right before the platform-specific exec paths fire. Used by the
++/// mobile client to rewrite `/tmp/...` path tokens to the platform's real
++/// temporary directory, since iOS and Android sandboxes have no real
++/// `/tmp` of their own. Only installed on mobile; never fires for remote
++/// SSH/WebSocket execution (which never enters this function).
++#[cfg(any(target_os = "ios", target_os = "android"))]
++pub(crate) static MOBILE_EXEC_PREFLIGHT: OnceLock<fn(&mut Vec<String>)> = OnceLock::new();
++
++/// Register the mobile exec preflight. Called once from the mobile client's
++/// platform bootstrap (before any exec call).
++#[cfg(any(target_os = "ios", target_os = "android"))]
++pub fn set_mobile_exec_preflight(f: fn(&mut Vec<String>)) {
++    let _ = MOBILE_EXEC_PREFLIGHT.set(f);
++}
++
  pub const DEFAULT_EXEC_COMMAND_TIMEOUT_MS: u64 = 10_000;
-
+ 
  // Hardcode these since it does not seem worth including the libc crate just
-@@ -854,6 +869,34 @@ async fn exec(
+@@ -841,7 +892,8 @@ async fn exec(
+     after_spawn: Option<Box<dyn FnOnce() + Send>>,
+ ) -> Result<RawExecToolCallOutput> {
+     let ExecParams {
+-        command,
++        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
++        mut command,
+         cwd,
+         mut env,
+         network,
+@@ -860,6 +912,48 @@ async fn exec(
      if let Some(network) = network.as_ref() {
          network.apply_to_env(&mut env);
      }
++    #[cfg(any(target_os = "ios", target_os = "android"))]
++    if let Some(preflight) = MOBILE_EXEC_PREFLIGHT.get() {
++        preflight(&mut command);
++    }
 +    #[cfg(target_os = "ios")]
 +    {
 +        let (code, data) = IOS_EXEC_HOOK
@@ -56,14 +106,24 @@ index a4399ddc4..0ec92221b 100644
 +            timed_out: false,
 +        });
 +    }
-
++
++    #[cfg(target_os = "android")]
++    {
++        if let Some(resolver) = ANDROID_TOOL_RESOLVER.get()
++            && let Some(first) = command.first()
++            && let Some(resolved) = resolver(first.as_str())
++        {
++            command[0] = resolved;
++        }
++    }
+ 
      let (program, args) = command.split_first().ok_or_else(|| {
          CodexErr::Io(io::Error::new(
 diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
-index 2d992507b..4e021fb66 100644
+index 5181359698..28b48c9919 100644
 --- a/codex-rs/core/src/unified_exec/process_manager.rs
 +++ b/codex-rs/core/src/unified_exec/process_manager.rs
-@@ -235,6 +235,12 @@ impl UnifiedExecProcessManager {
+@@ -237,6 +237,12 @@ impl UnifiedExecProcessManager {
              .workdir
              .clone()
              .unwrap_or_else(|| context.turn.cwd.clone());
@@ -76,10 +136,10 @@ index 2d992507b..4e021fb66 100644
          let process = self
              .open_session_with_sandbox(&request, cwd.clone(), context)
              .await;
-@@ -402,6 +408,80 @@ impl UnifiedExecProcessManager {
+@@ -404,6 +410,84 @@ impl UnifiedExecProcessManager {
          Ok(response)
      }
-
+ 
 +    #[cfg(target_os = "ios")]
 +    async fn exec_command_ios(
 +        &self,
@@ -88,6 +148,7 @@ index 2d992507b..4e021fb66 100644
 +        context: &UnifiedExecContext,
 +    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
 +        use crate::exec::IOS_EXEC_HOOK;
++        use crate::exec::MOBILE_EXEC_PREFLIGHT;
 +
 +        let event_ctx = ToolEventCtx::new(
 +            context.session.as_ref(),
@@ -109,9 +170,12 @@ index 2d992507b..4e021fb66 100644
 +        );
 +        let start = Instant::now();
 +        let (exit_code, raw_output) = tokio::task::spawn_blocking({
-+            let command = request.command.clone();
++            let mut command = request.command.clone();
 +            let cwd = cwd.clone();
 +            move || {
++                if let Some(preflight) = MOBILE_EXEC_PREFLIGHT.get() {
++                    preflight(&mut command);
++                }
 +                IOS_EXEC_HOOK
 +                    .get()
 +                    .map(|f| f(&command, &cwd, &env))

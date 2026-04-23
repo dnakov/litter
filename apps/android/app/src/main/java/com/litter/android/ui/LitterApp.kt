@@ -169,9 +169,13 @@ fun LitterApp(appModel: AppModel) {
         }
 
         suspend fun startNewSession(serverId: String, cwd: String) {
+            val serverIsLocal = appModel.snapshot.value
+                ?.servers
+                ?.firstOrNull { it.serverId == serverId }
+                ?.isLocal == true
             val startedKey = appModel.client.startThread(
                 serverId,
-                appModel.launchState.threadStartRequest(cwd),
+                appModel.launchState.threadStartRequest(cwd, serverIsLocal = serverIsLocal),
             )
             RecentDirectoryStore(context).record(serverId, cwd)
             SavedThreadsStore.add(
@@ -285,6 +289,7 @@ fun LitterApp(appModel: AppModel) {
                                 }
                             }
                         },
+                        onOpenSavedApp = { appId -> navigate(Route.SavedApp(appId)) },
                     )
                 }
 
@@ -306,6 +311,7 @@ fun LitterApp(appModel: AppModel) {
                         onBack = navigateBack,
                         onInfo = { navigate(Route.ConversationInfo(route.key)) },
                         onShowDirectoryPicker = { openDirectoryPicker(route.key.serverId) },
+                        onOpenSavedApp = { appId -> navigate(Route.SavedApp(appId)) },
                     )
                 }
 
@@ -393,6 +399,21 @@ fun LitterApp(appModel: AppModel) {
                         onBack = navigateBack,
                     )
                 }
+
+                is Route.Apps -> {
+                    com.litter.android.ui.apps.AppsListScreen(
+                        onBack = navigateBack,
+                        onOpenApp = { appId -> navigate(Route.SavedApp(appId)) },
+                    )
+                }
+
+                is Route.SavedApp -> {
+                    com.litter.android.ui.apps.SavedAppScreen(
+                        appId = route.appId,
+                        onBack = navigateBack,
+                        onOpenConversation = { key -> navigate(Route.Conversation(key)) },
+                    )
+                }
             }
 
             // Global approval overlay
@@ -455,6 +476,10 @@ fun LitterApp(appModel: AppModel) {
                         showSettings = false
                         showAccountForServer = serverId
                     },
+                    onOpenApps = {
+                        showSettings = false
+                        navigate(Route.Apps)
+                    },
                 )
             }
         }
@@ -509,9 +534,13 @@ fun LitterApp(appModel: AppModel) {
                 val serverNames = remember(snapshot) {
                     snapshot?.servers?.associate { it.serverId to it.displayName } ?: emptyMap()
                 }
+                val isLocalById = remember(snapshot) {
+                    snapshot?.servers?.associate { it.serverId to it.isLocal } ?: emptyMap()
+                }
                 ProjectPickerSheet(
                     projects = projects,
                     serverNamesById = serverNames,
+                    isLocalById = isLocalById,
                     onSelect = { project ->
                         selectedServerId = project.serverId
                         selectedProject = project

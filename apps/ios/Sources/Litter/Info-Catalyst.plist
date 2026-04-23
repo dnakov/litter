@@ -52,6 +52,7 @@
 	<array>
 		<string>_codex._tcp</string>
 		<string>_ssh._tcp</string>
+		<string>_litter-pair._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Litter can import image files for conversations.</string>
@@ -59,6 +60,8 @@
 	<string>Codex discovers coding agents and SSH servers on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Litter uses the microphone for voice-to-text input.</string>
+	<key>NSNearbyInteractionUsageDescription</key>
+	<string>Litter uses Nearby Interaction to confirm your iPhone and Mac are close before pairing.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>BerkeleyMono-Regular.otf</string>

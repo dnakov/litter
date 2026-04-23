@@ -83,8 +83,11 @@ fn platform_value_round_trips_through_envelope() {
     let writebacks = cloud_sync_apply_snapshot(remote, bytes).expect("apply");
 
     // The font key should appear as a writeback for the platform.
-    assert!(writebacks.iter().any(|wb| wb.key == "fontFamily"
-        && wb.value_json == "\"JetBrainsMono\""));
+    assert!(
+        writebacks
+            .iter()
+            .any(|wb| wb.key == "fontFamily" && wb.value_json == "\"JetBrainsMono\"")
+    );
 }
 
 #[test]
@@ -95,9 +98,8 @@ fn unknown_platform_key_is_ignored_on_update() {
 
 #[test]
 fn invalid_json_value_returns_error() {
-    let err =
-        cloud_sync_update_platform_value("fontFamily".into(), "this is not json".into())
-            .unwrap_err();
+    let err = cloud_sync_update_platform_value("fontFamily".into(), "this is not json".into())
+        .unwrap_err();
     let msg = format!("{err:?}");
     assert!(msg.contains("InvalidJson"), "got: {msg}");
 }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -95,6 +97,7 @@ fun ConversationScreen(
     onInfo: (() -> Unit)? = null,
     onNavigateToSessions: (() -> Unit)? = null,
     onShowDirectoryPicker: (() -> Unit)? = null,
+    onOpenSavedApp: ((String) -> Unit)? = null,
 ) {
     val appModel = LocalAppModel.current
     val snapshot by appModel.snapshot.collectAsState()
@@ -131,6 +134,8 @@ fun ConversationScreen(
     val items = thread?.hydratedConversationItems ?: emptyList()
     val normalizedActiveTurnId = thread?.activeTurnId?.trim()?.takeIf { it.isNotEmpty() }
     val isThinking = thread?.info?.status?.isActiveStatus == true
+    val minigameOverlay by appModel.minigameOverlay.collectAsState()
+    val isMinigameActive = minigameOverlay !is com.litter.android.state.MinigameOverlayState.Idle
     val collapseTurns = ConversationPrefs.areTurnsCollapsed
     val agentDirectoryVersion = snapshot?.agentDirectoryVersion ?: 0uL
     val transcriptTurns = remember(items, thread?.info?.status, isThinking, collapseTurns) {
@@ -500,6 +505,7 @@ fun ConversationScreen(
                                                 ConversationTimelineItem(
                                                     item = entry.item,
                                                     serverId = threadKey.serverId,
+                                                    threadId = threadKey.threadId,
                                                     agentDirectoryVersion = agentDirectoryVersion,
                                                     latestCommandExecutionItemId = latestCommandExecutionItemId,
                                                     isLiveTurn = turn.isActiveTurn,
@@ -528,6 +534,23 @@ fun ConversationScreen(
                                                                 )
                                                                 appModel.store.setActiveThread(newKey)
                                                                 appModel.refreshSnapshot()
+                                                            } catch (_: Exception) {}
+                                                        }
+                                                    },
+                                                    onOpenSavedApp = onOpenSavedApp,
+                                                    onWidgetPrompt = { text ->
+                                                        scope.launch {
+                                                            try {
+                                                                val payload = com.litter.android.state.AppComposerPayload(
+                                                                    text = text,
+                                                                    additionalInputs = emptyList(),
+                                                                    approvalPolicy = appModel.launchState.approvalPolicyValue(threadKey),
+                                                                    sandboxPolicy = appModel.launchState.turnSandboxPolicy(threadKey),
+                                                                    model = appModel.launchState.snapshot.value.selectedModel.trim().ifEmpty { null },
+                                                                    reasoningEffort = null,
+                                                                    serviceTier = null,
+                                                                )
+                                                                appModel.startTurn(threadKey, payload)
                                                             } catch (_: Exception) {}
                                                         }
                                                     },
@@ -619,7 +642,32 @@ fun ConversationScreen(
             }
 
             // Bottom area: gradient fade + pinned context + composer + nav bar inset
-            Column(modifier = Modifier.fillMaxWidth()) {
+            // Hidden while the thinking-minigame overlay is up.
+            if (!isMinigameActive) Column(modifier = Modifier.fillMaxWidth()) {
+                // Floating minigame launcher — visible only while thinking,
+                // gated by the experimental flag.
+                val minigameFeatureOn = com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                    com.litter.android.ui.LitterFeature.THINKING_MINIGAME,
+                )
+                if (minigameFeatureOn) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                        horizontalArrangement = Arrangement.Start,
+                    ) {
+                        MinigameLaunchButton(onClick = {
+                            val (lastUser, lastAssistant) = lastUserAndAssistantText(items)
+                            appModel.requestMinigame(
+                                parentThreadId = threadKey.threadId,
+                                serverId = threadKey.serverId,
+                                lastUserMessage = lastUser,
+                                lastAssistantMessage = lastAssistant,
+                            )
+                        })
+                    }
+                }
+
                 // Gradient fade from transparent to scrim
                 if (hasWallpaper) {
                     Box(
@@ -732,6 +780,34 @@ fun ConversationScreen(
 
                     Spacer(Modifier.navigationBarsPadding())
                 }
+            }
+        }
+
+        // Thinking-indicator minigame overlay: bottom 40% of the screen.
+        if (isMinigameActive) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.4f)
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                    .navigationBarsPadding(),
+            ) {
+                MinigameOverlay(
+                    state = minigameOverlay,
+                    onClose = { appModel.dismissMinigame() },
+                    onRetry = {
+                        val (lastUser, lastAssistant) = lastUserAndAssistantText(items)
+                        appModel.dismissMinigame()
+                        appModel.requestMinigame(
+                            parentThreadId = threadKey.threadId,
+                            serverId = threadKey.serverId,
+                            lastUserMessage = lastUser,
+                            lastAssistantMessage = lastAssistant,
+                        )
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
 
@@ -1377,6 +1453,22 @@ private fun SessionDiffSectionHeader(
     }
 }
 
+private fun lastUserAndAssistantText(
+    items: List<uniffi.codex_mobile_client.HydratedConversationItem>,
+): Pair<String?, String?> {
+    var lastUser: String? = null
+    var lastAssistant: String? = null
+    for (item in items.reversed()) {
+        when (val c = item.content) {
+            is HydratedConversationItemContent.User -> if (lastUser == null) lastUser = c.v1.text
+            is HydratedConversationItemContent.Assistant -> if (lastAssistant == null) lastAssistant = c.v1.text
+            else -> {}
+        }
+        if (lastUser != null && lastAssistant != null) break
+    }
+    return lastUser to lastAssistant
+}
+
 /**
  * Shimmering "Thinking..." text shown while the assistant is working.
  */
@@ -1407,4 +1499,25 @@ private fun StreamingCursor() {
         fontWeight = FontWeight.Medium,
         style = TextStyle(brush = shimmerBrush),
     )
+}
+
+@Composable
+private fun MinigameLaunchButton(onClick: () -> Unit) {
+    androidx.compose.material3.Surface(
+        onClick = onClick,
+        shape = androidx.compose.foundation.shape.CircleShape,
+        color = LitterTheme.surface.copy(alpha = 0.9f),
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, LitterTheme.accent.copy(alpha = 0.3f)),
+        shadowElevation = 2.dp,
+        modifier = Modifier.size(36.dp),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = Icons.Filled.SportsEsports,
+                contentDescription = "Play a minigame while waiting",
+                tint = LitterTheme.accent,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
 }

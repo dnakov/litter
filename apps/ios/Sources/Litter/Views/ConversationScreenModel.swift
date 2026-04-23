@@ -69,6 +69,20 @@ struct ConversationActiveTaskSummary: Equatable {
     var detail: String
 }
 
+struct MinigameContent: Equatable {
+    let html: String
+    let title: String
+    let width: CGFloat
+    let height: CGFloat
+}
+
+enum MinigameOverlayState: Equatable {
+    case idle
+    case loading
+    case shown(MinigameContent)
+    case failed(String)
+}
+
 @MainActor
 @Observable
 final class ConversationScreenModel {
@@ -76,6 +90,7 @@ final class ConversationScreenModel {
     private(set) var pinnedContextItems: [ConversationItem] = []
     private(set) var composer: ConversationComposerSnapshot = .empty
     private(set) var followScrollToken = 0
+    private(set) var minigameOverlay: MinigameOverlayState = .idle
 
     @ObservationIgnored private var thread: AppThreadSnapshot?
     @ObservationIgnored private var appModel: AppModel?
@@ -84,6 +99,7 @@ final class ConversationScreenModel {
     @ObservationIgnored private var cachedHydratedConversationItems: [HydratedConversationItem] = []
     @ObservationIgnored private var cachedProjectedConversationItems: [ConversationItem] = []
     @ObservationIgnored private var transcriptRevision: Int = 0
+    @ObservationIgnored private var minigameTask: Task<Void, Never>?
 
     func bind(
         thread: AppThreadSnapshot,
@@ -104,6 +120,9 @@ final class ConversationScreenModel {
             cachedConversationItemProjections = [:]
             cachedProjectedConversationItems = []
             transcriptRevision = 0
+            minigameTask?.cancel()
+            minigameTask = nil
+            minigameOverlay = .idle
         }
 
         refreshState()
@@ -195,6 +214,63 @@ final class ConversationScreenModel {
         if followScrollToken != nextFollowScrollToken {
             followScrollToken = nextFollowScrollToken
         }
+    }
+}
+
+extension ConversationScreenModel {
+    func requestMinigame() {
+        guard ExperimentalFeatures.shared.isEnabled(.thinkingMinigame) else { return }
+        guard minigameOverlay == .idle else { return }
+        guard let thread, let appModel else { return }
+
+        var lastUser: String?
+        var lastAssistant: String?
+        for item in transcript.items.reversed() {
+            switch item.content {
+            case .user(let data) where lastUser == nil:
+                lastUser = data.text
+            case .assistant(let data) where lastAssistant == nil:
+                lastAssistant = data.text
+            default:
+                break
+            }
+            if lastUser != nil && lastAssistant != nil { break }
+        }
+
+        minigameOverlay = .loading
+        minigameTask?.cancel()
+
+        let request = AppMinigameRequest(
+            serverId: thread.key.serverId,
+            parentThreadId: thread.key.threadId,
+            lastUserMessage: lastUser,
+            lastAssistantMessage: lastAssistant
+        )
+        let client = appModel.client
+
+        minigameTask = Task { @MainActor [weak self] in
+            do {
+                let result = try await client.startMinigame(request: request)
+                guard let self else { return }
+                if Task.isCancelled { return }
+                self.minigameOverlay = .shown(MinigameContent(
+                    html: result.widgetHtml,
+                    title: result.title,
+                    width: CGFloat(result.width),
+                    height: CGFloat(result.height)
+                ))
+            } catch {
+                guard let self else { return }
+                if Task.isCancelled { return }
+                self.minigameOverlay = .failed(String(describing: error))
+            }
+        }
+    }
+
+    func dismissMinigame() {
+        minigameTask?.cancel()
+        minigameTask = nil
+        minigameOverlay = .idle
     }
 }
 

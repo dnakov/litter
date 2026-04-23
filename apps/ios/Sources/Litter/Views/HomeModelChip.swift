@@ -2,9 +2,9 @@ import SwiftUI
 
 /// Small tap-to-open model picker for the home composer bar, styled to
 /// match `ProjectChip` so the two sit together above the input. Reads +
-/// writes `appState.selectedModel` / `appState.reasoningEffort` — the same
-/// pre-thread state the conversation view uses — so the choice rides
-/// through into the first `startThread` call.
+/// writes the persisted home defaults (`appState.preferredModel` /
+/// `appState.preferredReasoningEffort`) so the choice survives thread
+/// switches and app relaunches before the next `startThread` call.
 struct HomeModelChip: View {
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
@@ -39,7 +39,7 @@ struct HomeModelChip: View {
     }
 
     private var selectedModelLabel: String {
-        let trimmed = appState.selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = appState.preferredModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             if let match = availableModels.first(where: { $0.id == trimmed }) {
                 return match.displayName
@@ -53,22 +53,22 @@ struct HomeModelChip: View {
     }
 
     private var reasoningLabel: String {
-        let trimmed = appState.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = appState.preferredReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
         return ""
     }
 
     private var selectedModelBinding: Binding<String> {
         Binding(
-            get: { appState.selectedModel },
-            set: { appState.selectedModel = $0 }
+            get: { appState.preferredModel },
+            set: { appState.preferredModel = $0 }
         )
     }
 
     private var reasoningEffortBinding: Binding<String> {
         Binding(
-            get: { appState.reasoningEffort },
-            set: { appState.reasoningEffort = $0 }
+            get: { appState.preferredReasoningEffort },
+            set: { appState.preferredReasoningEffort = $0 }
         )
     }
 
@@ -134,6 +134,8 @@ struct HomeModelChip: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+            .presentationBackground(LitterTheme.surface)
         }
         .task(id: serverId) {
             guard let serverId else { return }

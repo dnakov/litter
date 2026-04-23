@@ -13,8 +13,6 @@ import uniffi.codex_mobile_client.AppSandboxMode
 import uniffi.codex_mobile_client.AppSandboxPolicy
 import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.generativeUiDynamicToolSpecs
-import com.litter.android.ui.ExperimentalFeatures
-import com.litter.android.ui.LitterFeature
 
 data class ThreadPermissionOverride(
     val approvalPolicy: String,
@@ -41,6 +39,7 @@ private const val DEFAULT_SANDBOX_MODE = "inherit"
 private const val CUSTOM_PERMISSION_VALUE = "custom"
 
 class AppLaunchState(context: Context) {
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _snapshot = MutableStateFlow(
         AppLaunchStateSnapshot(
@@ -169,11 +168,16 @@ class AppLaunchState(context: Context) {
             sandboxModeValue()?.toTurnSandboxPolicy()
         }
 
-    fun threadStartRequest(cwd: String, modelOverride: String? = null) =
+    fun threadStartRequest(
+        cwd: String,
+        modelOverride: String? = null,
+        serverIsLocal: Boolean = false,
+    ) =
         launchConfig(modelOverride).toAppStartThreadRequest(
-            cwd = cwd.normalizedOrFallback("/"),
-            dynamicTools = if (ExperimentalFeatures.isEnabled(LitterFeature.GENERATIVE_UI))
-                generativeUiDynamicToolSpecs() else null,
+            cwd = cwd.normalizedOrFallback(
+                if (serverIsLocal) HomeAnchor.path(appContext) else "/",
+            ),
+            dynamicTools = if (serverIsLocal) generativeUiDynamicToolSpecs() else null,
         ).also { updateCurrentCwd(it.cwd) }
 
     fun threadResumeRequest(

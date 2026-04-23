@@ -201,7 +201,8 @@ struct HeaderView: View {
     private var sessionDirectoryLabel: String {
         let currentDirectory = (thread.info.cwd ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !currentDirectory.isEmpty {
-            return abbreviateHomePath(currentDirectory)
+            let isLocal = appModel.isLocalServer(serverId: thread.key.serverId)
+            return PathDisplay.display(currentDirectory, isLocal: isLocal)
         }
 
         return "~"
@@ -462,7 +463,7 @@ struct InlineModelSelectorView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(models) { model in
                         Button {
                             selectedModel = model.id
@@ -509,7 +510,7 @@ struct InlineModelSelectorView: View {
                     }
                 }
             }
-            .frame(maxHeight: 260)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             if let info = currentModel, !info.supportedReasoningEfforts.isEmpty {
                 Divider().background(LitterTheme.separator).padding(.horizontal, 12)
@@ -607,7 +608,8 @@ struct InlineModelSelectorView: View {
             .padding(.vertical, 8)
         }
         .padding(.vertical, 4)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(LitterTheme.surface)
     }
 }
 

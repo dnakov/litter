@@ -29,7 +29,7 @@ fn path_buf_from_mobile(value: AbsolutePath) -> PathBuf {
     PathBuf::from(value.value)
 }
 
-fn ask_for_approval_into_upstream(value: AppAskForApproval) -> upstream::AskForApproval {
+pub(crate) fn ask_for_approval_into_upstream(value: AppAskForApproval) -> upstream::AskForApproval {
     match value {
         AppAskForApproval::UnlessTrusted => upstream::AskForApproval::UnlessTrusted,
         AppAskForApproval::OnFailure => upstream::AskForApproval::OnFailure,
@@ -51,7 +51,7 @@ fn ask_for_approval_into_upstream(value: AppAskForApproval) -> upstream::AskForA
     }
 }
 
-fn sandbox_mode_into_upstream(value: AppSandboxMode) -> upstream::SandboxMode {
+pub(crate) fn sandbox_mode_into_upstream(value: AppSandboxMode) -> upstream::SandboxMode {
     match value {
         AppSandboxMode::ReadOnly => upstream::SandboxMode::ReadOnly,
         AppSandboxMode::WorkspaceWrite => upstream::SandboxMode::WorkspaceWrite,
@@ -59,14 +59,14 @@ fn sandbox_mode_into_upstream(value: AppSandboxMode) -> upstream::SandboxMode {
     }
 }
 
-fn service_tier_into_upstream(value: ServiceTier) -> CoreServiceTier {
+pub(crate) fn service_tier_into_upstream(value: ServiceTier) -> CoreServiceTier {
     match value {
         ServiceTier::Fast => CoreServiceTier::Fast,
         ServiceTier::Flex => CoreServiceTier::Flex,
     }
 }
 
-fn reasoning_effort_into_upstream(value: ReasoningEffort) -> CoreReasoningEffort {
+pub(crate) fn reasoning_effort_into_upstream(value: ReasoningEffort) -> CoreReasoningEffort {
     match value {
         ReasoningEffort::None => CoreReasoningEffort::None,
         ReasoningEffort::Minimal => CoreReasoningEffort::Minimal,
@@ -320,6 +320,9 @@ pub struct AppStartThreadRequest {
     pub developer_instructions: Option<String>,
     pub persist_extended_history: bool,
     pub dynamic_tools: Option<Vec<AppDynamicToolSpec>>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub ephemeral: Option<bool>,
 }
 
 impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
@@ -339,7 +342,7 @@ impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
             base_instructions: None,
             developer_instructions: value.developer_instructions,
             personality: None,
-            ephemeral: None,
+            ephemeral: value.ephemeral,
             session_start_source: None,
             dynamic_tools: value
                 .dynamic_tools
@@ -578,6 +581,12 @@ pub struct AppStartTurnRequest {
     pub model: Option<String>,
     pub service_tier: Option<ServiceTier>,
     pub effort: Option<ReasoningEffort>,
+    /// Raw JSON Schema that constrains the assistant's final message to
+    /// valid JSON matching the schema. Forwarded verbatim to upstream
+    /// `TurnStartParams.output_schema`.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub output_schema: Option<String>,
 }
 
 impl TryFrom<AppStartTurnRequest> for upstream::TurnStartParams {
@@ -604,7 +613,17 @@ impl TryFrom<AppStartTurnRequest> for upstream::TurnStartParams {
             effort: value.effort.map(reasoning_effort_into_upstream),
             summary: None,
             personality: None,
-            output_schema: None,
+            output_schema: value
+                .output_schema
+                .as_deref()
+                .map(|raw| {
+                    serde_json::from_str::<serde_json::Value>(raw).map_err(|e| {
+                        RpcClientError::Serialization(format!(
+                            "parse AppStartTurnRequest.output_schema: {e}"
+                        ))
+                    })
+                })
+                .transpose()?,
             collaboration_mode: None,
         })
     }

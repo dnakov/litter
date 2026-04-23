@@ -61,6 +61,15 @@ impl AppClient {
         params: types::AppStartThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            // New thread: no `thread_id` yet, so no saved apps to
+            // reference. `saved_apps_context_for_thread` returns None
+            // for an unknown thread; `splice_saved_apps_context` is a
+            // no-op in that case, preserving existing behavior.
+            let mut params = params;
+            params.developer_instructions =
+                splice_saved_apps_context(c.as_ref(), None, params.developer_instructions);
+            params.developer_instructions =
+                splice_generative_ui_preamble(&params.dynamic_tools, params.developer_instructions);
             let params = convert_params::<_, upstream::ThreadStartParams>(params)?;
             let response: upstream::ThreadStartResponse =
                 rpc(c.as_ref(), &server_id, req!(server_id, ThreadStart, params)).await?;
@@ -75,6 +84,20 @@ impl AppClient {
         params: types::AppResumeThreadRequest,
     ) -> Result<types::ThreadKey, ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
+            // Prepend "Apps saved in this thread so far: …" to the
+            // developer_instructions so the model knows which slugs are
+            // already in use.
+            let mut params = params;
+            let thread_id = params.thread_id.clone();
+            params.developer_instructions = splice_saved_apps_context(
+                c.as_ref(),
+                Some(thread_id.as_str()),
+                params.developer_instructions,
+            );
+            // Resume requests don't carry `dynamic_tools` (the server
+            // remembers them from start). The preamble was injected at
+            // start_thread; developer_instructions persist server-side
+            // across turns, so no re-injection needed here.
             let params = convert_params::<_, upstream::ThreadResumeParams>(params)?;
             let response: upstream::ThreadResumeResponse = rpc(
                 c.as_ref(),
@@ -85,6 +108,24 @@ impl AppClient {
             c.apply_thread_resume_response(&server_id, &response)
                 .map_err(ClientError::Serialization)
         })
+    }
+
+    /// Register the directory where `saved_apps.rs` persists the app
+    /// index + per-app files. Platforms (iOS/Android) call this once at
+    /// process start with the same path they pass to `saved_apps_list`.
+    /// When set, the `show_widget` auto-upsert hook in the dynamic-tool
+    /// handler uses this directory to persist finalized widgets.
+    pub fn set_saved_apps_directory(&self, directory: String) {
+        let mut guard = self
+            .inner
+            .saved_apps_directory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = if directory.is_empty() {
+            None
+        } else {
+            Some(directory)
+        };
     }
 
     pub async fn fork_thread(
@@ -617,7 +658,12 @@ impl AppClient {
             })?;
             let snapshot = build_snapshot_from_wire(wire)?;
 
-            cache_insert(&c.ambient_cache, &server_id, &project_root, snapshot.clone());
+            cache_insert(
+                &c.ambient_cache,
+                &server_id,
+                &project_root,
+                snapshot.clone(),
+            );
             Ok(Some(snapshot))
         })
     }
@@ -742,7 +788,9 @@ impl AppClient {
             .codex_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
-        let handle = attach.handle.map(|h| Arc::new(LocalServerProcessHandle::new(h)));
+        let handle = attach
+            .handle
+            .map(|h| Arc::new(LocalServerProcessHandle::new(h)));
 
         Ok(LocalServerConnection {
             host: "127.0.0.1".to_string(),
@@ -753,6 +801,170 @@ impl AppClient {
             handle,
         })
     }
+
+    // ── Saved apps update ────────────────────────────────────────────────
+
+    /// Spin a short-lived hidden thread on `server_id`, seed it with the
+    /// saved app's current HTML + abbreviated state shape, send
+    /// `user_prompt`, and wait for the first finalized `show_widget`
+    /// call. On success, replace the saved app's HTML on disk. On
+    /// failure or cancellation, the saved app is left untouched. The
+    /// hidden thread is cleaned up either way (archived on the server;
+    /// also removed from the local hidden-threads list).
+    pub async fn update_saved_app(
+        &self,
+        server_id: String,
+        directory: String,
+        app_id: String,
+        user_prompt: String,
+    ) -> SavedAppUpdateResult {
+        let inner = Arc::clone(&self.inner);
+        let rt = Arc::clone(&self.rt);
+        let task = rt.spawn_blocking(move || {
+            let inner = Arc::clone(&inner);
+            let rt_for_block = Arc::clone(&crate::ffi::shared::shared_runtime());
+            rt_for_block.block_on(async move {
+                perform_update_saved_app(inner.as_ref(), server_id, directory, app_id, user_prompt)
+                    .await
+            })
+        });
+        match task.await {
+            Ok(result) => result,
+            Err(error) => SavedAppUpdateResult::Error {
+                message: format!("update_saved_app task join failed: {error}"),
+            },
+        }
+    }
+
+    // ── Minigame ─────────────────────────────────────────────────────────
+
+    /// Spin an ephemeral thread, generate a minigame via `show_widget`,
+    /// persist it under `parent_thread_id`, and return the result.
+    /// Times out after 30 seconds. Errors are returned as
+    /// `ClientError::MinigameGenerationFailed`.
+    pub async fn start_minigame(
+        &self,
+        request: AppMinigameRequest,
+    ) -> Result<AppMinigameResult, crate::ffi::ClientError> {
+        let inner = Arc::clone(&self.inner);
+        let mg_request = crate::mobile_client::minigame::MinigameRequest {
+            server_id: request.server_id,
+            parent_thread_id: request.parent_thread_id,
+            last_user_message: request.last_user_message,
+            last_assistant_message: request.last_assistant_message,
+        };
+        crate::mobile_client::minigame::run_minigame(inner.as_ref(), mg_request)
+            .await
+            .map(|result| AppMinigameResult {
+                ephemeral_thread_id: result.ephemeral_thread_id,
+                widget_html: result.widget_html,
+                title: result.title,
+                width: result.width,
+                height: result.height,
+            })
+            .map_err(crate::ffi::ClientError::MinigameGenerationFailed)
+    }
+
+    // ── Structured response (for app-mode `window.structuredResponse`) ───
+
+    /// One-shot schema-constrained query against an ephemeral hidden
+    /// thread. `cached_thread_id` is `None` on the first call from a saved
+    /// app view; the helper starts an ephemeral thread, sends the turn with
+    /// `output_schema` set, waits for the final assistant message, and
+    /// returns the (JSON-string) response plus the resolved thread id so
+    /// the host can cache it for subsequent calls in the same view.
+    ///
+    /// On a stale cached thread id (server reconnect, ephemeral thread
+    /// gone), the helper transparently creates a fresh ephemeral thread
+    /// and retries once. The caller should always overwrite its cache
+    /// with the returned `thread_id`.
+    pub async fn structured_response(
+        &self,
+        server_id: String,
+        cached_thread_id: Option<String>,
+        prompt: String,
+        output_schema_json: String,
+    ) -> StructuredResponseResult {
+        let inner = Arc::clone(&self.inner);
+        let rt = Arc::clone(&self.rt);
+        let task = rt.spawn_blocking(move || {
+            let inner = Arc::clone(&inner);
+            let rt_for_block = Arc::clone(&crate::ffi::shared::shared_runtime());
+            rt_for_block.block_on(async move {
+                perform_structured_response(
+                    inner.as_ref(),
+                    server_id,
+                    cached_thread_id,
+                    prompt,
+                    output_schema_json,
+                )
+                .await
+            })
+        });
+        match task.await {
+            Ok(result) => result,
+            Err(error) => StructuredResponseResult::Error {
+                message: format!("structured_response task join failed: {error}"),
+            },
+        }
+    }
+
+    // ── iPhone ↔ Mac proximity pairing ───────────────────────────────────
+
+    /// Start the Mac-side pair host: bind a TCP listener, accept inbound
+    /// pair WebSocket connections, and stage NI discovery tokens. Returns
+    /// the bound port + Bonjour TXT entries so Swift can publish a
+    /// `_litter-pair._tcp.` NetService alongside the Feature A local
+    /// codex.
+    ///
+    /// `device_name` is the Mac's user-facing name (used as Bonjour
+    /// instance name suggestion). `mac_id` is a stable per-Mac UUID
+    /// (Swift persists this in UserDefaults — random UUID on first call).
+    pub async fn start_pair_host(
+        &self,
+        device_name: String,
+        mac_id: String,
+        codex_port: u16,
+    ) -> Result<PairHostStartResult, ClientError> {
+        let rt = Arc::clone(&self.rt);
+        let result = rt
+            .spawn(
+                async move { crate::pair::start_pair_host(device_name, mac_id, codex_port).await },
+            )
+            .await
+            .map_err(|err| ClientError::Rpc(format!("task join error: {err}")))?
+            .map_err(|err| ClientError::Transport(err.to_string()))?;
+        let (handle, info) = result;
+        Ok(PairHostStartResult { handle, info })
+    }
+
+    /// Open a WebSocket pair connection from the iPhone to the Mac's
+    /// pair host. Sends the iPhone's hello inline; subsequent state is
+    /// surfaced via the returned handle's `poll_event`.
+    pub async fn pair_from_iphone(
+        &self,
+        host: String,
+        port: u16,
+        device_name: String,
+        ni_discovery_token_b64: String,
+    ) -> Result<Arc<crate::pair::PairClientHandle>, ClientError> {
+        let rt = Arc::clone(&self.rt);
+        rt.spawn(async move {
+            crate::pair::pair_from_iphone(host, port, device_name, ni_discovery_token_b64).await
+        })
+        .await
+        .map_err(|err| ClientError::Rpc(format!("task join error: {err}")))?
+        .map_err(|err| ClientError::Transport(err.to_string()))
+    }
+}
+
+/// Result of `AppClient::start_pair_host` — bundles the host handle (used
+/// by Swift to drive the state machine) with the Bonjour publish info
+/// (used by Swift to advertise a NetService).
+#[derive(uniffi::Record)]
+pub struct PairHostStartResult {
+    pub handle: Arc<crate::pair::PairHostHandle>,
+    pub info: crate::pair::PairServiceInfo,
 }
 
 /// Owning wrapper around a spawned `codex app-server` process. Exposed
@@ -1045,9 +1257,741 @@ fn inline_image_data(raw: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
+/// Return the "Apps saved in this thread so far: …" context line for
+/// the given `thread_id`, or `None` when:
+/// - `thread_id` is `None` (no thread yet, nothing to reference),
+/// - the saved-apps directory hasn't been registered by the platform,
+/// - the directory has no apps for this thread.
+fn saved_apps_context_line(client: &MobileClient, thread_id: Option<&str>) -> Option<String> {
+    let thread_id = thread_id?;
+    let directory = {
+        let guard = client
+            .saved_apps_directory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.clone()?
+    };
+    let apps = crate::saved_apps::saved_apps_for_thread(directory, thread_id.to_string());
+    if apps.is_empty() {
+        return None;
+    }
+    let joined = apps
+        .iter()
+        .map(|app| format!("{} ({})", app.app_id, app.title))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("Apps saved in this thread so far: {joined}"))
+}
+
+/// Prepend the saved-apps context line to `existing` if the thread has
+/// any saved apps. If there are no apps (or no thread yet), returns
+/// `existing` unchanged so callers can feed this directly into the RPC
+/// request params.
+fn splice_saved_apps_context(
+    client: &MobileClient,
+    thread_id: Option<&str>,
+    existing: Option<String>,
+) -> Option<String> {
+    let Some(line) = saved_apps_context_line(client, thread_id) else {
+        return existing;
+    };
+    Some(match existing {
+        Some(prev) if !prev.trim().is_empty() => format!("{line}\n\n{prev}"),
+        _ => line,
+    })
+}
+
+/// Prepend the generative-UI preamble when this thread is registering the
+/// `show_widget` / `visualize_read_me` dynamic tools (i.e., a local-server
+/// thread per the I3/A3 gating rule). Platforms decide whether to pass
+/// these tools in; Rust just checks the request and conditionally injects
+/// the nudge.
+fn splice_generative_ui_preamble(
+    dynamic_tools: &Option<Vec<crate::types::models::AppDynamicToolSpec>>,
+    existing: Option<String>,
+) -> Option<String> {
+    let has_show_widget = dynamic_tools
+        .as_ref()
+        .map(|tools| tools.iter().any(|t| t.name == "show_widget"))
+        .unwrap_or(false);
+    if !has_show_widget {
+        return existing;
+    }
+    let preamble = crate::widget_guidelines::GENERATIVE_UI_PREAMBLE;
+    Some(match existing {
+        Some(prev) if !prev.trim().is_empty() => format!("{preamble}\n\n{prev}"),
+        _ => preamble.to_string(),
+    })
+}
+
+// ── Saved apps update helpers ────────────────────────────────────────────
+
+/// Typed result of `AppClient::update_saved_app`.
+#[derive(uniffi::Enum)]
+pub enum SavedAppUpdateResult {
+    Success { app: crate::saved_apps::SavedApp },
+    Error { message: String },
+}
+
+/// Typed result of `AppClient::structured_response`.
+#[derive(uniffi::Enum)]
+pub enum StructuredResponseResult {
+    Success {
+        /// The ephemeral thread id the call landed on. The caller MUST
+        /// overwrite its cache from this value on every success — on
+        /// stale-thread recovery this differs from the `cached_thread_id`
+        /// passed in.
+        thread_id: String,
+        /// Raw JSON string matching the caller's `output_schema`. The
+        /// caller is expected to `JSON.parse` it.
+        response_json: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+// ── Minigame types ───────────────────────────────────────────────────────
+
+/// Request to `AppClient::start_minigame`.
+#[derive(uniffi::Record)]
+pub struct AppMinigameRequest {
+    pub server_id: String,
+    pub parent_thread_id: String,
+    pub last_user_message: Option<String>,
+    pub last_assistant_message: Option<String>,
+}
+
+/// Successful result of `AppClient::start_minigame`.
+#[derive(uniffi::Record)]
+pub struct AppMinigameResult {
+    pub ephemeral_thread_id: String,
+    pub widget_html: String,
+    pub title: String,
+    pub width: f64,
+    pub height: f64,
+}
+
+const STRUCTURED_RESPONSE_TIMEOUT_SECS: u64 = 60;
+
+const SAVED_APP_UPDATE_TIMEOUT_SECS: u64 = 120;
+
+fn is_stale_thread_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("thread not found")
+        || lower.contains("conversation not found")
+        || lower.contains("unknown thread")
+        || lower.contains("no such thread")
+}
+
+async fn start_ephemeral_thread_for_structured(
+    client: &crate::MobileClient,
+    server_id: &str,
+) -> Result<String, String> {
+    let start_params = upstream::ThreadStartParams {
+        model: None,
+        model_provider: None,
+        service_tier: None,
+        cwd: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox: None,
+        config: None,
+        service_name: None,
+        base_instructions: None,
+        developer_instructions: None,
+        personality: None,
+        ephemeral: Some(true),
+        session_start_source: None,
+        dynamic_tools: None,
+        mock_experimental_field: None,
+        experimental_raw_events: false,
+        persist_extended_history: false,
+    };
+    let response: upstream::ThreadStartResponse = client
+        .request_typed_for_server(
+            server_id,
+            upstream::ClientRequest::ThreadStart {
+                request_id: upstream::RequestId::Integer(next_request_id()),
+                params: start_params,
+            },
+        )
+        .await
+        .map_err(|e| format!("thread/start failed: {e}"))?;
+    Ok(response.thread.id)
+}
+
+async fn run_structured_turn(
+    client: &crate::MobileClient,
+    server_id: &str,
+    thread_id: &str,
+    prompt: &str,
+    output_schema: serde_json::Value,
+) -> Result<String, StructuredTurnError> {
+    // Subscribe BEFORE sending the turn so we don't miss a very fast
+    // completion. `UiEvent` is the typed, thread-scoped event stream the
+    // mobile client already fans out to the store.
+    let mut events_rx = client.event_processor.subscribe();
+
+    let turn_params = upstream::TurnStartParams {
+        thread_id: thread_id.to_string(),
+        input: vec![upstream::UserInput::Text {
+            text: prompt.to_string(),
+            text_elements: Vec::new(),
+        }],
+        responsesapi_client_metadata: None,
+        cwd: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox_policy: None,
+        model: None,
+        service_tier: None,
+        effort: None,
+        summary: None,
+        personality: None,
+        output_schema: Some(output_schema),
+        collaboration_mode: None,
+    };
+    let turn_outcome: Result<upstream::TurnStartResponse, _> = client
+        .request_typed_for_server(
+            server_id,
+            upstream::ClientRequest::TurnStart {
+                request_id: upstream::RequestId::Integer(next_request_id()),
+                params: turn_params,
+            },
+        )
+        .await;
+    if let Err(e) = turn_outcome {
+        if is_stale_thread_error(&e) {
+            return Err(StructuredTurnError::StaleThread);
+        }
+        return Err(StructuredTurnError::Fatal(format!("turn/start failed: {e}")));
+    }
+
+    let wait_outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(STRUCTURED_RESPONSE_TIMEOUT_SECS),
+        async {
+            let mut last_agent_text: Option<String> = None;
+            loop {
+                match events_rx.recv().await {
+                    Ok(crate::session::events::UiEvent::ItemCompleted { notification, .. })
+                        if notification.thread_id == thread_id =>
+                    {
+                        if let upstream::ThreadItem::AgentMessage { text, .. } = &notification.item
+                        {
+                            last_agent_text = Some(text.clone());
+                        }
+                    }
+                    Ok(crate::session::events::UiEvent::TurnCompleted { key, error, .. })
+                        if key.thread_id == thread_id && key.server_id == server_id =>
+                    {
+                        return Ok((last_agent_text, error));
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err("event stream closed".to_string());
+                    }
+                }
+            }
+        },
+    )
+    .await;
+
+    match wait_outcome {
+        Ok(Ok((_, Some(err)))) => Err(StructuredTurnError::Fatal(err)),
+        Ok(Ok((Some(text), None))) => Ok(text),
+        Ok(Ok((None, None))) => Err(StructuredTurnError::Fatal(
+            "turn completed with no assistant message".to_string(),
+        )),
+        Ok(Err(msg)) => Err(StructuredTurnError::Fatal(msg)),
+        Err(_) => Err(StructuredTurnError::Fatal(format!(
+            "timed out after {STRUCTURED_RESPONSE_TIMEOUT_SECS}s waiting for structured response"
+        ))),
+    }
+}
+
+enum StructuredTurnError {
+    StaleThread,
+    Fatal(String),
+}
+
+async fn perform_structured_response(
+    client: &crate::MobileClient,
+    server_id: String,
+    cached_thread_id: Option<String>,
+    prompt: String,
+    output_schema_json: String,
+) -> StructuredResponseResult {
+    if prompt.trim().is_empty() {
+        return StructuredResponseResult::Error {
+            message: "prompt is empty".to_string(),
+        };
+    }
+    let schema: serde_json::Value = match serde_json::from_str(&output_schema_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return StructuredResponseResult::Error {
+                message: format!("invalid responseFormat JSON schema: {e}"),
+            };
+        }
+    };
+
+    // First attempt: use cached id if provided, otherwise start fresh.
+    let mut thread_id = match cached_thread_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => match start_ephemeral_thread_for_structured(client, &server_id).await {
+            Ok(id) => id,
+            Err(e) => return StructuredResponseResult::Error { message: e },
+        },
+    };
+
+    match run_structured_turn(client, &server_id, &thread_id, &prompt, schema.clone()).await {
+        Ok(text) => StructuredResponseResult::Success {
+            thread_id,
+            response_json: text,
+        },
+        Err(StructuredTurnError::StaleThread) => {
+            // Cached thread is gone. Reseat and retry exactly once.
+            thread_id = match start_ephemeral_thread_for_structured(client, &server_id).await {
+                Ok(id) => id,
+                Err(e) => {
+                    return StructuredResponseResult::Error {
+                        message: format!("stale-thread recovery failed: {e}"),
+                    };
+                }
+            };
+            match run_structured_turn(client, &server_id, &thread_id, &prompt, schema).await {
+                Ok(text) => StructuredResponseResult::Success {
+                    thread_id,
+                    response_json: text,
+                },
+                Err(StructuredTurnError::StaleThread) => StructuredResponseResult::Error {
+                    message: "thread became stale again on retry".to_string(),
+                },
+                Err(StructuredTurnError::Fatal(msg)) => {
+                    StructuredResponseResult::Error { message: msg }
+                }
+            }
+        }
+        Err(StructuredTurnError::Fatal(msg)) => StructuredResponseResult::Error { message: msg },
+    }
+}
+
+async fn perform_update_saved_app(
+    client: &crate::MobileClient,
+    server_id: String,
+    directory: String,
+    app_id: String,
+    user_prompt: String,
+) -> SavedAppUpdateResult {
+    // 1. Load the current saved-app payload so we can seed the thread.
+    let current = match crate::saved_apps::saved_app_get(directory.clone(), app_id.clone()) {
+        Some(payload) => payload,
+        None => {
+            return SavedAppUpdateResult::Error {
+                message: format!("saved app '{app_id}' not found"),
+            };
+        }
+    };
+    let shape_summary = crate::saved_apps::abbreviated_state_shape(&directory, &app_id)
+        .unwrap_or_else(|| "  (no saved state yet)".to_string());
+
+    // Inherit the origin thread's model / reasoning / approval / sandbox
+    // settings when the thread is still known to the store. Falls back to
+    // `None` (server defaults) if the app has no origin_thread_id, or the
+    // thread has been archived / never hydrated.
+    let (model, reasoning_effort, approval_policy, sandbox_mode) =
+        inherited_settings_for_origin(client, &server_id, current.app.origin_thread_id.as_deref());
+
+    // Resolve the on-disk HTML path. The model edits this file directly
+    // via apply_patch; no show_widget round-trip needed. cwd is the
+    // `html/` directory so `./{app_id}.html` is a valid relative path.
+    let apps_root = std::path::Path::new(&directory).join("apps");
+    let html_dir = apps_root.join("html");
+    let html_filename = format!("{app_id}.html");
+    let html_path = html_dir.join(&html_filename);
+    let initial_mtime = std::fs::metadata(&html_path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    let developer_instructions = build_saved_app_update_seed(
+        &current.app.title,
+        current.app.schema_version,
+        &html_filename,
+        &shape_summary,
+    );
+
+    // 2. Start a hidden ephemeral thread on the server rooted at the
+    //    saved-apps HTML directory. The model uses its regular file-
+    //    editing tools (apply_patch, shell) to modify the HTML file on
+    //    disk — no dynamic_tools, no show_widget round-trip.
+    let start_params = upstream::ThreadStartParams {
+        model: model.clone(),
+        model_provider: None,
+        service_tier: None,
+        cwd: Some(html_dir.to_string_lossy().into_owned()),
+        approval_policy: approval_policy
+            .clone()
+            .map(crate::types::server_requests::ask_for_approval_into_upstream),
+        approvals_reviewer: None,
+        sandbox: sandbox_mode
+            .clone()
+            .map(crate::types::server_requests::sandbox_mode_into_upstream),
+        config: None,
+        service_name: None,
+        base_instructions: None,
+        developer_instructions: Some(developer_instructions),
+        personality: None,
+        ephemeral: Some(true),
+        session_start_source: None,
+        dynamic_tools: None,
+        mock_experimental_field: None,
+        experimental_raw_events: false,
+        persist_extended_history: false,
+    };
+    let thread_response: upstream::ThreadStartResponse = match client
+        .request_typed_for_server(
+            &server_id,
+            upstream::ClientRequest::ThreadStart {
+                request_id: upstream::RequestId::Integer(crate::next_request_id()),
+                params: start_params,
+            },
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return SavedAppUpdateResult::Error {
+                message: format!("thread/start failed: {e}"),
+            };
+        }
+    };
+    let thread_id = thread_response.thread.id.clone();
+
+    // Hide the thread from the local home/sidebar for the lifetime of
+    // the update. Removed on cleanup below.
+    let hidden_key = crate::preferences::PinnedThreadKey {
+        server_id: server_id.clone(),
+        thread_id: thread_id.clone(),
+    };
+    let _ =
+        crate::preferences::preferences_add_hidden_thread(directory.clone(), hidden_key.clone());
+
+    // 3. Subscribe to store updates BEFORE sending the turn so we don't
+    //    miss an extremely fast completion. We wait for ThreadMetadataChanged
+    //    on our thread with `active_turn_id = None` AND `status = Idle`
+    //    AFTER we've seen the turn become active at least once.
+    let mut updates_rx = client.app_store.subscribe();
+
+    // 4. Send the user's update prompt on this thread.
+    let turn_params = upstream::TurnStartParams {
+        thread_id: thread_id.clone(),
+        input: vec![upstream::UserInput::Text {
+            text: user_prompt.clone(),
+            text_elements: Vec::new(),
+        }],
+        responsesapi_client_metadata: None,
+        cwd: None,
+        approval_policy: None,
+        approvals_reviewer: None,
+        sandbox_policy: None,
+        model,
+        service_tier: None,
+        effort: reasoning_effort.map(crate::types::server_requests::reasoning_effort_into_upstream),
+        summary: None,
+        personality: None,
+        output_schema: None,
+        collaboration_mode: None,
+    };
+    let turn_start_outcome: Result<upstream::TurnStartResponse, _> = client
+        .request_typed_for_server(
+            &server_id,
+            upstream::ClientRequest::TurnStart {
+                request_id: upstream::RequestId::Integer(crate::next_request_id()),
+                params: turn_params,
+            },
+        )
+        .await;
+    if let Err(e) = turn_start_outcome {
+        cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+        return SavedAppUpdateResult::Error {
+            message: format!("turn/start failed: {e}"),
+        };
+    }
+
+    // 5. Wait for the turn to complete, or time out.
+    let wait_outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(SAVED_APP_UPDATE_TIMEOUT_SECS),
+        async {
+            let mut saw_active = false;
+            loop {
+                match updates_rx.recv().await {
+                    Ok(crate::store::updates::AppStoreUpdateRecord::ThreadMetadataChanged {
+                        state,
+                        ..
+                    }) if state.key.thread_id == thread_id && state.key.server_id == server_id => {
+                        if state.active_turn_id.is_some() {
+                            saw_active = true;
+                        } else if saw_active {
+                            return Ok(());
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err("update channel closed".to_string());
+                    }
+                }
+            }
+        },
+    )
+    .await;
+
+    match wait_outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+            return SavedAppUpdateResult::Error { message: e };
+        }
+        Err(_) => {
+            cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+            return SavedAppUpdateResult::Error {
+                message: format!(
+                    "update timed out after {SAVED_APP_UPDATE_TIMEOUT_SECS}s waiting for turn to complete"
+                ),
+            };
+        }
+    }
+
+    // 6. Read the HTML file from disk — model should have edited it.
+    let new_html = match std::fs::read_to_string(&html_path) {
+        Ok(html) => html,
+        Err(e) => {
+            cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+            return SavedAppUpdateResult::Error {
+                message: format!("could not read updated HTML: {e}"),
+            };
+        }
+    };
+
+    // If the file wasn't actually changed, report that — better UX than
+    // silently re-saving the same content.
+    let new_mtime = std::fs::metadata(&html_path)
+        .and_then(|m| m.modified())
+        .ok();
+    if let (Some(before), Some(after)) = (initial_mtime, new_mtime) {
+        if before == after {
+            cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+            return SavedAppUpdateResult::Error {
+                message: "no changes were made to the app".to_string(),
+            };
+        }
+    }
+
+    // 7. Write through saved_app_replace_html so the index's updated_at_ms
+    //    and any derived fields stay in sync. This re-writes the same
+    //    file with the same content, which is fine — the `updated_at_ms`
+    //    bump is what downstream listeners (home-row takeover etc.) care
+    //    about.
+    let replace_result = crate::saved_apps::saved_app_replace_html(
+        directory.clone(),
+        app_id.clone(),
+        new_html,
+        current.app.width,
+        current.app.height,
+    );
+
+    // 8. Clean up the hidden thread regardless of result.
+    cleanup_update_thread(client, &server_id, &thread_id, &directory, &hidden_key).await;
+
+    match replace_result {
+        Ok(app) => SavedAppUpdateResult::Success { app },
+        Err(e) => SavedAppUpdateResult::Error {
+            message: format!("replace_html failed: {e}"),
+        },
+    }
+}
+
+async fn cleanup_update_thread(
+    client: &crate::MobileClient,
+    server_id: &str,
+    thread_id: &str,
+    directory: &str,
+    hidden_key: &crate::preferences::PinnedThreadKey,
+) {
+    let _ = crate::preferences::preferences_remove_hidden_thread(
+        directory.to_string(),
+        hidden_key.clone(),
+    );
+    let archive_params = upstream::ThreadArchiveParams {
+        thread_id: thread_id.to_string(),
+    };
+    let archive_result: Result<upstream::ThreadArchiveResponse, _> = client
+        .request_typed_for_server(
+            server_id,
+            upstream::ClientRequest::ThreadArchive {
+                request_id: upstream::RequestId::Integer(crate::next_request_id()),
+                params: archive_params,
+            },
+        )
+        .await;
+    if let Err(e) = archive_result {
+        tracing::warn!(
+            "update_saved_app: failed to archive hidden thread {thread_id}: {e} (ignored)"
+        );
+    }
+}
+
+/// Look up an origin thread in the app store and extract its effective
+/// settings (model / reasoning effort / approval / sandbox mode) so the
+/// saved-app update thread can run with the same configuration the user
+/// chose for the source conversation. Returns `(None, None, None, None)`
+/// when the thread is unknown, never hydrated, or belongs to a different
+/// server.
+fn inherited_settings_for_origin(
+    client: &crate::MobileClient,
+    server_id: &str,
+    origin_thread_id: Option<&str>,
+) -> (
+    Option<String>,
+    Option<crate::types::models::ReasoningEffort>,
+    Option<crate::types::models::AppAskForApproval>,
+    Option<crate::types::models::AppSandboxMode>,
+) {
+    use crate::types::models::{AppSandboxMode, AppSandboxPolicy, ReasoningEffort};
+
+    let Some(thread_id) = origin_thread_id.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    }) else {
+        return (None, None, None, None);
+    };
+
+    let snapshot = client.app_store.snapshot();
+    let key = crate::types::ThreadKey {
+        server_id: server_id.to_string(),
+        thread_id,
+    };
+    let Some(thread) = snapshot.threads.get(&key) else {
+        return (None, None, None, None);
+    };
+
+    let model = thread
+        .model
+        .as_ref()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+    let effort = thread.reasoning_effort.as_deref().and_then(|raw| {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(ReasoningEffort::None),
+            "minimal" => Some(ReasoningEffort::Minimal),
+            "low" => Some(ReasoningEffort::Low),
+            "medium" => Some(ReasoningEffort::Medium),
+            "high" => Some(ReasoningEffort::High),
+            "xhigh" | "x-high" => Some(ReasoningEffort::XHigh),
+            _ => None,
+        }
+    });
+    let approval_policy = thread.effective_approval_policy.clone();
+    let sandbox_mode = thread.effective_sandbox_policy.as_ref().map(|p| match p {
+        AppSandboxPolicy::ReadOnly { .. } | AppSandboxPolicy::ExternalSandbox { .. } => {
+            AppSandboxMode::ReadOnly
+        }
+        AppSandboxPolicy::WorkspaceWrite { .. } => AppSandboxMode::WorkspaceWrite,
+        AppSandboxPolicy::DangerFullAccess => AppSandboxMode::DangerFullAccess,
+    });
+    (model, effort, approval_policy, sandbox_mode)
+}
+
+fn build_saved_app_update_seed(
+    title: &str,
+    schema_version: u32,
+    html_filename: &str,
+    state_shape_summary: &str,
+) -> String {
+    let app_guidelines = crate::widget_guidelines::get_guidelines(&["app".to_string()]);
+    format!(
+        "You are updating an existing saved app called \"{title}\".\n\n\
+The app's HTML lives in the current working directory as `./{html_filename}`. \
+**Read it first, then edit it with `apply_patch`** (or rewrite it \
+wholesale if the change is extensive). Do NOT call `show_widget` — that \
+tool is not available on this thread. Your job is to modify the HTML \
+file on disk.\n\n\
+The app persists user data via `window.loadAppState()` / `window.saveAppState()`. \
+The current state schema_version is {schema_version}. You MUST:\n\n\
+- Preserve the `loadAppState`/`saveAppState` contract so the user's existing \
+data keeps working.\n\
+- If state-field shapes changed, migrate them defensively on load.\n\
+- Keep the widget self-contained (no cross-file deps; inline CSS/JS is fine).\n\n\
+Abbreviated shape of the current persisted state (top-level keys + sample values; \
+the raw user data is NOT included):\n\
+```\n{{\n{state_shape_summary}\n}}\n```\n\n\
+---\n\n\
+Widget construction guidelines (for reference when making UI decisions):\n\n\
+{app_guidelines}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ImageViewSource, image_read_command, normalized_image_path};
+    use super::{
+        ImageViewSource, image_read_command, normalized_image_path, splice_generative_ui_preamble,
+    };
+    use crate::types::models::AppDynamicToolSpec;
+    use crate::widget_guidelines::GENERATIVE_UI_PREAMBLE;
+
+    fn show_widget_spec() -> AppDynamicToolSpec {
+        AppDynamicToolSpec {
+            name: "show_widget".to_string(),
+            description: "test".to_string(),
+            input_schema_json: "{}".to_string(),
+            defer_loading: false,
+        }
+    }
+
+    #[test]
+    fn preamble_prepended_when_show_widget_registered() {
+        let tools = Some(vec![show_widget_spec()]);
+        let result = splice_generative_ui_preamble(&tools, Some("user instructions".to_string()));
+        let out = result.expect("expected Some");
+        assert!(out.starts_with(GENERATIVE_UI_PREAMBLE));
+        assert!(out.ends_with("user instructions"));
+    }
+
+    #[test]
+    fn preamble_skipped_without_show_widget() {
+        let other = AppDynamicToolSpec {
+            name: "list_servers".to_string(),
+            description: "x".to_string(),
+            input_schema_json: "{}".to_string(),
+            defer_loading: false,
+        };
+        let tools = Some(vec![other]);
+        let result = splice_generative_ui_preamble(&tools, Some("user instructions".to_string()));
+        assert_eq!(result.as_deref(), Some("user instructions"));
+    }
+
+    #[test]
+    fn preamble_used_alone_when_no_existing_instructions() {
+        let tools = Some(vec![show_widget_spec()]);
+        assert_eq!(
+            splice_generative_ui_preamble(&tools, None).as_deref(),
+            Some(GENERATIVE_UI_PREAMBLE)
+        );
+    }
+
+    #[test]
+    fn preamble_skipped_when_no_dynamic_tools() {
+        assert_eq!(
+            splice_generative_ui_preamble(&None, Some("keep".to_string())).as_deref(),
+            Some("keep")
+        );
+    }
 
     #[test]
     fn parses_inline_image_data() {

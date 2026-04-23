@@ -32,5 +32,6 @@ enum SavedProjectStore {
             directory: MobilePreferencesDirectory.path,
             selection: selection
         )
+        CloudKVSBridge.shared.notifyRustPreferencesChanged()
     }
 }

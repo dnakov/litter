@@ -15,6 +15,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicLong
 import uniffi.codex_mobile_client.AppClient
+import uniffi.codex_mobile_client.AppMinigameRequest
+import uniffi.codex_mobile_client.AppMinigameResult
 import uniffi.codex_mobile_client.AppSessionSummary
 import uniffi.codex_mobile_client.AppSnapshotRecord
 import uniffi.codex_mobile_client.AppStore
@@ -84,6 +86,9 @@ class AppModel private constructor(context: android.content.Context) {
         LLog.bootstrap(context)
         store = AppStore()
         client = AppClient()
+        // The show_widget auto-save hook on the Rust side persists to this
+        // directory. Without setting it at launch the hook is a silent no-op.
+        client.setSavedAppsDirectory(SavedAppsDirectory.path(context))
         discovery = DiscoveryBridge()
         serverBridge = ServerBridge()
         ssh = SshBridge()
@@ -132,6 +137,54 @@ class AppModel private constructor(context: android.content.Context) {
         if (_composerPrefillRequest.value?.requestId == requestId) {
             _composerPrefillRequest.value = null
         }
+    }
+
+    // --- Thinking-indicator minigame -----------------------------------------
+
+    private val _minigameOverlay = MutableStateFlow<MinigameOverlayState>(MinigameOverlayState.Idle)
+    val minigameOverlay: StateFlow<MinigameOverlayState> = _minigameOverlay.asStateFlow()
+    private var minigameJob: Job? = null
+
+    fun requestMinigame(
+        parentThreadId: String,
+        serverId: String,
+        lastUserMessage: String?,
+        lastAssistantMessage: String?,
+    ) {
+        if (!com.litter.android.ui.ExperimentalFeatures.isEnabled(
+                com.litter.android.ui.LitterFeature.THINKING_MINIGAME
+            )) return
+        if (_minigameOverlay.value !is MinigameOverlayState.Idle) return
+        _minigameOverlay.value = MinigameOverlayState.Loading
+        minigameJob?.cancel()
+        minigameJob = scope.launch {
+            try {
+                val result: AppMinigameResult = client.startMinigame(
+                    AppMinigameRequest(
+                        serverId = serverId,
+                        parentThreadId = parentThreadId,
+                        lastUserMessage = lastUserMessage,
+                        lastAssistantMessage = lastAssistantMessage,
+                    )
+                )
+                _minigameOverlay.value = MinigameOverlayState.Shown(
+                    MinigameContent(
+                        html = result.widgetHtml,
+                        title = result.title,
+                        width = result.width.toFloat(),
+                        height = result.height.toFloat(),
+                    )
+                )
+            } catch (t: Throwable) {
+                _minigameOverlay.value = MinigameOverlayState.Failed(t.message ?: t.toString())
+            }
+        }
+    }
+
+    fun dismissMinigame() {
+        minigameJob?.cancel()
+        minigameJob = null
+        _minigameOverlay.value = MinigameOverlayState.Idle
     }
 
     // --- Subscription lifecycle ----------------------------------------------
@@ -568,7 +621,66 @@ class AppModel private constructor(context: android.content.Context) {
             is AppStoreUpdateRecord.RealtimeOutputAudioDelta -> Unit
             is AppStoreUpdateRecord.RealtimeError -> refreshSnapshot()
             is AppStoreUpdateRecord.RealtimeClosed -> refreshSnapshot()
+            is AppStoreUpdateRecord.SavedAppsChanged -> {
+                // R3: Rust broadcasts this whenever the saved-apps index/HTML/
+                // state changes (show_widget finalize, update, delete). Reload
+                // the Kotlin mirror so home-row takeover and Apps list can
+                // react without a full snapshot churn.
+                try {
+                    SavedAppsStore.reload(appContext)
+                } catch (_: Exception) {}
+            }
+            is AppStoreUpdateRecord.DynamicWidgetStreaming ->
+                applyStreamingWidget(update.key, update.itemId, update.widget)
         }
+    }
+
+    /// Mutate an in-flight widget bubble's data so the timeline WebView
+    /// picks up the growing HTML via its existing pushWidgetContent path.
+    /// The reducer guarantees `isFinalized == false` on these; the
+    /// finalized update arrives separately as ThreadItemChanged and must
+    /// win.
+    private fun applyStreamingWidget(
+        key: ThreadKey,
+        itemId: String,
+        widget: uniffi.codex_mobile_client.HydratedWidgetData,
+    ) {
+        val current = _snapshot.value ?: return
+        val threadIndex = current.threads.indexOfFirst { it.key == key }
+        if (threadIndex < 0) return
+        val thread = current.threads[threadIndex]
+        val itemIndex = thread.hydratedConversationItems.indexOfFirst { it.id == itemId }
+        val updatedItems = thread.hydratedConversationItems.toMutableList()
+        if (itemIndex >= 0) {
+            val item = updatedItems[itemIndex]
+            val content = item.content
+            // Before the first delta the item is a generic DynamicToolCall
+            // (no args → hydration returns None → item stays as tool-call).
+            // Replace its content unconditionally with the hydrated widget,
+            // except when it's already a finalized widget (stale delta).
+            if (content is HydratedConversationItemContent.Widget) {
+                if (content.v1.isFinalized) return
+                if (content.v1 == widget) return
+            }
+            updatedItems[itemIndex] = item.copy(
+                content = HydratedConversationItemContent.Widget(widget),
+            )
+        } else {
+            // First delta raced ThreadItemStarted. Synthesize a placeholder
+            // so the bubble appears now; the later ThreadItemStarted/Changed
+            // will overwrite with the canonical hydrated item.
+            updatedItems.add(
+                HydratedConversationItem(
+                    id = itemId,
+                    content = HydratedConversationItemContent.Widget(widget),
+                    sourceTurnId = thread.activeTurnId,
+                    sourceTurnIndex = null,
+                    timestamp = null,
+                    isFromUserTurnBoundary = false,
+                ),
+            )
+        }
+        applyThreadSnapshot(thread.copy(hydratedConversationItems = updatedItems))
     }
 
     private suspend fun recoverThreadDeltaApplication(key: ThreadKey) {

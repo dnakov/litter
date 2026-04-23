@@ -7,9 +7,18 @@
 mod aec;
 #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
 mod ios_exec;
+#[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
+mod mobile_exec_command;
 
 #[cfg(target_os = "android")]
 pub mod android_exec;
+
+#[cfg(any(
+    all(target_os = "ios", not(target_abi = "macabi")),
+    target_os = "android",
+    test
+))]
+pub mod shell_preflight;
 
 pub mod ambient_suggestions;
 pub mod cloud_sync;
@@ -24,6 +33,7 @@ pub mod local_server;
 pub mod logging;
 pub mod markdown_blocks;
 mod mobile_client;
+pub mod pair;
 pub mod parser;
 pub mod permissions;
 pub mod plugin_refs;
@@ -32,6 +42,7 @@ pub mod project;
 pub mod reconnect;
 pub mod recorder;
 pub mod remote_path;
+pub mod saved_apps;
 pub mod session;
 pub mod ssh;
 pub mod store;

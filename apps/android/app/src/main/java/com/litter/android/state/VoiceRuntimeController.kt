@@ -720,9 +720,16 @@ class VoiceRuntimeController {
         when (action) {
             is uniffi.codex_mobile_client.HandoffAction.StartThread -> {
                 try {
+                    val serverIsLocal = appModel.snapshot.value
+                        ?.servers
+                        ?.firstOrNull { it.serverId == action.targetServerId }
+                        ?.isLocal == true
                     val key = appModel.client.startThread(
                         action.targetServerId,
-                        appModel.launchState.threadStartRequest(action.cwd),
+                        appModel.launchState.threadStartRequest(
+                            action.cwd,
+                            serverIsLocal = serverIsLocal,
+                        ),
                     )
                     SavedThreadsStore.add(
                         appModel.appContext,

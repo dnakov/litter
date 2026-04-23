@@ -28,16 +28,48 @@ struct WidgetWebView: UIViewRepresentable {
     let widgetHTML: String
     let isFinalized: Bool
     var allowsScrollAndZoom: Bool = false
+    var isMinigame: Bool = false
     var onMessage: ((Any) -> Void)?
+    /// Typed hook for `window.structuredResponse(...)` calls from app-mode
+    /// widgets. The coordinator passes a `respond` closure that wraps
+    /// `evaluateJavaScript` into `window.__resolveStructuredResponse(...)` /
+    /// `__rejectStructuredResponse(...)` so the host can resolve/reject the
+    /// widget's Promise once the Rust call returns. Only fires in app mode.
+    var onStructuredRequest: ((
+        _ requestId: String,
+        _ prompt: String,
+        _ responseFormatJSON: String,
+        _ respond: @escaping (String /* requestId */, String? /* resolveJSON */, String? /* rejectMessage */) -> Void
+    ) -> Void)?
     var heightBinding: Binding<CGFloat>?
+    var appMode: Bool = false
+    var initialAppState: String? = nil
+    var schemaVersion: Int = 1
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onMessage: onMessage, heightBinding: heightBinding)
+        Coordinator(
+            onMessage: onMessage,
+            onStructuredRequest: onStructuredRequest,
+            heightBinding: heightBinding
+        )
     }
 
     func makeUIView(context: Context) -> WidgetWebViewContainer {
         let config = WKWebViewConfiguration()
         config.userContentController.add(context.coordinator, name: "widget")
+
+        if isMinigame {
+            // Stub out bridge globals so a minigame cannot inject text into the
+            // user's conversation or persist state, even if it tries to.
+            let stub = """
+            window.sendPrompt = function(){};
+            window.saveAppState = function(){};
+            window.loadAppState = function(){ return null; };
+            window.structuredResponse = function(){ return Promise.reject(new Error('disabled in minigame mode')); };
+            """
+            let script = WKUserScript(source: stub, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            config.userContentController.addUserScript(script)
+        }
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
@@ -48,6 +80,23 @@ struct WidgetWebView: UIViewRepresentable {
         if !allowsScrollAndZoom {
             webView.scrollView.pinchGestureRecognizer?.isEnabled = false
         }
+        if isMinigame {
+            // Disable double-tap-to-zoom in addition to pinch. Setting min/max
+            // zoom scales pegs the underlying UIScrollView, and a no-op
+            // double-tap recogniser (configured to require failure of any
+            // existing double-tap) absorbs the gesture before WebKit's own
+            // zoom heuristic kicks in.
+            webView.scrollView.minimumZoomScale = 1
+            webView.scrollView.maximumZoomScale = 1
+            webView.scrollView.bouncesZoom = false
+            let absorber = UITapGestureRecognizer(target: context.coordinator,
+                                                  action: #selector(Coordinator.absorbDoubleTap(_:)))
+            absorber.numberOfTapsRequired = 2
+            absorber.cancelsTouchesInView = true
+            absorber.delaysTouchesBegan = false
+            absorber.delegate = context.coordinator
+            webView.addGestureRecognizer(absorber)
+        }
         webView.navigationDelegate = context.coordinator
 
         #if DEBUG
@@ -57,7 +106,13 @@ struct WidgetWebView: UIViewRepresentable {
         #endif
 
         context.coordinator.webView = webView
-        webView.loadHTMLString(Self.shellHTML, baseURL: nil)
+        let shell = appMode
+            ? Self.buildAppModeShellHTML(
+                initialAppState: initialAppState,
+                schemaVersion: schemaVersion
+            )
+            : Self.shellHTML
+        webView.loadHTMLString(shell, baseURL: nil)
         return WidgetWebViewContainer(webView: webView)
     }
 
@@ -71,12 +126,14 @@ struct WidgetWebView: UIViewRepresentable {
         guard !widgetHTML.isEmpty else { return }
         let coordinator = context.coordinator
         coordinator.onMessage = onMessage
+        coordinator.onStructuredRequest = onStructuredRequest
         coordinator.heightBinding = heightBinding
         let escaped = Self.escapeJS(widgetHTML)
         guard escaped != coordinator.lastEscapedHTML || (isFinalized && !coordinator.hasFinalized) else { return }
         coordinator.lastEscapedHTML = escaped
 
         if isFinalized && !coordinator.hasFinalized {
+            coordinator.cancelScheduledUpdate()
             coordinator.hasFinalized = true
             coordinator.sendContent(escaped, runScripts: true)
         } else if !isFinalized {
@@ -86,9 +143,26 @@ struct WidgetWebView: UIViewRepresentable {
 
     // MARK: - Coordinator
 
-    class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, UIGestureRecognizerDelegate {
+        @objc func absorbDoubleTap(_ recogniser: UITapGestureRecognizer) {
+            // No-op. Recogniser is attached only in minigame mode to swallow
+            // the double-tap-to-zoom gesture before WebKit reacts to it.
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            // Let our absorber sit alongside any of WebKit's own recognisers.
+            return true
+        }
+
         var webView: WKWebView?
         var onMessage: ((Any) -> Void)?
+        var onStructuredRequest: ((
+            _ requestId: String,
+            _ prompt: String,
+            _ responseFormatJSON: String,
+            _ respond: @escaping (String, String?, String?) -> Void
+        ) -> Void)?
         var heightBinding: Binding<CGFloat>?
         var hasFinalized = false
         var lastEscapedHTML: String?
@@ -100,17 +174,34 @@ struct WidgetWebView: UIViewRepresentable {
         private var pendingHeight: CGFloat = 0
         private var lastCommittedHeight: CGFloat = 0
 
-        init(onMessage: ((Any) -> Void)?, heightBinding: Binding<CGFloat>? = nil) {
+        init(
+            onMessage: ((Any) -> Void)?,
+            onStructuredRequest: ((
+                _ requestId: String,
+                _ prompt: String,
+                _ responseFormatJSON: String,
+                _ respond: @escaping (String, String?, String?) -> Void
+            ) -> Void)? = nil,
+            heightBinding: Binding<CGFloat>? = nil
+        ) {
             self.onMessage = onMessage
+            self.onStructuredRequest = onStructuredRequest
             self.heightBinding = heightBinding
         }
 
         func teardown() {
             updateTimer?.invalidate()
             updateTimer = nil
+            pendingHTML = nil
             heightTimer?.invalidate()
             heightTimer = nil
             webView = nil
+        }
+
+        func cancelScheduledUpdate() {
+            updateTimer?.invalidate()
+            updateTimer = nil
+            pendingHTML = nil
         }
 
         func sendContent(_ escaped: String, runScripts: Bool) {
@@ -161,7 +252,69 @@ struct WidgetWebView: UIViewRepresentable {
                 }
                 return
             }
+            // Structured-response calls have a typed handler + reply path.
+            if let dict = message.body as? [String: Any],
+               dict["_type"] as? String == "structuredResponse",
+               let requestId = dict["requestId"] as? String,
+               let prompt = dict["prompt"] as? String {
+                let schemaJson: String
+                if let raw = dict["responseFormat"] {
+                    if let s = raw as? String {
+                        schemaJson = s
+                    } else if let data = try? JSONSerialization.data(withJSONObject: raw, options: []),
+                              let s = String(data: data, encoding: .utf8) {
+                        schemaJson = s
+                    } else {
+                        schemaJson = "null"
+                    }
+                } else {
+                    schemaJson = "null"
+                }
+                let respond: (String, String?, String?) -> Void = { [weak self] reqId, resolveJSON, rejectMessage in
+                    guard let webView = self?.webView else { return }
+                    let script: String
+                    if let resolveJSON {
+                        script = "window.__resolveStructuredResponse(\(Self.jsStringLiteral(reqId)), \(Self.jsStringLiteral(resolveJSON)));"
+                    } else {
+                        script = "window.__rejectStructuredResponse(\(Self.jsStringLiteral(reqId)), \(Self.jsStringLiteral(rejectMessage ?? "structuredResponse failed")));"
+                    }
+                    DispatchQueue.main.async {
+                        webView.evaluateJavaScript(script, completionHandler: nil)
+                    }
+                }
+                if let handler = onStructuredRequest {
+                    handler(requestId, prompt, schemaJson, respond)
+                } else {
+                    respond(requestId, nil, "structuredResponse is not supported in this context")
+                }
+                return
+            }
+            // `saveAppState` / `sendPrompt` / `openLink` all flow through the
+            // same `onMessage` hook — callers that don't care about app-mode
+            // simply never see `saveAppState` messages (timeline widgets use
+            // the cached shell that doesn't expose `window.saveAppState`).
             onMessage?(message.body)
+        }
+
+        /// Emit a JS single-quoted string literal for safe splicing into
+        /// `evaluateJavaScript` replies. Mirrors `WidgetWebView.escapeJS`
+        /// — kept local to the Coordinator so reply plumbing stays
+        /// independent of the static shell helpers.
+        private static func jsStringLiteral(_ s: String) -> String {
+            var out = "'"
+            for c in s {
+                switch c {
+                case "\\": out.append("\\\\")
+                case "'":  out.append("\\'")
+                case "\n": out.append("\\n")
+                case "\r": out.append("\\r")
+                case "\u{2028}": out.append("\\u2028")
+                case "\u{2029}": out.append("\\u2029")
+                default: out.append(c)
+                }
+            }
+            out.append("'")
+            return out
         }
 
         // Block navigation to external URLs
@@ -325,19 +478,27 @@ struct WidgetWebView: UIViewRepresentable {
         var root = document.getElementById('root');
         var target = document.createElement('div');
         target.id = 'root';
-        target.innerHTML = html;
-        morphdom(root, target, {
-            onBeforeElUpdated: function(from, to) {
-                if (from.isEqualNode(to)) return false;
-                return true;
-            },
-            onNodeAdded: function(node) {
-                if (node.nodeType === 1 && node.tagName !== 'STYLE' && node.tagName !== 'SCRIPT') {
-                    node.style.animation = '_fadeIn 0.3s ease both';
+        // Tolerate mid-stream HTML: an unclosed tag or half-parsed
+        // attribute must not blow up morphdom. The parser is
+        // forgiving enough on innerHTML; morphdom occasionally trips
+        // on transient shapes, so fall back to innerHTML replacement.
+        try {
+            target.innerHTML = html;
+            morphdom(root, target, {
+                onBeforeElUpdated: function(from, to) {
+                    if (from.isEqualNode(to)) return false;
+                    return true;
+                },
+                onNodeAdded: function(node) {
+                    if (node.nodeType === 1 && node.tagName !== 'STYLE' && node.tagName !== 'SCRIPT') {
+                        node.style.animation = '_fadeIn 0.3s ease both';
+                    }
+                    return node;
                 }
-                return node;
-            }
-        });
+            });
+        } catch (e) {
+            try { root.innerHTML = html; } catch (_) {}
+        }
         window._attachHeightObserver();
         setTimeout(function() {
             window._reportHeight();
@@ -367,6 +528,77 @@ struct WidgetWebView: UIViewRepresentable {
     """
     }
 
+    // MARK: - App-mode shell
+
+    /// Builds a per-app shell that mirrors `shellHTML` but also exposes the
+    /// `window.loadAppState` / `window.saveAppState` JS bridge. The shell is
+    /// *not* cached — `initialAppState` differs per-app, so we build fresh on
+    /// every mount.
+    static func buildAppModeShellHTML(
+        initialAppState: String?,
+        schemaVersion: Int
+    ) -> String {
+        let stateLiteral: String = {
+            guard let raw = initialAppState else { return "null" }
+            // Escape `</` to prevent a stray `</script>` inside user JSON
+            // from closing the inline script, then emit as a JS string
+            // literal. The JS side calls `JSON.parse` on it.
+            let escaped = raw.replacingOccurrences(of: "</", with: "<\\/")
+            return "'\(escapeJS(escaped))'"
+        }()
+        let injection = """
+        window._initialAppState = \(stateLiteral);
+        window._appStateSchemaVersion = \(schemaVersion);
+        window.loadAppState = function() {
+            try { return window._initialAppState == null ? null : JSON.parse(window._initialAppState); }
+            catch (_) { return null; }
+        };
+        window.saveAppState = function(obj) {
+            var payload;
+            try { payload = JSON.stringify(obj); } catch (_) { return false; }
+            window.webkit.messageHandlers.widget.postMessage(
+                { _type: 'saveAppState', value: payload, schema: window._appStateSchemaVersion });
+            return true;
+        };
+        (function(){
+            var nextId = 1;
+            var pending = new Map();
+            window.structuredResponse = function(req) {
+                var id = 'sr-' + (nextId++);
+                return new Promise(function(resolve, reject) {
+                    pending.set(id, { resolve: resolve, reject: reject });
+                    var fmt = (req && req.responseFormat) || null;
+                    window.webkit.messageHandlers.widget.postMessage({
+                        _type: 'structuredResponse',
+                        requestId: id,
+                        prompt: String((req && req.prompt) || ''),
+                        responseFormat: fmt,
+                    });
+                });
+            };
+            window.__resolveStructuredResponse = function(id, jsonText) {
+                var p = pending.get(id); if (!p) return;
+                pending.delete(id);
+                try { p.resolve(JSON.parse(jsonText)); }
+                catch (e) { p.reject(new Error('invalid structured response JSON: ' + (e && e.message))); }
+            };
+            window.__rejectStructuredResponse = function(id, message) {
+                var p = pending.get(id); if (!p) return;
+                pending.delete(id);
+                p.reject(new Error(message || 'structuredResponse failed'));
+            };
+        })();
+        """
+        // Splice the bridge declarations before the base shell's
+        // `window._morphReady` so user widget scripts can call the bridge
+        // synchronously during first render.
+        let base = buildShellHTML(theme: ThemeStore.shared.dark)
+        return base.replacingOccurrences(
+            of: "window._morphReady = false;",
+            with: "\(injection)\n    window._morphReady = false;"
+        )
+    }
+
     // MARK: - JS Escape
 
     static func escapeJS(_ s: String) -> String {
@@ -388,14 +620,16 @@ extension Notification.Name {
 
 struct WidgetContainerView: View {
     let widget: WidgetState
+    var originThreadId: String?
     var onMessage: ((Any) -> Void)?
     private let minimumInlineHeight: CGFloat = 200
 
     @State private var contentHeight: CGFloat
     @State private var isFullscreen = false
 
-    init(widget: WidgetState, onMessage: ((Any) -> Void)? = nil) {
+    init(widget: WidgetState, originThreadId: String? = nil, onMessage: ((Any) -> Void)? = nil) {
         self.widget = widget
+        self.originThreadId = originThreadId
         self.onMessage = onMessage
         _contentHeight = State(initialValue: max(widget.height, 200))
     }
@@ -411,6 +645,9 @@ struct WidgetContainerView: View {
                         .tint(LitterTheme.accentStrong)
                 }
                 Spacer()
+                if widget.isFinalized, originThreadId != nil, let slug = widget.appId, !slug.isEmpty {
+                    savedAsChip(slug: slug)
+                }
                 Button {
                     isFullscreen = true
                 } label: {
@@ -462,6 +699,30 @@ struct WidgetContainerView: View {
                     .foregroundColor(.white.opacity(0.7))
                     .padding(16)
             }
+        }
+    }
+
+    /// Compact pill shown on finalized widgets carrying a non-empty `appId`.
+    /// Tap routes to the matching saved app's detail view.
+    private func savedAsChip(slug: String) -> some View {
+        Button {
+            if let saved = SavedAppsStore.shared.app(slug: slug, threadId: originThreadId) {
+                SavedAppsNavigation.shared.requestOpen(appId: saved.id)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "square.grid.2x2.fill")
+                    .litterFont(size: 10, weight: .medium)
+                Text("Saved as")
+                    .litterFont(size: 11, weight: .medium)
+                Text(slug)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            }
+            .foregroundColor(LitterTheme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(LitterTheme.surfaceLight.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
     }
 }

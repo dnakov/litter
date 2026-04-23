@@ -44,6 +44,30 @@ Current automated checks:
 3. `remoteOnlyDebug`: attempt local connect path, verify explicit disabled error; connect remote server and run thread/list + turn/start.
 4. Both flavors: verify account read/login status refresh still updates UI after reconnect.
 
+## Thinking-indicator Minigame (iOS + Android)
+
+Gated by Settings → Experimental → "Thinking minigame" (off by default on
+both platforms). The shimmering "Thinking..." indicator becomes tappable
+while the assistant is generating; tapping it spins up an ephemeral thread
+on `gpt-5.3-codex-spark` (low reasoning, fast tier) and renders the
+returned `show_widget` HTML in a bottom-40% overlay that hides the
+composer.
+
+| Check | iOS | Android |
+|---|---|---|
+| Indicator is non-interactive when flag off | "Thinking" shimmer has no tap effect | Shimmer has no clickable ripple |
+| Tap while thinking opens overlay immediately | Slides in with skeleton | Slides in with skeleton |
+| Skeleton swaps to rendered widget on completion | WidgetWebView (no zoom, theme-injected) | MinigameWebView (no zoom, themed) |
+| Composer is hidden while overlay is up | `ConversationBottomChrome` returns `EmptyView` from `safeAreaInset` | Composer `Column` is omitted |
+| Last message is not occluded | safeAreaInset reserves overlay height in scroll inset | LazyColumn has trailing spacer / overlay sits over nav bar inset |
+| Close (X) restores composer + idles overlay | `dismissMinigame()` cancels in-flight task | `dismissMinigame()` cancels coroutine |
+| Repeat tap on a fresh assistant turn generates a new game | New ephemeral thread per request | New ephemeral thread per request |
+| Bridge globals stubbed in minigame mode | `WKUserScript` at `.atDocumentStart` no-ops `sendPrompt`/`saveAppState`/`loadAppState`/`structuredResponse`, and the matching `WKScriptMessageHandler` registrations are skipped | `evaluateJavascript` in `onPageStarted` injects stubs; the matching `@JavascriptInterface` registrations are skipped (`WidgetBridge` for openLink/height/ready only) |
+| Light + dark mode rendering | Widget uses host CSS variables that adapt automatically | Same |
+| Minigame is NOT saved as a regular widget | Waiter intercepts `show_widget` so `auto_upsert_saved_app` is skipped, and `start_minigame` does not call `saved_app_upsert` itself | Same — single shared Rust path |
+| Ephemeral thread is torn down | `thread/archive` after waiter resolves or times out | Same |
+| Generation timeout (~30s) | Overlay shows failure card with "Try again" | Overlay shows failure card with "Try again" |
+
 ## Sidebar + Picker Parity Checklist (iOS + Android)
 
 ### Session Sidebar
@@ -136,3 +160,45 @@ Status normalization parity:
 - `completed`, `complete`, `success`, `ok`, `done` -> completed (green)
 - `failed`, `failure`, `error`, `denied`, `cancelled`, `aborted` -> failed (red)
 - anything else/missing -> unknown (neutral)
+
+## Saved Apps (Generative UI persistent apps)
+
+Generative UI is permanent (no flag). Local-server threads register `show_widget` / `visualize_read_me`; remote-server threads do not. Saved apps are created automatically whenever a local-server model finalizes a `show_widget` with an `app_id` slug — there is no manual "Save as App" button.
+
+| Area | Check |
+|---|---|
+| Bootstrap | `AppClient.setSavedAppsDirectory(MobilePreferencesDirectory.path(context))` is called once in `AppModel.init`, before any thread starts. Without this, the Rust `show_widget` finalize hook is a silent no-op. |
+| Auto-upsert | When the model finalizes a `show_widget` with `app_id = "fitness-tracker"` on a local-server thread, the Rust hook calls `saved_app_upsert(directory, originThreadId, appId, title, html, w, h, schema)` and writes to `{filesDir}/LitterPreferences/apps/saved_apps.json` + `html/<uuid>.html`. No Kotlin-initiated promote call is needed. |
+| Saved-as chip | Finalized `WidgetRow` whose `HydratedWidgetData.appId` is non-null renders a compact "Saved as `<slug>`" chip below the WebView (11sp mono, accent slug). Tap resolves `SavedAppsStore.appForSlug(slug, threadId)` to a UUID and pushes `Route.SavedApp`. Chip is absent when `appId == null` or the widget isn't finalized. |
+| Home-row takeover | `HomeDashboardScreen` keeps a `savedAppsByThread` map keyed by `originThreadId`, reloaded via `SavedAppsStore.reload` on every snapshot tick (MVP coarse reactivity; R3 will supply a `SavedAppsChanged` stream). When a session's threadId has entries, its row renders `HomeAppTakeoverRow` (monogram + title + slug subtitle + "+N more" when there are siblings) instead of `SessionCanvasRow`. Tap navigates to `Route.SavedApp(mostRecent.id)`. Swipe-to-hide on the session still works. |
+| Apps list entry | Settings sheet "Apps → Saved Apps" row is always visible (no flag gate). Pushes `Route.Apps`. |
+| Apps list | `AppsListScreen` renders apps newest-updated-first: monogram tile + title + relative timestamp. Swipe-to-dismiss cascades `savedAppDelete`. Empty state explains that saved apps are created automatically. |
+| Detail relaunch | Tapping a row (or a Saved-as chip, or a home-row takeover) pushes `Route.SavedApp(uuid)`. `SavedAppScreen` calls `savedAppGet(dir, uuid)` on enter, hydrates the WebView with `wrapWidgetHtml(html, AppStateInjection(stateJson, schemaVersion))`, and registers `__LitterAppBridge` via `addJavascriptInterface`. |
+| State persistence | `window.saveAppState(obj)` flows through the bridge into `SavedAppsStore.saveState`, 250 ms trailing-edge debounced per `appId`, landing in `savedAppSaveState`. `SavedAppException.StateTooLarge` logs + swallows. |
+| Structured response | `window.structuredResponse({prompt, responseFormat})` returns a Promise that resolves with parsed JSON. Routes through `__LitterAppBridge.structuredResponse(requestId, prompt, schemaJson)` → `AppClient.structuredResponse` on an ephemeral hidden thread (`ThreadStartParams.ephemeral = true`). First call per view session creates the hidden thread; subsequent calls reuse it via `remember(appId) { mutableStateOf<String?>(null) }`. Reply flows back via `webView.evaluateJavascript("window.__resolveStructuredResponse(...)")`. Navigating away + returning resets the cache so a fresh ephemeral thread is created. The hidden thread never appears in the thread list (ephemeral threads are absent from `thread/list`). |
+| Cold-launch persistence | Increment a counter in a saved app, `am force-stop`, relaunch, reopen the app. `loadAppState()` pulls `window._initialAppState` from the seeded state JSON — count survives. |
+| Update flow | "Update" in the top bar opens `SavedAppUpdateOverlay`. Submit calls `SavedAppsStore.requestUpdate(...)` → `AppClient.updateSavedApp(...)`. WebView dims + shimmer overlay. On success: dismiss + detail re-fetch (state preserved because `replace_html` doesn't touch `state/<id>.json`). Failure: retry inline + toast. |
+| Origin server routing | Update RPC prefers `originThreadId`'s server → active thread's server → any local server → any connected. No connected server → clear error message. |
+| View Conversation | Top bar has a chat-bubble icon (`Icons.AutoMirrored.Filled.Chat`) that pushes `Route.Conversation(originThreadKey)`. Only rendered when `originThreadId` still resolves to a `ThreadKey` in the current snapshot — gone otherwise. |
+| Rename / delete | Top bar title tap → rename dialog → `savedAppRename`. Overflow "Delete" → destructive confirmation → `savedAppDelete` → pop back to list. |
+| Same slug in two threads | Model emitting `app_id = "fitness-tracker"` in two different origin threads creates two independent saved apps (distinct UUIDs, separate state files). The Apps list shows both; home-row takeover on each thread points at its own. |
+| Regression: timeline widgets with no slug | A `show_widget` call that omits `app_id` (or is pre-R2) renders with the baseline `wrapWidgetHtml(html)` shell, does not trigger auto-save, and shows no Saved-as chip. |
+| Regression: thread delete | Deleting an `originThreadId` thread does not affect saved apps; the `View Conversation` button becomes hidden for those apps but update/state flows still work. |
+
+## Timeline WebView shell (SW-A0)
+
+The timeline widget WebView shell (`wrapWidgetHtml` in `ConversationTimeline.kt`) is kept at parity with iOS's `WidgetWebView.buildShellHTML`. The shell is loaded **once** per WebView; subsequent content changes push through `window._setContent(html)` / `window._runScripts()` via `evaluateJavascript`, never a full page reload. This is the foundation for SW-A1 (partial widget-HTML streaming) and the fix for the prior "widgets pop in" behavior.
+
+| Area | Check |
+|---|---|
+| Shell parity | `wrapWidgetHtml` emits the full iOS-parity document: theme vars in `:root`, `@keyframes _fadeIn` + `onNodeAdded` fade-in hook, morphdom CDN (`morphdom@2.7.4/dist/morphdom-umd.min.js`), and the `_morphReady` / `_pending` / `_setContent` / `_runScripts` / `_reportHeight` / `_attachHeightObserver` / `sendPrompt` / `openLink` JS. App-mode injection splices before `window._morphReady = false;`. |
+| Bridge | JS posts `{_type, ...}` messages through `__postWidgetMessage`, which routes: `saveAppState` → `__LitterAppBridge`, `height`/`sendPrompt`/`openLink`/`ready` → `__LitterWidgetBridge`, with the iOS `webkit.messageHandlers.widget` fallback (no-op on Android). Both bridges coexist on the saved-app WebView. |
+| Shell loads once | `AndroidView.factory` calls `loadDataWithBaseURL(..., wrapWidgetHtml(""), ...)` exactly once. `WebViewClient.onPageFinished` flips a per-WebView `widget_webview_shell_ready` tag to `true` and flushes any buffered HTML through `pushWidgetContent`. |
+| Content push | Subsequent HTML changes in `AndroidView.update` call `pushWidgetContent(webView, html, runScripts = isFinalized)`, which runs `webView.evaluateJavascript("window._setContent('${escaped}'); window._runScripts();", null)`. `escapeJsString` matches iOS's `escapeJS` (backslash, single-quote, newline, CR, `</script>` → `<\/script>`). |
+| Pre-ready queue | HTML changes that arrive before `onPageFinished` are stored on the WebView via the `widget_webview_pending_html` tag; `onPageFinished` flushes them. No content is dropped. |
+| Dynamic height | `__LitterWidgetBridge.height(px)` posts the reported height through a main-thread `Handler`, clamped to `[200dp, 720dp]`. Compose's `mutableStateOf<Dp>(initial)` drives the WebView's `.height(widgetHeight)` modifier and animates smoothly as the widget grows/shrinks. Initial seed is the declared `data.height`. |
+| sendPrompt | A widget button that calls `window.sendPrompt(text)` routes through `__LitterWidgetBridge.sendPrompt` → `onWidgetPrompt` callback in `WidgetRow` → `ConversationScreen` builds an `AppComposerPayload` and calls `appModel.startTurn(threadKey, payload)` — parity with iOS's `sendWidgetPrompt` which also submits a turn immediately. |
+| openLink | Widget call to `window.openLink(url)` routes through the bridge to an `Intent.ACTION_VIEW` in the host Activity, opening the URL in the default browser. |
+| Save-as-App bubble | `show_widget` finalize → auto-save (Rust-side) → Saved-as chip appears under the WebView. Shell lifecycle unchanged. |
+| Saved app detail | `SavedAppScreen` uses the same shell through `wrapWidgetHtml("", AppStateInjection(...))` loaded once, then pushes `payload.widgetHtml` via `pushWidgetContent`. `loadAppState`/`saveAppState` still work. State persists across cold relaunch. |
+| Regression: finalized timeline widget | An existing finalized `show_widget` renders identically to pre-refactor — fade-in animation, tap routing, state persistence of saved-app mode all preserved. |
