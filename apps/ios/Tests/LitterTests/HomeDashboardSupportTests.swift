@@ -183,6 +183,26 @@ final class HomeDashboardSupportTests: XCTestCase {
         XCTAssertEqual(model.recentSessions.map(\.key.threadId), ["thread-late"])
     }
 
+    func testRecentConnectedSessionsPrefersExplicitTitleOverPreview() {
+        let server = makeServerSnapshot(id: "server-a", name: "Server A")
+        var thread = makeThreadSnapshot(serverId: "server-a", threadId: "thread-renamed", updatedAt: 80)
+        thread.info.title = "Renamed thread"
+        thread.info.preview = "Original first user message"
+        let snapshot = makeSnapshot(servers: [server], threads: [thread], activeThread: nil)
+
+        let connectedServers = HomeDashboardSupport.sortedConnectedServers(
+            from: [server],
+            activeServerId: nil
+        )
+        let result = HomeDashboardSupport.recentConnectedSessions(
+            from: snapshot.sessionSummaries,
+            serversById: Dictionary(uniqueKeysWithValues: connectedServers.map { ($0.id, $0) }),
+            limit: nil
+        )
+
+        XCTAssertEqual(result.first?.sessionTitle, "Renamed thread")
+    }
+
     func testHomeDashboardModelIgnoresThreadChangesWhileInactiveAndRefreshesOnReactivate() async {
         let appModel = AppModel()
         let model = HomeDashboardModel()

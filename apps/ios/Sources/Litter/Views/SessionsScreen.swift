@@ -1210,9 +1210,10 @@ struct SessionsScreen: View {
         let nextTitle = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nextTitle.isEmpty else { return }
         do {
-            _ = try await appModel.client.renameThread(
+            try await appModel.renameThread(
                 serverId: key.serverId,
-                params: AppRenameThreadRequest(threadId: key.threadId, name: nextTitle)
+                threadId: key.threadId,
+                title: nextTitle
             )
         } catch {
             sessionActionErrorMessage = error.localizedDescription

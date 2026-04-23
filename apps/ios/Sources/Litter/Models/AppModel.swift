@@ -916,6 +916,30 @@ final class AppModel {
         return !preview.isEmpty || !title.isEmpty || thread.hasActiveTurn
     }
 
+    func renameThread(serverId: String, threadId: String, title rawTitle: String) async throws {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        let key = ThreadKey(serverId: serverId, threadId: threadId)
+
+        _ = try await client.renameThread(
+            serverId: serverId,
+            params: AppRenameThreadRequest(threadId: threadId, name: title)
+        )
+        applyLocalThreadTitle(title, for: key)
+        await refreshSnapshot()
+        applyLocalThreadTitle(title, for: key)
+    }
+
+    private func applyLocalThreadTitle(_ title: String, for key: ThreadKey) {
+        guard var snapshot else { return }
+        guard snapshot.applyLocalThreadTitle(title, for: key) else { return }
+        self.snapshot = snapshot
+        if let thread = snapshot.threadSnapshot(for: key) {
+            cacheThreadSnapshot(thread)
+        }
+        lastError = nil
+    }
+
     private func applyThreadSnapshot(_ thread: AppThreadSnapshot) {
         let thread = mergedThreadSnapshotPreservingHydratedItems(thread)
         guard var snapshot else {

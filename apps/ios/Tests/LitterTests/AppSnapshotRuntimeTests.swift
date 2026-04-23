@@ -89,6 +89,18 @@ final class AppSnapshotRuntimeTests: XCTestCase {
         XCTAssertEqual(snapshot.threadsWithTrackedTurns.map(\.key), [otherKey])
     }
 
+    func testApplyLocalThreadTitleUpdatesThreadAndSessionSummary() {
+        let key = ThreadKey(serverId: "srv", threadId: "thread-1")
+        var snapshot = makeSnapshot(
+            threads: [makeThreadSnapshot(key: key)]
+        )
+
+        XCTAssertTrue(snapshot.applyLocalThreadTitle("Renamed Thread", for: key))
+
+        XCTAssertEqual(snapshot.threadSnapshot(for: key)?.info.title, "Renamed Thread")
+        XCTAssertEqual(snapshot.sessionSummaries.first { $0.key == key }?.title, "Renamed Thread")
+    }
+
     @MainActor
     func testReconcileBackgroundedTurnsWaitsForAllTrackedThreadsToFinishBeforeNotifying() {
         let rootKey = ThreadKey(serverId: "srv", threadId: "thread-root")

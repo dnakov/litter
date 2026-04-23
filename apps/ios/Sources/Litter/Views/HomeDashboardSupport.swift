@@ -5,6 +5,7 @@ struct HomeDashboardRecentSession: Identifiable, Hashable {
     let key: ThreadKey
     let serverId: String
     let serverDisplayName: String
+    let isLocal: Bool
     let sessionTitle: String
     let preview: String
     let cwd: String
@@ -100,6 +101,7 @@ enum HomeDashboardSupport {
                     key: session.key,
                     serverId: session.key.serverId,
                     serverDisplayName: server.displayName,
+                    isLocal: server.isLocal,
                     sessionTitle: sessionTitle(for: session),
                     preview: session.preview,
                     cwd: session.cwd,
@@ -184,16 +186,13 @@ enum HomeDashboardSupport {
     }
 
     private static func sessionTitle(for session: AppSessionSummary) -> String {
-        let trimmedPreview = session.preview.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedPreview.isEmpty { return trimmedPreview }
-
-        // Rust's `title` falls back to the literal "Untitled session" when
-        // title + preview are both empty on the server — treat it as empty
-        // here so we pick up the first user message instead.
         let trimmedTitle = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty && trimmedTitle != "Untitled session" {
             return trimmedTitle
         }
+
+        let trimmedPreview = session.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPreview.isEmpty { return trimmedPreview }
 
         if let userMessage = session.lastUserMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
            !userMessage.isEmpty {

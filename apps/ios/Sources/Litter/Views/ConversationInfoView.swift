@@ -719,11 +719,11 @@ struct ConversationInfoView: View {
         isRenaming = false
         Task {
             do {
-                _ = try await appModel.client.renameThread(
+                try await appModel.renameThread(
                     serverId: threadKey.serverId,
-                    params: AppRenameThreadRequest(threadId: threadKey.threadId, name: title)
+                    threadId: threadKey.threadId,
+                    title: title
                 )
-                await appModel.refreshSnapshot()
             } catch {
                 LLog.error("info", "failed to rename thread", error: error)
             }
