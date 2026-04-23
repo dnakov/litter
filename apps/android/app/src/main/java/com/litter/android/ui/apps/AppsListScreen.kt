@@ -18,14 +18,22 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,7 +43,8 @@ import androidx.compose.ui.unit.dp
 import com.litter.android.state.SavedAppsStore
 import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
-import com.litter.android.ui.home.SwipeToHideRow
+import com.litter.android.ui.common.SwipeAction
+import com.litter.android.ui.common.SwipeableRow
 import com.litter.android.ui.scaled
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.SavedApp
@@ -49,6 +58,8 @@ fun AppsListScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val apps by SavedAppsStore.apps.collectAsState()
+    var renameTarget by remember { mutableStateOf<SavedApp?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         SavedAppsStore.reload(context)
@@ -83,6 +94,40 @@ fun AppsListScreen(
             )
         }
 
+        renameTarget?.let { app ->
+            AlertDialog(
+                onDismissRequest = { renameTarget = null },
+                title = { Text("Rename App") },
+                text = {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it },
+                        label = { Text("Title") },
+                        singleLine = true,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val trimmed = renameText.trim()
+                        if (trimmed.isEmpty()) return@TextButton
+                        scope.launch {
+                            try {
+                                SavedAppsStore.rename(context, app.id, trimmed)
+                            } catch (_: Exception) {}
+                        }
+                        renameTarget = null
+                    }) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renameTarget = null }) {
+                        Text("Cancel")
+                    }
+                },
+            )
+        }
+
         if (apps.isEmpty()) {
             EmptyState()
         } else {
@@ -95,14 +140,28 @@ fun AppsListScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(apps, key = { it.id }) { app ->
-                    SwipeToHideRow(
-                        onHide = {
-                            scope.launch {
-                                try {
-                                    SavedAppsStore.delete(context, app.id)
-                                } catch (_: Exception) {}
-                            }
-                        },
+                    SwipeableRow(
+                        leadingAction = SwipeAction(
+                            icon = Icons.Filled.Edit,
+                            label = "rename",
+                            tint = LitterTheme.accent,
+                            onTrigger = {
+                                renameText = app.title
+                                renameTarget = app
+                            },
+                        ),
+                        trailingAction = SwipeAction(
+                            icon = Icons.Filled.Delete,
+                            label = "delete",
+                            tint = LitterTheme.textMuted,
+                            onTrigger = {
+                                scope.launch {
+                                    try {
+                                        SavedAppsStore.delete(context, app.id)
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                        ),
                     ) {
                         AppRow(app = app, onClick = { onOpenApp(app.id) })
                     }
@@ -117,7 +176,7 @@ private fun AppRow(
     app: SavedApp,
     onClick: () -> Unit,
 ) {
-    val monogram = app.title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+    val monogram = monogramInitials(app.title)
 
     Row(
         modifier = Modifier
@@ -183,6 +242,17 @@ private fun EmptyState() {
             )
         }
     }
+}
+
+/**
+ * Monogram: first letter of the first two whitespace-separated words of the
+ * title, uppercased. Mirrors iOS `AppsListView.monogramInitials` so avatars
+ * stay recognizable across platforms. Falls back to `?` on empty titles.
+ */
+private fun monogramInitials(title: String): String {
+    val words = title.trim().split("\\s+".toRegex()).take(2)
+    val letters = words.mapNotNull { it.firstOrNull() }.joinToString("")
+    return if (letters.isEmpty()) "?" else letters.uppercase()
 }
 
 private fun relativeTime(millis: Long): String {

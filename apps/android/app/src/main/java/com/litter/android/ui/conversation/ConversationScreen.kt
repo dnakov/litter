@@ -190,6 +190,7 @@ fun ConversationScreen(
     // Reuse already-loaded thread content on re-entry, and only fall back to
     // resume/read flows when the conversation isn't available locally yet.
     LaunchedEffect(threadKey) {
+        appModel.dismissMinigame()
         try {
             val resolvedThreadKey = appModel.hydrateThreadPermissions(threadKey) ?: threadKey
             appModel.activateThread(resolvedThreadKey)
