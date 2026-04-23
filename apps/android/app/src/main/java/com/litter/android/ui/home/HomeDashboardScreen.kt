@@ -180,6 +180,7 @@ fun HomeDashboardScreen(
     var suppressComposerCollapse by remember { mutableStateOf(false) }
     var isSearchExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var hasLoadedThreadListing by remember { mutableStateOf(false) }
     val requestedHydrationKeys = remember { mutableSetOf<String>() }
 
     // Dashboard zoom state. `zoomLevel` observes DashboardZoomPrefs; the
@@ -219,6 +220,16 @@ fun HomeDashboardScreen(
                 appModel.refreshThreadSnapshot(session.key)
             }
         }
+    }
+
+    // First time the user opens search, pull the full thread listing from
+    // every connected server so results aren't limited to the first page
+    // that seeded `allSessions`. Mirrors iOS
+    // `HomeDashboardView.swift:149-155` / `LitterApp.loadAllThreads`.
+    LaunchedEffect(isSearchExpanded) {
+        if (!isSearchExpanded || hasLoadedThreadListing) return@LaunchedEffect
+        runCatching { appModel.refreshSessions() }
+        hasLoadedThreadListing = true
     }
 
     Box(modifier = Modifier.fillMaxSize()) {

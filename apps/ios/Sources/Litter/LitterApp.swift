@@ -1448,7 +1448,6 @@ private struct HomeNavigationView: View {
                 }
             }
         }
-        await appModel.refreshSnapshot()
     }
 
     private func updateHomeDashboardActivity() {
