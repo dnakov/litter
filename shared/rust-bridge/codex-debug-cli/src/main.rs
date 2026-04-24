@@ -494,13 +494,13 @@ fn print_update(update: &AppStoreUpdateRecord) {
                 key.thread_id, item_id, kind, text
             );
         }
-        ThreadItemUpserted { key, item } => {
+        ThreadItemChanged { key, item, .. } => {
             eprintln!(
                 "\x1b[36m[item {}/{}]\x1b[0m {:?}",
                 key.server_id, key.thread_id, item
             );
         }
-        ThreadStateUpdated { state, .. } => {
+        ThreadMetadataChanged { state, .. } => {
             eprintln!(
                 "\x1b[35m[state {}]\x1b[0m {:?}",
                 state.key.thread_id, state.info.status
@@ -629,9 +629,9 @@ fn app_update_event(update: &AppStoreUpdateRecord) -> serde_json::Value {
             "status": thread.info.status,
             "activeTurnId": thread.active_turn_id,
         }),
-        AppStoreUpdateRecord::ThreadStateUpdated { state, .. } => serde_json::json!({
+        AppStoreUpdateRecord::ThreadMetadataChanged { state, .. } => serde_json::json!({
             "event": "app-update",
-            "kind": "thread-state-updated",
+            "kind": "thread-metadata-changed",
             "threadId": state.key.thread_id,
             "serverId": state.key.server_id,
             "status": state.info.status,
@@ -641,30 +641,12 @@ fn app_update_event(update: &AppStoreUpdateRecord) -> serde_json::Value {
                 "text": preview.text,
             })).collect::<Vec<_>>(),
         }),
-        AppStoreUpdateRecord::ThreadItemUpserted { key, item } => serde_json::json!({
+        AppStoreUpdateRecord::ThreadItemChanged { key, item, .. } => serde_json::json!({
             "event": "app-update",
-            "kind": "thread-item-upserted",
+            "kind": "thread-item-changed",
             "threadId": key.thread_id,
             "serverId": key.server_id,
             "item": item,
-        }),
-        AppStoreUpdateRecord::ThreadCommandExecutionUpdated {
-            key,
-            item_id,
-            status,
-            exit_code,
-            duration_ms,
-            process_id,
-        } => serde_json::json!({
-            "event": "app-update",
-            "kind": "thread-command-execution-updated",
-            "threadId": key.thread_id,
-            "serverId": key.server_id,
-            "itemId": item_id,
-            "status": status,
-            "exitCode": exit_code,
-            "durationMs": duration_ms,
-            "processId": process_id,
         }),
         AppStoreUpdateRecord::ThreadStreamingDelta {
             key,
@@ -729,6 +711,7 @@ async fn connect_mobile_client(args: &AppArgs) -> Result<(Arc<MobileClient>, Str
             port: args.ssh_port,
             username: user.clone(),
             auth: SshAuth::Password(password),
+            unlock_macos_keychain: false,
         };
         client
             .connect_remote_over_ssh(
@@ -1850,6 +1833,7 @@ async fn run_server_cli(args: ServerArgs) -> Result<(), Box<dyn std::error::Erro
                 args.password.clone(),
                 None,
                 None,
+                false,
                 true,
                 None,
                 args.ipc_socket_path_override.clone(),
@@ -1998,6 +1982,7 @@ async fn run_server_cli(args: ServerArgs) -> Result<(), Box<dyn std::error::Erro
                             developer_instructions: None,
                             persist_extended_history: false,
                             dynamic_tools: None,
+                            ephemeral: None,
                         },
                     )
                     .await;
@@ -2126,6 +2111,7 @@ async fn run_server_cli(args: ServerArgs) -> Result<(), Box<dyn std::error::Erro
                             model: None,
                             service_tier: None,
                             effort: None,
+                            output_schema: None,
                         },
                     )
                     .await;

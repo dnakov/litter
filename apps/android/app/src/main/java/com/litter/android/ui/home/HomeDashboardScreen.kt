@@ -310,6 +310,9 @@ fun HomeDashboardScreen(
                                 SavedThreadsStore.hide(context, key)
                                 hiddenKeys = SavedThreadsStore.hiddenKeys(context)
                                 pinnedKeys = SavedThreadsStore.pinnedKeys(context)
+                                scope.launch {
+                                    runCatching { appModel.store.unsubscribeThread(session.key) }
+                                }
                             },
                         ),
                         onError = { msg ->
@@ -569,12 +572,28 @@ fun HomeDashboardScreen(
                         pinnedKeys = pinnedKeys.toSet(),
                         query = searchQuery,
                         onPin = { session ->
+                            val displacedKeys = if (pinnedKeys.isEmpty()) {
+                                recentSessions
+                                    .map { it.key }
+                                    .filter { it != session.key }
+                            } else {
+                                emptyList()
+                            }
                             val key = PinnedThreadKey(
                                 serverId = session.key.serverId,
                                 threadId = session.key.threadId,
                             )
                             SavedThreadsStore.add(context, key)
                             pinnedKeys = SavedThreadsStore.pinnedKeys(context)
+                            if (displacedKeys.isNotEmpty()) {
+                                scope.launch {
+                                    displacedKeys.distinct().forEach { displacedKey ->
+                                        runCatching {
+                                            appModel.store.unsubscribeThread(displacedKey)
+                                        }
+                                    }
+                                }
+                            }
                         },
                         onUnpin = { session ->
                             val key = PinnedThreadKey(

@@ -42,6 +42,7 @@ fn round_trip_export_then_apply_preserves_pinned_threads() {
                 selected_server_id: Some("s1".into()),
                 selected_project_id: Some("s1::/work".into()),
             },
+            ..Default::default()
         },
     );
 

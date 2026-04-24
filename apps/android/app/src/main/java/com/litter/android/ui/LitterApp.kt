@@ -183,7 +183,7 @@ fun LitterApp(appModel: AppModel) {
                 PinnedThreadKey(serverId = startedKey.serverId, threadId = startedKey.threadId),
             )
             appModel.store.setActiveThread(startedKey)
-            appModel.refreshSnapshot()
+            appModel.refreshThreadSnapshot(startedKey)
             val resolvedKey = appModel.ensureThreadLoaded(startedKey)
                 ?: appModel.snapshot.value?.threads?.firstOrNull { it.key == startedKey }?.key
                 ?: startedKey

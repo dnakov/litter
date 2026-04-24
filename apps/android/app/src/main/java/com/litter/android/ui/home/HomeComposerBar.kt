@@ -185,7 +185,7 @@ fun HomeComposerBar(
                         serviceTier = null,
                     )
                     appModel.startTurn(threadKey, payload)
-                    appModel.refreshSnapshot()
+                    appModel.refreshThreadSnapshot(threadKey)
                     onThreadCreated(threadKey)
                 } catch (e: Exception) {
                     errorMessage = e.message ?: "Failed to start thread"

@@ -203,7 +203,6 @@ final class AppLifecycleController {
                 fields: ["trackedKeys": Array(keys).map(\.debugLabel)]
             )
         }
-        await appModel.refreshSnapshot()
 
         guard let snapshot = appModel.snapshot else { return }
         let trustedLiveKeys = Set(keys.filter { shouldTrustLiveThreadState(for: $0, appModel: appModel) })
@@ -380,7 +379,6 @@ final class AppLifecycleController {
             )
         }
 
-        await appModel.refreshSnapshot()
         liveActivities.sync(appModel.snapshot)
         LLog.info("lifecycle", "performForegroundRecovery completed")
     }
@@ -462,11 +460,12 @@ final class AppLifecycleController {
             ]
         )
         do {
-            _ = try await appModel.reloadThread(
+            let resolvedKey = try await appModel.reloadThread(
                 key: key,
                 launchConfig: config,
                 cwdOverride: cwd?.isEmpty == false ? cwd : nil
             )
+            await appModel.refreshThreadSnapshot(key: resolvedKey)
             LLog.info("lifecycle", "reloadTrackedThread completed", fields: ["key": key.debugLabel])
         } catch {
             LLog.error(

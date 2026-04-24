@@ -1470,9 +1470,11 @@ final class AppModel {
                 lastError = error.localizedDescription
             }
 
-            await refreshSnapshot()
-            if threadSnapshot(for: currentKey) != nil {
-                return currentKey
+            if readSucceeded {
+                await refreshLoadedThreadSnapshot(key: currentKey)
+                if threadSnapshot(for: currentKey) != nil {
+                    return currentKey
+                }
             }
 
             if !readSucceeded {
@@ -1491,7 +1493,7 @@ final class AppModel {
                     lastError = error.localizedDescription
                 }
 
-                await refreshSnapshot()
+                await refreshLoadedThreadSnapshot(key: currentKey)
                 if threadSnapshot(for: currentKey) != nil {
                     return currentKey
                 }
@@ -1509,6 +1511,19 @@ final class AppModel {
         }
 
         return nil
+    }
+
+    private func refreshLoadedThreadSnapshot(key: ThreadKey) async {
+        do {
+            if let thread = try await store.threadSnapshot(key: key) {
+                applyThreadSnapshot(thread)
+            } else {
+                await refreshSnapshot()
+            }
+        } catch {
+            lastError = error.localizedDescription
+            await refreshSnapshot()
+        }
     }
 
     func threadSnapshot(for key: ThreadKey) -> AppThreadSnapshot? {

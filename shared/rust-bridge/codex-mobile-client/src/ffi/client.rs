@@ -1465,7 +1465,9 @@ async fn run_structured_turn(
         if is_stale_thread_error(&e) {
             return Err(StructuredTurnError::StaleThread);
         }
-        return Err(StructuredTurnError::Fatal(format!("turn/start failed: {e}")));
+        return Err(StructuredTurnError::Fatal(format!(
+            "turn/start failed: {e}"
+        )));
     }
 
     let wait_outcome = tokio::time::timeout(

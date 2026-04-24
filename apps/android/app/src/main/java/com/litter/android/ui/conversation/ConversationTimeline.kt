@@ -1748,6 +1748,10 @@ internal fun wrapWidgetHtml(
             --color-text-danger: #FF6B6B;
             --color-text-success: #00FF9C;
             --color-text-warning: #FFD166;
+            --color-info: var(--color-text-info);
+            --color-danger: var(--color-text-danger);
+            --color-success: var(--color-text-success);
+            --color-warning: var(--color-text-warning);
             --color-border-tertiary: rgba(255,255,255,0.08);
             --color-border-secondary: rgba(255,255,255,0.16);
             --color-border-primary: rgba(255,255,255,0.24);
@@ -1898,8 +1902,16 @@ internal fun wrapWidgetHtml(
             window._heightObserver.observe(r);
         };
         window._setContent = function(html) {
-            if (!window._morphReady) { window._pending = html; return; }
             var root = document.getElementById('root');
+            if (!root) return;
+            if (!window._morphReady || typeof morphdom !== 'function') {
+                try { root.innerHTML = html; } catch (_) {}
+                window._attachHeightObserver();
+                setTimeout(function() {
+                    window._reportHeight();
+                }, 60);
+                return;
+            }
             var target = document.createElement('div');
             target.id = 'root';
             // Tolerate mid-stream HTML: unclosed tags or half-parsed

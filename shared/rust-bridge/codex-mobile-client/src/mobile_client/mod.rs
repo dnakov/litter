@@ -80,6 +80,7 @@ pub struct MobileClient {
     /// `Some`, the `show_widget` auto-upsert hook is enabled; when
     /// `None`, the hook is skipped (pre-R2 callers / tests).
     pub(crate) saved_apps_directory: Arc<StdMutex<Option<String>>>,
+    direct_resumed_threads: Arc<StdMutex<HashSet<ThreadKey>>>,
 }
 
 /// A waiter registered by `update_saved_app` to receive the next
@@ -165,6 +166,12 @@ fn should_fall_back_to_direct_after_ipc_mutation_error(error: &IpcError) -> bool
 
 fn is_timeout_like_ipc_mutation_error(error: &IpcError) -> bool {
     matches!(error, IpcError::Request(RequestError::Timeout))
+}
+
+fn should_fallback_to_thread_metadata_after_resume_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("no rollout found for thread id")
+        || lower.contains("remote app-server worker channel is closed")
 }
 
 fn normalize_pending_user_input_answers(
@@ -354,6 +361,7 @@ impl MobileClient {
             ambient_cache: crate::ambient_suggestions::new_ambient_cache(),
             widget_waiters: Arc::new(StdMutex::new(HashMap::new())),
             saved_apps_directory: Arc::new(StdMutex::new(None)),
+            direct_resumed_threads: Arc::new(StdMutex::new(HashSet::new())),
         }
     }
 
@@ -377,6 +385,29 @@ impl MobileClient {
                 error.into_inner()
             }
         }
+    }
+
+    fn direct_resumed_threads(&self) -> std::sync::MutexGuard<'_, HashSet<ThreadKey>> {
+        match self.direct_resumed_threads.lock() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!("MobileClient: recovering poisoned direct resume marker lock");
+                error.into_inner()
+            }
+        }
+    }
+
+    fn has_direct_resume_marker(&self, key: &ThreadKey) -> bool {
+        self.direct_resumed_threads().contains(key)
+    }
+
+    fn mark_direct_resumed_thread(&self, key: ThreadKey) {
+        self.direct_resumed_threads().insert(key);
+    }
+
+    pub(super) fn clear_direct_resume_markers_for_server(&self, server_id: &str) {
+        self.direct_resumed_threads()
+            .retain(|key| key.server_id != server_id);
     }
 
     // ── Internal RPC helpers ──────────────────────────────────────────────
@@ -536,6 +567,7 @@ impl MobileClient {
     async fn replace_existing_session(&self, server_id: &str) {
         self.clear_oauth_callback_tunnel(server_id).await;
         let existing = self.sessions_write().remove(server_id);
+        self.clear_direct_resume_markers_for_server(server_id);
         if let Some(session) = existing {
             info!("MobileClient: replacing existing server session {server_id}");
             session.disconnect().await;
@@ -838,6 +870,7 @@ impl MobileClient {
     /// no-op because the snapshot would still carry it.
     pub fn disconnect_server(&self, server_id: &str) {
         let session = self.sessions_write().remove(server_id);
+        self.clear_direct_resume_markers_for_server(server_id);
         self.app_store.remove_server(server_id);
 
         let inner = Arc::clone(&self.oauth_callback_tunnels);
@@ -854,6 +887,7 @@ impl MobileClient {
     pub async fn restart_app_server(&self, server_id: &str) -> Result<(), TransportError> {
         self.clear_oauth_callback_tunnel(server_id).await;
         let session = self.sessions_write().remove(server_id);
+        self.clear_direct_resume_markers_for_server(server_id);
         self.app_store.remove_server(server_id);
         let Some(session) = session else {
             return Err(TransportError::Disconnected);
@@ -1024,15 +1058,16 @@ impl MobileClient {
                 server_id, thread_id
             );
         }
+        let key = ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id: thread_id.to_string(),
+        };
+
         // If the server has live IPC and the thread already exists in the store
         // with populated data, skip the RPC — IPC broadcasts are already keeping
         // the thread state up to date.  This is the "passive IPC open" path that
         // was previously handled in platform code (Swift/Kotlin).
         if server_has_live_ipc(&self.app_store, server_id, &session) {
-            let key = ThreadKey {
-                server_id: server_id.to_string(),
-                thread_id: thread_id.to_string(),
-            };
             let thread_exists_with_data = self
                 .app_store
                 .snapshot()
@@ -1051,6 +1086,13 @@ impl MobileClient {
                 server_id, thread_id
             );
         }
+        if self.has_direct_resume_marker(&key) {
+            debug!(
+                "external_resume_thread: skipping RPC for server={} thread={} — direct listener already attached for current session",
+                server_id, thread_id
+            );
+            return Ok(());
+        }
         // Use thread/resume (not thread/read) so the server attaches a
         // conversation listener for this connection.  Without the listener
         // the WebSocket client only receives ThreadStatusChanged — no
@@ -1067,10 +1109,6 @@ impl MobileClient {
             .await
         {
             Ok(response) => {
-                let key = ThreadKey {
-                    server_id: server_id.to_string(),
-                    thread_id: thread_id.to_string(),
-                };
                 let existing = self.app_store.thread_snapshot(&key);
                 let turns = response.thread.turns.clone();
                 let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
@@ -1087,48 +1125,77 @@ impl MobileClient {
                 .map_err(RpcError::Deserialization)?;
                 reconcile_active_turn(existing.as_ref(), &mut snapshot, &turns);
                 self.app_store.upsert_thread_snapshot(snapshot);
+                self.mark_direct_resumed_thread(key);
                 Ok(())
             }
-            Err(error) if error.contains("no rollout found for thread id") => {
-                info!(
-                    "external_resume_thread: falling back to thread/read for pathless thread server={} thread={}",
-                    server_id, thread_id
-                );
-                let response: upstream::ThreadReadResponse = self
-                    .request_typed_for_server(
-                        server_id,
-                        upstream::ClientRequest::ThreadRead {
-                            request_id: upstream::RequestId::Integer(crate::next_request_id()),
-                            params: upstream::ThreadReadParams {
-                                thread_id: thread_id.to_string(),
-                                include_turns: false,
-                            },
-                        },
-                    )
+            Err(error) if should_fallback_to_thread_metadata_after_resume_error(&error) => {
+                if error.contains("no rollout found for thread id") {
+                    info!(
+                        "external_resume_thread: falling back to thread/read for pathless thread server={} thread={}",
+                        server_id, thread_id
+                    );
+                } else {
+                    warn!(
+                        "external_resume_thread: resume failed, falling back to metadata-only thread/read server={} thread={} error={}",
+                        server_id, thread_id, error
+                    );
+                }
+                self.read_thread_metadata_only(server_id, thread_id)
                     .await
-                    .map_err(RpcError::Deserialization)?;
-                let key = ThreadKey {
-                    server_id: server_id.to_string(),
-                    thread_id: thread_id.to_string(),
-                };
-                let existing = self.app_store.thread_snapshot(&key);
-                let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
-                    server_id,
-                    response.thread,
-                    None,
-                    None,
-                    response.approval_policy.map(Into::into),
-                    response.sandbox.map(Into::into),
-                )
-                .map_err(RpcError::Deserialization)?;
-                // include_turns=false: pass an empty slice so reconcile_active_turn
-                // preserves any local active state (no evidence to clear it).
-                reconcile_active_turn(existing.as_ref(), &mut snapshot, &[]);
-                self.app_store.upsert_thread_snapshot(snapshot);
-                Ok(())
+                    .map_err(|fallback_error| {
+                        RpcError::Deserialization(format!(
+                            "{error}; metadata fallback failed: {fallback_error}"
+                        ))
+                    })
             }
             Err(error) => Err(RpcError::Deserialization(error)),
         }
+    }
+
+    async fn read_thread_metadata_only(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+    ) -> Result<(), RpcError> {
+        let response: upstream::ThreadReadResponse = self
+            .request_typed_for_server(
+                server_id,
+                upstream::ClientRequest::ThreadRead {
+                    request_id: upstream::RequestId::Integer(crate::next_request_id()),
+                    params: upstream::ThreadReadParams {
+                        thread_id: thread_id.to_string(),
+                        include_turns: false,
+                    },
+                },
+            )
+            .await
+            .map_err(RpcError::Deserialization)?;
+        upsert_thread_snapshot_from_app_server_read_response(&self.app_store, server_id, response)
+    }
+
+    pub async fn thread_unsubscribe(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+    ) -> Result<(), RpcError> {
+        self.get_session(server_id)?;
+        let _: upstream::ThreadUnsubscribeResponse = self
+            .request_typed_for_server(
+                server_id,
+                upstream::ClientRequest::ThreadUnsubscribe {
+                    request_id: upstream::RequestId::Integer(crate::next_request_id()),
+                    params: upstream::ThreadUnsubscribeParams {
+                        thread_id: thread_id.to_string(),
+                    },
+                },
+            )
+            .await
+            .map_err(RpcError::Deserialization)?;
+        self.direct_resumed_threads().remove(&ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id: thread_id.to_string(),
+        });
+        Ok(())
     }
 
     pub async fn start_turn(

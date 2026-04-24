@@ -102,6 +102,43 @@ const ARCHETYPES: &[(&str, &str)] = &[
     ),
 ];
 
+fn choose_minigame_server_id(
+    requested_server_id: &str,
+    mut local_server_ids: Vec<String>,
+) -> Option<String> {
+    if local_server_ids
+        .iter()
+        .any(|server_id| server_id == requested_server_id)
+    {
+        return Some(requested_server_id.to_string());
+    }
+    if local_server_ids
+        .iter()
+        .any(|server_id| server_id == "local")
+    {
+        return Some("local".to_string());
+    }
+
+    local_server_ids.sort();
+    local_server_ids.dedup();
+    local_server_ids.into_iter().next()
+}
+
+fn resolve_minigame_server_id(
+    client: &crate::MobileClient,
+    requested_server_id: &str,
+) -> Result<String, String> {
+    let local_server_ids = client
+        .sessions_read()
+        .values()
+        .filter(|session| session.config().is_local)
+        .map(|session| session.config().server_id.clone())
+        .collect::<Vec<_>>();
+
+    choose_minigame_server_id(requested_server_id, local_server_ids)
+        .ok_or_else(|| "minigame generation requires a connected local server".to_string())
+}
+
 /// Pick one archetype non-deterministically so consecutive minigames vary.
 fn pick_archetype() -> &'static (&'static str, &'static str) {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -187,8 +224,15 @@ pub(crate) async fn run_minigame(
     client: &crate::MobileClient,
     request: MinigameRequest,
 ) -> Result<MinigameResult, String> {
-    let server_id = &request.server_id;
+    let requested_server_id = &request.server_id;
+    let server_id = resolve_minigame_server_id(client, requested_server_id)?;
     let parent_thread_id = &request.parent_thread_id;
+    if server_id != *requested_server_id {
+        info!(
+            "minigame: routing ephemeral thread to local server {} instead of parent server {}",
+            server_id, requested_server_id
+        );
+    }
 
     // Use the trimmed minigame-specific prompt directly. We do NOT prepend
     // GENERATIVE_UI_PREAMBLE here — its general "use show_widget when the
@@ -201,9 +245,8 @@ pub(crate) async fn run_minigame(
     );
 
     let app_tool = show_widget_tool_spec();
-    let input_schema: serde_json::Value =
-        serde_json::from_str(&app_tool.input_schema_json)
-            .map_err(|e| format!("parse show_widget input schema: {e}"))?;
+    let input_schema: serde_json::Value = serde_json::from_str(&app_tool.input_schema_json)
+        .map_err(|e| format!("parse show_widget input schema: {e}"))?;
     let dynamic_tools = vec![upstream::DynamicToolSpec {
         name: app_tool.name,
         description: app_tool.description,
@@ -236,7 +279,7 @@ pub(crate) async fn run_minigame(
 
     let thread_response: upstream::ThreadStartResponse = client
         .request_typed_for_server(
-            server_id,
+            &server_id,
             upstream::ClientRequest::ThreadStart {
                 request_id: upstream::RequestId::Integer(crate::next_request_id()),
                 params: start_params,
@@ -288,7 +331,7 @@ pub(crate) async fn run_minigame(
 
     if let Err(e) = client
         .request_typed_for_server::<upstream::TurnStartResponse>(
-            server_id,
+            &server_id,
             upstream::ClientRequest::TurnStart {
                 request_id: upstream::RequestId::Integer(crate::next_request_id()),
                 params: turn_params,
@@ -302,7 +345,7 @@ pub(crate) async fn run_minigame(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&ephemeral_thread_id);
-        cleanup_ephemeral_thread(client, server_id, &ephemeral_thread_id).await;
+        cleanup_ephemeral_thread(client, &server_id, &ephemeral_thread_id).await;
         return Err(format!("turn/start failed: {e}"));
     }
 
@@ -314,7 +357,7 @@ pub(crate) async fn run_minigame(
     .await;
 
     // 5. Best-effort cancel ephemeral thread
-    cleanup_ephemeral_thread(client, server_id, &ephemeral_thread_id).await;
+    cleanup_ephemeral_thread(client, &server_id, &ephemeral_thread_id).await;
 
     let payload = match wait_outcome {
         Ok(Ok(payload)) => payload,
@@ -410,5 +453,28 @@ mod tests {
         assert!(instructions.contains("i_have_seen_read_me: true"));
         assert!(instructions.contains("mg-"));
         assert!(instructions.contains("window.sendPrompt"));
+    }
+
+    #[test]
+    fn choose_minigame_server_keeps_requested_when_local() {
+        let chosen = choose_minigame_server_id(
+            "device-local",
+            vec!["local".to_string(), "device-local".to_string()],
+        );
+        assert_eq!(chosen.as_deref(), Some("device-local"));
+    }
+
+    #[test]
+    fn choose_minigame_server_prefers_canonical_local_for_remote_parent() {
+        let chosen = choose_minigame_server_id(
+            "remote",
+            vec!["device-local".to_string(), "local".to_string()],
+        );
+        assert_eq!(chosen.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn choose_minigame_server_returns_none_without_local_session() {
+        assert_eq!(choose_minigame_server_id("remote", Vec::new()), None);
     }
 }

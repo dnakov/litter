@@ -183,7 +183,7 @@ fun ConversationInfoScreen(
                                         ),
                                     )
                                     appModel.store.setActiveThread(newKey)
-                                    appModel.refreshSnapshot()
+                                    appModel.refreshThreadSnapshot(newKey)
                                 } catch (_: Exception) {}
                             }
                         },
@@ -293,7 +293,7 @@ fun ConversationInfoScreen(
                                     name = trimmed,
                                 ),
                             )
-                            appModel.refreshSnapshot()
+                            appModel.refreshThreadSnapshot(threadKey)
                         } catch (_: Exception) {}
                     }
                 }) {

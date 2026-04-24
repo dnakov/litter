@@ -132,6 +132,8 @@ struct HomeModelChip: View {
                 reasoningEffort: reasoningEffortBinding,
                 threadKey: nil
             )
+            .environment(appModel)
+            .environment(appState)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)

@@ -480,6 +480,7 @@ impl MobileClient {
     }
 
     pub(super) fn mark_server_transport_disconnected(&self, server_id: &str) {
+        self.clear_direct_resume_markers_for_server(server_id);
         self.app_store
             .update_server_health(server_id, ServerHealthSnapshot::Disconnected);
         self.app_store.update_server_ipc_state(server_id, false);

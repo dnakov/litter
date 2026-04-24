@@ -148,11 +148,10 @@ class MainActivity : ComponentActivity() {
         val model = appModel ?: return
         lifecycleScope.launch {
             model.activateThread(threadKey)
-            model.refreshSnapshot()
 
             val resolvedKey = model.ensureThreadLoaded(threadKey) ?: threadKey
             model.activateThread(resolvedKey)
-            model.refreshSnapshot()
+            model.refreshThreadSnapshot(resolvedKey)
         }
     }
 

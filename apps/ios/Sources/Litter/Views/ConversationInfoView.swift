@@ -705,7 +705,7 @@ struct ConversationInfoView: View {
                 ).threadForkRequest(threadId: sourceKey.threadId, cwdOverride: thread?.info.cwd)
             )
             appModel.store.setActiveThread(key: newKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: newKey)
             onOpenConversation?(newKey)
         } catch {
             LLog.error("info", "failed to fork thread", error: error)

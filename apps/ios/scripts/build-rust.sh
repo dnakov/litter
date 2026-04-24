@@ -6,6 +6,7 @@ IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$IOS_DIR/../.." && pwd)"
 source "$REPO_DIR/tools/scripts/load-sccache-aws-creds.sh"
 RUST_BRIDGE_DIR="$REPO_DIR/shared/rust-bridge"
+CARGO_TARGET_DIR_EFFECTIVE="${CARGO_TARGET_DIR:-$RUST_BRIDGE_DIR/target}"
 FRAMEWORKS_DIR="$IOS_DIR/Frameworks"
 GENERATED_SWIFT_DIR="$RUST_BRIDGE_DIR/generated/swift"
 UNIFFI_OUT="$IOS_DIR/Sources/Litter/Bridge/UniFFICodexClient.generated.swift"
@@ -192,7 +193,7 @@ maybe_generate_swift_bindings() {
 }
 
 copy_device_artifact() {
-  cp "$RUST_BRIDGE_DIR/target/aarch64-apple-ios/$PROFILE/libcodex_mobile_client.a" \
+  cp "$CARGO_TARGET_DIR_EFFECTIVE/aarch64-apple-ios/$PROFILE/libcodex_mobile_client.a" \
     "$GENERATED_DEVICE_DIR/libcodex_mobile_client.a"
 }
 
@@ -202,8 +203,8 @@ copy_sim_artifact() {
 }
 
 copy_macabi_artifact() {
-  local arm64_lib="$RUST_BRIDGE_DIR/target/aarch64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
-  local x86_64_lib="$RUST_BRIDGE_DIR/target/x86_64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
+  local arm64_lib="$CARGO_TARGET_DIR_EFFECTIVE/aarch64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
+  local x86_64_lib="$CARGO_TARGET_DIR_EFFECTIVE/x86_64-apple-ios-macabi/$PROFILE/libcodex_mobile_client.a"
   lipo -create "$arm64_lib" "$x86_64_lib" \
     -output "$GENERATED_MACABI_DIR/libcodex_mobile_client.a"
 }
@@ -236,7 +237,7 @@ if [ "$DEVICE_ONLY" -eq 1 ]; then
 elif [ "$SIM_ONLY" -eq 1 ]; then
   echo "==> Building codex-mobile-client for aarch64-apple-ios-sim ($PROFILE)..."
   cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-sim --crate-type staticlib $CARGO_FEATURES
-  copy_sim_artifact "$RUST_BRIDGE_DIR/target/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
+  copy_sim_artifact "$CARGO_TARGET_DIR_EFFECTIVE/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
 elif [ "$MACABI_ONLY" -eq 1 ]; then
   echo "==> Building codex-mobile-client for Mac Catalyst macabi targets ($PROFILE) in parallel..."
 
@@ -314,7 +315,7 @@ else
   [ "$FAILED" -eq 0 ] || exit 1
 
   copy_device_artifact
-  copy_sim_artifact "$RUST_BRIDGE_DIR/target/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
+  copy_sim_artifact "$CARGO_TARGET_DIR_EFFECTIVE/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
   copy_macabi_artifact
 fi
 

@@ -211,7 +211,7 @@ fun ConversationScreen(
                         threadKey = resolvedThreadKey,
                     ),
                 )
-                appModel.refreshSnapshot()
+                appModel.refreshThreadSnapshot(resolvedThreadKey)
             }
             if (appModel.threadSnapshot(resolvedThreadKey) == null) {
                 appModel.ensureThreadLoaded(resolvedThreadKey)
@@ -534,7 +534,7 @@ fun ConversationScreen(
                                                                     ),
                                                                 )
                                                                 appModel.store.setActiveThread(newKey)
-                                                                appModel.refreshSnapshot()
+                                                                appModel.refreshThreadSnapshot(newKey)
                                                             } catch (_: Exception) {}
                                                         }
                                                     },
@@ -762,7 +762,7 @@ fun ConversationScreen(
                                                 name = trimmed,
                                             ),
                                         )
-                                        appModel.refreshSnapshot()
+                                        appModel.refreshThreadSnapshot(threadKey)
                                     } catch (e: Exception) {
                                         slashErrorMessage = e.message ?: "Failed to rename conversation"
                                     }
@@ -926,7 +926,7 @@ fun ConversationScreen(
                                             name = nextTitle,
                                         ),
                                     )
-                                    appModel.refreshSnapshot()
+                                    appModel.refreshThreadSnapshot(threadKey)
                                 } catch (e: Exception) {
                                     slashErrorMessage = e.message ?: "Failed to rename conversation"
                                 }

@@ -101,6 +101,7 @@ struct SessionsScreen: View {
                     }
                 )
             }
+            .environment(appModel)
         }
     }
 
@@ -1156,7 +1157,7 @@ struct SessionsScreen: View {
             RecentDirectoryStore.shared.record(path: cwd, for: serverId)
             SavedThreadsStore.add(.init(threadKey: startedKey))
             appModel.store.setActiveThread(key: startedKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: startedKey)
 
             // startThread already created the thread and applied it to the store;
             // prefer the snapshot key if available, otherwise use the returned key
@@ -1184,7 +1185,7 @@ struct SessionsScreen: View {
                 )
             )
             appModel.store.setActiveThread(key: nextKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: nextKey)
             workDir = thread.cwd
             appState.currentCwd = thread.cwd
             onOpenConversation(nextKey)

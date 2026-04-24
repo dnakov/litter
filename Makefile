@@ -16,7 +16,6 @@ endif
 ROOT := $(shell pwd)
 STAMPS := $(ROOT)/.build-stamps
 RUST_DIR := $(ROOT)/shared/rust-bridge
-RUST_TARGET := $(RUST_DIR)/target
 SUBMODULE_DIR := $(ROOT)/shared/third_party/codex
 IOS_DIR := $(ROOT)/apps/ios
 IOS_SCRIPTS := $(IOS_DIR)/scripts
@@ -47,8 +46,16 @@ ANDROID_RELEASE_ABIS ?= arm64-v8a,x86_64
 HOST_ARCH := $(shell uname -m)
 ANDROID_EMULATOR_ABIS ?= $(if $(filter arm64 aarch64,$(HOST_ARCH)),arm64-v8a,x86_64)
 
-# Source local env (credentials, SDK paths) if present — must precede ?= auto-detect
+# Source local env (credentials, SDK paths, cache settings) if present.
+# This must precede cache setup and path auto-detection.
 -include .env
+
+LITTER_SHARED_CACHE_ROOT ?= $(HOME)/Library/Caches/litter-build
+LITTER_SHARED_RUST_TARGET ?= 0
+ifeq ($(LITTER_SHARED_RUST_TARGET),1)
+  export CARGO_TARGET_DIR ?= $(LITTER_SHARED_CACHE_ROOT)/cargo-target
+endif
+RUST_TARGET := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(RUST_DIR)/target)
 
 AWS_SHARED_CREDENTIALS_FILE ?= $(HOME)/.aws/credentials
 
@@ -612,7 +619,12 @@ clean: clean-rust clean-ios clean-android
 
 clean-rust:
 	@echo "==> Cleaning Rust build artifacts..."
-	@rm -rf $(RUST_TARGET)
+	@if [ "$(LITTER_SHARED_RUST_TARGET)" = "1" ] && [ "$(RUST_TARGET)" != "$(RUST_DIR)/target" ]; then \
+		echo "==> Shared Rust target is enabled; leaving $(RUST_TARGET) intact."; \
+		echo "==> Remove it manually if you really want to clear the shared cache."; \
+	else \
+		rm -rf $(RUST_TARGET); \
+	fi
 
 clean-ios:
 	@echo "==> Cleaning iOS artifacts..."

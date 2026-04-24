@@ -37,10 +37,7 @@ mod tests {
     #[test]
     fn wraps_script_with_semicolons() {
         let argv = vec!["sh".into(), "-c".into(), "echo one; echo two".into()];
-        assert_eq!(
-            mobile_system_command(&argv),
-            "sh -c 'echo one; echo two'"
-        );
+        assert_eq!(mobile_system_command(&argv), "sh -c 'echo one; echo two'");
     }
 
     #[test]
@@ -56,10 +53,7 @@ mod tests {
     #[test]
     fn escapes_single_quote_inside_script() {
         let argv = vec!["sh".into(), "-c".into(), "echo it's fine".into()];
-        assert_eq!(
-            mobile_system_command(&argv),
-            "sh -c 'echo it'\\''s fine'"
-        );
+        assert_eq!(mobile_system_command(&argv), "sh -c 'echo it'\\''s fine'");
     }
 
     #[test]

@@ -48,12 +48,18 @@ class AppLifecycleController {
      * Called when the app enters the foreground.
      */
     suspend fun onResume(context: Context, appModel: AppModel) {
+        val keysToRefresh = buildSet {
+            addAll(backgroundedTurnKeys)
+            appModel.snapshot.value?.activeThread?.let(::add)
+        }
         val servers = SavedServerStore.remembered(context).map { it.toRecord() }
         appModel.reconnectController.syncSavedServers(servers)
         val results = appModel.reconnectController.onAppBecameActive()
         restoreLocalStateAfterReconnect(appModel, results)
         backgroundedTurnKeys.clear()
-        appModel.refreshSnapshot()
+        keysToRefresh.forEach { key ->
+            appModel.refreshThreadSnapshot(key)
+        }
     }
 
     /**

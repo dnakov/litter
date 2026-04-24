@@ -422,6 +422,7 @@ mod tests {
                 pinned_threads: vec![pin("s", "a")],
                 hidden_threads: vec![],
                 home_selection: HomeSelection::default(),
+                ..Default::default()
             },
         );
 
@@ -446,6 +447,7 @@ mod tests {
                 pinned_threads: vec![pin("s", "a")],
                 hidden_threads: vec![],
                 home_selection: HomeSelection::default(),
+                ..Default::default()
             },
         );
 

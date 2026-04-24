@@ -242,7 +242,7 @@ fun ComposerBar(
                         ),
                     )
                     appModel.store.setActiveThread(newKey)
-                    appModel.refreshSnapshot()
+                    appModel.refreshThreadSnapshot(newKey)
                 } catch (e: Exception) {
                     onSlashError?.invoke(e.message ?: "Failed to fork conversation")
                 }

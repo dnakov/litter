@@ -259,7 +259,7 @@ struct ConversationView: View {
                         cwdOverride: thread.info.cwd
                     )
                 )
-                await appModel.refreshSnapshot()
+                await appModel.refreshThreadSnapshot(key: nextKey)
                 let nextCwd = thread.info.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !nextCwd.isEmpty {
                     workDir = nextCwd
@@ -1928,7 +1928,7 @@ private struct ConversationInputBar: View {
                 ).threadForkRequest(threadId: snapshot.threadKey.threadId, cwdOverride: workDir)
             )
             appModel.store.setActiveThread(key: nextKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: nextKey)
             let nextCwd = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
             if !nextCwd.isEmpty {
                 workDir = nextCwd
@@ -3075,6 +3075,7 @@ private struct SubagentBreadcrumbBar: View {
 private struct ConversationDebugButton: View {
     let topInset: CGFloat
     let activeThreadKey: ThreadKey
+    @Environment(AppModel.self) private var appModel
     @State private var showPopover = false
 
     var body: some View {
@@ -3112,6 +3113,7 @@ private struct ConversationDebugButton: View {
         .padding(.top, topInset + 12)
         .popover(isPresented: $showPopover) {
             DebugPopoverContent(activeThreadKey: activeThreadKey)
+                .environment(appModel)
                 .presentationCompactAdaptation(.popover)
         }
     }

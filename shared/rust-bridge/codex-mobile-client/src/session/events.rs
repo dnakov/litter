@@ -981,7 +981,11 @@ mod tests {
         });
         let evt = process_and_recv("srv1", &notification).expect("should emit UiEvent");
         match evt {
-            UiEvent::TurnCompleted { key, turn_id, error } => {
+            UiEvent::TurnCompleted {
+                key,
+                turn_id,
+                error,
+            } => {
                 assert_eq!(key.thread_id, "thr_2");
                 assert_eq!(turn_id, "turn_2");
                 assert!(error.is_none());

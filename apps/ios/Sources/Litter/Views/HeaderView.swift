@@ -49,6 +49,8 @@ struct HeaderView: View {
             arrowEdge: .top
         ) {
             ConversationModelPickerPanel(thread: thread)
+                .environment(appModel)
+                .environment(appState)
                 .presentationCompactAdaptation(.popover)
         }
         .task(id: thread.key) {
@@ -253,6 +255,7 @@ struct ConversationModelPickerPanel: View {
             collaborationMode: thread.collaborationMode,
             effectiveApprovalPolicy: thread.effectiveApprovalPolicy,
             effectiveSandboxPolicy: thread.effectiveSandboxPolicy,
+            showsBackground: false,
             onDismiss: {
                 appState.showModelSelector = false
             }
@@ -433,6 +436,7 @@ struct InlineModelSelectorView: View {
     var collaborationMode: AppModeKind = .default
     var effectiveApprovalPolicy: AppAskForApproval?
     var effectiveSandboxPolicy: AppSandboxPolicy?
+    var showsBackground = true
     @Environment(AppModel.self) private var appModel
     @Environment(AppState.self) private var appState
     @AppStorage("fastMode") private var fastMode = false
@@ -609,7 +613,7 @@ struct InlineModelSelectorView: View {
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(LitterTheme.surface)
+        .background(showsBackground ? LitterTheme.surface : Color.clear)
     }
 }
 

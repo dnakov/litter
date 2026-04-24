@@ -566,6 +566,207 @@ mod mobile_client_tests {
         assert_eq!(snapshot.info.status, ThreadSummaryStatus::Idle);
     }
 
+    #[tokio::test]
+    async fn external_resume_thread_falls_back_to_metadata_read_after_worker_channel_closes() {
+        let client = MobileClient::new();
+        let server_id = "srv";
+        let thread_id = "thread-1";
+        let config = make_server_config(server_id);
+        client
+            .app_store
+            .upsert_server(&config, ServerHealthSnapshot::Connected, true);
+
+        let requests = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let request_handler: TestRequestHandler = {
+            let requests = Arc::clone(&requests);
+            Arc::new(move |request| {
+                requests
+                    .lock()
+                    .expect("request log lock should not be poisoned")
+                    .push(request.method().to_string());
+                match request {
+                    upstream::ClientRequest::ThreadResume { .. } => {
+                        Err(RpcError::Transport(TransportError::SendFailed(
+                            "remote app-server worker channel is closed".to_string(),
+                        )))
+                    }
+                    upstream::ClientRequest::ThreadRead { params, .. } => {
+                        assert!(
+                            !params.include_turns,
+                            "metadata fallback should avoid loading turns"
+                        );
+                        serde_json::to_value(serde_json::json!({
+                            "thread": {
+                                "id": thread_id,
+                                "preview": "hi",
+                                "ephemeral": false,
+                                "modelProvider": "openai",
+                                "createdAt": 1,
+                                "updatedAt": 2,
+                                "status": { "type": "idle" },
+                                "path": "/tmp/thread",
+                                "cwd": "/tmp/thread",
+                                "cliVersion": "1.0.0",
+                                "source": "cli",
+                                "agentNickname": null,
+                                "agentRole": null,
+                                "gitInfo": null,
+                                "name": "thread",
+                                "turns": []
+                            },
+                            "approvalPolicy": "never",
+                            "sandbox": {
+                                "type": "dangerFullAccess"
+                            }
+                        }))
+                        .map_err(|error| RpcError::Deserialization(error.to_string()))
+                    }
+                    other => Err(RpcError::Deserialization(format!(
+                        "unexpected request in test: {}",
+                        other.method()
+                    ))),
+                }
+            })
+        };
+        let session = Arc::new(ServerSession::test_stub_with_handlers(
+            config,
+            None,
+            Some(request_handler),
+            None,
+            None,
+        ));
+        client
+            .sessions
+            .write()
+            .expect("sessions lock should not be poisoned")
+            .insert(server_id.to_string(), session);
+
+        client
+            .external_resume_thread(server_id, thread_id, None)
+            .await
+            .expect("resume should fall back to metadata read");
+
+        let requests = requests
+            .lock()
+            .expect("request log lock should not be poisoned");
+        assert_eq!(
+            requests.as_slice(),
+            ["thread/resume", "thread/read"],
+            "resume should retry with metadata-only thread/read"
+        );
+        drop(requests);
+
+        let snapshot = client
+            .app_store
+            .snapshot()
+            .threads
+            .get(&ThreadKey {
+                server_id: server_id.to_string(),
+                thread_id: thread_id.to_string(),
+            })
+            .cloned()
+            .expect("thread snapshot should exist after fallback");
+        assert!(snapshot.items.is_empty());
+        assert_eq!(
+            snapshot.effective_approval_policy,
+            Some(crate::types::AppAskForApproval::Never)
+        );
+        assert_eq!(
+            snapshot.effective_sandbox_policy,
+            Some(crate::types::AppSandboxPolicy::DangerFullAccess)
+        );
+    }
+
+    #[tokio::test]
+    async fn external_resume_thread_skips_duplicate_direct_resume_for_current_session() {
+        let client = MobileClient::new();
+        let server_id = "srv";
+        let thread_id = "thread-1";
+        let config = make_server_config(server_id);
+        client
+            .app_store
+            .upsert_server(&config, ServerHealthSnapshot::Connected, false);
+
+        let requests = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let request_handler: TestRequestHandler = {
+            let requests = Arc::clone(&requests);
+            Arc::new(move |request| {
+                requests
+                    .lock()
+                    .expect("request log lock should not be poisoned")
+                    .push(request.method().to_string());
+                match request {
+                    upstream::ClientRequest::ThreadResume { .. } => {
+                        serde_json::to_value(serde_json::json!({
+                            "thread": {
+                                "id": thread_id,
+                                "preview": "hi",
+                                "ephemeral": false,
+                                "modelProvider": "openai",
+                                "createdAt": 1,
+                                "updatedAt": 2,
+                                "status": { "type": "idle" },
+                                "path": "/tmp/thread",
+                                "cwd": "/tmp/thread",
+                                "cliVersion": "1.0.0",
+                                "source": "cli",
+                                "agentNickname": null,
+                                "agentRole": null,
+                                "gitInfo": null,
+                                "name": "thread",
+                                "turns": []
+                            },
+                            "model": "gpt-5",
+                            "modelProvider": "openai",
+                            "cwd": "/tmp/thread",
+                            "approvalPolicy": "never",
+                            "approvalsReviewer": "user",
+                            "sandbox": {
+                                "type": "dangerFullAccess"
+                            },
+                            "reasoningEffort": "medium"
+                        }))
+                        .map_err(|error| RpcError::Deserialization(error.to_string()))
+                    }
+                    other => Err(RpcError::Deserialization(format!(
+                        "unexpected request in test: {}",
+                        other.method()
+                    ))),
+                }
+            })
+        };
+        let session = Arc::new(ServerSession::test_stub_with_handlers(
+            config,
+            None,
+            Some(request_handler),
+            None,
+            None,
+        ));
+        client
+            .sessions
+            .write()
+            .expect("sessions lock should not be poisoned")
+            .insert(server_id.to_string(), session);
+
+        client
+            .external_resume_thread(server_id, thread_id, None)
+            .await
+            .expect("first resume should attach direct listener");
+        client
+            .external_resume_thread(server_id, thread_id, None)
+            .await
+            .expect("second resume should be skipped");
+
+        let requests = requests
+            .lock()
+            .expect("request log lock should not be poisoned");
+        assert_eq!(
+            requests.as_slice(),
+            ["thread/resume"],
+            "duplicate direct resume should not call app-server again"
+        );
+    }
+
     #[test]
     fn remote_oauth_callback_port_reads_localhost_redirect() {
         let auth_url = "https://auth.openai.com/oauth/authorize?response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=abc";

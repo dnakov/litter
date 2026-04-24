@@ -45,6 +45,7 @@ struct SubagentCardView: View {
         .sheet(item: $sheetThreadKey) { key in
             let resolvedKey = appModel.snapshot?.resolvedThreadKey(for: key.threadId, serverId: key.serverId) ?? key
             SubagentDetailSheet(threadKey: resolvedKey, agentLabel: sheetAgentLabel)
+                .environment(appModel)
         }
     }
 
@@ -458,7 +459,7 @@ private struct SubagentDetailSheet: View {
                 ),
                 cwdOverride: nil
             )
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: threadKey)
         } catch {}
     }
 }

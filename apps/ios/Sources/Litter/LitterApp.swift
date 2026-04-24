@@ -456,12 +456,15 @@ struct ContentView: View {
                     appState.showServerPicker = false
                 })
             }
+            .environment(appModel)
             .environment(appState)
             .environment(\.textScale, textScale)
         }
         .sheet(isPresented: $bindableAppState.showSettings) {
             SettingsView()
+                .environment(appModel)
                 .environment(appState)
+                .environment(themeManager)
                 .environment(\.textScale, textScale)
         }
         #if targetEnvironment(macCatalyst)
@@ -813,6 +816,7 @@ private struct HomeNavigationView: View {
                     }
                 )
             }
+            .environment(appModel)
         }
         .sheet(isPresented: $showProjectPicker) {
             ProjectPickerSheet(
@@ -832,6 +836,7 @@ private struct HomeNavigationView: View {
                     }
                 }
             )
+            .environment(appModel)
         }
         .alert("Home Action Failed", isPresented: Binding(
             get: { actionErrorMessage != nil },
@@ -1037,7 +1042,7 @@ private struct HomeNavigationView: View {
             RecentDirectoryStore.shared.record(path: cwd, for: serverId)
             homeDashboardModel.pinThread(key)
             appModel.store.setActiveThread(key: startedKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: startedKey)
         } catch {
             actionErrorMessage = error.localizedDescription
             return
@@ -1291,7 +1296,12 @@ private struct HomeNavigationView: View {
     }
 
     private func pinThread(_ key: ThreadKey) {
+        let shouldUnsubscribeDisplacedRecent = homeDashboardModel.pinnedKeys.isEmpty
+        let displacedKeys = shouldUnsubscribeDisplacedRecent
+            ? Set(homeDashboardModel.recentSessions.map(\.key)).subtracting([key])
+            : []
         homeDashboardModel.pinThread(key)
+        unsubscribeHomeThreads(Array(displacedKeys))
     }
 
     private func unpinThread(_ key: ThreadKey) {
@@ -1300,6 +1310,29 @@ private struct HomeNavigationView: View {
 
     private func hideThread(_ key: ThreadKey) {
         homeDashboardModel.hideThread(key)
+        unsubscribeHomeThreads([key])
+    }
+
+    private func unsubscribeHomeThreads(_ keys: [ThreadKey]) {
+        let uniqueKeys = Array(Set(keys))
+        guard !uniqueKeys.isEmpty else { return }
+        Task {
+            for key in uniqueKeys {
+                do {
+                    try await appModel.store.unsubscribeThread(key: key)
+                } catch {
+                    LLog.warn(
+                        "transport",
+                        "failed to unsubscribe hidden/displaced home thread",
+                        fields: [
+                            "serverId": key.serverId,
+                            "threadId": key.threadId,
+                            "error": String(describing: error)
+                        ]
+                    )
+                }
+            }
+        }
     }
 
     private func hydrateThread(_ key: ThreadKey) async {
@@ -1326,7 +1359,7 @@ private struct HomeNavigationView: View {
             serverId: key.serverId,
             params: AppArchiveThreadRequest(threadId: key.threadId)
         )
-        await appModel.refreshSnapshot()
+        await appModel.refreshThreadSnapshot(key: key)
     }
 
     @MainActor
@@ -1346,7 +1379,7 @@ private struct HomeNavigationView: View {
                     turnId: turnId
                 )
             )
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: threadKey)
         } catch {
             actionErrorMessage = error.localizedDescription
         }
@@ -1385,7 +1418,7 @@ private struct HomeNavigationView: View {
         )
         do {
             try await appModel.startTurn(key: activeKey, payload: payload)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: activeKey)
         } catch {
             actionErrorMessage = error.localizedDescription
         }

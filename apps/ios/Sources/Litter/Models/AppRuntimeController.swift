@@ -42,7 +42,6 @@ final class AppRuntimeController {
         )
         lifecycle.markThreadOpenedFromNotification(key)
         appModel.activateThread(key)
-        await appModel.refreshSnapshot()
 
         if let resolvedKey = await appModel.ensureThreadLoaded(key: key) {
             lifecycle.markThreadOpenedFromNotification(resolvedKey)
@@ -52,7 +51,7 @@ final class AppRuntimeController {
                 fields: ["serverId": resolvedKey.serverId, "threadId": resolvedKey.threadId]
             )
             appModel.activateThread(resolvedKey)
-            await appModel.refreshSnapshot()
+            await appModel.refreshThreadSnapshot(key: resolvedKey)
         } else {
             LLog.warn(
                 "push",

@@ -285,6 +285,14 @@ impl AppStore {
         })
     }
 
+    pub async fn unsubscribe_thread(&self, key: ThreadKey) -> Result<(), ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            c.thread_unsubscribe(&key.server_id, &key.thread_id)
+                .await
+                .map_err(|e| ClientError::Rpc(e.to_string()))
+        })
+    }
+
     pub fn subscribe_updates(&self) -> AppStoreSubscription {
         AppStoreSubscription {
             state: std::sync::Mutex::new(Some(AppStoreSubscriptionState {

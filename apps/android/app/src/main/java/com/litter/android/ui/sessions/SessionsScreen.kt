@@ -196,7 +196,7 @@ fun SessionsScreen(
                 ),
             )
             appModel.store.setActiveThread(newKey)
-            appModel.refreshSnapshot()
+            appModel.refreshThreadSnapshot(newKey)
             appModel.launchState.updateCurrentCwd(summary.cwd)
             onOpenConversation(newKey)
         } finally {
@@ -681,7 +681,7 @@ private fun SessionNodeRow(
                                     name = newName,
                                 ),
                             )
-                            appModel.refreshSnapshot()
+                            appModel.refreshThreadSnapshot(summary.key)
                         } catch (_: Exception) {}
                     }
                 }) { Text("Rename") }

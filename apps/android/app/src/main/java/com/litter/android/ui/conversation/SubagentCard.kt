@@ -167,7 +167,7 @@ fun SubagentCard(
                                 } else {
                                     scope.launch {
                                         appModel.store.setActiveThread(threadKey)
-                                        appModel.refreshSnapshot()
+                                        appModel.refreshThreadSnapshot(threadKey)
                                     }
                                 }
                             },

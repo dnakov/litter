@@ -64,6 +64,7 @@ fun ModelSelectorPanel(
     fastMode: Boolean,
     onFastModeChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    showBackground: Boolean = true,
 ) {
     val appModel = LocalAppModel.current
     val launchState by appModel.launchState.snapshot.collectAsState()
@@ -107,7 +108,13 @@ fun ModelSelectorPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .background(LitterTheme.codeBackground)
+            .then(
+                if (showBackground) {
+                    Modifier.background(LitterTheme.codeBackground)
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Text(

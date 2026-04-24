@@ -532,9 +532,11 @@ class AppModel private constructor(context: android.content.Context) {
                 _lastError.value = e.message
             }
 
-            refreshSnapshot()
-            if (threadSnapshot(currentKey) != null) {
-                return currentKey
+            if (readSucceeded) {
+                refreshLoadedThreadSnapshot(currentKey)
+                if (threadSnapshot(currentKey) != null) {
+                    return currentKey
+                }
             }
 
             if (!readSucceeded) {
@@ -553,7 +555,7 @@ class AppModel private constructor(context: android.content.Context) {
                     _lastError.value = e.message
                 }
 
-                refreshSnapshot()
+                refreshLoadedThreadSnapshot(currentKey)
                 if (threadSnapshot(currentKey) != null) {
                     return currentKey
                 }
@@ -573,6 +575,20 @@ class AppModel private constructor(context: android.content.Context) {
         }
 
         return null
+    }
+
+    private suspend fun refreshLoadedThreadSnapshot(key: ThreadKey) {
+        try {
+            val thread = store.threadSnapshot(key)
+            if (thread != null) {
+                applyThreadSnapshot(thread)
+            } else {
+                refreshSnapshot()
+            }
+        } catch (e: Exception) {
+            _lastError.value = e.message
+            refreshSnapshot()
+        }
     }
 
     // --- Internal event handling ----------------------------------------------

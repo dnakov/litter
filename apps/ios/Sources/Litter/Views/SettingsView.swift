@@ -50,15 +50,16 @@ struct SettingsView: View {
                         .foregroundColor(LitterTheme.accent)
                 }
             }
-            .sheet(isPresented: $showAddServer) {
-                NavigationStack {
-                    DiscoveryView(onServerSelected: { _ in
-                        showAddServer = false
-                    })
-                }
-                .environment(appState)
-                .environment(\.textScale, textScale)
+        .sheet(isPresented: $showAddServer) {
+            NavigationStack {
+                DiscoveryView(onServerSelected: { _ in
+                    showAddServer = false
+                })
             }
+            .environment(appModel)
+            .environment(appState)
+            .environment(\.textScale, textScale)
+        }
         }
     }
 

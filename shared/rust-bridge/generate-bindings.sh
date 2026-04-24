@@ -61,7 +61,7 @@ else
     cargo build -p codex-mobile-client
 fi
 
-DYLIB_PATH="$WORKSPACE_DIR/target/$PROFILE"
+DYLIB_PATH="${CARGO_TARGET_DIR:-$WORKSPACE_DIR/target}/$PROFILE"
 
 # Resolve the dynamic library name per platform
 if [[ "$(uname)" == "Darwin" ]]; then

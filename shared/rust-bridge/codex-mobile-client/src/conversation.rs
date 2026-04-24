@@ -332,20 +332,23 @@ fn convert_thread_item(
                     "content": r.content,
                     "structuredContent": r.structured_content,
                 });
-                pretty_json(&obj)
+                pretty_json(&obj).map(|json| truncate_command_output_text(&json))
             });
             let content_summary = result.as_ref().map(|r| {
-                r.content
+                let summary = r
+                    .content
                     .iter()
                     .map(stringify_json_value)
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n");
+                truncate_command_output_text(&summary)
             });
             let structured_json = result
                 .as_ref()
                 .and_then(|r| r.structured_content.as_ref())
-                .and_then(pretty_json);
+                .and_then(pretty_json)
+                .map(|json| truncate_command_output_text(&json));
             let computer_use = if server == "computer-use" {
                 Some(build_computer_use_view(
                     tool,
@@ -361,7 +364,8 @@ fn convert_thread_item(
                     tool: tool.clone(),
                     status: convert_mcp_status(status),
                     duration_ms: *duration_ms,
-                    arguments_json: pretty_json(arguments),
+                    arguments_json: pretty_json(arguments)
+                        .map(|json| truncate_command_display_text(&json)),
                     content_summary,
                     structured_content_json: structured_json,
                     raw_output_json,
@@ -397,7 +401,7 @@ fn convert_thread_item(
                 });
             }
             let content_summary = content_items.as_ref().map(|items| {
-                items
+                let summary = items
                     .iter()
                     .map(|item| match item {
                         DynamicToolCallOutputContentItem::InputText { text } => text.clone(),
@@ -406,7 +410,8 @@ fn convert_thread_item(
                         }
                     })
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n");
+                truncate_command_output_text(&summary)
             });
             (
                 HydratedConversationItemContent::DynamicToolCall(HydratedDynamicToolCallData {
@@ -414,7 +419,8 @@ fn convert_thread_item(
                     status: convert_dynamic_status(status),
                     duration_ms: *duration_ms,
                     success: *success,
-                    arguments_json: pretty_json(arguments),
+                    arguments_json: pretty_json(arguments)
+                        .map(|json| truncate_command_display_text(&json)),
                     content_summary,
                 }),
                 false,

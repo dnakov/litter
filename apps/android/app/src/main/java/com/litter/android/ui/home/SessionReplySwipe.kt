@@ -87,7 +87,7 @@ fun SessionReplySwipe(
                         serviceTier = null,
                     )
                     appModel.startTurn(resumeKey, payload)
-                    appModel.refreshSnapshot()
+                    appModel.refreshThreadSnapshot(resumeKey)
                 }.onFailure { err ->
                     onError(err.message ?: "Failed to send reply")
                 }

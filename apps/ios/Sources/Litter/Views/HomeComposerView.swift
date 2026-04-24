@@ -235,7 +235,7 @@ struct HomeComposerView: View {
                     serviceTier: nil
                 )
                 try await appModel.startTurn(key: threadKey, payload: payload)
-                await appModel.refreshSnapshot()
+                await appModel.refreshThreadSnapshot(key: threadKey)
                 onThreadCreated(threadKey)
             } catch {
                 errorMessage = error.localizedDescription

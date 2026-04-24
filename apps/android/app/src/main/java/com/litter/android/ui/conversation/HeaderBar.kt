@@ -316,7 +316,7 @@ fun HeaderBar(
                                     ),
                                 )
                             }
-                            appModel.refreshSnapshot()
+                            appModel.refreshThreadSnapshot(thread.key)
                         } catch (e: Exception) {
                             onReloadError?.invoke(e.message ?: "Failed to reload conversation")
                         } finally {
@@ -382,6 +382,7 @@ fun HeaderBar(
                 },
                 fastMode = HeaderOverrides.pendingFastMode,
                 onFastModeChange = { HeaderOverrides.pendingFastMode = it },
+                showBackground = false,
             )
         }
     }
@@ -404,4 +405,3 @@ private fun effortLabelLocal(value: uniffi.codex_mobile_client.ReasoningEffort):
         uniffi.codex_mobile_client.ReasoningEffort.HIGH -> "high"
         uniffi.codex_mobile_client.ReasoningEffort.X_HIGH -> "xhigh"
     }
-
