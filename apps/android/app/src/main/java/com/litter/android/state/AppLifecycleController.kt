@@ -104,7 +104,7 @@ class AppLifecycleController {
             if (!result.needsLocalAuthRestore) {
                 continue
             }
-            appModel.restoreStoredLocalChatGptAuth(result.serverId)
+            appModel.restoreStoredLocalAuthState(result.serverId)
             runCatching {
                 appModel.refreshSessions(listOf(result.serverId))
             }

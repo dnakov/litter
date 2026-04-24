@@ -349,7 +349,7 @@ rust-ios-sim-fast: $(STAMP_SYNC)
 
 rust-check:
 	@echo "==> cargo check (host, shared crates)..."
-	@cd $(ROOT) && $(DEV_CARGO_ENV) cargo check --manifest-path $(RUST_DIR)/Cargo.toml -p codex-mobile-client -p codex-ios-audio
+	@cd $(ROOT) && $(DEV_CARGO_ENV) cargo check --manifest-path $(RUST_DIR)/Cargo.toml -p codex-mobile-client
 
 rust-test:
 	@echo "==> cargo test (host, shared crates)..."

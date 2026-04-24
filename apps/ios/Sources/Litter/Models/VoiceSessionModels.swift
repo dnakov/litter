@@ -219,14 +219,16 @@ extension VoiceSessionState {
 protocol VoiceActions: AnyObject {
     var activeVoiceSession: VoiceSessionState? { get }
 
+    @discardableResult
     func startPinnedLocalVoiceCall(
         cwd: String,
         model: String?,
         approvalPolicy: AppAskForApproval?,
         sandboxMode: AppSandboxMode?
-    ) async throws
+    ) async throws -> ThreadKey
 
-    func startVoiceOnThread(_ key: ThreadKey) async throws
+    @discardableResult
+    func startVoiceOnThread(_ key: ThreadKey) async throws -> ThreadKey
 
     func stopActiveVoiceSession() async
 

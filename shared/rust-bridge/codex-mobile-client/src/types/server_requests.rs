@@ -337,6 +337,7 @@ impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
             approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
             approvals_reviewer: None,
             sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            permission_profile: None,
             config: None,
             service_name: None,
             base_instructions: None,
@@ -360,6 +361,7 @@ impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
                                 name: spec.name,
                                 description: spec.description,
                                 input_schema,
+                                namespace: None,
                                 defer_loading: spec.defer_loading,
                             })
                         })
@@ -401,6 +403,7 @@ impl TryFrom<AppResumeThreadRequest> for upstream::ThreadResumeParams {
             approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
             approvals_reviewer: None,
             sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            permission_profile: None,
             config: None,
             base_instructions: None,
             developer_instructions: value.developer_instructions,
@@ -437,6 +440,7 @@ impl TryFrom<AppForkThreadRequest> for upstream::ThreadForkParams {
             approval_policy: value.approval_policy.map(ask_for_approval_into_upstream),
             approvals_reviewer: None,
             sandbox: value.sandbox.map(sandbox_mode_into_upstream),
+            permission_profile: None,
             config: None,
             base_instructions: None,
             developer_instructions: value.developer_instructions,
@@ -513,8 +517,9 @@ impl From<AppListThreadsRequest> for upstream::ThreadListParams {
             model_providers: None,
             source_kinds: None,
             archived: value.archived,
-            cwd: value.cwd,
+            cwd: value.cwd.map(upstream::ThreadListCwdFilter::One),
             search_term: value.search_term,
+            use_state_db_only: false,
         }
     }
 }
@@ -608,6 +613,8 @@ impl TryFrom<AppStartTurnRequest> for upstream::TurnStartParams {
                 .sandbox_policy
                 .map(sandbox_policy_into_upstream)
                 .transpose()?,
+            environments: None,
+            permission_profile: None,
             model: value.model,
             service_tier: value.service_tier.map(service_tier_into_upstream).map(Some),
             effort: value.effort.map(reasoning_effort_into_upstream),
@@ -957,6 +964,7 @@ impl TryFrom<AppExecCommandRequest> for upstream::CommandExecParams {
                 .sandbox_policy
                 .map(sandbox_policy_into_upstream)
                 .transpose()?,
+            permission_profile: None,
         })
     }
 }

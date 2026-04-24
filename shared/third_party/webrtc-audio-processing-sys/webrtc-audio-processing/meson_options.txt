@@ -1,9 +1,0 @@
-option('gnustl', type: 'feature',
-       value: 'auto',
-       description: 'Use gnustl for a c++ library implementation (only used on Android)')
-option('neon', type: 'feature',
-       value: 'auto',
-       description: 'Enable NEON optimisations')
-option('inline-sse', type: 'boolean',
-       value: true,
-       description: 'Enable inline SSE/SSE2 optimisations (i.e. assume CPU supports SSE/SSE2)')

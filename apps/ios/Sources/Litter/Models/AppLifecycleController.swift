@@ -45,9 +45,11 @@ final class AppLifecycleController {
         )
         appModel.reconnectController.syncSavedServers(servers: servers)
         let results = await appModel.reconnectController.reconnectSavedServers()
+        await appModel.refreshSnapshot()
         for result in results where result.needsLocalAuthRestore {
-            await appModel.restoreStoredLocalChatGPTAuth(serverId: result.serverId)
+            await appModel.restoreStoredLocalAuthState(serverId: result.serverId)
         }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
         await appModel.refreshSnapshot()
     }
 
@@ -62,9 +64,11 @@ final class AppLifecycleController {
         )
         appModel.reconnectController.syncSavedServers(servers: servers)
         let result = await appModel.reconnectController.reconnectServer(serverId: serverId)
+        await appModel.refreshSnapshot()
         if result.needsLocalAuthRestore {
-            await appModel.restoreStoredLocalChatGPTAuth(serverId: serverId)
+            await appModel.restoreStoredLocalAuthState(serverId: serverId)
         }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
         await appModel.refreshSnapshot()
     }
 
@@ -352,9 +356,11 @@ final class AppLifecycleController {
         )
         appModel.reconnectController.syncSavedServers(servers: servers)
         let results = await appModel.reconnectController.onAppBecameActive()
+        await appModel.refreshSnapshot()
         for result in results where result.needsLocalAuthRestore {
-            await appModel.restoreStoredLocalChatGPTAuth(serverId: result.serverId)
+            await appModel.restoreStoredLocalAuthState(serverId: result.serverId)
         }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
         guard !Task.isCancelled else { return }
 
         let trustedLiveKeys = Set(keysToRefresh.filter {

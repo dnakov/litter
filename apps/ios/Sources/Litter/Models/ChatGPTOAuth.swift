@@ -27,6 +27,7 @@ enum ChatGPTOAuthError: LocalizedError {
     case missingAccountID
     case tokenExchangeFailed(status: Int, message: String)
     case refreshAccountMismatch
+    case keychain(OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -56,7 +57,14 @@ enum ChatGPTOAuthError: LocalizedError {
             return "ChatGPT token exchange failed (\(status)): \(message)"
         case .refreshAccountMismatch:
             return "ChatGPT refresh returned a different account than expected."
+        case .keychain(let status):
+            return "Keychain error (\(status))"
         }
+    }
+
+    var isTransientKeychainAvailabilityFailure: Bool {
+        guard case .keychain(let status) = self else { return false }
+        return status == errSecInteractionNotAllowed || status == errSecNotAvailable
     }
 }
 
@@ -65,6 +73,7 @@ final class ChatGPTOAuthTokenStore {
 
     private let service = "com.sigkitten.litter.chatgpt.tokens"
     private let account = "default"
+    private let accessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
     private init() {}
 
@@ -85,39 +94,39 @@ final class ChatGPTOAuthTokenStore {
         case errSecItemNotFound:
             return nil
         default:
-            throw ChatGPTOAuthError.oauthError("Keychain error (\(status))")
+            throw ChatGPTOAuthError.keychain(status)
         }
     }
 
     func save(_ tokens: ChatGPTOAuthTokenBundle) throws {
         let data = try JSONEncoder().encode(tokens)
         let attributes: [String: Any] = baseQuery().merging([
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrAccessible as String: accessibility,
             kSecValueData as String: data
         ]) { _, new in new }
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
         if status == errSecDuplicateItem {
             let updates: [String: Any] = [
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                kSecAttrAccessible as String: accessibility,
                 kSecValueData as String: data
             ]
             let updateStatus = SecItemUpdate(baseQuery() as CFDictionary, updates as CFDictionary)
             guard updateStatus == errSecSuccess else {
-                throw ChatGPTOAuthError.oauthError("Keychain error (\(updateStatus))")
+                throw ChatGPTOAuthError.keychain(updateStatus)
             }
             return
         }
 
         guard status == errSecSuccess else {
-            throw ChatGPTOAuthError.oauthError("Keychain error (\(status))")
+            throw ChatGPTOAuthError.keychain(status)
         }
     }
 
     func clear() throws {
         let status = SecItemDelete(baseQuery() as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw ChatGPTOAuthError.oauthError("Keychain error (\(status))")
+            throw ChatGPTOAuthError.keychain(status)
         }
     }
 
@@ -163,15 +172,21 @@ enum ChatGPTOAuth {
         return tokens
     }
 
-    static func refreshStoredTokens(previousAccountID: String?) async throws -> ChatGPTOAuthTokenBundle {
-        guard let stored = try ChatGPTOAuthTokenStore.shared.load() else {
+    static func refreshStoredTokens(
+        previousAccountID: String?,
+        storedTokens: ChatGPTOAuthTokenBundle? = nil
+    ) async throws -> ChatGPTOAuthTokenBundle {
+        guard let stored = try (storedTokens ?? ChatGPTOAuthTokenStore.shared.load()) else {
             throw ChatGPTOAuthError.missingStoredTokens
         }
         guard let refreshToken = stored.refreshToken, !refreshToken.isEmpty else {
             throw ChatGPTOAuthError.missingRefreshToken
         }
 
-        let refreshed = try await exchangeRefreshToken(refreshToken)
+        let refreshed = try await exchangeRefreshToken(
+            refreshToken,
+            fallbackRefreshToken: refreshToken
+        )
         if let previousAccountID, !previousAccountID.isEmpty,
            refreshed.accountID != previousAccountID,
            stored.accountID != previousAccountID {
@@ -266,16 +281,25 @@ enum ChatGPTOAuth {
         return try await exchangeToken(body: body)
     }
 
-    private static func exchangeRefreshToken(_ refreshToken: String) async throws -> ChatGPTOAuthTokenBundle {
+    private static func exchangeRefreshToken(
+        _ refreshToken: String,
+        fallbackRefreshToken: String? = nil
+    ) async throws -> ChatGPTOAuthTokenBundle {
         let body = [
             "grant_type=refresh_token",
             "refresh_token=\(urlEncode(refreshToken))",
             "client_id=\(urlEncode(clientID))"
         ].joined(separator: "&")
-        return try await exchangeToken(body: body)
+        return try await exchangeToken(
+            body: body,
+            fallbackRefreshToken: fallbackRefreshToken
+        )
     }
 
-    private static func exchangeToken(body: String) async throws -> ChatGPTOAuthTokenBundle {
+    private static func exchangeToken(
+        body: String,
+        fallbackRefreshToken: String? = nil
+    ) async throws -> ChatGPTOAuthTokenBundle {
         guard let url = URL(string: "\(authIssuer)/oauth/token") else {
             throw ChatGPTOAuthError.invalidAuthorizeURL
         }
@@ -298,16 +322,28 @@ enum ChatGPTOAuth {
         }
 
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return try tokenBundle(
+            from: payload,
+            statusCode: http.statusCode,
+            fallbackRefreshToken: fallbackRefreshToken
+        )
+    }
+
+    static func tokenBundle(
+        from payload: [String: Any]?,
+        statusCode: Int,
+        fallbackRefreshToken: String? = nil
+    ) throws -> ChatGPTOAuthTokenBundle {
         let accessToken = (payload?["access_token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let idToken = (payload?["id_token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let refreshTokenString = (payload?["refresh_token"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let refreshToken = refreshTokenString.flatMap { token in
             token.isEmpty ? nil : token
-        }
+        } ?? fallbackRefreshToken
         guard !accessToken.isEmpty, !idToken.isEmpty else {
             throw ChatGPTOAuthError.tokenExchangeFailed(
-                status: http.statusCode,
+                status: statusCode,
                 message: "missing access_token or id_token"
             )
         }

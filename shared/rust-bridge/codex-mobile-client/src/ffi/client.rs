@@ -1039,6 +1039,7 @@ pub(crate) async fn exec_command_simple(
         env: None,
         size: None,
         sandbox_policy: None,
+        permission_profile: None,
     };
     rpc(
         client,
@@ -1162,6 +1163,7 @@ async fn exec_command_simple_owned(
         env: None,
         size: None,
         sandbox_policy: None,
+        permission_profile: None,
     };
     rpc(
         client,
@@ -1396,6 +1398,7 @@ async fn start_ephemeral_thread_for_structured(
         approval_policy: None,
         approvals_reviewer: None,
         sandbox: None,
+        permission_profile: None,
         config: None,
         service_name: None,
         base_instructions: None,
@@ -1444,6 +1447,8 @@ async fn run_structured_turn(
         approval_policy: None,
         approvals_reviewer: None,
         sandbox_policy: None,
+        environments: None,
+        permission_profile: None,
         model: None,
         service_tier: None,
         effort: None,
@@ -1599,12 +1604,39 @@ async fn perform_update_saved_app(
     let shape_summary = crate::saved_apps::abbreviated_state_shape(&directory, &app_id)
         .unwrap_or_else(|| "  (no saved state yet)".to_string());
 
+    let requested_server_id = server_id;
+    let snapshot = client.app_store.snapshot();
+    let server_id = match choose_saved_app_update_server_id(&requested_server_id, &snapshot) {
+        Some(server_id) => server_id,
+        None => {
+            return SavedAppUpdateResult::Error {
+                message: "saved-app updates require a connected local server because app files live on this device".to_string(),
+            };
+        }
+    };
+    if server_id != requested_server_id {
+        tracing::info!(
+            "update_saved_app: routing edit thread to local server {} instead of requested server {}",
+            server_id,
+            requested_server_id
+        );
+    }
+
     // Inherit the origin thread's model / reasoning / approval / sandbox
     // settings when the thread is still known to the store. Falls back to
     // `None` (server defaults) if the app has no origin_thread_id, or the
     // thread has been archived / never hydrated.
-    let (model, reasoning_effort, approval_policy, sandbox_mode) =
-        inherited_settings_for_origin(client, &server_id, current.app.origin_thread_id.as_deref());
+    let inherited = inherited_settings_for_origin(
+        client,
+        &requested_server_id,
+        current.app.origin_thread_id.as_deref(),
+    );
+    let inherited = if inherited_settings_empty(&inherited) && requested_server_id != server_id {
+        inherited_settings_for_origin(client, &server_id, current.app.origin_thread_id.as_deref())
+    } else {
+        inherited
+    };
+    let (model, reasoning_effort, approval_policy, sandbox_mode) = inherited;
 
     // Resolve the on-disk HTML path. The model edits this file directly
     // via apply_patch; no show_widget round-trip needed. cwd is the
@@ -1640,6 +1672,7 @@ async fn perform_update_saved_app(
         sandbox: sandbox_mode
             .clone()
             .map(crate::types::server_requests::sandbox_mode_into_upstream),
+        permission_profile: None,
         config: None,
         service_name: None,
         base_instructions: None,
@@ -1698,6 +1731,8 @@ async fn perform_update_saved_app(
         approval_policy: None,
         approvals_reviewer: None,
         sandbox_policy: None,
+        environments: None,
+        permission_profile: None,
         model,
         service_tier: None,
         effort: reasoning_effort.map(crate::types::server_requests::reasoning_effort_into_upstream),
@@ -1815,6 +1850,38 @@ async fn perform_update_saved_app(
     }
 }
 
+fn choose_saved_app_update_server_id(
+    requested_server_id: &str,
+    snapshot: &crate::store::AppSnapshot,
+) -> Option<String> {
+    let mut local_server_ids = snapshot
+        .servers
+        .values()
+        .filter(|server| {
+            server.is_local
+                && matches!(server.health, crate::store::ServerHealthSnapshot::Connected)
+        })
+        .map(|server| server.server_id.clone())
+        .collect::<Vec<_>>();
+
+    if local_server_ids
+        .iter()
+        .any(|server_id| server_id == requested_server_id)
+    {
+        return Some(requested_server_id.to_string());
+    }
+    if local_server_ids
+        .iter()
+        .any(|server_id| server_id == "local")
+    {
+        return Some("local".to_string());
+    }
+
+    local_server_ids.sort();
+    local_server_ids.dedup();
+    local_server_ids.into_iter().next()
+}
+
 async fn cleanup_update_thread(
     client: &crate::MobileClient,
     server_id: &str,
@@ -1845,6 +1912,17 @@ async fn cleanup_update_thread(
     }
 }
 
+type InheritedSettings = (
+    Option<String>,
+    Option<crate::types::models::ReasoningEffort>,
+    Option<crate::types::models::AppAskForApproval>,
+    Option<crate::types::models::AppSandboxMode>,
+);
+
+fn inherited_settings_empty(settings: &InheritedSettings) -> bool {
+    settings.0.is_none() && settings.1.is_none() && settings.2.is_none() && settings.3.is_none()
+}
+
 /// Look up an origin thread in the app store and extract its effective
 /// settings (model / reasoning effort / approval / sandbox mode) so the
 /// saved-app update thread can run with the same configuration the user
@@ -1855,12 +1933,7 @@ fn inherited_settings_for_origin(
     client: &crate::MobileClient,
     server_id: &str,
     origin_thread_id: Option<&str>,
-) -> (
-    Option<String>,
-    Option<crate::types::models::ReasoningEffort>,
-    Option<crate::types::models::AppAskForApproval>,
-    Option<crate::types::models::AppSandboxMode>,
-) {
+) -> InheritedSettings {
     use crate::types::models::{AppSandboxMode, AppSandboxPolicy, ReasoningEffort};
 
     let Some(thread_id) = origin_thread_id.and_then(|s| {
@@ -1942,10 +2015,14 @@ Widget construction guidelines (for reference when making UI decisions):\n\n\
 #[cfg(test)]
 mod tests {
     use super::{
-        ImageViewSource, image_read_command, normalized_image_path, splice_generative_ui_preamble,
+        ImageViewSource, choose_saved_app_update_server_id, image_read_command,
+        normalized_image_path, splice_generative_ui_preamble,
     };
+    use crate::store::snapshot::ServerTransportDiagnostics;
+    use crate::store::{AppSnapshot, ServerHealthSnapshot, ServerSnapshot};
     use crate::types::models::AppDynamicToolSpec;
     use crate::widget_guidelines::GENERATIVE_UI_PREAMBLE;
+    use std::collections::HashMap;
 
     fn show_widget_spec() -> AppDynamicToolSpec {
         AppDynamicToolSpec {
@@ -1953,6 +2030,40 @@ mod tests {
             description: "test".to_string(),
             input_schema_json: "{}".to_string(),
             defer_loading: false,
+        }
+    }
+
+    fn server_snapshot(
+        server_id: &str,
+        is_local: bool,
+        health: ServerHealthSnapshot,
+    ) -> ServerSnapshot {
+        ServerSnapshot {
+            server_id: server_id.to_string(),
+            display_name: server_id.to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            wake_mac: None,
+            is_local,
+            supports_ipc: false,
+            has_ipc: false,
+            health,
+            account: None,
+            requires_openai_auth: false,
+            rate_limits: None,
+            available_models: None,
+            connection_progress: None,
+            transport: ServerTransportDiagnostics::default(),
+        }
+    }
+
+    fn app_snapshot_with_servers(servers: Vec<ServerSnapshot>) -> AppSnapshot {
+        AppSnapshot {
+            servers: servers
+                .into_iter()
+                .map(|server| (server.server_id.clone(), server))
+                .collect::<HashMap<_, _>>(),
+            ..AppSnapshot::default()
         }
     }
 
@@ -1993,6 +2104,39 @@ mod tests {
             splice_generative_ui_preamble(&None, Some("keep".to_string())).as_deref(),
             Some("keep")
         );
+    }
+
+    #[test]
+    fn saved_app_update_server_keeps_requested_local_server() {
+        let snapshot = app_snapshot_with_servers(vec![
+            server_snapshot("local", true, ServerHealthSnapshot::Connected),
+            server_snapshot("remote", false, ServerHealthSnapshot::Connected),
+        ]);
+
+        let chosen = choose_saved_app_update_server_id("local", &snapshot);
+        assert_eq!(chosen.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn saved_app_update_server_routes_remote_request_to_local_server() {
+        let snapshot = app_snapshot_with_servers(vec![
+            server_snapshot("remote", false, ServerHealthSnapshot::Connected),
+            server_snapshot("local", true, ServerHealthSnapshot::Connected),
+        ]);
+
+        let chosen = choose_saved_app_update_server_id("remote", &snapshot);
+        assert_eq!(chosen.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn saved_app_update_server_ignores_disconnected_local_server() {
+        let snapshot = app_snapshot_with_servers(vec![
+            server_snapshot("remote", false, ServerHealthSnapshot::Connected),
+            server_snapshot("local", true, ServerHealthSnapshot::Disconnected),
+        ]);
+
+        let chosen = choose_saved_app_update_server_id("remote", &snapshot);
+        assert_eq!(chosen, None);
     }
 
     #[test]

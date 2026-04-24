@@ -45,7 +45,7 @@ jobs:
           xcode-version: '26.3'
 
       - name: Install build dependencies
-        run: brew install xcodegen meson ninja
+        run: brew install xcodegen
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

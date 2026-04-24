@@ -23,7 +23,12 @@ final class AppRuntimeController {
             rememberedOnly: true
         )
         appModel.reconnectController.syncSavedServers(servers: servers)
-        _ = await appModel.reconnectController.reconnectSavedServers()
+        let results = await appModel.reconnectController.reconnectSavedServers()
+        await appModel.refreshSnapshot()
+        for result in results where result.needsLocalAuthRestore {
+            await appModel.restoreStoredLocalAuthState(serverId: result.serverId)
+        }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
         await appModel.refreshSnapshot()
     }
 
@@ -33,7 +38,12 @@ final class AppRuntimeController {
             localDisplayName: appModel.resolvedLocalServerDisplayName()
         )
         appModel.reconnectController.syncSavedServers(servers: servers)
-        _ = await appModel.reconnectController.reconnectServer(serverId: serverId)
+        let result = await appModel.reconnectController.reconnectServer(serverId: serverId)
+        await appModel.refreshSnapshot()
+        if result.needsLocalAuthRestore {
+            await appModel.restoreStoredLocalAuthState(serverId: serverId)
+        }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
         await appModel.refreshSnapshot()
     }
 
@@ -93,12 +103,19 @@ final class VoiceRuntimeController {
     var handoffFastMode = false
 
     func bind(appModel: AppModel) {}
+    @discardableResult
     func startPinnedLocalVoiceCall(
         cwd: String,
         model: String?,
         approvalPolicy: AppAskForApproval?,
         sandboxMode: AppSandboxMode?
-    ) async throws {}
+    ) async throws -> ThreadKey {
+        throw NSError(
+            domain: "Litter",
+            code: 9999,
+            userInfo: [NSLocalizedDescriptionKey: "Voice not available on Catalyst"]
+        )
+    }
     func stopActiveVoiceSession() async {}
     func toggleActiveVoiceSessionSpeaker() async throws {}
 }

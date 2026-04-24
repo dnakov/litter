@@ -1823,6 +1823,7 @@ diff --git a/parser.rs b/parser.rs\n\
                 ThreadItem::DynamicToolCall {
                     id: "dyn-1".into(),
                     tool: "show_widget".into(),
+                    namespace: None,
                     arguments: serde_json::json!({
                         "title": "Widget",
                         "widget_code": "<svg></svg>",

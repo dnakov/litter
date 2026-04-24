@@ -5,14 +5,10 @@ struct AccountView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var server: AppServerSnapshot? {
-        if let activeServerId = appModel.snapshot?.activeThread?.serverId,
-           let activeServer = appModel.snapshot?.servers.first(where: { $0.serverId == activeServerId }) {
-            return activeServer
-        }
-        if let localServer = appModel.snapshot?.servers.first(where: \.isLocal) {
-            return localServer
-        }
-        return appModel.snapshot?.servers.first
+        // Account management (ChatGPT login / API key) is local-only, always.
+        // If the local Codex bridge hasn't spun up there's no login target, and
+        // the caller falls through to `AccountDisconnectedView`.
+        appModel.snapshot?.servers.first(where: \.isLocal)
     }
 
     var body: some View {
@@ -144,11 +140,6 @@ private struct AccountConnectionView: View {
                 }
                 .padding(.horizontal, 16)
                 .disabled(isWorking)
-            } else {
-                Text("Remote servers request their own OAuth login when needed. Local ChatGPT login and API key entry are not used here.")
-                    .litterFont(.caption)
-                    .foregroundColor(LitterTheme.textSecondary)
-                    .padding(.horizontal, 20)
             }
 
             if server.isLocal, allowsLocalEnvApiKey {
@@ -332,10 +323,10 @@ private struct AccountDisconnectedView: View {
             ZStack {
                 LitterTheme.backgroundGradient.ignoresSafeArea()
                 VStack(spacing: 16) {
-                    Text("Connect to a server first")
+                    Text("Local Codex isn't running")
                         .litterFont(.subheadline)
                         .foregroundColor(LitterTheme.textPrimary)
-                    Text("Account settings are tied to the active server connection.")
+                    Text("ChatGPT login and API key entry require the local Codex bridge.")
                         .litterFont(.caption)
                         .foregroundColor(LitterTheme.textSecondary)
                         .multilineTextAlignment(.center)

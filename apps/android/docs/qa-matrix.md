@@ -202,3 +202,22 @@ The timeline widget WebView shell (`wrapWidgetHtml` in `ConversationTimeline.kt`
 | Save-as-App bubble | `show_widget` finalize → auto-save (Rust-side) → Saved-as chip appears under the WebView. Shell lifecycle unchanged. |
 | Saved app detail | `SavedAppScreen` uses the same shell through `wrapWidgetHtml("", AppStateInjection(...))` loaded once, then pushes `payload.widgetHtml` via `pushWidgetContent`. `loadAppState`/`saveAppState` still work. State persists across cold relaunch. |
 | Regression: finalized timeline widget | An existing finalized `show_widget` renders identically to pre-refactor — fade-in animation, tap routing, state persistence of saved-app mode all preserved. |
+
+## Realtime Voice (WebRTC transport)
+
+Replaces the prior WebSocket + base64-PCM audio pump with a platform-native WebRTC peer connection on both iOS and Android. Upstream `thread/realtime/start` receives a client offer SDP via `AppRealtimeStartTransport.Webrtc`; the app-server responds with an answer SDP via `ThreadRealtimeSdpNotification`. All other realtime notifications (transcripts, item-added, handoff, closed, error) continue over the existing RPC WebSocket — only the audio byte path moved to the peer connection.
+
+| Area | iOS | Android |
+|---|---|---|
+| Start request carries Webrtc transport | `AppStartRealtimeSessionRequest.transport == .webrtc(sdp:)` with a non-empty offer SDP (log at session start) | Same — `AppRealtimeStartTransport.Webrtc(sdp)` |
+| Answer SDP applied | `AppStoreUpdateRecord.realtimeSdp` → `RealtimeWebRtcSession.applyAnswer(_:)` → `setRemoteDescription` succeeds | `AppStoreUpdateRecord.RealtimeSdp` → `RealtimeWebRtcSession.applyAnswer` → `setRemoteDescription` succeeds |
+| Peer connection reaches connected state | `RTCPeerConnectionState.connected` observed via delegate | `PeerConnection.IceConnectionState.CONNECTED` observed |
+| Bidirectional audio | Assistant voice plays back; mic input produces responses | Same |
+| Transcript deltas (RPC path) | `ThreadRealtimeTranscriptDelta`/`Done` notifications still render | Same |
+| Client-controlled handoff during voice | `HandoffManager` receives `HandoffRequested`, `resolveHandoff` / `finalizeHandoff` round-trip completes | Same |
+| Dynamic tool call during voice | Argument deltas stream via RPC `ConversationItemAdded`; tool output returns via `resolveHandoff` | Same |
+| Session stop | `RealtimeWebRtcSession.stop()` closes peer + data channel, deactivates `RTCAudioSession` | `stop()` disposes peer, restores audio mode, abandons audio focus |
+| Session cycle (start/stop x5) | No leaked peer connections, microphone releases between sessions | No leaked peer, mic indicator clears between sessions |
+| Known non-blockers | Per-frame input/output meter animation no longer drives — requires `RTCRtpReceiver.stats` polling to restore (follow-up) | Same flat meter behavior; speaker toggle currently stubbed to a boolean — follow-up to honor runtime routing |
+| Regression: custom AEC path | Retired — `codex-ios-audio` crate + `AecBridge.swift` / `VoiceSessionAudioCodec.swift` were deleted; libwebrtc AEC3 handles echo cancellation natively | Retired — `AecBridge.kt` deleted; `JavaAudioDeviceModule` enables the hardware AEC + NS |
+| Regression: SSH-tunneled codex server | RPC still flows through SSH; WebRTC peer goes direct to OpenAI edge from device. If client runs in fully air-gapped network, realtime voice will not establish | Same |

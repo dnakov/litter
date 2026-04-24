@@ -54,6 +54,7 @@ struct NewThreadHeroView: View {
 
                 HomeComposerView(
                     project: project,
+                    transcriptionServerId: project?.serverId ?? selectedServerId,
                     onThreadCreated: { key in
                         withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
                             isSending = true

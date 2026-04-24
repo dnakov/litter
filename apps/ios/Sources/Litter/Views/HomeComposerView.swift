@@ -10,6 +10,7 @@ import os
 /// in the task list and streams in place.
 struct HomeComposerView: View {
     let project: AppProject?
+    let transcriptionServerId: String?
     let onThreadCreated: (ThreadKey) -> Void
     /// Fires when the composer becomes "active" (keyboard up, text/image
     /// entered, or voice recording/transcribing) or returns to idle.
@@ -41,6 +42,9 @@ struct HomeComposerView: View {
     @State private var isComposerFocused: Bool = false
 
     private var isDisabled: Bool { project == nil }
+    private var resolvedTranscriptionServerId: String? {
+        project?.serverId ?? transcriptionServerId
+    }
 
     private var attachSheetDetentHeight: CGFloat {
         let showsFile = LitterPlatform.isRegularSurface(horizontalSizeClass: horizontalSizeClass)
@@ -93,6 +97,7 @@ struct HomeComposerView: View {
                 isTurnActive: isSubmitting,
                 showModeChip: false,
                 voiceManager: voiceManager,
+                allowsVoiceInput: project != nil,
                 showAttachMenu: $showAttachMenu,
                 onClearAttachment: { attachedImage = nil },
                 onRespondToPendingUserInput: { _ in },
@@ -260,13 +265,13 @@ struct HomeComposerView: View {
     }
 
     private func stopVoiceRecording() {
-        guard let project else {
+        guard let serverId = resolvedTranscriptionServerId else {
             voiceManager.cancelRecording()
             return
         }
         Task {
             let auth = try? await appModel.client.authStatus(
-                serverId: project.serverId,
+                serverId: serverId,
                 params: AuthStatusRequest(includeToken: true, refreshToken: false)
             )
             if let text = await voiceManager.stopAndTranscribe(

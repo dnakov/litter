@@ -928,6 +928,7 @@ impl MobileClient {
                     archived: None,
                     cwd: None,
                     search_term: None,
+                    use_state_db_only: false,
                 },
             )
             .await
@@ -2196,6 +2197,8 @@ impl MobileClient {
                 approval_policy: None,
                 approvals_reviewer: None,
                 sandbox_policy: None,
+                environments: None,
+                permission_profile: None,
                 model: None,
                 service_tier: None,
                 effort: None,

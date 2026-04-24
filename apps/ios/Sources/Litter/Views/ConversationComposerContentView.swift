@@ -15,6 +15,7 @@ struct ConversationComposerContentView: View {
     let isTurnActive: Bool
     let showModeChip: Bool
     let voiceManager: VoiceTranscriptionManager
+    let allowsVoiceInput: Bool
     @Binding var showAttachMenu: Bool
     let onClearAttachment: () -> Void
     let onRespondToPendingUserInput: ([String: [String]]) -> Void
@@ -44,6 +45,7 @@ struct ConversationComposerContentView: View {
         isTurnActive: Bool,
         showModeChip: Bool = true,
         voiceManager: VoiceTranscriptionManager,
+        allowsVoiceInput: Bool = true,
         showAttachMenu: Binding<Bool>,
         onClearAttachment: @escaping () -> Void,
         onRespondToPendingUserInput: @escaping ([String: [String]]) -> Void,
@@ -72,6 +74,7 @@ struct ConversationComposerContentView: View {
         self.isTurnActive = isTurnActive
         self.showModeChip = showModeChip
         self.voiceManager = voiceManager
+        self.allowsVoiceInput = allowsVoiceInput
         _showAttachMenu = showAttachMenu
         self.onClearAttachment = onClearAttachment
         self.onRespondToPendingUserInput = onRespondToPendingUserInput
@@ -160,6 +163,7 @@ struct ConversationComposerContentView: View {
                     voiceManager: voiceManager,
                     isTurnActive: isTurnActive,
                     hasAttachment: attachedImage != nil,
+                    allowsVoiceInput: allowsVoiceInput,
                     onPasteImage: onPasteImage,
                     onSendText: onSendText,
                     onStopRecording: onStopRecording,

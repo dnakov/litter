@@ -1041,25 +1041,27 @@ pub(super) fn pending_user_input_from_ipc_projection(
         thread_id: request.thread_id,
         turn_id: request.turn_id,
         item_id: request.item_id,
-        questions: request
-            .questions
-            .into_iter()
-            .map(|question| crate::types::PendingUserInputQuestion {
-                id: question.id,
-                header: question.header,
-                question: question.question,
-                is_other_allowed: question.is_other_allowed,
-                is_secret: question.is_secret,
-                options: question
-                    .options
-                    .into_iter()
-                    .map(|option| crate::types::PendingUserInputOption {
-                        label: option.label,
-                        description: option.description,
-                    })
-                    .collect(),
-            })
-            .collect(),
+        questions: crate::session::events::sanitize_pending_user_input_questions(
+            request
+                .questions
+                .into_iter()
+                .map(|question| crate::types::PendingUserInputQuestion {
+                    id: question.id,
+                    header: question.header,
+                    question: question.question,
+                    is_other_allowed: question.is_other_allowed,
+                    is_secret: question.is_secret,
+                    options: question
+                        .options
+                        .into_iter()
+                        .map(|option| crate::types::PendingUserInputOption {
+                            label: option.label,
+                            description: option.description,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        ),
         requester_agent_nickname: request.requester_agent_nickname,
         requester_agent_role: request.requester_agent_role,
     }
@@ -1484,6 +1486,7 @@ pub(super) fn approval_response_json(
                     }
                     _ => upstream::PermissionGrantScope::Turn,
                 },
+                strict_auto_review: None,
             })
         }
     }

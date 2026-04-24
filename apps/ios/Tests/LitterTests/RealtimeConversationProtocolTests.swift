@@ -48,4 +48,30 @@ final class RealtimeConversationProtocolTests: XCTestCase {
         XCTAssertEqual(notification.threadId, "thread-123")
         XCTAssertEqual(notification.message, "mic disconnected")
     }
+
+    func testAppStartRealtimeSessionRequestWebrtcTransportRoundTrip() {
+        let sdp = "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\ns=-\r\n"
+        let params = AppStartRealtimeSessionRequest(
+            threadId: "thread-123",
+            prompt: "hello",
+            sessionId: "session-456",
+            transport: .webrtc(sdp: sdp),
+            clientControlledHandoff: true,
+            dynamicTools: nil
+        )
+
+        guard case let .webrtc(roundTrippedSdp) = params.transport else {
+            XCTFail("expected transport to be .webrtc, got \(String(describing: params.transport))")
+            return
+        }
+        XCTAssertEqual(roundTrippedSdp, sdp)
+    }
+
+    func testAppRealtimeSdpNotificationDecodes() {
+        let sdp = "v=0\r\no=- 999 2 IN IP4 127.0.0.1\r\ns=-\r\n"
+        let notification = AppRealtimeSdpNotification(threadId: "t1", sdp: sdp)
+
+        XCTAssertEqual(notification.threadId, "t1")
+        XCTAssertEqual(notification.sdp, sdp)
+    }
 }

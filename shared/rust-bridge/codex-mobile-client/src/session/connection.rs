@@ -511,6 +511,7 @@ impl ServerSession {
             base_config.codex_home.to_path_buf(),
             false,
             base_config.cli_auth_credentials_store_mode,
+            Some(base_config.chatgpt_base_url.clone()),
         );
 
         let cloud_requirements = cloud_requirements_loader(
@@ -542,7 +543,10 @@ impl ServerSession {
             cloud_requirements,
             feedback,
             log_db: None,
-            environment_manager: Arc::new(codex_exec_server::EnvironmentManager::new(None)),
+            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+            environment_manager: Arc::new(
+                codex_exec_server::EnvironmentManager::default_for_tests(),
+            ),
             config_warnings: Vec::new(),
             session_source,
             enable_codex_api_key_env: true,

@@ -4,8 +4,6 @@
 //! business logic here so Swift/Kotlin only compile one binding set.
 
 #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
-mod aec;
-#[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
 mod ios_exec;
 #[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 mod mobile_exec_command;

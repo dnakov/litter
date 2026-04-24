@@ -34,6 +34,7 @@ import uniffi.codex_mobile_client.ServerBridge
 import uniffi.codex_mobile_client.SshBridge
 import uniffi.codex_mobile_client.ThreadKey
 import uniffi.codex_mobile_client.AppListThreadsRequest
+import uniffi.codex_mobile_client.AppRefreshAccountRequest
 import uniffi.codex_mobile_client.AppRefreshModelsRequest
 import uniffi.codex_mobile_client.AppReadThreadRequest
 import uniffi.codex_mobile_client.registerAndroidTools
@@ -334,7 +335,7 @@ class AppModel private constructor(context: android.content.Context) {
             host = "127.0.0.1",
             port = 0u,
         )
-        restoreStoredLocalChatGptAuth(serverId)
+        restoreStoredLocalAuthState(serverId)
         try {
             refreshSessions(listOf(serverId))
         } catch (_: Exception) {
@@ -416,9 +417,50 @@ class AppModel private constructor(context: android.content.Context) {
         }
     }
 
+    suspend fun restoreStoredLocalAuthState(serverId: String) {
+        val apiKeyStore = OpenAIApiKeyStore(appContext)
+        apiKeyStore.applyToEnvironment()
+        if (apiKeyStore.hasStoredKey() && refreshStoredLocalApiKeyAuth(serverId)) {
+            return
+        }
+        restoreStoredLocalChatGptAuth(serverId)
+    }
+
     suspend fun restoreStoredLocalChatGptAuth(serverId: String) {
-        val tokens = ChatGPTOAuthTokenStore(appContext).load() ?: return
+        val storedTokens = ChatGPTOAuthTokenStore(appContext).load() ?: return
+        val refreshedTokens = runCatching {
+            ChatGPTOAuth.refreshStoredTokens(
+                context = appContext,
+                previousAccountId = null,
+            )
+        }.getOrNull()
+        if (refreshedTokens != null &&
+            loginStoredLocalChatGptAuth(serverId, refreshedTokens)
+        ) {
+            return
+        }
+        if (loginStoredLocalChatGptAuth(serverId, storedTokens)) {
+            return
+        }
+        if (refreshedTokens != null) {
+            return
+        }
+        delay(2_000)
         runCatching {
+            ChatGPTOAuth.refreshStoredTokens(
+                context = appContext,
+                previousAccountId = null,
+            )
+        }.getOrNull()?.let { retriedRefresh ->
+            loginStoredLocalChatGptAuth(serverId, retriedRefresh)
+        }
+    }
+
+    private suspend fun loginStoredLocalChatGptAuth(
+        serverId: String,
+        tokens: ChatGPTOAuthTokenBundle,
+    ): Boolean {
+        return runCatching {
             client.loginAccount(
                 serverId,
                 uniffi.codex_mobile_client.AppLoginAccountRequest.ChatgptAuthTokens(
@@ -427,8 +469,31 @@ class AppModel private constructor(context: android.content.Context) {
                     chatgptPlanType = tokens.planType,
                 ),
             )
-        }.onFailure { error ->
+            true
+        }.getOrElse { error ->
             _lastError.value = error.message
+            false
+        }
+    }
+
+    private suspend fun refreshStoredLocalApiKeyAuth(serverId: String): Boolean {
+        return runCatching {
+            client.refreshAccount(
+                serverId,
+                AppRefreshAccountRequest(refreshToken = false),
+            )
+            _lastError.value = null
+            true
+        }.getOrElse { error ->
+            LLog.w(
+                "AppModel",
+                "restoring stored local API key auth failed",
+                fields = mapOf(
+                    "serverId" to serverId,
+                    "error" to (error.localizedMessage ?: error.message ?: error.toString()),
+                ),
+            )
+            false
         }
     }
 
@@ -634,6 +699,7 @@ class AppModel private constructor(context: android.content.Context) {
             is AppStoreUpdateRecord.RealtimeHandoffRequested -> Unit
             is AppStoreUpdateRecord.RealtimeSpeechStarted -> Unit
             is AppStoreUpdateRecord.RealtimeStarted -> refreshSnapshot()
+            is AppStoreUpdateRecord.RealtimeSdp -> Unit
             is AppStoreUpdateRecord.RealtimeOutputAudioDelta -> Unit
             is AppStoreUpdateRecord.RealtimeError -> refreshSnapshot()
             is AppStoreUpdateRecord.RealtimeClosed -> refreshSnapshot()

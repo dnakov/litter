@@ -33,6 +33,11 @@ final class AppRuntimeController {
         await lifecycle.reconnectServer(serverId: serverId, appModel: appModel)
     }
 
+    func restoreMissingLocalAuthStateIfNeeded() async {
+        guard let appModel else { return }
+        await appModel.restoreMissingLocalAuthStateIfNeeded()
+    }
+
     func openThreadFromNotification(key: ThreadKey) async {
         guard let appModel else { return }
         LLog.info(

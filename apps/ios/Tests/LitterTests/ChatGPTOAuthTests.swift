@@ -39,4 +39,55 @@ final class ChatGPTOAuthTests: XCTestCase {
 
         XCTAssertThrowsError(try ChatGPTOAuth.validateCallbackURL(url))
     }
+
+    func testTransientKeychainAvailabilityDetectionMatchesRelevantStatuses() {
+        XCTAssertTrue(ChatGPTOAuthError.keychain(errSecInteractionNotAllowed).isTransientKeychainAvailabilityFailure)
+        XCTAssertTrue(ChatGPTOAuthError.keychain(errSecNotAvailable).isTransientKeychainAvailabilityFailure)
+        XCTAssertFalse(ChatGPTOAuthError.keychain(errSecItemNotFound).isTransientKeychainAvailabilityFailure)
+        XCTAssertFalse(ChatGPTOAuthError.missingStoredTokens.isTransientKeychainAvailabilityFailure)
+    }
+
+    func testTokenBundlePreservesExistingRefreshTokenWhenRefreshResponseOmitsIt() throws {
+        let idToken = jwt(claims: [
+            "chatgpt_account_id": "acct_123",
+            "chatgpt_plan_type": "plus"
+        ])
+        let accessToken = jwt(claims: [
+            "chatgpt_account_id": "acct_123"
+        ])
+
+        let bundle = try ChatGPTOAuth.tokenBundle(
+            from: [
+                "access_token": accessToken,
+                "id_token": idToken
+            ],
+            statusCode: 200,
+            fallbackRefreshToken: "refresh_123"
+        )
+
+        XCTAssertEqual(bundle.refreshToken, "refresh_123")
+        XCTAssertEqual(bundle.accountID, "acct_123")
+        XCTAssertEqual(bundle.planType, "plus")
+    }
+
+    private func jwt(claims: [String: String]) -> String {
+        let header = ["alg": "none", "typ": "JWT"]
+        let encoder = JSONEncoder()
+        let headerData = try! encoder.encode(header)
+        let payloadData = try! encoder.encode(claims)
+        return [
+            headerData.base64URLEncodedString(),
+            payloadData.base64URLEncodedString(),
+            ""
+        ].joined(separator: ".")
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
 }

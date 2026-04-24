@@ -573,7 +573,7 @@ final class CarPlayVoiceManager {
                 let cwd = FileManager.default.urls(
                     for: .documentDirectory, in: .userDomainMask
                 ).first?.path ?? "/"
-                try await voiceActions.startPinnedLocalVoiceCall(
+                _ = try await voiceActions.startPinnedLocalVoiceCall(
                     cwd: cwd,
                     model: nil,
                     approvalPolicy: .never,
@@ -591,7 +591,7 @@ final class CarPlayVoiceManager {
     private func handleResume(_ key: ThreadKey) {
         Task { @MainActor in
             do {
-                try await voiceActions.startVoiceOnThread(key)
+                _ = try await voiceActions.startVoiceOnThread(key)
                 if let session = voiceActions.activeVoiceSession {
                     pushActiveSession(session)
                 }

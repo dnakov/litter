@@ -9,15 +9,11 @@ struct SettingsView: View {
     @AppStorage("collapseTurns") private var collapseTurns = false
     @State private var showAddServer = false
 
-    private var currentServer: AppServerSnapshot? {
-        if let activeServerId = appModel.snapshot?.activeThread?.serverId,
-           let activeServer = appModel.snapshot?.servers.first(where: { $0.serverId == activeServerId }) {
-            return activeServer
-        }
-        if let localServer = appModel.snapshot?.servers.first(where: \.isLocal) {
-            return localServer
-        }
-        return appModel.snapshot?.servers.first
+    private var localServer: AppServerSnapshot? {
+        // Account management (ChatGPT login / API key) is local-only, always.
+        // If the local Codex bridge hasn't spun up there's no login target, and
+        // the caller falls through to `SettingsDisconnectedAccountSection`.
+        appModel.snapshot?.servers.first(where: \.isLocal)
     }
 
     private var connectedServers: [HomeDashboardServer] {
@@ -197,8 +193,8 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         Group {
-            if let currentServer {
-                SettingsConnectionAccountSection(server: currentServer)
+            if let localServer {
+                SettingsConnectionAccountSection(server: localServer)
             } else {
                 SettingsDisconnectedAccountSection()
             }
@@ -363,13 +359,6 @@ private struct SettingsConnectionAccountSection: View {
                 .listRowBackground(LitterTheme.surface.opacity(0.6))
             }
 
-            if !server.isLocal {
-                Text("Remote servers use their own OAuth flow when authentication is needed. Settings login and API key entry stay local-only.")
-                    .litterFont(.caption)
-                    .foregroundColor(LitterTheme.textSecondary)
-                    .listRowBackground(LitterTheme.surface.opacity(0.6))
-            }
-
             if let authError {
                 Text(authError)
                     .litterFont(.caption)
@@ -495,7 +484,7 @@ private struct SettingsConnectionAccountSection: View {
 private struct SettingsDisconnectedAccountSection: View {
     var body: some View {
         Section {
-            Text("Connect to a server first")
+            Text("Local Codex isn't running. ChatGPT login and API key entry require the local bridge.")
                 .litterFont(.caption)
                 .foregroundColor(LitterTheme.textMuted)
                 .listRowBackground(LitterTheme.surface.opacity(0.6))

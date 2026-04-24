@@ -1,0 +1,76 @@
+diff --git a/codex-rs/app-server-client/src/remote.rs b/codex-rs/app-server-client/src/remote.rs
+index 4fb54184aa..f061d3c09a 100644
+--- a/codex-rs/app-server-client/src/remote.rs
++++ b/codex-rs/app-server-client/src/remote.rs
+@@ -45,16 +45,18 @@ use tokio::sync::oneshot;
+ use tokio::time::timeout;
+ use tokio_tungstenite::MaybeTlsStream;
+ use tokio_tungstenite::WebSocketStream;
+-use tokio_tungstenite::connect_async;
++use tokio_tungstenite::connect_async_with_config;
+ use tokio_tungstenite::tungstenite::Message;
+ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+ use tokio_tungstenite::tungstenite::http::HeaderValue;
+ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
++use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+ use tracing::warn;
+ use url::Url;
+ 
+ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
++const MAX_REMOTE_APP_SERVER_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+ 
+ #[derive(Debug, Clone)]
+ pub struct RemoteAppServerConnectArgs {
+@@ -89,6 +91,13 @@ impl RemoteAppServerConnectArgs {
+     }
+ }
+ 
++fn remote_app_server_websocket_config() -> WebSocketConfig {
++    let mut config = WebSocketConfig::default();
++    config.max_message_size = Some(MAX_REMOTE_APP_SERVER_MESSAGE_SIZE);
++    config.max_frame_size = Some(MAX_REMOTE_APP_SERVER_MESSAGE_SIZE);
++    config
++}
++
+ pub(crate) fn websocket_url_supports_auth_token(url: &Url) -> bool {
+     match (url.scheme(), url.host()) {
+         ("wss", Some(_)) => true,
+@@ -170,20 +179,23 @@ impl RemoteAppServerClient {
+             request.headers_mut().insert(AUTHORIZATION, header_value);
+         }
+         ensure_rustls_crypto_provider();
+-        let stream = timeout(CONNECT_TIMEOUT, connect_async(request))
+-            .await
+-            .map_err(|_| {
+-                IoError::new(
+-                    ErrorKind::TimedOut,
+-                    format!("timed out connecting to remote app server at `{websocket_url}`"),
+-                )
+-            })?
+-            .map(|(stream, _response)| stream)
+-            .map_err(|err| {
+-                IoError::other(format!(
+-                    "failed to connect to remote app server at `{websocket_url}`: {err}"
+-                ))
+-            })?;
++        let stream = timeout(
++            CONNECT_TIMEOUT,
++            connect_async_with_config(request, Some(remote_app_server_websocket_config()), false),
++        )
++        .await
++        .map_err(|_| {
++            IoError::new(
++                ErrorKind::TimedOut,
++                format!("timed out connecting to remote app server at `{websocket_url}`"),
++            )
++        })?
++        .map(|(stream, _response)| stream)
++        .map_err(|err| {
++            IoError::other(format!(
++                "failed to connect to remote app server at `{websocket_url}`: {err}"
++            ))
++        })?;
+         let mut stream = stream;
+         let pending_events = initialize_remote_connection(
+             &mut stream,

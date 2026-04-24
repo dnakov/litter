@@ -2,7 +2,6 @@
 members = [
     "codex-bridge",
     "codex-debug-cli",
-    "codex-ios-audio",
     "codex-ipc",
     "codex-mobile-client",
     "uniffi-bindgen",
@@ -76,7 +75,6 @@ debug = 0
 codegen-units = 16
 
 [patch.crates-io]
-webrtc-audio-processing-sys = { path = "../third_party/webrtc-audio-processing-sys" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }

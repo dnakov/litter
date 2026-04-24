@@ -8,6 +8,7 @@ struct ConversationComposerEntryRowView: View {
     let voiceManager: VoiceTranscriptionManager
     let isTurnActive: Bool
     let hasAttachment: Bool
+    let allowsVoiceInput: Bool
     let onPasteImage: (UIImage) -> Void
     let onSendText: () -> Void
     let onStopRecording: () -> Void
@@ -21,6 +22,7 @@ struct ConversationComposerEntryRowView: View {
         voiceManager: VoiceTranscriptionManager,
         isTurnActive: Bool,
         hasAttachment: Bool,
+        allowsVoiceInput: Bool = true,
         onPasteImage: @escaping (UIImage) -> Void,
         onSendText: @escaping () -> Void,
         onStopRecording: @escaping () -> Void,
@@ -33,6 +35,7 @@ struct ConversationComposerEntryRowView: View {
         self.voiceManager = voiceManager
         self.isTurnActive = isTurnActive
         self.hasAttachment = hasAttachment
+        self.allowsVoiceInput = allowsVoiceInput
         self.onPasteImage = onPasteImage
         self.onSendText = onSendText
         self.onStopRecording = onStopRecording
@@ -123,7 +126,7 @@ struct ConversationComposerEntryRowView: View {
                     ProgressView()
                         .tint(LitterTheme.accent)
                         .padding(.trailing, 8)
-                } else {
+                } else if allowsVoiceInput {
                     Button(action: onStartRecording) {
                         Image(systemName: "mic.fill")
                             .font(LitterFont.styled(size: 15))

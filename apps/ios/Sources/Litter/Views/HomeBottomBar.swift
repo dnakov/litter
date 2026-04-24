@@ -21,6 +21,7 @@ struct HomeBottomBar: View {
     @Binding var mode: HomeInputMode
     @Binding var searchQuery: String
     let project: AppProject?
+    let transcriptionServerId: String?
     let onThreadCreated: (ThreadKey) -> Void
     /// When `true`, the plus/composer pool is omitted and only the search
     /// button / search-row morph renders. Used by the iPad + Catalyst
@@ -153,6 +154,7 @@ struct HomeBottomBar: View {
         //       can flicker during the spring animation.
         HomeComposerView(
             project: project,
+            transcriptionServerId: transcriptionServerId,
             onThreadCreated: { key in
                 onThreadCreated(key)
                 setMode(.collapsed)

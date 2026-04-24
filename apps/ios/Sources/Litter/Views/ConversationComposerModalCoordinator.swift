@@ -37,6 +37,7 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
     let onLoadSkills: (Bool, Bool) async -> Void
     let onRenameThread: (String) async -> Void
     @ViewBuilder let content: Content
+    @State private var modelSelectorDetent: PresentationDetent = .large
 
     private var selectedModelBinding: Binding<String> {
         Binding(
@@ -166,10 +167,15 @@ struct ConversationComposerModalCoordinator<Content: View>: View {
                     selectedModel: selectedModelBinding,
                     reasoningEffort: reasoningEffortBinding
                 )
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large], selection: $modelSelectorDetent)
                 .presentationDragIndicator(.visible)
                 .presentationContentInteraction(.scrolls)
                 .presentationBackground(LitterTheme.surface)
+            }
+            .onChange(of: showModelSelector) { _, isPresented in
+                if isPresented {
+                    modelSelectorDetent = .large
+                }
             }
             .sheet(isPresented: $showPermissionsSheet) {
                 permissionsSheetContent

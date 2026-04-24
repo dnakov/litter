@@ -208,7 +208,7 @@ fun DiscoveryScreen(
                         prepared.hostname,
                         prepared.port.toUShort(),
                     )
-                    appModel.restoreStoredLocalChatGptAuth(prepared.id)
+                    appModel.restoreStoredLocalAuthState(prepared.id)
                     SavedServerStore.remember(context, prepared.normalizedForPersistence())
                     reloadSavedServers()
                     appModel.refreshSnapshot()

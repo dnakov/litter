@@ -53,6 +53,7 @@ impl TryFrom<AppDynamicToolSpec> for codex_protocol::dynamic_tools::DynamicToolS
             input_schema: serde_json::from_str(&value.input_schema_json).map_err(|e| {
                 RpcClientError::Serialization(format!("invalid input_schema JSON: {e}"))
             })?,
+            namespace: None,
             defer_loading: value.defer_loading,
         })
     }
@@ -435,6 +436,8 @@ pub enum AuthMode {
     Chatgpt,
     #[serde(rename = "chatgptAuthTokens")]
     ChatgptAuthTokens,
+    #[serde(rename = "agentIdentity")]
+    AgentIdentity,
 }
 
 impl From<upstream::AuthMode> for AuthMode {
@@ -443,6 +446,7 @@ impl From<upstream::AuthMode> for AuthMode {
             upstream::AuthMode::ApiKey => Self::ApiKey,
             upstream::AuthMode::Chatgpt => Self::Chatgpt,
             upstream::AuthMode::ChatgptAuthTokens => Self::ChatgptAuthTokens,
+            upstream::AuthMode::AgentIdentity => Self::AgentIdentity,
         }
     }
 }
@@ -1273,6 +1277,23 @@ pub struct AppRealtimeStartedNotification {
     #[uniffi(default = None)]
     pub session_id: Option<String>,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppRealtimeSdpNotification {
+    pub thread_id: String,
+    pub sdp: String,
+}
+
+impl From<upstream::ThreadRealtimeSdpNotification> for AppRealtimeSdpNotification {
+    fn from(value: upstream::ThreadRealtimeSdpNotification) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            sdp: value.sdp,
+        }
+    }
 }
 
 #[cfg(test)]

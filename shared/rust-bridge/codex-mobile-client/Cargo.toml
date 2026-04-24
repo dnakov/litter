@@ -59,7 +59,6 @@ uniffi = { version = "0.31.0", features = ["build"] }
 
 [target.'cfg(all(target_os = "ios", not(target_abi = "macabi")))'.dependencies]
 codex-apply-patch = { workspace = true }
-codex-ios-audio = { path = "../codex-ios-audio" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }

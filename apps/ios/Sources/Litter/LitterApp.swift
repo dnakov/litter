@@ -32,6 +32,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        OpenAIApiKeyStore.shared.applyToEnvironment()
         LitterPlatform.bootstrapLocalRuntimeIfNeeded()
         LLog.bootstrap()
 
@@ -50,8 +51,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
         #endif
 
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            LLog.info("lifecycle", "protected app data became available")
+            OpenAIApiKeyStore.shared.applyToEnvironment()
+            guard let appRuntime = self?.appRuntime else { return }
+            Task { @MainActor in
+                await appRuntime.restoreMissingLocalAuthStateIfNeeded()
+            }
+        }
+
         LLog.info("lifecycle", "application did finish launching")
-        OpenAIApiKeyStore.shared.applyToEnvironment()
         // Pre-initialize Rust bridges (tokio runtime) on a background thread
         // before SwiftUI accesses AppModel.shared, avoiding a priority inversion
         // where the main thread blocks on lower-QoS tokio worker init.
@@ -903,16 +916,14 @@ private struct HomeNavigationView: View {
                 voiceRuntime.handoffEffort = selectedEffort.isEmpty ? nil : selectedEffort
                 voiceRuntime.handoffFastMode = false
                 let voicePermissions = await voicePermissionConfig()
-                try await voiceRuntime.startPinnedLocalVoiceCall(
+                let voiceKey = try await voiceRuntime.startPinnedLocalVoiceCall(
                     cwd: preferredVoiceWorkingDirectory(),
                     model: selectedModel,
                     approvalPolicy: voicePermissions.approvalPolicy,
                     sandboxMode: voicePermissions.sandboxMode
                 )
-                if let voiceKey = await MainActor.run(body: { voiceRuntime.activeVoiceSession?.threadKey }) {
-                    await MainActor.run {
-                        openRealtimeVoice(voiceKey)
-                    }
+                await MainActor.run {
+                    openRealtimeVoice(voiceKey)
                 }
             } catch {
                 await MainActor.run {

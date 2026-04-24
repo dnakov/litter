@@ -361,6 +361,7 @@ struct HomeDashboardView: View {
             mode: $inputMode,
             searchQuery: $searchQuery,
             project: nil,
+            transcriptionServerId: nil,
             onThreadCreated: { _ in },
             compact: true
         )
@@ -400,6 +401,7 @@ struct HomeDashboardView: View {
                 mode: $inputMode,
                 searchQuery: $searchQuery,
                 project: selectedProject,
+                transcriptionServerId: selectedProject?.serverId ?? selectedServerId,
                 onThreadCreated: onThreadCreated
             )
         }

@@ -4,6 +4,7 @@
 //! from `codex-app-server-protocol` and maps them to high-level `UiEvent`s
 //! for platform (iOS/Android) consumption.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use codex_app_server_protocol::{ServerNotification, ServerRequest};
@@ -134,6 +135,10 @@ pub(crate) enum UiEvent {
     RealtimeStarted {
         key: ThreadKey,
         notification: codex_app_server_protocol::ThreadRealtimeStartedNotification,
+    },
+    RealtimeSdp {
+        key: ThreadKey,
+        notification: codex_app_server_protocol::ThreadRealtimeSdpNotification,
     },
     RealtimeItemAdded {
         key: ThreadKey,
@@ -408,6 +413,13 @@ impl EventProcessor {
             ServerNotification::ThreadRealtimeStarted(n) => {
                 let key = Self::make_key(server_id, &n.thread_id);
                 self.emit(UiEvent::RealtimeStarted {
+                    key,
+                    notification: n.clone(),
+                });
+            }
+            ServerNotification::ThreadRealtimeSdp(n) => {
+                let key = Self::make_key(server_id, &n.thread_id);
+                self.emit(UiEvent::RealtimeSdp {
                     key,
                     notification: n.clone(),
                 });
@@ -707,32 +719,60 @@ fn request_id_to_string(request_id: &codex_app_server_protocol::RequestId) -> St
     }
 }
 
+pub(crate) fn sanitize_pending_user_input_questions(
+    questions: Vec<PendingUserInputQuestion>,
+) -> Vec<PendingUserInputQuestion> {
+    let mut seen_ids = HashSet::new();
+    questions
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut question)| {
+            let requested_id = question.id.trim();
+            let base_id = if requested_id.is_empty() {
+                format!("question-{}", index + 1)
+            } else {
+                requested_id.to_string()
+            };
+            let mut candidate = base_id.clone();
+            let mut suffix = 2usize;
+            while !seen_ids.insert(candidate.clone()) {
+                candidate = format!("{base_id}-{suffix}");
+                suffix += 1;
+            }
+            question.id = candidate;
+            question
+        })
+        .collect()
+}
+
 fn pending_user_input_request_from_upstream(
     server_id: &str,
     request_id: &codex_app_server_protocol::RequestId,
     params: &codex_app_server_protocol::ToolRequestUserInputParams,
 ) -> Option<PendingUserInputRequest> {
-    let questions = params
-        .questions
-        .iter()
-        .map(|question| PendingUserInputQuestion {
-            id: question.id.clone(),
-            header: Some(question.header.clone()).filter(|header| !header.is_empty()),
-            question: question.question.clone(),
-            is_other_allowed: question.is_other,
-            is_secret: question.is_secret,
-            options: question
-                .options
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|option| PendingUserInputOption {
-                    label: option.label,
-                    description: Some(option.description).filter(|value| !value.is_empty()),
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
+    let questions = sanitize_pending_user_input_questions(
+        params
+            .questions
+            .iter()
+            .map(|question| PendingUserInputQuestion {
+                id: question.id.clone(),
+                header: Some(question.header.clone()).filter(|header| !header.is_empty()),
+                question: question.question.clone(),
+                is_other_allowed: question.is_other,
+                is_secret: question.is_secret,
+                options: question
+                    .options
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|option| PendingUserInputOption {
+                        label: option.label,
+                        description: Some(option.description).filter(|value| !value.is_empty()),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>(),
+    );
 
     if questions.is_empty() {
         return None;
@@ -762,27 +802,29 @@ fn pending_user_input_request_from_raw(
     let params = payload.get("params")?;
     let params: codex_app_server_protocol::ToolRequestUserInputParams =
         serde_json::from_value(params.clone()).ok()?;
-    let questions = params
-        .questions
-        .iter()
-        .map(|question| PendingUserInputQuestion {
-            id: question.id.clone(),
-            header: Some(question.header.clone()).filter(|header| !header.is_empty()),
-            question: question.question.clone(),
-            is_other_allowed: question.is_other,
-            is_secret: question.is_secret,
-            options: question
-                .options
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|option| PendingUserInputOption {
-                    label: option.label,
-                    description: Some(option.description).filter(|value| !value.is_empty()),
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
+    let questions = sanitize_pending_user_input_questions(
+        params
+            .questions
+            .iter()
+            .map(|question| PendingUserInputQuestion {
+                id: question.id.clone(),
+                header: Some(question.header.clone()).filter(|header| !header.is_empty()),
+                question: question.question.clone(),
+                is_other_allowed: question.is_other,
+                is_secret: question.is_secret,
+                options: question
+                    .options
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|option| PendingUserInputOption {
+                        label: option.label,
+                        description: Some(option.description).filter(|value| !value.is_empty()),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>(),
+    );
 
     if questions.is_empty() {
         return None;
@@ -1331,6 +1373,24 @@ mod tests {
     }
 
     #[test]
+    fn realtime_sdp_emits_typed_event() {
+        let notification =
+            ServerNotification::ThreadRealtimeSdp(proto::ThreadRealtimeSdpNotification {
+                thread_id: "thr_1".to_string(),
+                sdp: "v=0\r\no=- 42 2 IN IP4 0.0.0.0\r\n...".to_string(),
+            });
+        let evt = process_and_recv("srv1", &notification).expect("should emit");
+        match evt {
+            UiEvent::RealtimeSdp { key, notification } => {
+                assert_eq!(key.thread_id, "thr_1");
+                assert_eq!(notification.thread_id, "thr_1");
+                assert!(notification.sdp.starts_with("v=0"));
+            }
+            other => panic!("expected RealtimeSdp, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn realtime_error_emits_typed_event() {
         let notification =
             ServerNotification::ThreadRealtimeError(proto::ThreadRealtimeErrorNotification {
@@ -1641,6 +1701,7 @@ mod tests {
                 thread_id: "thr_1".to_string(),
                 turn_id: "turn_1".to_string(),
                 item_id: "item_1".to_string(),
+                cwd: test_abs_path("/tmp"),
                 reason: Some("need network access".to_string()),
                 permissions: proto::RequestPermissionProfile {
                     network: None,
@@ -1730,6 +1791,57 @@ mod tests {
     }
 
     #[test]
+    fn tool_request_user_input_normalizes_blank_and_duplicate_question_ids() {
+        let request = ServerRequest::ToolRequestUserInput {
+            request_id: proto::RequestId::Integer(14),
+            params: proto::ToolRequestUserInputParams {
+                thread_id: "thr_1".to_string(),
+                turn_id: "turn_1".to_string(),
+                item_id: "item_1".to_string(),
+                questions: vec![
+                    proto::ToolRequestUserInputQuestion {
+                        id: "".to_string(),
+                        header: "One".to_string(),
+                        question: "Pick one".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: None,
+                    },
+                    proto::ToolRequestUserInputQuestion {
+                        id: "dup".to_string(),
+                        header: "Two".to_string(),
+                        question: "Pick two".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: None,
+                    },
+                    proto::ToolRequestUserInputQuestion {
+                        id: "dup".to_string(),
+                        header: "Three".to_string(),
+                        question: "Pick three".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: None,
+                    },
+                ],
+            },
+        };
+
+        let evt = request_and_recv("srv1", &request).expect("should emit");
+        match evt {
+            UiEvent::UserInputRequested { request } => {
+                let ids = request
+                    .questions
+                    .iter()
+                    .map(|question| question.id.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, vec!["question-1", "dup", "dup-2"]);
+            }
+            other => panic!("expected UserInputRequested, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn dynamic_tool_call_is_forwarded_with_request_id() {
         let request = ServerRequest::DynamicToolCall {
             request_id: proto::RequestId::Integer(14),
@@ -1738,6 +1850,7 @@ mod tests {
                 turn_id: "turn_1".to_string(),
                 call_id: "call_1".to_string(),
                 tool: "show_widget".to_string(),
+                namespace: None,
                 arguments: json!({"title": "Hello"}),
             },
         };

@@ -261,6 +261,7 @@ pub(super) async fn list_sessions_tool_output(
                 archived: None,
                 cwd: None,
                 search_term: None,
+                use_state_db_only: false,
             },
         )
         .await;

@@ -163,6 +163,8 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-transformer:1.4.1")
 
+    implementation("io.github.webrtc-sdk:android:144.7559.04")
+
     implementation("androidx.glance:glance-appwidget:1.1.0")
     implementation("androidx.glance:glance-material3:1.1.0")
 

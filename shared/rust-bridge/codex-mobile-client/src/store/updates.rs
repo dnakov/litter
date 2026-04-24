@@ -86,6 +86,13 @@ pub enum AppStoreUpdateRecord {
         key: ThreadKey,
         notification: crate::types::AppRealtimeStartedNotification,
     },
+    /// One-shot WebRTC answer SDP from the server, to be applied via
+    /// `RTCPeerConnection.setRemoteDescription` on the platform. No store
+    /// state changes; the shared Rust layer just relays it.
+    RealtimeSdp {
+        key: ThreadKey,
+        notification: crate::types::AppRealtimeSdpNotification,
+    },
     RealtimeOutputAudioDelta {
         key: ThreadKey,
         notification: crate::types::AppRealtimeOutputAudioDeltaNotification,

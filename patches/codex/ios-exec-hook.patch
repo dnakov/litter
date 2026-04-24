@@ -214,7 +214,7 @@ index 5181359698..28b48c9919 100644
 +            process_id: None,
 +            exit_code: Some(exit_code),
 +            original_token_count: Some(original_token_count),
-+            session_command: Some(request.command.clone()),
++            hook_command: Some(codex_shell_command::parse_command::shlex_join(&request.command)),
 +        })
 +    }
 +

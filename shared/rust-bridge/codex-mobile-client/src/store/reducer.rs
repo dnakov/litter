@@ -1780,6 +1780,15 @@ impl AppStoreReducer {
                 });
                 self.emit_thread_metadata_changed(key);
             }
+            UiEvent::RealtimeSdp { key, notification } => {
+                let protocol_notification = crate::types::AppRealtimeSdpNotification::from(
+                    notification.clone(),
+                );
+                self.emit(AppStoreUpdateRecord::RealtimeSdp {
+                    key: key.clone(),
+                    notification: protocol_notification,
+                });
+            }
             UiEvent::RealtimeTranscriptUpdated { key, role, text } => {
                 for update in self
                     .voice_state
@@ -2365,6 +2374,9 @@ impl AppStoreReducer {
             }
             AppStoreUpdateRecord::RealtimeStarted { key, .. } => {
                 tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeStarted")
+            }
+            AppStoreUpdateRecord::RealtimeSdp { key, .. } => {
+                tracing::debug!(target: "store", server_id = key.server_id, thread_id = key.thread_id, "emit RealtimeSdp")
             }
             AppStoreUpdateRecord::RealtimeOutputAudioDelta { .. } => {} // too noisy even for trace
             AppStoreUpdateRecord::RealtimeError { key, .. } => {
@@ -4737,6 +4749,7 @@ mod tests {
                 item: ThreadItem::DynamicToolCall {
                     id: "item-99".to_string(),
                     tool: "show_widget".to_string(),
+                    namespace: None,
                     arguments: serde_json::json!({}),
                     status: DynamicToolCallStatus::Completed,
                     content_items: None,

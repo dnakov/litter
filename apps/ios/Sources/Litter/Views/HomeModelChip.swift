@@ -17,6 +17,7 @@ struct HomeModelChip: View {
     let disabled: Bool
 
     @State private var showSheet = false
+    @State private var selectedDetent: PresentationDetent = .large
 
     /// Whether the user has escalated the pre-thread launch permissions to
     /// the equivalent of the header's "Full Access" preset.
@@ -74,6 +75,7 @@ struct HomeModelChip: View {
 
     var body: some View {
         Button {
+            selectedDetent = .large
             showSheet = true
         } label: {
             HStack(spacing: 6) {
@@ -134,7 +136,7 @@ struct HomeModelChip: View {
             )
             .environment(appModel)
             .environment(appState)
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $selectedDetent)
             .presentationDragIndicator(.visible)
             .presentationContentInteraction(.scrolls)
             .presentationBackground(LitterTheme.surface)

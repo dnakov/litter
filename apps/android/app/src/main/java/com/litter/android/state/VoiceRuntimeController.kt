@@ -1,44 +1,32 @@
 package com.litter.android.state
 
 import android.content.Context
-import android.media.AudioDeviceInfo
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioRecord
-import android.media.AudioTrack
-import android.media.MediaRecorder
-import android.util.Base64
+import com.litter.android.voice.RealtimeWebRtcSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppDynamicToolSpec
+import uniffi.codex_mobile_client.AppRealtimeStartTransport
 import uniffi.codex_mobile_client.AppStoreUpdateRecord
 import uniffi.codex_mobile_client.HandoffManager
 import uniffi.codex_mobile_client.PinnedThreadKey
 import uniffi.codex_mobile_client.ThreadKey
-import uniffi.codex_mobile_client.AppAppendRealtimeAudioRequest
 import uniffi.codex_mobile_client.AppFinalizeRealtimeHandoffRequest
 import uniffi.codex_mobile_client.AppResolveRealtimeHandoffRequest
 import uniffi.codex_mobile_client.AppStartRealtimeSessionRequest
 import uniffi.codex_mobile_client.AppStopRealtimeSessionRequest
-import uniffi.codex_mobile_client.AppRealtimeAudioChunk
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.UUID
-import kotlin.math.max
-import kotlin.math.sqrt
 
 /**
- * Full realtime voice session controller with audio I/O, level metering,
- * and handoff dispatch. Shared transcript/phase state comes from Rust AppStore.
+ * Realtime voice session controller backed by a WebRTC peer connection to the
+ * OpenAI realtime edge. Microphone capture and speaker playback flow through
+ * libwebrtc natively; transcripts, items, handoff, and errors continue to
+ * arrive over the RPC `AppStore` update stream.
  */
 class VoiceRuntimeController {
 
@@ -47,14 +35,6 @@ class VoiceRuntimeController {
         private const val LOCAL_SERVER_ID = "local"
         private const val VOICE_PREFS_NAME = "litter.voice"
         private const val PERSISTED_LOCAL_VOICE_THREAD_ID_KEY = "litter.voice.local.thread_id"
-        private const val TARGET_SAMPLE_RATE = 24000
-        private const val AEC_SAMPLE_RATE = 48000
-        private const val INPUT_DECAY_MS = 450L
-        private const val OUTPUT_DECAY_MS = 350L
-        private const val INPUT_THRESHOLD = 0.05f
-        private const val OUTPUT_THRESHOLD = 0.02f
-        private const val LEVEL_SCALE = 3.1f
-        private const val CAPTURE_WARMUP_MS = 350L
     }
 
     // ── State ────────────────────────────────────────────────────────────────
@@ -70,27 +50,11 @@ class VoiceRuntimeController {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var sessionJob: Job? = null
-    private var captureJob: Job? = null
     private var handoffManager: HandoffManager? = null
-    private var aecBridge: AecBridge? = null
+    private var webRtcSession: RealtimeWebRtcSession? = null
     private var stopRequestedThreadKey: ThreadKey? = null
-
-    // Audio I/O
-    private var audioRecord: AudioRecord? = null
-    private var audioTrack: AudioTrack? = null
-    private var isCapturing = false
-    private var audioManager: AudioManager? = null
-    private var audioFocusRequest: AudioFocusRequest? = null
-    private var previousAudioMode: Int? = null
-    private var captureSampleRate = TARGET_SAMPLE_RATE
     private var speakerEnabled = true
-    private val playbackLock = Any()
-    private val captureLock = Any()
     private val sessionLock = Any()
-
-    // Level decay tokens
-    private var inputDecayToken: String? = null
-    private var outputDecayToken: String? = null
 
     // ── Session lifecycle ────────────────────────────────────────────────────
 
@@ -151,306 +115,10 @@ class VoiceRuntimeController {
         }
     }
 
-    // ── Audio capture ────────────────────────────────────────────────────────
-
-    private data class RecorderConfig(
-        val sampleRate: Int,
-        val bufferSize: Int,
-        val audioRecord: AudioRecord,
-    )
-
-    private suspend fun startAudioCapture(appModel: AppModel, threadKey: ThreadKey) {
-        synchronized(captureLock) {
-            if (isCapturing || captureJob?.isActive == true || audioRecord != null) {
-                return
-            }
-            isCapturing = true
-        }
-        val manager = appModel.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager = manager
-        prepareCommunicationAudio(manager)
-
-        if (manager.mode != AudioManager.MODE_IN_COMMUNICATION) {
-            android.util.Log.w(
-                "VoiceRuntime",
-                "AudioManager mode not set to MODE_IN_COMMUNICATION after prepare (mode=${manager.mode}), retrying",
-            )
-            runCatching { manager.mode = AudioManager.MODE_IN_COMMUNICATION }
-        }
-
-        val recorderConfig = createRecorder(manager)
-        if (recorderConfig == null) {
-            synchronized(captureLock) { isCapturing = false }
-            abortRealtimeSession(
-                appModel,
-                threadKey,
-                "Unable to initialize Android microphone capture",
-            )
-            return
-        }
-
-        captureSampleRate = recorderConfig.sampleRate
-        val bufferSize = recorderConfig.bufferSize
-        audioRecord = recorderConfig.audioRecord
-
-        // Attach Android's platform AEC to the recorder session when available.
-        aecBridge = audioRecord?.audioSessionId?.let(AecBridge::attach)
-
-        // Initialize playback
-        configureOutputRoute(manager)
-
-        val playbackBufSize = AudioTrack.getMinBufferSize(
-            AEC_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
-        )
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(AEC_SAMPLE_RATE)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .build()
-            )
-            .setBufferSizeInBytes(if (playbackBufSize > 0) playbackBufSize * 2 else 8192)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-        audioTrack?.play()
-
-        val recorder = audioRecord
-        if (recorder == null || recorder.state != AudioRecord.STATE_INITIALIZED) {
-            synchronized(captureLock) { isCapturing = false }
-            abortRealtimeSession(
-                appModel,
-                threadKey,
-                "AudioRecord was not initialized for sampleRate=$captureSampleRate",
-            )
-            return
-        }
-
-        try {
-            recorder.startRecording()
-        } catch (e: IllegalStateException) {
-            synchronized(captureLock) { isCapturing = false }
-            abortRealtimeSession(
-                appModel,
-                threadKey,
-                "AudioRecord.startRecording failed for sampleRate=$captureSampleRate: ${e.message}",
-            )
-            return
-        }
-        isCapturing = true
-        val captureStartTime = System.currentTimeMillis()
-
-        captureJob = scope.launch {
-            val buffer = ShortArray(bufferSize / 2)
-            while (shouldContinueCapturing(threadKey)) {
-                val read = recorder.read(buffer, 0, buffer.size)
-                if (read <= 0) continue
-                if (!shouldContinueCapturing(threadKey)) break
-
-                // Compute input level (RMS)
-                val rms = computeRms(buffer, read)
-                val scaledLevel = (rms * LEVEL_SCALE).coerceAtMost(1f)
-                updateInputLevel(scaledLevel)
-
-                // Skip capture warmup (first 350ms)
-                if (System.currentTimeMillis() - captureStartTime < CAPTURE_WARMUP_MS) continue
-
-                // Convert to float samples for AEC
-                val floatSamples = ShortArray(read).also { System.arraycopy(buffer, 0, it, 0, read) }
-                    .map { it.toFloat() / Short.MAX_VALUE }.toFloatArray()
-
-                // Resample to AEC rate (48kHz) for echo cancellation
-                val aecSamples = resample(floatSamples, captureSampleRate, AEC_SAMPLE_RATE)
-
-                // Apply echo cancellation
-                val ecSamples = aecBridge?.processCapture(aecSamples) ?: aecSamples
-
-                // Resample to target rate (24kHz) for transmission
-                val targetSamples = resample(ecSamples, AEC_SAMPLE_RATE, TARGET_SAMPLE_RATE)
-
-                // Encode as PCM16 base64
-                val pcm16 = encodePcm16(targetSamples)
-                val base64Data = Base64.encodeToString(pcm16, Base64.NO_WRAP)
-
-                // Send to server
-                if (!shouldContinueCapturing(threadKey)) break
-                try {
-                    appModel.client.appendRealtimeAudio(
-                        threadKey.serverId,
-                        AppAppendRealtimeAudioRequest(
-                            threadId = threadKey.threadId,
-                            audio = AppRealtimeAudioChunk(
-                                data = base64Data,
-                                sampleRate = TARGET_SAMPLE_RATE.toUInt(),
-                                numChannels = 1u,
-                                samplesPerChannel = targetSamples.size.toUInt(),
-                                itemId = null,
-                            ),
-                        ),
-                    )
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
-    private fun prepareCommunicationAudio(manager: AudioManager) {
-        if (previousAudioMode == null) {
-            previousAudioMode = manager.mode
-        }
-        runCatching { manager.mode = AudioManager.MODE_IN_COMMUNICATION }
-        runCatching { manager.isMicrophoneMute = false }
-        val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .build()
-        audioFocusRequest = focusRequest
-        manager.requestAudioFocus(focusRequest)
-    }
-
-    private fun configureOutputRoute(manager: AudioManager) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            // Prefer Bluetooth SCO (HFP) over A2DP for voice communication
-            val btScoDevice = manager.availableCommunicationDevices.firstOrNull {
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-            }
-            if (btScoDevice != null && !speakerEnabled) {
-                runCatching { manager.setCommunicationDevice(btScoDevice) }
-            } else {
-                val targetType = if (speakerEnabled) {
-                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                } else {
-                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                }
-                val device = manager.availableCommunicationDevices.firstOrNull { it.type == targetType }
-                if (device != null) {
-                    runCatching { manager.setCommunicationDevice(device) }
-                }
-            }
-        }
-        @Suppress("DEPRECATION")
-        runCatching { manager.isSpeakerphoneOn = speakerEnabled }
-    }
-
     fun isSpeakerEnabled(): Boolean = speakerEnabled
 
     fun setSpeakerEnabled(enabled: Boolean) {
         speakerEnabled = enabled
-        audioManager?.let { configureOutputRoute(it) }
-    }
-
-    private fun createRecorder(manager: AudioManager): RecorderConfig? {
-        val preferredRate = manager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
-            ?.toIntOrNull()
-        val candidateRates = listOfNotNull(
-            preferredRate,
-            AEC_SAMPLE_RATE,
-            44100,
-            32000,
-            TARGET_SAMPLE_RATE,
-            16000,
-        ).distinct()
-
-        for (rate in candidateRates) {
-            val minBufferSize = AudioRecord.getMinBufferSize(
-                rate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            )
-            if (minBufferSize <= 0) {
-                android.util.Log.w("VoiceRuntime", "Skipping unsupported capture rate=$rate minBufferSize=$minBufferSize")
-                continue
-            }
-
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                rate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                max(minBufferSize * 2, rate / 5),
-            )
-            if (record.state == AudioRecord.STATE_INITIALIZED) {
-                android.util.Log.i("VoiceRuntime", "Initialized AudioRecord rate=$rate buffer=$minBufferSize")
-                return RecorderConfig(
-                    sampleRate = rate,
-                    bufferSize = minBufferSize,
-                    audioRecord = record,
-                )
-            }
-
-            android.util.Log.w("VoiceRuntime", "AudioRecord init failed for rate=$rate state=${record.state}")
-            runCatching { record.release() }
-        }
-
-        return null
-    }
-
-    private suspend fun abortRealtimeSession(
-        appModel: AppModel,
-        threadKey: ThreadKey,
-        reason: String,
-    ) {
-        android.util.Log.e("VoiceRuntime", reason)
-        try {
-            appModel.client.stopRealtimeSession(
-                threadKey.serverId,
-                AppStopRealtimeSessionRequest(threadId = threadKey.threadId),
-            )
-        } catch (e: Exception) {
-            android.util.Log.w("VoiceRuntime", "Failed to stop realtime after audio init failure: ${e.message}")
-        } finally {
-            cleanup()
-        }
-    }
-
-    // ── Audio playback ───────────────────────────────────────────────────────
-
-    private fun playOutputAudio(base64Audio: String, sampleRate: Int) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                // Decode base64 → PCM16 → float samples
-                val pcmBytes = Base64.decode(base64Audio, Base64.DEFAULT)
-                val floatSamples = decodePcm16(pcmBytes)
-
-                // Compute output level
-                val rms = computeRmsFloat(floatSamples)
-                val scaledLevel = (rms * LEVEL_SCALE).coerceAtMost(1f)
-                updateOutputLevel(scaledLevel)
-
-                // Resample to AEC rate for echo cancellation training
-                val aecSamples = resample(floatSamples, sampleRate, AEC_SAMPLE_RATE)
-                aecBridge?.analyzeRender(aecSamples)
-
-                // Write PCM16 to AudioTrack. Blocking writes avoid the repeated underruns
-                // seen with tiny realtime chunks on some Android devices.
-                val pcm16Samples = FloatArray(aecSamples.size).also { output ->
-                    for (i in aecSamples.indices) output[i] = aecSamples[i].coerceIn(-1f, 1f)
-                }
-                val shortSamples = ShortArray(pcm16Samples.size)
-                for (i in pcm16Samples.indices) {
-                    shortSamples[i] = (pcm16Samples[i] * Short.MAX_VALUE).toInt().toShort()
-                }
-                val wrote = synchronized(playbackLock) {
-                    val track = audioTrack ?: return@synchronized 0
-                    if (track.state != AudioTrack.STATE_INITIALIZED) {
-                        return@synchronized 0
-                    }
-                    track.write(shortSamples, 0, shortSamples.size, AudioTrack.WRITE_BLOCKING)
-                }
-                if (wrote < 0) {
-                    android.util.Log.w("VoiceRuntime", "AudioTrack write failed code=$wrote")
-                }
-            } catch (_: Exception) {}
-        }
     }
 
     // ── Event handling ───────────────────────────────────────────────────────
@@ -492,7 +160,7 @@ class VoiceRuntimeController {
                 android.util.Log.i("VoiceRuntime", "Realtime session already starting/active for ${resolvedThreadKey.threadId}")
                 return
             }
-            if (sessionJob?.isActive == true || captureJob?.isActive == true || active != null) {
+            if (sessionJob?.isActive == true || active != null) {
                 cleanup()
             }
             _activeSession.value = VoiceSessionState(threadKey = resolvedThreadKey)
@@ -523,7 +191,27 @@ class VoiceRuntimeController {
             // Give the event loop a moment to start consuming
             kotlinx.coroutines.delay(50)
 
-            android.util.Log.i("VoiceRuntime", "Calling threadRealtimeStart...")
+            android.util.Log.i("VoiceRuntime", "Creating WebRTC peer connection and offer...")
+            val session = RealtimeWebRtcSession(appModel.appContext)
+            val claimed = synchronized(sessionLock) {
+                if (webRtcSession != null) {
+                    false
+                } else {
+                    webRtcSession = session
+                    true
+                }
+            }
+            if (!claimed) {
+                android.util.Log.w(
+                    "VoiceRuntime",
+                    "Racing start detected; another peer connection already claimed — aborting this attempt",
+                )
+                session.stop()
+                return
+            }
+            val offerSdp = session.start()
+
+            android.util.Log.i("VoiceRuntime", "Calling threadRealtimeStart with WebRTC offer...")
             _activeSession.value = VoiceSessionState(threadKey = resolvedThreadKey)
             appModel.client.startRealtimeSession(
                 resolvedThreadKey.serverId,
@@ -531,6 +219,7 @@ class VoiceRuntimeController {
                     threadId = resolvedThreadKey.threadId,
                     prompt = realtimePrompt(appModel),
                     sessionId = "litter-voice-${UUID.randomUUID().toString().lowercase()}",
+                    transport = AppRealtimeStartTransport.Webrtc(sdp = offerSdp),
                     clientControlledHandoff = true,
                     dynamicTools = buildDynamicToolSpecs(),
                 ),
@@ -603,7 +292,7 @@ class VoiceRuntimeController {
         val displayName = currentLocal?.displayName ?: "Local"
         return try {
             appModel.serverBridge.connectLocalServer(serverId, displayName, "127.0.0.1", 0u)
-            appModel.restoreStoredLocalChatGptAuth(serverId)
+            appModel.restoreStoredLocalAuthState(serverId)
             appModel.refreshSnapshot()
             serverId
         } catch (_: Exception) {
@@ -638,42 +327,39 @@ class VoiceRuntimeController {
         when (update) {
             is AppStoreUpdateRecord.RealtimeStarted -> {
                 android.util.Log.i("VoiceRuntime", "RealtimeStarted!")
-                val threadKey = _activeSession.value?.threadKey ?: return
-                if (update.key != threadKey || isStopRequested(threadKey)) return
-                startAudioCapture(appModel, threadKey)
+            }
+
+            is AppStoreUpdateRecord.RealtimeSdp -> {
+                val threadId = update.notification.threadId
+                android.util.Log.i("VoiceRuntime", "RealtimeSdp received for thread=$threadId")
+                val active = _activeSession.value ?: return
+                if (active.threadKey.threadId != threadId || isStopRequested(active.threadKey)) return
+                val session = webRtcSession ?: run {
+                    android.util.Log.w("VoiceRuntime", "RealtimeSdp arrived with no local WebRTC session")
+                    return
+                }
+                try {
+                    session.applyAnswer(update.notification.sdp)
+                    android.util.Log.i("VoiceRuntime", "Applied WebRTC answer SDP")
+                } catch (e: Exception) {
+                    android.util.Log.e("VoiceRuntime", "Failed to apply answer SDP", e)
+                    cleanupForThread(active.threadKey)
+                }
             }
 
             is AppStoreUpdateRecord.FullResync -> {
-                // After a lagged resync we may have missed RealtimeStarted.
-                // Refresh the Kotlin snapshot from Rust, then check if voice is live.
-                val session = _activeSession.value ?: return
-                appModel.refreshSnapshot()
-                val voiceSession = appModel.snapshot.value?.voiceSession
-                android.util.Log.i("VoiceRuntime", "FullResync: activeThread=${voiceSession?.activeThread} isCapturing=$isCapturing")
-                if (session.threadKey == voiceSession?.activeThread &&
-                    !isCapturing &&
-                    !isStopRequested(session.threadKey)
-                ) {
-                    android.util.Log.i("VoiceRuntime", "FullResync: voice session already active, starting audio capture")
-                    startAudioCapture(appModel, session.threadKey)
+                // After a lagged resync we may have missed events — refresh snapshot so UI stays consistent.
+                if (_activeSession.value != null) {
+                    appModel.refreshSnapshot()
                 }
             }
 
             is AppStoreUpdateRecord.VoiceSessionChanged -> {
-                val session = _activeSession.value ?: return
                 val voiceSession = appModel.snapshot.value?.voiceSession
                 android.util.Log.i(
                     "VoiceRuntime",
                     "VoiceSessionChanged: active=${voiceSession?.activeThread != null} phase=${voiceSession?.phase} error=${voiceSession?.lastError}",
                 )
-                // VoiceSessionChanged while CONNECTING means the server accepted and session is live
-                if (session.threadKey == voiceSession?.activeThread &&
-                    !isCapturing &&
-                    !isStopRequested(session.threadKey)
-                ) {
-                    android.util.Log.i("VoiceRuntime", "Voice session active in snapshot, starting audio")
-                    startAudioCapture(appModel, session.threadKey)
-                }
             }
 
             is AppStoreUpdateRecord.RealtimeHandoffRequested -> {
@@ -681,9 +367,10 @@ class VoiceRuntimeController {
             }
 
             is AppStoreUpdateRecord.RealtimeOutputAudioDelta -> {
-                val audio = update.notification.audio
-                playOutputAudio(audio.data, audio.sampleRate.toInt())
+                // With WebRTC transport the server does not emit output audio over RPC;
+                // audio rides the peer connection. This branch is unreachable in practice.
             }
+
             is AppStoreUpdateRecord.RealtimeError -> {
                 if (!matchesCurrentSession(update.key)) return
                 android.util.Log.e(
@@ -827,92 +514,6 @@ class VoiceRuntimeController {
         ),
     )
 
-    // ── Level management with decay ──────────────────────────────────────────
-
-    private fun updateInputLevel(level: Float) {
-        val session = _activeSession.value ?: return
-        _activeSession.value = session.copy(inputLevel = level)
-
-        if (level > INPUT_THRESHOLD) {
-            val token = UUID.randomUUID().toString()
-            inputDecayToken = token
-            scope.launch {
-                delay(INPUT_DECAY_MS)
-                if (inputDecayToken == token) {
-                    _activeSession.value = _activeSession.value?.copy(inputLevel = 0f)
-                }
-            }
-        }
-    }
-
-    private fun updateOutputLevel(level: Float) {
-        val session = _activeSession.value ?: return
-        _activeSession.value = session.copy(outputLevel = level)
-
-        if (level > OUTPUT_THRESHOLD) {
-            val token = UUID.randomUUID().toString()
-            outputDecayToken = token
-            scope.launch {
-                delay(OUTPUT_DECAY_MS)
-                if (outputDecayToken == token) {
-                    _activeSession.value = _activeSession.value?.copy(
-                        outputLevel = 0f,
-                    )
-                }
-            }
-        }
-    }
-
-    // ── Audio utilities ──────────────────────────────────────────────────────
-
-    private fun computeRms(buffer: ShortArray, size: Int): Float {
-        var sum = 0.0
-        for (i in 0 until size) {
-            val s = buffer[i].toDouble() / Short.MAX_VALUE
-            sum += s * s
-        }
-        return sqrt(sum / size).toFloat()
-    }
-
-    private fun computeRmsFloat(buffer: FloatArray): Float {
-        var sum = 0.0
-        for (s in buffer) { sum += s * s }
-        return sqrt(sum / buffer.size).toFloat()
-    }
-
-    private fun resample(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
-        if (fromRate == toRate) return input
-        val ratio = fromRate.toDouble() / toRate
-        val outSize = (input.size / ratio).toInt()
-        val output = FloatArray(outSize)
-        for (i in 0 until outSize) {
-            val pos = i * ratio
-            val idx = pos.toInt().coerceAtMost(input.size - 1)
-            val frac = (pos - idx).toFloat()
-            val s0 = input[idx]
-            val s1 = input[(idx + 1).coerceAtMost(input.size - 1)]
-            output[i] = s0 + frac * (s1 - s0)
-        }
-        return output
-    }
-
-    private fun encodePcm16(samples: FloatArray): ByteArray {
-        val buf = ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (s in samples) {
-            buf.putShort((s.coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort())
-        }
-        return buf.array()
-    }
-
-    private fun decodePcm16(pcmBytes: ByteArray): FloatArray {
-        val buf = ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN)
-        val samples = FloatArray(pcmBytes.size / 2)
-        for (i in samples.indices) {
-            samples[i] = buf.getShort().toFloat() / Short.MAX_VALUE
-        }
-        return samples
-    }
-
     private fun persistedLocalVoiceThreadId(appModel: AppModel): String? {
         val stored = voicePrefs(appModel)
             .getString(PERSISTED_LOCAL_VOICE_THREAD_ID_KEY, null)
@@ -964,16 +565,6 @@ class VoiceRuntimeController {
 
     // ── Cleanup ──────────────────────────────────────────────────────────────
 
-    private fun shouldContinueCapturing(threadKey: ThreadKey): Boolean {
-        val isSessionCurrent = synchronized(sessionLock) {
-            _activeSession.value?.threadKey == threadKey && stopRequestedThreadKey != threadKey
-        }
-        val captureActive = synchronized(captureLock) {
-            isCapturing
-        }
-        return isSessionCurrent && captureActive
-    }
-
     private fun isStopRequested(threadKey: ThreadKey): Boolean =
         synchronized(sessionLock) { stopRequestedThreadKey == threadKey }
 
@@ -988,41 +579,15 @@ class VoiceRuntimeController {
     }
 
     private fun cleanup(clearStopRequest: Boolean = true) {
-        synchronized(captureLock) {
-            isCapturing = false
-            captureJob?.cancel()
-            captureJob = null
-            try { audioRecord?.stop() } catch (_: Exception) {}
-            try { audioRecord?.release() } catch (_: Exception) {}
-            audioRecord = null
-        }
         sessionJob?.cancel()
         sessionJob = null
-        synchronized(playbackLock) {
-            try { audioTrack?.stop() } catch (_: Exception) {}
-            try { audioTrack?.release() } catch (_: Exception) {}
-            audioTrack = null
+        try {
+            webRtcSession?.stop()
+        } catch (t: Throwable) {
+            android.util.Log.w("VoiceRuntime", "webRtcSession.stop failed: ${t.message}")
         }
-        aecBridge?.release()
-        aecBridge = null
-        audioFocusRequest?.let { request ->
-            runCatching { audioManager?.abandonAudioFocusRequest(request) }
-        }
-        audioFocusRequest = null
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            runCatching { audioManager?.clearCommunicationDevice() }
-        }
-        @Suppress("DEPRECATION")
-        runCatching { audioManager?.isSpeakerphoneOn = false }
-        previousAudioMode?.let { mode ->
-            runCatching { audioManager?.mode = mode }
-        }
-        previousAudioMode = null
-        audioManager = null
+        webRtcSession = null
         handoffManager = null
-        inputDecayToken = null
-        outputDecayToken = null
-        captureSampleRate = TARGET_SAMPLE_RATE
         if (clearStopRequest) {
             synchronized(sessionLock) {
                 stopRequestedThreadKey = null

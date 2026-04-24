@@ -43,6 +43,9 @@ packages:
   Hairball:
     url: https://github.com/dnakov/hairball.git
     branch: main
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: "147.0.0"
 targets:
   Litter:
     type: application
@@ -66,10 +69,8 @@ targets:
         com.apple.BackgroundModes:
           enabled: true
     sources:
-      - path: Sources/Litter/Bridge/AecBridge.swift
       - path: Sources/Litter
         excludes:
-          - Bridge/AecBridge.swift
           - "**/*.h"
       - path: Sources/LitterLiveActivity/CodexTurnLiveActivity.swift
       - path: Sources/LitterWatch/Models/WatchModels.swift
@@ -86,6 +87,8 @@ targets:
       - sdk: Network.framework
       - package: Hairball
         product: HairballUI
+      - package: WebRTC
+        product: WebRTC
       - framework: Frameworks/ios_system/ios_system.xcframework
         embed: true
       - framework: Frameworks/ios_system/shell.xcframework
@@ -160,7 +163,6 @@ targets:
     sources:
       - path: Sources/Litter
         excludes:
-          - Bridge/AecBridge.swift
           - Bridge/IosSystemBridge.m
           - CarPlay/**
           - Info.plist
@@ -172,11 +174,11 @@ targets:
           - Models/CodexTurnAttributes.swift
           - Models/CodexVoiceCallAttributes.swift
           - Models/OrientationResponder.swift
+          - Models/RealtimeWebRtcSession.swift
           - Models/StableSafeAreaInsets.swift
           - Models/TurnLiveActivityController.swift
           - Models/VoiceRuntimeController.swift
           - Models/VoiceSessionControl.swift
-          - Models/VoiceSessionCoordinator.swift
           - Models/VoiceSessionModels.swift
           - Models/WatchCompanionBridge.swift
           - Models/WatchProjection.swift
