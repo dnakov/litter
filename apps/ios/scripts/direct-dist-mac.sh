@@ -30,16 +30,20 @@ PROJECT_PATH="${PROJECT_PATH:-$PROJECT_DIR/Litter.xcodeproj}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.sigkitten.litter}"
 APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Litter}"
 TEAM_ID="${TEAM_ID:-}"
-# Developer ID provisioning profile name (NOT the Mac App Store one). Only
-# strictly required for capabilities that demand a profile (APNs, iCloud,
-# etc.). If empty, automatic signing is used and Xcode fetches / generates
-# whatever is needed.
-PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_SPECIFIER:-}"
+# Developer ID provisioning profile name (NOT the Mac App Store one).
+# Required because our entitlements include APS + App Groups (and iCloud
+# KVS when Feature C activates) — all three are silently stripped from
+# the signed .app unless a matching profile authorizes them.
+PROVISIONING_PROFILE_SPECIFIER="${PROVISIONING_PROFILE_SPECIFIER:-Litter Developer ID}"
 APP_PROVISIONING_PROFILE_SPECIFIER="${APP_PROVISIONING_PROFILE_SPECIFIER:-$PROVISIONING_PROFILE_SPECIFIER}"
 # Code sign identity for the .app bundle. `Developer ID Application` is the
 # exact CN prefix Apple uses; `security find-identity` will confirm it.
 APP_CODE_SIGN_IDENTITY="${APP_CODE_SIGN_IDENTITY:-Developer ID Application}"
-EXPORT_SIGNING_STYLE="${EXPORT_SIGNING_STYLE:-automatic}"
+# Manual signing so xcodebuild doesn't auto-pick the iOS / Apple
+# Distribution cert instead of Developer ID Application. Same lesson as
+# testflight-upload-mac.sh — automatic signing is too willing to grab the
+# wrong identity when multiple are in the keychain.
+EXPORT_SIGNING_STYLE="${EXPORT_SIGNING_STYLE:-manual}"
 MARKETING_VERSION="${MARKETING_VERSION:-}"
 BUILD_NUMBER="${BUILD_NUMBER:-}"
 SKIP_NOTARIZATION="${SKIP_NOTARIZATION:-0}"
@@ -157,6 +161,9 @@ fi
 if [[ "$EXPORT_SIGNING_STYLE" == "manual" && -n "$APP_PROVISIONING_PROFILE_SPECIFIER" ]]; then
     /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
     /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $APP_PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+    # Same story as mac-testflight: pin the signing cert so xcodebuild
+    # doesn't auto-select whatever it finds first in the keychain.
+    /usr/libexec/PlistBuddy -c "Add :signingCertificate string $APP_CODE_SIGN_IDENTITY" "$EXPORT_OPTIONS_PLIST"
 fi
 
 echo "==> Exporting Developer ID-signed .app"

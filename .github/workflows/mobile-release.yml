@@ -973,6 +973,11 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     environment: release
+    # Needed so the auto-publish step can create the `v${MARKETING_VERSION}`
+    # release and upload the .dmg as an asset on first build, and clobber
+    # it on subsequent builds of the same version.
+    permissions:
+      contents: write
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
 
@@ -1114,3 +1119,57 @@ jobs:
             ${{ steps.locate.outputs.dmg_path }}
             ${{ steps.locate.outputs.dmg_path }}.sha256
           if-no-files-found: error
+
+      - name: Publish DMG to GitHub Release (auto per version)
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG_PATH: ${{ steps.locate.outputs.dmg_path }}
+          DMG_NAME: ${{ steps.locate.outputs.dmg_name }}
+        run: |
+          set -euo pipefail
+
+          # Read the version out of project.yml the same way the scripts do.
+          MARKETING_VERSION="$(
+            sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)".*/\1/p' \
+              apps/ios/project.yml | head -n1
+          )"
+          if [[ -z "$MARKETING_VERSION" ]]; then
+            echo "Could not parse MARKETING_VERSION from apps/ios/project.yml" >&2
+            exit 1
+          fi
+
+          TAG="v${MARKETING_VERSION}"
+          BODY=$(cat <<EOF
+          Mac Catalyst direct-distribution build for ${TAG}.
+
+          Notarized \`.dmg\`; drag Litter.app into /Applications. The
+          asset is overwritten on every CI run that targets this version,
+          so the download URL below always points to the latest build.
+
+          Build: $(date -u +%Y-%m-%dT%H:%M:%SZ) / commit ${GITHUB_SHA}
+
+          Download:
+          https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DMG_NAME}
+          EOF
+          )
+
+          # Three states: (a) release already exists → just clobber the asset,
+          # (b) git tag exists but no release → create release against tag,
+          # (c) neither exists → create both (tag targets current SHA).
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — updating notes + clobbering asset"
+            gh release edit "$TAG" --notes "$BODY"
+          elif git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag $TAG exists but no release — creating release"
+            gh release create "$TAG" --title "$TAG" --notes "$BODY"
+          else
+            echo "Creating tag $TAG + release targeting ${GITHUB_SHA}"
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "$BODY" \
+              --target "$GITHUB_SHA"
+          fi
+
+          gh release upload "$TAG" "$DMG_PATH" "${DMG_PATH}.sha256" --clobber
+          echo "::notice title=DMG published::https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
