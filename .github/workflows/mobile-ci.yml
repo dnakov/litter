@@ -219,7 +219,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios-sim
+          targets: aarch64-apple-ios-sim,i686-unknown-linux-musl
 
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
