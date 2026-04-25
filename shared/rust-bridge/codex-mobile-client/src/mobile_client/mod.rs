@@ -278,6 +278,12 @@ where
     Ok(None)
 }
 
+/// Returns true when an RPC error string looks like a JSON-RPC -32601
+/// "method not found" error.
+fn is_method_not_found(error: &str) -> bool {
+    error.contains("-32601") || error.to_ascii_lowercase().contains("method not found")
+}
+
 fn ipc_pending_user_input_submission_id(request: &PendingUserInputRequest) -> &str {
     // Desktop thread-follower user-input replies resolve the pending app-server request,
     // not the turn id that originally emitted it.
@@ -1102,6 +1108,11 @@ impl MobileClient {
             request_id: upstream::RequestId::Integer(crate::next_request_id()),
             params: upstream::ThreadResumeParams {
                 thread_id: thread_id.to_string(),
+                developer_instructions:
+                    crate::local_runtime_instructions::splice_local_runtime_developer_instructions(
+                        self, server_id, None,
+                    ),
+                exclude_turns: true,
                 ..Default::default()
             },
         };
@@ -1112,6 +1123,15 @@ impl MobileClient {
             Ok(response) => {
                 let existing = self.app_store.thread_snapshot(&key);
                 let turns = response.thread.turns.clone();
+                let server_honored_exclude_turns = turns.is_empty();
+                // Legacy v0.124 remotes ignore `exclude_turns` and return the
+                // full embedded turn history. Flip the capability flag so
+                // future code paths (load_thread_turns_page) short-circuit
+                // and the UI keeps relying on embedded turns.
+                if !server_honored_exclude_turns {
+                    self.app_store
+                        .set_server_supports_turn_pagination(server_id, false);
+                }
                 let mut snapshot = thread_snapshot_from_upstream_thread_with_overrides(
                     server_id,
                     response.thread,
@@ -1124,6 +1144,21 @@ impl MobileClient {
                     Some(response.sandbox.into()),
                 )
                 .map_err(RpcError::Deserialization)?;
+                // Preserve existing store items when the server returned
+                // empty turns (paginated path); mark initial_turns_loaded so
+                // the UI spinner knows to wait for load_thread_turns_page.
+                if server_honored_exclude_turns {
+                    if let Some(current) = existing.as_ref() {
+                        snapshot.items = current.items.clone();
+                        snapshot.older_turns_cursor = current.older_turns_cursor.clone();
+                        snapshot.initial_turns_loaded = current.initial_turns_loaded;
+                    } else {
+                        snapshot.initial_turns_loaded = false;
+                    }
+                } else {
+                    snapshot.initial_turns_loaded = true;
+                    snapshot.older_turns_cursor = None;
+                }
                 reconcile_active_turn(existing.as_ref(), &mut snapshot, &turns);
                 self.app_store.upsert_thread_snapshot(snapshot);
                 self.mark_direct_resumed_thread(key);
@@ -1148,6 +1183,71 @@ impl MobileClient {
                             "{error}; metadata fallback failed: {fallback_error}"
                         ))
                     })
+            }
+            Err(error) => Err(RpcError::Deserialization(error)),
+        }
+    }
+
+    /// Composite action: page a thread's older turns via `thread/turns/list`
+    /// and merge them into the canonical store.
+    ///
+    /// - When the server is known to not support pagination
+    ///   (`supports_turn_pagination == false`), short-circuits with
+    ///   `loaded: false, has_more: false` — callers should rely on the
+    ///   embedded turns populated by the resume/fork path.
+    /// - When the RPC comes back as JSON-RPC -32601 (method not found),
+    ///   flips `supports_turn_pagination = false` on the server snapshot
+    ///   and returns the same short-circuit result.
+    /// - On success, invokes the `apply_thread_turns_page` reducer.
+    pub async fn load_thread_turns_page(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<crate::types::AppLoadThreadTurnsOutcome, RpcError> {
+        if !self.app_store.server_supports_turn_pagination(server_id) {
+            return Ok(crate::types::AppLoadThreadTurnsOutcome {
+                loaded: false,
+                has_more: false,
+            });
+        }
+        let params = upstream::ThreadTurnsListParams {
+            thread_id: thread_id.to_string(),
+            cursor,
+            limit,
+            sort_direction: Some(upstream::SortDirection::Desc),
+        };
+        let request = upstream::ClientRequest::ThreadTurnsList {
+            request_id: upstream::RequestId::Integer(crate::next_request_id()),
+            params,
+        };
+        match self
+            .request_typed_for_server::<upstream::ThreadTurnsListResponse>(server_id, request)
+            .await
+        {
+            Ok(response) => {
+                let has_more = response.next_cursor.is_some();
+                let page: crate::types::AppListThreadTurnsResponse = response.into();
+                self.apply_thread_turns_page(
+                    server_id,
+                    thread_id,
+                    &page,
+                    crate::types::AppTurnsSortDirection::Descending,
+                )
+                .map_err(RpcError::Deserialization)?;
+                Ok(crate::types::AppLoadThreadTurnsOutcome {
+                    loaded: true,
+                    has_more,
+                })
+            }
+            Err(error) if is_method_not_found(&error) => {
+                self.app_store
+                    .set_server_supports_turn_pagination(server_id, false);
+                Ok(crate::types::AppLoadThreadTurnsOutcome {
+                    loaded: false,
+                    has_more: false,
+                })
             }
             Err(error) => Err(RpcError::Deserialization(error)),
         }
@@ -1747,6 +1847,13 @@ impl MobileClient {
         ensure_thread_is_editable(&source)?;
         let rollback_depth = rollback_depth_for_turn(&source, selected_turn_index as usize)?;
 
+        let developer_instructions =
+            crate::local_runtime_instructions::splice_local_runtime_developer_instructions(
+                self,
+                &key.server_id,
+                developer_instructions,
+            );
+
         let response = self
             .server_thread_fork(
                 &key.server_id,
@@ -1758,6 +1865,7 @@ impl MobileClient {
                     sandbox,
                     developer_instructions,
                     persist_extended_history,
+                    exclude_turns: false,
                 }
                 .try_into()
                 .map_err(|e: crate::RpcClientError| RpcError::Deserialization(e.to_string()))?,

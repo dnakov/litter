@@ -239,24 +239,26 @@ private final class DirectoryPickerSheetModel {
     }
 
     private func listLocalDirectory(_ path: String, serverId: String) async {
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(atPath: path)
-            guard serverId == lastLoadedServerId else { return }
-            var dirs: [String] = []
-            for name in contents {
-                let fullPath = (path as NSString).appendingPathComponent(name)
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue {
-                    dirs.append(name)
-                }
-            }
-            allEntries = dirs.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                currentPath = path
-            }
-        } catch {
-            guard serverId == lastLoadedServerId else { return }
-            errorMessage = error.localizedDescription
+        // Local paths live inside the iSH fakefs, which iOS-side `FileManager`
+        // cannot see. Route directory enumeration through the iSH shell so we
+        // get the actual fakefs contents. BusyBox-safe pipeline (no GNU
+        // `-printf`).
+        let result = await IshFS.run(
+            "find \(IshFS.shellQuote(path)) -mindepth 1 -maxdepth 1 -type d 2>/dev/null | awk -F/ '{print $NF}' | sort"
+        )
+        guard serverId == lastLoadedServerId else { return }
+        guard result.exitCode == 0 else {
+            errorMessage = result.output.isEmpty
+                ? "Couldn't list \(path)"
+                : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return
+        }
+        let dirs = result.output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+        allEntries = dirs
+        withAnimation(.easeInOut(duration: 0.2)) {
+            currentPath = path
         }
     }
 
@@ -323,10 +325,12 @@ private final class DirectoryPickerSheetModel {
         let target = RemotePath.parse(path: currentPath).join(name: trimmed).asString()
         do {
             if isLocalServer {
-                try FileManager.default.createDirectory(
-                    atPath: target,
-                    withIntermediateDirectories: true
-                )
+                let result = await IshFS.run("mkdir -p \(IshFS.shellQuote(target))")
+                if result.exitCode != 0 {
+                    return result.output.isEmpty
+                        ? DirectoryPickerStrings.createFolderFailed
+                        : result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
             } else {
                 try await appModel.client.createRemoteDirectory(
                     serverId: selectedServerId,

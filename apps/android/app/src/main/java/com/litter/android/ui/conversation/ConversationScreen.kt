@@ -155,12 +155,18 @@ fun ConversationScreen(
         hash = 31 * hash + if (isThinking) 1 else 0
         hash
     }
-    var turnWindowSize by remember(threadKey) { mutableStateOf(10) }
-    val displayedTurns = remember(transcriptTurns, turnWindowSize) {
-        if (transcriptTurns.size <= turnWindowSize) transcriptTurns
-        else transcriptTurns.takeLast(turnWindowSize)
-    }
-    val hasMoreTurnsAbove = transcriptTurns.size > turnWindowSize
+    // Server-paginated windowing: the Rust reducer owns which turns are
+    // currently loaded for this thread. Kotlin just renders whatever is in
+    // `hydratedConversationItems` and exposes a "Load earlier" button gated
+    // on `olderTurnsCursor`. On legacy v0.124 servers this cursor stays null
+    // (all turns arrive in the resume response), so the button stays hidden.
+    val displayedTurns = transcriptTurns
+    val hasMoreTurnsAbove = thread?.olderTurnsCursor != null
+    val supportsTurnPagination = server?.capabilities?.supportsTurnPagination == true
+    val isInitialTurnsLoading = thread != null &&
+        !thread.initialTurnsLoaded &&
+        supportsTurnPagination
+    var isLoadingOlderTurns by remember(threadKey) { mutableStateOf(false) }
     var expandedTurnIds by remember(threadKey, collapseTurns) { mutableStateOf(setOf<String>()) }
     var streamingRenderTick by remember(threadKey) { mutableStateOf(0) }
     var followScrollToken by remember(threadKey) { mutableStateOf(0) }
@@ -226,6 +232,16 @@ fun ConversationScreen(
         thread?.effectiveSandboxPolicy,
     ) {
         appModel.launchState.syncFromThread(thread)
+    }
+
+    // Server-paginated initial turn load. Rust handles the legacy-server
+    // case (short-circuits when `supports_turn_pagination == false`); we
+    // still gate here on the capability flag to avoid dispatching the RPC
+    // at all when the server doesn't support it.
+    LaunchedEffect(threadKey, thread?.initialTurnsLoaded, supportsTurnPagination) {
+        if (thread != null && !thread.initialTurnsLoaded && supportsTurnPagination) {
+            appModel.loadInitialTurns(threadKey)
+        }
     }
 
     var showModelSelector by remember { mutableStateOf(false) }
@@ -431,7 +447,7 @@ fun ConversationScreen(
                     ) {
                         item { Spacer(Modifier.height(12.dp)) }
 
-                        if (isWaitingForData) {
+                        if (isWaitingForData || isInitialTurnsLoading) {
                             item {
                                 Box(
                                     modifier = Modifier
@@ -439,11 +455,19 @@ fun ConversationScreen(
                                         .padding(top = 40.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text(
-                                        "Loading conversation…",
-                                        color = LitterTheme.textMuted,
-                                        fontSize = LitterTextStyle.caption.scaled,
-                                    )
+                                    if (isInitialTurnsLoading) {
+                                        CircularProgressIndicator(
+                                            color = LitterTheme.accent,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    } else {
+                                        Text(
+                                            "Loading conversation…",
+                                            color = LitterTheme.textMuted,
+                                            fontSize = LitterTextStyle.caption.scaled,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -451,17 +475,34 @@ fun ConversationScreen(
                         if (hasMoreTurnsAbove) {
                             item {
                                 TextButton(
+                                    enabled = !isLoadingOlderTurns,
                                     onClick = {
-                                        turnWindowSize = (turnWindowSize + 20).coerceAtMost(transcriptTurns.size)
+                                        if (isLoadingOlderTurns) return@TextButton
+                                        isLoadingOlderTurns = true
+                                        scope.launch {
+                                            try {
+                                                appModel.loadOlderTurns(threadKey)
+                                            } finally {
+                                                isLoadingOlderTurns = false
+                                            }
+                                        }
                                     },
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    Text(
-                                        "Load earlier messages",
-                                        color = LitterTheme.accent,
-                                        fontSize = LitterTextStyle.caption.scaled,
-                                        fontWeight = FontWeight.SemiBold,
-                                    )
+                                    if (isLoadingOlderTurns) {
+                                        CircularProgressIndicator(
+                                            color = LitterTheme.accent,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    } else {
+                                        Text(
+                                            "Load earlier messages",
+                                            color = LitterTheme.accent,
+                                            fontSize = LitterTextStyle.caption.scaled,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                    }
                                 }
                             }
                         }

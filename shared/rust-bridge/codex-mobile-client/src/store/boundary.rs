@@ -35,6 +35,10 @@ pub struct AppServerSnapshot {
     pub available_models: Option<Vec<crate::types::ModelInfo>>,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
     pub usage_stats: Option<AppServerUsageStats>,
+    /// Semver version string parsed from the server's `initialize.user_agent`,
+    /// or `None` when the user-agent did not match a recognised codex
+    /// originator format.
+    pub codex_version: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -70,6 +74,11 @@ pub struct AppServerCapabilities {
     pub can_resume_threads: bool,
     pub can_use_ipc: bool,
     pub can_resume_via_ipc: bool,
+    /// Whether the remote server supports paginated turn fetching via
+    /// `thread/turns/list` and the `exclude_turns` resume/fork parameter.
+    /// Derived from `codex_version >= 0.125.0`, with runtime fallback when
+    /// the RPC returns method-not-found.
+    pub supports_turn_pagination: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -92,6 +101,12 @@ pub struct AppThreadSnapshot {
     pub realtime_session_id: Option<String>,
     pub stats: Option<AppConversationStats>,
     pub token_usage: Option<AppTokenUsage>,
+    /// Cursor for fetching the next older page of turns, or `None` when no
+    /// more older turns exist OR pagination is unsupported.
+    pub older_turns_cursor: Option<String>,
+    /// Whether the first page of turns has been loaded. UI uses this to
+    /// gate an initial-load spinner when `exclude_turns` was requested.
+    pub initial_turns_loaded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -437,6 +452,7 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                         can_resume_threads: can_use_transport_actions,
                         can_use_ipc,
                         can_resume_via_ipc: can_use_ipc,
+                        supports_turn_pagination: server.supports_turn_pagination,
                     },
                     account: server.account,
                     requires_openai_auth: server.requires_openai_auth,
@@ -444,6 +460,7 @@ impl TryFrom<AppSnapshot> for AppSnapshotRecord {
                     available_models: server.available_models,
                     connection_progress: server.connection_progress,
                     usage_stats,
+                    codex_version: server.codex_version,
                 }
             })
             .collect::<Vec<_>>();
@@ -510,6 +527,8 @@ fn app_thread_snapshot_from_state(
         realtime_session_id: thread.realtime_session_id.clone(),
         stats,
         token_usage: thread_token_usage(thread),
+        older_turns_cursor: thread.older_turns_cursor.clone(),
+        initial_turns_loaded: thread.initial_turns_loaded,
     })
 }
 
@@ -1467,6 +1486,8 @@ mod tests {
                 realtime_session_id: None,
                 active_plan_progress: None,
                 pending_plan_implementation_turn_id: None,
+                older_turns_cursor: None,
+                initial_turns_loaded: false,
             },
         );
 

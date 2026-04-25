@@ -285,6 +285,19 @@ impl AppStore {
         })
     }
 
+    pub async fn load_thread_turns_page(
+        &self,
+        key: ThreadKey,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<crate::types::AppLoadThreadTurnsOutcome, ClientError> {
+        blocking_async!(self.rt, self.inner, |c| {
+            c.load_thread_turns_page(&key.server_id, &key.thread_id, cursor, limit)
+                .await
+                .map_err(|e| ClientError::Rpc(e.to_string()))
+        })
+    }
+
     pub async fn unsubscribe_thread(&self, key: ThreadKey) -> Result<(), ClientError> {
         blocking_async!(self.rt, self.inner, |c| {
             c.thread_unsubscribe(&key.server_id, &key.thread_id)

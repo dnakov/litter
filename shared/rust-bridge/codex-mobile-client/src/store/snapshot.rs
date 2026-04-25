@@ -224,6 +224,13 @@ pub struct ServerSnapshot {
     pub available_models: Option<Vec<ModelInfo>>,
     pub connection_progress: Option<AppConnectionProgressSnapshot>,
     pub transport: ServerTransportDiagnostics,
+    /// Semver string parsed from the server's `initialize.user_agent`
+    /// response. `None` when the user-agent is absent or unparseable.
+    pub codex_version: Option<String>,
+    /// Whether the remote supports `thread/turns/list` + `exclude_turns`.
+    /// Derived from `codex_version` at handshake time; can be flipped to
+    /// `false` at runtime if a paginated RPC comes back as method-not-found.
+    pub supports_turn_pagination: bool,
 }
 
 impl ServerSnapshot {
@@ -268,6 +275,16 @@ pub struct ThreadSnapshot {
     pub realtime_session_id: Option<String>,
     pub active_plan_progress: Option<AppPlanProgressSnapshot>,
     pub(crate) pending_plan_implementation_turn_id: Option<String>,
+    /// Paginated-turns cursor pointing at the next older page, per
+    /// `thread/turns/list` semantics with `sort_direction: Desc`.
+    /// `None` means no more older turns on the server OR pagination is not
+    /// yet loaded.
+    pub older_turns_cursor: Option<String>,
+    /// Whether this thread's first page of turns has been loaded into
+    /// `items` (either from embedded resume/fork turns on a legacy server,
+    /// or from an explicit `thread/turns/list` call on a paginated server).
+    /// Gates the UI spinner when a thread is opened with `exclude_turns`.
+    pub initial_turns_loaded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -316,6 +333,8 @@ impl ThreadSnapshot {
             realtime_session_id: None,
             active_plan_progress: None,
             pending_plan_implementation_turn_id: None,
+            older_turns_cursor: None,
+            initial_turns_loaded: false,
         }
     }
 }

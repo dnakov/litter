@@ -121,6 +121,7 @@ struct ConversationComposerContentView: View {
             VStack(alignment: .trailing, spacing: 0) {
                 if let activePlanProgress {
                     ConversationComposerPlanProgressView(progress: activePlanProgress)
+                        .id(activePlanProgress.turnId)
                         .padding(.horizontal, 12)
                         .padding(.top, 8)
                 }
@@ -222,49 +223,44 @@ struct ConversationComposerModeChip: View {
 
 private struct ConversationComposerPlanProgressView: View {
     let progress: AppPlanProgressSnapshot
+    @State private var isExpanded = true
 
     private var completedCount: Int {
         progress.plan.filter { $0.status == .completed }.count
     }
 
+    private var currentStepText: String {
+        guard let step = currentStep?.step.trimmingCharacters(in: .whitespacesAndNewlines),
+              !step.isEmpty else {
+            return progress.plan.isEmpty ? "No plan task" : "Plan complete"
+        }
+        return step
+    }
+
+    private var currentStep: AppPlanStep? {
+        progress.plan.first(where: { $0.status == .inProgress })
+            ?? progress.plan.first(where: { $0.status == .pending })
+            ?? progress.plan.last(where: { $0.status == .completed })
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.clipboard")
-                    .litterFont(size: 12, weight: .semibold)
-                    .foregroundStyle(LitterTheme.accent)
-                Text("Plan Progress")
-                    .litterFont(.caption, weight: .semibold)
-                    .foregroundStyle(LitterTheme.textPrimary)
-                Text("\(completedCount)/\(progress.plan.count)")
-                    .litterMonoFont(size: 11, weight: .semibold)
-                    .foregroundStyle(LitterTheme.textSecondary)
-            }
-
-            if let explanation = progress.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !explanation.isEmpty {
-                Text(explanation)
-                    .litterFont(.caption)
-                    .foregroundStyle(LitterTheme.textSecondary)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(progress.plan.enumerated()), id: \.offset) { index, step in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: iconName(for: step.status))
-                            .litterFont(size: 11, weight: .semibold)
-                            .foregroundStyle(iconColor(for: step.status))
-                            .padding(.top, 2)
-                        Text("\(index + 1).")
-                            .litterMonoFont(size: 11, weight: .semibold)
-                            .foregroundStyle(LitterTheme.textMuted)
-                            .padding(.top, 1)
-                        Text(step.step)
-                            .litterFont(.caption)
-                            .foregroundStyle(LitterTheme.textPrimary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+        VStack(alignment: .leading, spacing: isExpanded ? 8 : 0) {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isExpanded.toggle()
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    headerContent
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? "Collapse plan progress" : "Expand plan progress")
+
+            if isExpanded {
+                expandedContent
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -273,6 +269,64 @@ private struct ConversationComposerPlanProgressView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(LitterTheme.codeBackground.opacity(0.92))
         )
+    }
+
+    private var headerContent: some View {
+        Group {
+            Image(systemName: "list.bullet.clipboard")
+                .litterFont(size: 12, weight: .semibold)
+                .foregroundStyle(LitterTheme.accent)
+            Text(isExpanded ? "Plan Progress" : "Plan")
+                .litterFont(.caption, weight: .semibold)
+                .foregroundStyle(LitterTheme.textPrimary)
+            Text("\(completedCount)/\(progress.plan.count)")
+                .litterMonoFont(size: 11, weight: .semibold)
+                .foregroundStyle(LitterTheme.textSecondary)
+
+            if !isExpanded {
+                Text(currentStepText)
+                    .litterFont(.caption)
+                    .foregroundStyle(LitterTheme.textPrimary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .litterFont(size: 10, weight: .semibold)
+                .foregroundStyle(LitterTheme.textMuted)
+        }
+    }
+
+    @ViewBuilder
+    private var expandedContent: some View {
+        if let explanation = progress.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explanation.isEmpty {
+            Text(explanation)
+                .litterFont(.caption)
+                .foregroundStyle(LitterTheme.textSecondary)
+        }
+
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(progress.plan.enumerated()), id: \.offset) { index, step in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: iconName(for: step.status))
+                        .litterFont(size: 11, weight: .semibold)
+                        .foregroundStyle(iconColor(for: step.status))
+                        .padding(.top, 2)
+                    Text("\(index + 1).")
+                        .litterMonoFont(size: 11, weight: .semibold)
+                        .foregroundStyle(LitterTheme.textMuted)
+                        .padding(.top, 1)
+                    Text(step.step)
+                        .litterFont(.caption)
+                        .foregroundStyle(LitterTheme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 
     private func iconName(for status: AppPlanStepStatus) -> String {

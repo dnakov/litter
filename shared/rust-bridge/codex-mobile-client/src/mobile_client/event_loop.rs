@@ -568,7 +568,17 @@ impl MobileClient {
             started_at.elapsed().as_millis()
         );
         self.app_store.note_server_direct_request_success(server_id);
-        deserialize_typed_response(&value).map_err(|e| {
+        let (parsed, legacy_permission_profile) =
+            deserialize_typed_response_with_legacy_flag(&value);
+        if legacy_permission_profile {
+            // v0.124 remotes never support turn pagination — mark the
+            // capability off as soon as we recognise the legacy shape so
+            // downstream code paths (load_thread_turns_page) short-circuit
+            // instead of waiting for the runtime -32601 probe.
+            self.app_store
+                .set_server_supports_turn_pagination(server_id, false);
+        }
+        parsed.map_err(|e| {
             let error = format_typed_rpc_deserialization_error(wire_method, &e, &value);
             warn!("{error}\nraw payload: {value}");
             error
@@ -618,14 +628,116 @@ fn deserialize_typed_response<R>(value: &serde_json::Value) -> Result<R, serde_j
 where
     R: serde::de::DeserializeOwned,
 {
+    let (result, _legacy) = deserialize_typed_response_with_legacy_flag(value);
+    result
+}
+
+/// Returns the deserialized response and a flag indicating whether the
+/// legacy pre-v0.125 `PermissionProfile` struct shape was detected anywhere
+/// in the payload. Callers can use the flag to flip server capability
+/// bookkeeping (e.g. `supports_turn_pagination = false`) before further
+/// processing.
+fn deserialize_typed_response_with_legacy_flag<R>(
+    value: &serde_json::Value,
+) -> (Result<R, serde_json::Error>, bool)
+where
+    R: serde::de::DeserializeOwned,
+{
     let mut normalized = value.clone();
+    let legacy_permission_profile = normalize_legacy_permission_profile_fields(&mut normalized);
     normalize_relative_absolute_path_fields(&mut normalized, None);
-    if let Some(base_path) = response_deserialization_base(&normalized) {
+    let parsed = if let Some(base_path) = response_deserialization_base(&normalized) {
         let _guard = AbsolutePathBufGuard::new(base_path.as_path());
         serde_json::from_value(normalized)
     } else {
         serde_json::from_value(normalized)
+    };
+    (parsed, legacy_permission_profile)
+}
+
+/// Walk the JSON tree and upgrade any legacy v0.124 `PermissionProfile`
+/// struct shape into the v0.125 tagged-enum shape. Legacy payloads omit the
+/// `type` discriminator entirely; the only legacy shape encountered in the
+/// wild is equivalent to the new `Managed { network, fileSystem }` variant.
+///
+/// Also upgrades the inner `PermissionProfileFileSystemPermissions` (the
+/// value under `fileSystem`) which was similarly refactored into a tagged
+/// enum — legacy servers always sent the equivalent of `Restricted`.
+///
+/// Returns `true` if any legacy shape was patched, so the caller can mark
+/// the server as pre-pagination (belt-and-suspenders alongside the
+/// runtime `-32601` probe).
+fn normalize_legacy_permission_profile_fields(value: &mut serde_json::Value) -> bool {
+    let mut found_legacy = false;
+    visit_permission_profile_fields(value, &mut found_legacy);
+    found_legacy
+}
+
+fn visit_permission_profile_fields(value: &mut serde_json::Value, found_legacy: &mut bool) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(profile) = map.get_mut("permissionProfile")
+                && upgrade_legacy_permission_profile(profile)
+            {
+                *found_legacy = true;
+            }
+            for child in map.values_mut() {
+                visit_permission_profile_fields(child, found_legacy);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                visit_permission_profile_fields(child, found_legacy);
+            }
+        }
+        _ => {}
     }
+}
+
+/// If `profile` looks like the legacy v0.124 `PermissionProfile` struct
+/// shape (object with no `type` discriminator), upgrade it in-place to the
+/// v0.125 `Managed` variant. Returns true when an upgrade occurred.
+fn upgrade_legacy_permission_profile(profile: &mut serde_json::Value) -> bool {
+    let Some(map) = profile.as_object_mut() else {
+        return false;
+    };
+    if map.contains_key("type") {
+        return false;
+    }
+    // Legacy shape: `{ "fileSystem": {...}, "network": {...} }`.
+    // v0.125 equivalent is `Managed { network, fileSystem }`.
+    if let Some(file_system) = map.get_mut("fileSystem") {
+        upgrade_legacy_file_system_permissions(file_system);
+    }
+    // `PermissionProfileNetworkPermissions.enabled` tightened from
+    // Option<bool> to bool in v0.125. Defensive: if a legacy server ever
+    // sent an explicit `null`, coerce to `false`.
+    if let Some(network) = map.get_mut("network")
+        && let Some(network_map) = network.as_object_mut()
+        && network_map.get("enabled").is_some_and(|v| v.is_null())
+    {
+        network_map.insert("enabled".to_string(), serde_json::Value::Bool(false));
+    }
+    map.insert(
+        "type".to_string(),
+        serde_json::Value::String("managed".to_string()),
+    );
+    true
+}
+
+/// Legacy `fileSystem` payloads always used the equivalent of the new
+/// `Restricted { entries, glob_scan_max_depth? }` variant (no `type`).
+fn upgrade_legacy_file_system_permissions(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    if map.contains_key("type") {
+        return;
+    }
+    map.insert(
+        "type".to_string(),
+        serde_json::Value::String("restricted".to_string()),
+    );
 }
 
 fn response_deserialization_base(value: &serde_json::Value) -> Option<PathBuf> {
@@ -1283,5 +1395,156 @@ mod tests {
             path.as_path(),
             Path::new("/repo/crates/krusty-cli/src/main.rs")
         );
+    }
+
+    /// A v0.125+ server already emits the tagged-enum shape. Normalization
+    /// should be a no-op and the legacy flag must stay false.
+    #[test]
+    fn permission_profile_v125_tagged_shape_is_no_op() {
+        let mut payload = json!({
+            "permissionProfile": {
+                "type": "managed",
+                "network": { "enabled": true },
+                "fileSystem": { "type": "restricted", "entries": [] }
+            }
+        });
+        let legacy = normalize_legacy_permission_profile_fields(&mut payload);
+        assert!(!legacy);
+        assert_eq!(
+            payload["permissionProfile"]["type"].as_str(),
+            Some("managed")
+        );
+        assert_eq!(
+            payload["permissionProfile"]["fileSystem"]["type"].as_str(),
+            Some("restricted")
+        );
+    }
+
+    /// Exact legacy shape from the v0.124 device-console log — no `type`
+    /// discriminator on `permissionProfile` or its inner `fileSystem`.
+    /// Normalization should upgrade both to the new tagged shapes and the
+    /// legacy flag must be true so the caller can flip
+    /// `supports_turn_pagination = false`.
+    #[test]
+    fn permission_profile_v124_legacy_shape_is_upgraded() {
+        let mut payload = json!({
+            "permissionProfile": {
+                "fileSystem": {
+                    "entries": [
+                        { "access": "write", "path": { "type": "special", "value": { "kind": "root" } } }
+                    ]
+                },
+                "network": { "enabled": true }
+            }
+        });
+        let legacy = normalize_legacy_permission_profile_fields(&mut payload);
+        assert!(legacy);
+        assert_eq!(
+            payload["permissionProfile"]["type"].as_str(),
+            Some("managed")
+        );
+        assert_eq!(
+            payload["permissionProfile"]["fileSystem"]["type"].as_str(),
+            Some("restricted")
+        );
+        // Entries array preserved unchanged.
+        assert_eq!(
+            payload["permissionProfile"]["fileSystem"]["entries"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    /// A legacy-shape `permissionProfile` nested under a response object
+    /// (e.g. inside the top level of ThreadResumeResponse) still gets
+    /// upgraded — the walker recurses through all nested objects.
+    #[test]
+    fn permission_profile_legacy_shape_upgraded_in_nested_response() {
+        let mut payload = json!({
+            "thread": { "cliVersion": "0.124.0" },
+            "permissionProfile": {
+                "fileSystem": { "entries": [] },
+                "network": { "enabled": false }
+            }
+        });
+        assert!(normalize_legacy_permission_profile_fields(&mut payload));
+        assert_eq!(
+            payload["permissionProfile"]["type"].as_str(),
+            Some("managed")
+        );
+    }
+
+    /// A legacy network.enabled=null must coerce to false so deserialization
+    /// into the v0.125 `PermissionProfileNetworkPermissions.enabled: bool`
+    /// succeeds.
+    #[test]
+    fn permission_profile_network_enabled_null_coerces_to_false() {
+        let mut payload = json!({
+            "permissionProfile": {
+                "fileSystem": { "entries": [] },
+                "network": { "enabled": null }
+            }
+        });
+        assert!(normalize_legacy_permission_profile_fields(&mut payload));
+        assert_eq!(
+            payload["permissionProfile"]["network"]["enabled"],
+            json!(false)
+        );
+    }
+
+    /// Payloads without any `permissionProfile` (e.g. thread/list) must
+    /// pass through unchanged, legacy flag false.
+    #[test]
+    fn payload_without_permission_profile_is_untouched() {
+        let mut payload = json!({ "data": [{"id": "t1"}], "nextCursor": null });
+        let legacy = normalize_legacy_permission_profile_fields(&mut payload);
+        assert!(!legacy);
+        assert_eq!(payload["data"][0]["id"].as_str(), Some("t1"));
+    }
+
+    /// Full end-to-end: a legacy ThreadResumeResponse payload (minimal
+    /// fields) deserializes successfully into `upstream::ThreadResumeResponse`
+    /// via `deserialize_typed_response_with_legacy_flag`.
+    #[test]
+    fn legacy_thread_resume_response_deserializes_with_flag() {
+        let payload = json!({
+            "model": "gpt-5",
+            "modelProvider": "openai",
+            "serviceTier": "fast",
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": { "type": "dangerFullAccess" },
+            "cwd": "/tmp",
+            "instructionSources": [],
+            "reasoningEffort": "medium",
+            "permissionProfile": {
+                "fileSystem": { "entries": [] },
+                "network": { "enabled": true }
+            },
+            "thread": {
+                "id": "019da728-02a9-74a1-8dc6-ef71c5c111d8",
+                "preview": "hello",
+                "ephemeral": false,
+                "modelProvider": "openai",
+                "createdAt": 1,
+                "updatedAt": 2,
+                "status": { "type": "idle" },
+                "path": "/tmp/thread.jsonl",
+                "cwd": "/tmp",
+                "cliVersion": "0.124.0",
+                "source": "cli",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": "Thread",
+                "turns": []
+            }
+        });
+        let (parsed, legacy) =
+            deserialize_typed_response_with_legacy_flag::<upstream::ThreadResumeResponse>(&payload);
+        assert!(legacy, "legacy flag should fire on v0.124 payload");
+        let response = parsed.expect("legacy payload should deserialize");
+        assert!(response.permission_profile.is_some());
     }
 }

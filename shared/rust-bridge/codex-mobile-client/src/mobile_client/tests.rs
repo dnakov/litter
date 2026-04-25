@@ -393,6 +393,8 @@ mod mobile_client_tests {
                 }],
             }),
             pending_plan_implementation_turn_id: Some("turn-1".to_string()),
+            older_turns_cursor: None,
+            initial_turns_loaded: false,
         };
         let mut target = ThreadSnapshot::from_info("srv", make_thread_info("thread-1"));
 
@@ -445,6 +447,8 @@ mod mobile_client_tests {
             realtime_session_id: None,
             active_plan_progress: None,
             pending_plan_implementation_turn_id: None,
+            older_turns_cursor: None,
+            initial_turns_loaded: false,
         };
         let mut target = ThreadSnapshot::from_info("srv", make_thread_info("thread-1"));
 

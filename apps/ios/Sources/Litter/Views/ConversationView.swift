@@ -77,6 +77,13 @@ struct ConversationView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var supportsTurnPagination: Bool {
+        appModel.snapshot?
+            .serverSnapshot(for: activeThreadKey.serverId)?
+            .capabilities
+            .supportsTurnPagination ?? false
+    }
+
     var body: some View {
         ConversationMessageList(
             items: items,
@@ -88,12 +95,17 @@ struct ConversationView: View {
             activeThreadKey: activeThreadKey,
             agentDirectoryVersion: agentDirectoryVersion,
             topInset: thread.isSubagent ? topInset + 32 : topInset,
+            olderTurnsCursor: thread.olderTurnsCursor,
+            initialTurnsLoaded: thread.initialTurnsLoaded || !supportsTurnPagination,
             textSizeStep: $conversationTextSizeStep,
             resolveTargetLabel: resolveTargetLabel,
             onWidgetPrompt: sendWidgetPrompt,
             onEditUserItem: editMessage,
             onForkFromUserItem: forkFromMessage,
-            onOpenConversation: onOpenConversation
+            onOpenConversation: onOpenConversation,
+            onLoadOlderTurns: { key in
+                Task { await appModel.loadOlderTurns(threadId: key) }
+            }
         )
         .overlay(alignment: .bottomLeading) {
             if let onTypingTap,
@@ -165,6 +177,17 @@ struct ConversationView: View {
         .onChange(of: thread) { _, newThread in
             appState.hydratePermissions(from: newThread)
         }
+        .task(id: activeThreadKey) {
+            await loadInitialTurnsIfNeeded()
+        }
+        .onChange(of: thread.initialTurnsLoaded) { _, _ in
+            Task { await loadInitialTurnsIfNeeded() }
+        }
+    }
+
+    private func loadInitialTurnsIfNeeded() async {
+        guard supportsTurnPagination, !thread.initialTurnsLoaded else { return }
+        await appModel.loadInitialTurns(threadId: activeThreadKey)
     }
 
     private func sendMessage(_ text: String, attachmentImage: UIImage?, skillMentions: [SkillMentionSelection]) {
@@ -495,12 +518,15 @@ private struct ConversationMessageList: View {
     let activeThreadKey: ThreadKey
     let agentDirectoryVersion: UInt64
     var topInset: CGFloat = 0
+    let olderTurnsCursor: String?
+    let initialTurnsLoaded: Bool
     @Binding var textSizeStep: Int
     let resolveTargetLabel: (String) -> String?
     let onWidgetPrompt: (String) -> Void
     let onEditUserItem: (ConversationItem) -> Void
     let onForkFromUserItem: (ConversationItem) -> Void
     var onOpenConversation: ((ThreadKey) -> Void)? = nil
+    let onLoadOlderTurns: (ThreadKey) -> Void
     @State private var isNearBottom = true
     @State private var autoFollowStreaming = true
     @State private var userIsDraggingScroll = false
@@ -558,30 +584,13 @@ private struct ConversationMessageList: View {
         return false
     }
 
-    private static let initialTurnWindow = 10
-    private static let turnPageSize = 20
-    @State private var turnWindowSize: Int = ConversationMessageList.initialTurnWindow
-
-    private var displayedTurns: [TranscriptTurn] {
-        let all = sourceTurns
-        if all.count <= turnWindowSize { return all }
-        return Array(all.suffix(turnWindowSize))
-    }
-
-    private var hasMoreTurnsAbove: Bool {
-        sourceTurns.count > turnWindowSize
-    }
-
-    private func loadMoreTurns() {
-        turnWindowSize = min(turnWindowSize + Self.turnPageSize, sourceTurns.count)
-    }
-
-    private func resetTurnWindow() {
-        turnWindowSize = Self.initialTurnWindow
+    private var hasOlderTurns: Bool {
+        if let cursor = olderTurnsCursor { return !cursor.isEmpty }
+        return false
     }
 
     private var mergedRenderableTurns: [TranscriptTurn] {
-        let turns = displayedTurns
+        let turns = sourceTurns
         let buildKey = makeRenderedTurnsBuildKey(for: turns)
         if renderedTurnsBuildKey == buildKey { return renderedTurns }
         return TranscriptTurn.mergeConsecutiveExplorationTurnsForRendering(turns)
@@ -596,9 +605,13 @@ private struct ConversationMessageList: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         LazyVStack(alignment: .leading, spacing: 10) {
-                            if hasMoreTurnsAbove {
+                            if !initialTurnsLoaded {
+                                ConversationLoadingIndicator(label: "Loading earlier messages...")
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            } else if hasOlderTurns {
                                 Button {
-                                    loadMoreTurns()
+                                    onLoadOlderTurns(activeThreadKey)
                                 } label: {
                                     Text("Load earlier messages")
                                         .litterFont(.caption, weight: .semibold)
@@ -659,7 +672,9 @@ private struct ConversationMessageList: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
-                .defaultScrollAnchor(.bottom)
+                // Keep the chat initially bottom-aligned, but don't let keyboard-driven
+                // viewport size changes force a fresh bottom jump with stale lazy heights.
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .simultaneousGesture(
                     MagnificationGesture(minimumScaleDelta: 0.03)
                         .onChanged { scale in handlePinchChanged(scale: scale) }
@@ -703,7 +718,6 @@ private struct ConversationMessageList: View {
                     autoFollowStreaming = true
                     isNearBottom = true
                     waitingForDataExpired = false
-                    resetTurnWindow()
                     syncTranscriptTurns(resetExpansion: true)
                     StreamingRendererCoordinator.shared.reset()
                 }

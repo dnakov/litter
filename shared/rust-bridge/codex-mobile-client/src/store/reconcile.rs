@@ -1,7 +1,11 @@
 use std::any::Any;
+use std::collections::HashSet;
 
 use crate::MobileClient;
+use crate::conversation_uniffi::HydratedConversationItem;
+use crate::store::ThreadSnapshot;
 use crate::transport::RpcError;
+use crate::types::server_requests::{AppListThreadTurnsResponse, AppTurnsSortDirection};
 use crate::types::{ThreadInfo, ThreadKey};
 use codex_app_server_protocol as upstream;
 
@@ -216,6 +220,11 @@ impl MobileClient {
             Some(response.sandbox.clone().into()),
         )
         .map_err(|e| e.to_string())?;
+        // A freshly-started thread has no turns to page; mark the initial
+        // page as loaded so UI does not auto-fire `thread/turns/list`
+        // (which the server rejects until the first user message lands).
+        snapshot.initial_turns_loaded = true;
+        snapshot.older_turns_cursor = None;
         let key = snapshot.key.clone();
         let existing = self.app_store.thread_snapshot(&key);
         crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
@@ -237,6 +246,11 @@ impl MobileClient {
             response.sandbox.clone().map(Into::into),
         )
         .map_err(|e| e.to_string())?;
+        // `thread/read` responses always carry the embedded turn history;
+        // treat as authoritative and clear the older-turns cursor (the
+        // legacy/embedded path doesn't paginate).
+        snapshot.initial_turns_loaded = true;
+        snapshot.older_turns_cursor = None;
         let key = snapshot.key.clone();
         let existing = self.app_store.thread_snapshot(&key);
         crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
@@ -263,6 +277,7 @@ impl MobileClient {
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
         let existing = self.app_store.thread_snapshot(&key);
+        apply_pagination_merge(existing.as_ref(), &mut snapshot, &response.thread.turns);
         crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
@@ -287,9 +302,38 @@ impl MobileClient {
         .map_err(|e| e.to_string())?;
         let key = snapshot.key.clone();
         let existing = self.app_store.thread_snapshot(&key);
+        apply_pagination_merge(existing.as_ref(), &mut snapshot, &response.thread.turns);
         crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
+    }
+
+    /// Merge a paged `thread/turns/list` response into the canonical thread
+    /// snapshot.
+    ///
+    /// `direction` matches the `sortDirection` the client sent with the
+    /// request. For `Descending` (newest-first) pages the hydrated turns
+    /// are in newest-first order; the store keeps items in chronological
+    /// (ascending) order, so this reverses per-page before merging. Turns
+    /// already in the store (by `source_turn_id`) are deduped.
+    pub fn apply_thread_turns_page(
+        &self,
+        server_id: &str,
+        thread_id: &str,
+        page: &AppListThreadTurnsResponse,
+        direction: AppTurnsSortDirection,
+    ) -> Result<(), String> {
+        let key = ThreadKey {
+            server_id: server_id.to_string(),
+            thread_id: thread_id.to_string(),
+        };
+        let mut thread = match self.app_store.thread_snapshot(&key) {
+            Some(thread) => thread,
+            None => return Err(format!("thread {thread_id} not in store")),
+        };
+        merge_paged_turns(&mut thread, page, direction);
+        self.app_store.upsert_thread_snapshot(thread);
+        Ok(())
     }
 
     pub fn apply_thread_rollback_response(
@@ -330,6 +374,95 @@ impl MobileClient {
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(next_key)
     }
+}
+
+/// Decide how a resume/fork response's embedded `thread.turns` field maps
+/// into the store's existing items list.
+///
+/// v0.125+ servers honor `exclude_turns: true` by returning an empty turns
+/// array; we must preserve the store's existing hydrated items so the UI
+/// does not flicker to empty while pagination loads the first page. Legacy
+/// servers ignore `exclude_turns` and return the embedded turns — we treat
+/// those as an authoritative hydration.
+fn apply_pagination_merge(
+    existing: Option<&ThreadSnapshot>,
+    target: &mut ThreadSnapshot,
+    upstream_turns: &[upstream::Turn],
+) {
+    if upstream_turns.is_empty() {
+        if let Some(current) = existing {
+            target.items = current.items.clone();
+            target.older_turns_cursor = current.older_turns_cursor.clone();
+            target.initial_turns_loaded = current.initial_turns_loaded;
+        } else {
+            target.initial_turns_loaded = false;
+            target.older_turns_cursor = None;
+        }
+    } else {
+        // Legacy remote (or explicit hydration): the response carries the
+        // full turn history. Authoritative — paged cursor no longer applies.
+        target.initial_turns_loaded = true;
+        target.older_turns_cursor = None;
+    }
+}
+
+fn merge_paged_turns(
+    thread: &mut ThreadSnapshot,
+    page: &AppListThreadTurnsResponse,
+    direction: AppTurnsSortDirection,
+) {
+    // Items within a single paged turn come in hydrated order (ascending).
+    // When the server returns a Desc page (newest-first) we receive turns in
+    // reverse chronological order, so we need to group by source_turn_id,
+    // reverse the turn-order, then flatten.
+    let mut turns_in_page: Vec<Vec<HydratedConversationItem>> = Vec::new();
+    let mut current_turn_id: Option<String> = None;
+    for item in &page.turns {
+        let item_turn = item.source_turn_id.clone();
+        if item_turn != current_turn_id {
+            turns_in_page.push(Vec::new());
+            current_turn_id = item_turn;
+        }
+        if let Some(group) = turns_in_page.last_mut() {
+            group.push(item.clone());
+        }
+    }
+
+    if matches!(direction, AppTurnsSortDirection::Descending) {
+        // Desc page: newest turn first — reverse to get chronological order.
+        turns_in_page.reverse();
+    }
+
+    // Build a set of existing turn ids already in the store for dedupe.
+    let existing_turn_ids: HashSet<String> = thread
+        .items
+        .iter()
+        .filter_map(|item| item.source_turn_id.clone())
+        .collect();
+
+    let mut new_items: Vec<HydratedConversationItem> = Vec::new();
+    for group in turns_in_page {
+        let group_turn_id = group.first().and_then(|item| item.source_turn_id.clone());
+        if let Some(id) = group_turn_id {
+            if existing_turn_ids.contains(&id) {
+                continue;
+            }
+        }
+        new_items.extend(group);
+    }
+
+    // For Desc direction the `next_cursor` points at older turns; prepend new
+    // items before existing ones since our store is chronological ascending.
+    // For Asc direction (future use) append.
+    if matches!(direction, AppTurnsSortDirection::Descending) {
+        let mut merged = new_items;
+        merged.extend(thread.items.iter().cloned());
+        thread.items = merged;
+        thread.older_turns_cursor = page.next_cursor.clone();
+    } else {
+        thread.items.extend(new_items);
+    }
+    thread.initial_turns_loaded = true;
 }
 
 fn downcast_public_rpc_response<'a, T: Any>(
@@ -606,5 +739,260 @@ mod tests {
             server_id: "srv".to_string(),
             thread_id: "thread-1".to_string(),
         }));
+    }
+
+    fn item_with_turn(turn_id: &str, item_id: &str) -> HydratedConversationItem {
+        use crate::conversation_uniffi::{
+            HydratedConversationItemContent, HydratedUserMessageData,
+        };
+        HydratedConversationItem {
+            id: item_id.to_string(),
+            content: HydratedConversationItemContent::User(HydratedUserMessageData {
+                text: "hi".to_string(),
+                image_data_uris: Vec::new(),
+            }),
+            source_turn_id: Some(turn_id.to_string()),
+            source_turn_index: None,
+            timestamp: None,
+            is_from_user_turn_boundary: false,
+        }
+    }
+
+    fn test_thread_snapshot() -> ThreadSnapshot {
+        let info = ThreadInfo {
+            id: "thread-1".to_string(),
+            title: None,
+            model: None,
+            status: crate::types::ThreadSummaryStatus::Idle,
+            preview: None,
+            cwd: None,
+            path: None,
+            model_provider: None,
+            agent_nickname: None,
+            agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
+            created_at: None,
+            updated_at: None,
+        };
+        ThreadSnapshot::from_info("srv", info)
+    }
+
+    #[test]
+    fn merge_paged_turns_empty_store_first_desc_page() {
+        let mut thread = test_thread_snapshot();
+        let page = AppListThreadTurnsResponse {
+            // Desc page: turn-3 newest, then turn-2, then turn-1.
+            turns: vec![
+                item_with_turn("turn-3", "i3"),
+                item_with_turn("turn-2", "i2"),
+                item_with_turn("turn-1", "i1"),
+            ],
+            next_cursor: Some("cursor-older".to_string()),
+            backwards_cursor: None,
+        };
+        merge_paged_turns(&mut thread, &page, AppTurnsSortDirection::Descending);
+        // Store should be chronological ascending.
+        let ids: Vec<Option<String>> = thread
+            .items
+            .iter()
+            .map(|item| item.source_turn_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("turn-1".to_string()),
+                Some("turn-2".to_string()),
+                Some("turn-3".to_string()),
+            ]
+        );
+        assert_eq!(thread.older_turns_cursor.as_deref(), Some("cursor-older"));
+        assert!(thread.initial_turns_loaded);
+    }
+
+    #[test]
+    fn merge_paged_turns_prepends_older_page() {
+        let mut thread = test_thread_snapshot();
+        thread.items = vec![item_with_turn("turn-3", "i3")];
+        thread.initial_turns_loaded = true;
+        thread.older_turns_cursor = Some("cursor-first".to_string());
+        let page = AppListThreadTurnsResponse {
+            turns: vec![
+                item_with_turn("turn-2", "i2"),
+                item_with_turn("turn-1", "i1"),
+            ],
+            next_cursor: None, // no more older
+            backwards_cursor: None,
+        };
+        merge_paged_turns(&mut thread, &page, AppTurnsSortDirection::Descending);
+        let ids: Vec<Option<String>> = thread
+            .items
+            .iter()
+            .map(|item| item.source_turn_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("turn-1".to_string()),
+                Some("turn-2".to_string()),
+                Some("turn-3".to_string()),
+            ]
+        );
+        assert!(thread.older_turns_cursor.is_none());
+        assert!(thread.initial_turns_loaded);
+    }
+
+    #[test]
+    fn merge_paged_turns_dedupes_existing_turn_id() {
+        let mut thread = test_thread_snapshot();
+        thread.items = vec![item_with_turn("turn-3", "i3")];
+        thread.initial_turns_loaded = true;
+        let page = AppListThreadTurnsResponse {
+            turns: vec![
+                item_with_turn("turn-3", "i3-dup"),
+                item_with_turn("turn-2", "i2"),
+            ],
+            next_cursor: None,
+            backwards_cursor: None,
+        };
+        merge_paged_turns(&mut thread, &page, AppTurnsSortDirection::Descending);
+        // Dupe of turn-3 should not reappear; turn-2 prepended.
+        let ids: Vec<Option<String>> = thread
+            .items
+            .iter()
+            .map(|item| item.source_turn_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![Some("turn-2".to_string()), Some("turn-3".to_string())]
+        );
+    }
+
+    #[test]
+    fn apply_pagination_merge_preserves_existing_on_empty_turns() {
+        let mut existing = test_thread_snapshot();
+        existing.items = vec![item_with_turn("turn-1", "i1")];
+        existing.initial_turns_loaded = true;
+        existing.older_turns_cursor = Some("cursor-1".to_string());
+        let mut target = test_thread_snapshot();
+        target.items = Vec::new();
+        apply_pagination_merge(Some(&existing), &mut target, &[]);
+        assert_eq!(target.items.len(), 1);
+        assert!(target.initial_turns_loaded);
+        assert_eq!(target.older_turns_cursor.as_deref(), Some("cursor-1"));
+    }
+
+    #[test]
+    fn apply_pagination_merge_legacy_nonempty_is_authoritative() {
+        let mut existing = test_thread_snapshot();
+        existing.items = vec![item_with_turn("stale", "s1")];
+        existing.initial_turns_loaded = true;
+        existing.older_turns_cursor = Some("cursor-1".to_string());
+        let mut target = test_thread_snapshot();
+        // target already populated from upstream thread with hydrated items.
+        target.items = vec![item_with_turn("turn-1", "i1")];
+        let upstream_turn = upstream::Turn {
+            id: "turn-1".to_string(),
+            status: upstream::TurnStatus::Completed,
+            items: Vec::new(),
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        };
+        apply_pagination_merge(Some(&existing), &mut target, &[upstream_turn]);
+        // Legacy path: keep target's upstream-hydrated items, clear older
+        // cursor, mark loaded.
+        assert_eq!(target.items.len(), 1);
+        assert!(target.initial_turns_loaded);
+        assert!(target.older_turns_cursor.is_none());
+    }
+
+    #[test]
+    fn apply_pagination_merge_no_existing_marks_initial_false() {
+        let mut target = test_thread_snapshot();
+        apply_pagination_merge(None, &mut target, &[]);
+        assert!(!target.initial_turns_loaded);
+        assert!(target.older_turns_cursor.is_none());
+    }
+
+    /// A freshly-started thread has no turns to page. The reducer must mark
+    /// `initial_turns_loaded = true` immediately so the iOS conversation
+    /// view does not auto-fire `thread/turns/list` (which the server
+    /// rejects with "thread not materialized" until the first user turn
+    /// lands).
+    #[tokio::test]
+    async fn apply_thread_start_response_marks_initial_turns_loaded() {
+        let client = MobileClient::new();
+        client.app_store.upsert_server(
+            &ServerConfig {
+                server_id: "srv".to_string(),
+                display_name: "Server".to_string(),
+                host: "localhost".to_string(),
+                port: 8390,
+                websocket_url: None,
+                is_local: true,
+                tls: false,
+            },
+            ServerHealthSnapshot::Connected,
+            false,
+        );
+        let response = upstream::ThreadStartResponse {
+            thread: test_upstream_thread("thread-1"),
+            model: "gpt-5".to_string(),
+            model_provider: "openai".to_string(),
+            service_tier: None,
+            cwd: test_abs_path("/tmp"),
+            instruction_sources: Vec::new(),
+            approval_policy: upstream::AskForApproval::Never,
+            approvals_reviewer: upstream::ApprovalsReviewer::User,
+            sandbox: upstream::SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
+            reasoning_effort: None,
+        };
+        let key = client
+            .apply_thread_start_response("srv", &response)
+            .expect("thread/start reconciliation");
+        let snapshot = client.app_store.thread_snapshot(&key).expect("snapshot");
+        assert!(
+            snapshot.initial_turns_loaded,
+            "new thread must be marked initial_turns_loaded"
+        );
+        assert!(snapshot.older_turns_cursor.is_none());
+    }
+
+    /// `thread/read` carries embedded turns and is authoritative — the
+    /// reducer must mark `initial_turns_loaded = true` so the spinner
+    /// clears and `older_turns_cursor` gets cleared.
+    #[tokio::test]
+    async fn apply_thread_read_response_marks_initial_turns_loaded() {
+        let client = MobileClient::new();
+        client.app_store.upsert_server(
+            &ServerConfig {
+                server_id: "srv".to_string(),
+                display_name: "Server".to_string(),
+                host: "localhost".to_string(),
+                port: 8390,
+                websocket_url: None,
+                is_local: true,
+                tls: false,
+            },
+            ServerHealthSnapshot::Connected,
+            false,
+        );
+        let response = upstream::ThreadReadResponse {
+            thread: test_upstream_thread("thread-1"),
+            approval_policy: None,
+            sandbox: None,
+        };
+        let key = client
+            .apply_thread_read_response("srv", &response)
+            .expect("thread/read reconciliation");
+        let snapshot = client.app_store.thread_snapshot(&key).expect("snapshot");
+        assert!(
+            snapshot.initial_turns_loaded,
+            "thread/read response must mark initial_turns_loaded"
+        );
+        assert!(snapshot.older_turns_cursor.is_none());
     }
 }

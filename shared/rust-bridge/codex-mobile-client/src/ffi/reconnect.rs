@@ -509,6 +509,8 @@ mod tests {
             available_models: None,
             connection_progress: None,
             transport: ServerTransportDiagnostics::default(),
+            codex_version: None,
+            supports_turn_pagination: true,
         }
     }
 
@@ -549,6 +551,8 @@ mod tests {
                 available_models: None,
                 connection_progress: None,
                 transport: ServerTransportDiagnostics::default(),
+                codex_version: None,
+                supports_turn_pagination: true,
             },
         );
 
@@ -604,6 +608,8 @@ mod tests {
                 available_models: None,
                 connection_progress: None,
                 transport: ServerTransportDiagnostics::default(),
+                codex_version: None,
+                supports_turn_pagination: true,
             },
         );
 

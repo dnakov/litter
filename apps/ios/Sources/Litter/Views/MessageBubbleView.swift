@@ -511,9 +511,19 @@ struct MessageBubbleView: View {
             message.sourceTurnIndex != nil
     }
 
+    private var canCopyMessageText: Bool {
+        !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var userBubbleWithActions: some View {
         UserBubble(text: message.text, images: message.images)
             .contextMenu {
+                if canCopyMessageText {
+                    Button("Copy Message") {
+                        UIPasteboard.general.string = message.text
+                    }
+                }
+
                 if supportsUserActions {
                     Button("Edit Message") {
                         onEditUserMessage?(message)
@@ -530,19 +540,28 @@ struct MessageBubbleView: View {
 
     @ViewBuilder
     private var assistantContent: some View {
-        if isStreamingMessage {
-            StreamingAssistantBubble(
-                itemId: message.id.uuidString,
-                text: message.text,
-                isStreaming: true,
-                label: assistantAgentLabel,
-                onSnapshotRendered: onStreamingSnapshotRendered
-            )
-        } else {
-            AssistantBlocksBubble(
-                segments: assistantSegmentsForRendering,
-                label: assistantAgentLabel
-            )
+        Group {
+            if isStreamingMessage {
+                StreamingAssistantBubble(
+                    itemId: message.id.uuidString,
+                    text: message.text,
+                    isStreaming: true,
+                    label: assistantAgentLabel,
+                    onSnapshotRendered: onStreamingSnapshotRendered
+                )
+            } else {
+                AssistantBlocksBubble(
+                    segments: assistantSegmentsForRendering,
+                    label: assistantAgentLabel
+                )
+            }
+        }
+        .contextMenu {
+            if canCopyMessageText {
+                Button("Copy Message") {
+                    UIPasteboard.general.string = message.text
+                }
+            }
         }
     }
 
@@ -561,6 +580,13 @@ struct MessageBubbleView: View {
             .foregroundColor(LitterTheme.textSecondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .contextMenu {
+                if canCopyMessageText {
+                    Button("Copy Message") {
+                        UIPasteboard.general.string = message.text
+                    }
+                }
+            }
     }
 
     @ViewBuilder
@@ -635,6 +661,13 @@ struct MessageBubbleView: View {
                 .padding(.vertical, 6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            if canCopyMessageText {
+                Button("Copy Message") {
+                    UIPasteboard.general.string = message.text
+                }
+            }
+        }
     }
 
     private func extractSystemTitleAndBody(_ text: String) -> (String?, String) {

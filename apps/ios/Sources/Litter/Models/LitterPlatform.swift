@@ -23,15 +23,32 @@ enum LitterPlatform {
 
     static func bootstrapLocalRuntimeIfNeeded() {
 #if !targetEnvironment(macCatalyst)
-        codex_ios_system_init()
+        migrateWorkDirIfHostPath()
+        codex_ish_init()
+        litter_install_ish_hook()
 #endif
+    }
+
+    /// iSH cannot see iOS sandbox paths. If the persisted `workDir` is one
+    /// (carried over from an older build that ran shell commands directly in
+    /// the iOS sandbox, or from the @AppStorage default), reset it to a
+    /// fakefs-internal path so the model doesn't waste a cd-probe round-trip
+    /// on every fresh turn.
+    private static func migrateWorkDirIfHostPath() {
+        let key = "workDir"
+        let stored = UserDefaults.standard.string(forKey: key) ?? ""
+        let hostPrefixes = ["/var/", "/private/", "/Users/", "/Library/", "/System/", "/Applications/"]
+        let isHostPath = hostPrefixes.contains { stored.hasPrefix($0) }
+        if stored.isEmpty || isHostPath {
+            UserDefaults.standard.set("/root", forKey: key)
+        }
     }
 
     static func defaultLocalWorkingDirectory() -> String {
 #if targetEnvironment(macCatalyst)
         return NSHomeDirectory()
 #else
-        return codex_ios_default_cwd() as String? ?? NSHomeDirectory()
+        return codex_ish_default_cwd() as String? ?? NSHomeDirectory()
 #endif
     }
 

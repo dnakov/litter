@@ -273,6 +273,7 @@ pub(crate) async fn run_minigame(
         personality: None,
         ephemeral: Some(true),
         session_start_source: None,
+        environments: None,
         dynamic_tools: Some(dynamic_tools),
         mock_experimental_field: None,
         experimental_raw_events: false,

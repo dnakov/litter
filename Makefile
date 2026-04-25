@@ -140,8 +140,12 @@ BOUNDARY_SOURCES += $(shell find $(RUST_DIR)/codex-mobile-client/src -type f -na
 STAMP_SYNC := $(STAMPS)/sync
 STAMP_BINDINGS_S := $(STAMPS)/bindings-swift
 STAMP_BINDINGS_K := $(STAMPS)/bindings-kotlin
-STAMP_IOS_SYSTEM := $(STAMPS)/ios-system-frameworks
 STAMP_XCGEN := $(STAMPS)/xcgen
+
+# Pinned release tag of dnakov/litter-ish (fork of iSH adapted as an
+# embeddable iOS library). Bump and re-run `make litter-ish` to upgrade.
+LITTER_ISH_VERSION := v0.1.0
+STAMP_LITTER_ISH := $(STAMPS)/litter-ish-$(LITTER_ISH_VERSION)
 
 empty :=
 space := $(empty) $(empty)
@@ -159,7 +163,7 @@ $(shell mkdir -p $(STAMPS))
 	android android-fast android-tools android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
 	rust-ios rust-ios-package rust-ios-device-release rust-mac-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
-	sync patch unpatch xcgen ios-frameworks \
+	sync patch unpatch xcgen litter-ish \
 	ios-build ios-build-sim ios-build-sim-fast ios-build-device ios-build-device-fast \
 	watch watch-sim watch-sim-run watch-device watch-typecheck \
 	test test-rust test-ios test-android \
@@ -170,13 +174,13 @@ $(shell mkdir -p $(STAMPS))
 all: ios android
 
 # ios-build-* targets declare their real prerequisites so that `make -j`
-# can run rust-ios-package, ios-frameworks, and xcgen in parallel.
-ios-build-sim: rust-ios-package ios-frameworks xcgen
-ios-build-device: rust-ios-package ios-frameworks xcgen
+# can run rust-ios-package, litter-ish download, and xcgen in parallel.
+ios-build-sim: rust-ios-package litter-ish xcgen
+ios-build-device: rust-ios-package litter-ish xcgen
 
 # Fast lanes use lightweight raw staticlib outputs instead of full packaging.
-ios-build-sim-fast: rust-ios-sim-fast ios-frameworks xcgen
-ios-build-device-fast: rust-ios-device-fast ios-frameworks xcgen
+ios-build-sim-fast: rust-ios-sim-fast litter-ish xcgen
+ios-build-device-fast: rust-ios-device-fast litter-ish xcgen
 
 ios: ios-build-sim
 ios-sim: ios-build-sim
@@ -185,11 +189,11 @@ ios-device: ios-build-device
 ios-device-fast: ios-build-device-fast
 
 # Mac Catalyst build. Uses the same rust-ios-package (macabi arches)
-# + ios-frameworks + xcgen chain, but targets the `LitterMac` scheme
-# and writes into a separate DerivedData path so it doesn't collide
-# with the iOS sim build cache.
+# + xcgen chain, but targets the `LitterMac` scheme and writes into a
+# separate DerivedData path so it doesn't collide with the iOS sim build
+# cache.
 CATALYST_DERIVED_DATA := $(IOS_DIR)/build/catalyst
-catalyst: rust-ios-package ios-frameworks xcgen
+catalyst: rust-ios-package litter-ish xcgen
 	@echo "==> Building LitterMac for Mac Catalyst..."
 	@cd $(IOS_DIR) && xcodebuild \
 		-project Litter.xcodeproj \
@@ -212,7 +216,7 @@ catalyst-run: catalyst
 # export → hdiutil → notarize → staple cycle. Use `make mac-direct-dist`
 # for the signed + notarized DMG.
 MAC_DIRECT_DERIVED := $(IOS_DIR)/build/mac-direct
-mac-direct: rust-ios-package ios-frameworks xcgen
+mac-direct: rust-ios-package litter-ish xcgen
 	@echo "==> Building LitterMac (DeveloperID — unsandboxed)..."
 	@cd $(IOS_DIR) && xcodebuild \
 		-project Litter.xcodeproj \
@@ -420,16 +424,19 @@ $(STAMP_BINDINGS_K): $(STAMP_SYNC) $(BOUNDARY_SOURCES)
 	@cd $(RUST_DIR) && ./generate-bindings.sh --kotlin-only
 	@touch $@
 
-ios-frameworks: $(STAMP_IOS_SYSTEM)
-$(STAMP_IOS_SYSTEM):
-	@echo "==> Downloading ios_system frameworks..."
-	@$(IOS_SCRIPTS)/download-ios-system.sh
-	@touch $@
-
 xcgen: $(STAMP_XCGEN)
 $(STAMP_XCGEN): $(IOS_DIR)/project.yml
 	@echo "==> Regenerating Xcode project..."
 	@$(IOS_SCRIPTS)/regenerate-project.sh
+	@touch $@
+
+# Download the pinned litter-ish release (xcframework + Alpine fakefs) and
+# extract into apps/ios/Frameworks + apps/ios/Resources. The stamp is
+# version-keyed so bumping LITTER_ISH_VERSION re-runs the download.
+litter-ish: $(STAMP_LITTER_ISH)
+$(STAMP_LITTER_ISH):
+	@echo "==> Fetching litter-ish $(LITTER_ISH_VERSION)..."
+	@LITTER_ISH_VERSION=$(LITTER_ISH_VERSION) $(IOS_SCRIPTS)/download-litter-ish.sh
 	@touch $@
 
 verify-ios-project:
@@ -578,11 +585,8 @@ test-android:
 	@echo "==> Running Android tests..."
 	@cd $(ANDROID_DIR) && ./gradlew :app:testDebugUnitTest
 
-ios-release-prep: rust-ios-device-release ios-frameworks xcgen
+ios-release-prep: rust-ios-device-release litter-ish xcgen
 
-# LitterMac excludes ios_system from its sources, so ios-frameworks is not
-# a dependency — only the macabi rust staticlib + regenerated Xcode project
-# are needed before archiving.
 mac-release-prep: rust-mac-release xcgen
 
 testflight: ios-release-prep
@@ -628,8 +632,9 @@ clean-rust:
 
 clean-ios:
 	@echo "==> Cleaning iOS artifacts..."
-	@rm -rf $(IOS_FW_DIR)/codex_mobile_client.xcframework $(IOS_GENERATED)
-	@rm -f $(STAMP_IOS_SYSTEM) $(STAMP_XCGEN) $(STAMP_BINDINGS_S)
+	@rm -rf $(IOS_FW_DIR)/codex_mobile_client.xcframework $(IOS_FW_DIR)/litter_ish.xcframework $(IOS_GENERATED)
+	@rm -rf $(IOS_DIR)/Resources/fs
+	@rm -f $(STAMP_XCGEN) $(STAMP_BINDINGS_S) $(STAMPS)/litter-ish-*
 
 clean-android:
 	@echo "==> Cleaning Android artifacts..."

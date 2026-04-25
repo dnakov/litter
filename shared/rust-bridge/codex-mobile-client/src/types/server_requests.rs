@@ -368,6 +368,7 @@ impl TryFrom<AppStartThreadRequest> for upstream::ThreadStartParams {
                         .collect::<Result<Vec<_>, RpcClientError>>()
                 })
                 .transpose()?,
+            environments: None,
             mock_experimental_field: None,
             experimental_raw_events: false,
             persist_extended_history: value.persist_extended_history,
@@ -386,6 +387,9 @@ pub struct AppResumeThreadRequest {
     pub sandbox: Option<AppSandboxMode>,
     pub developer_instructions: Option<String>,
     pub persist_extended_history: bool,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub exclude_turns: bool,
 }
 
 impl TryFrom<AppResumeThreadRequest> for upstream::ThreadResumeParams {
@@ -408,6 +412,7 @@ impl TryFrom<AppResumeThreadRequest> for upstream::ThreadResumeParams {
             base_instructions: None,
             developer_instructions: value.developer_instructions,
             personality: None,
+            exclude_turns: value.exclude_turns,
             persist_extended_history: value.persist_extended_history,
         })
     }
@@ -424,6 +429,9 @@ pub struct AppForkThreadRequest {
     pub sandbox: Option<AppSandboxMode>,
     pub developer_instructions: Option<String>,
     pub persist_extended_history: bool,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub exclude_turns: bool,
 }
 
 impl TryFrom<AppForkThreadRequest> for upstream::ThreadForkParams {
@@ -445,8 +453,89 @@ impl TryFrom<AppForkThreadRequest> for upstream::ThreadForkParams {
             base_instructions: None,
             developer_instructions: value.developer_instructions,
             ephemeral: false,
+            exclude_turns: value.exclude_turns,
             persist_extended_history: value.persist_extended_history,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "camelCase")]
+pub enum AppTurnsSortDirection {
+    Ascending,
+    Descending,
+}
+
+impl From<AppTurnsSortDirection> for upstream::SortDirection {
+    fn from(value: AppTurnsSortDirection) -> Self {
+        match value {
+            AppTurnsSortDirection::Ascending => upstream::SortDirection::Asc,
+            AppTurnsSortDirection::Descending => upstream::SortDirection::Desc,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppListThreadTurnsRequest {
+    pub thread_id: String,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub sort_direction: Option<AppTurnsSortDirection>,
+}
+
+impl TryFrom<AppListThreadTurnsRequest> for upstream::ThreadTurnsListParams {
+    type Error = RpcClientError;
+
+    fn try_from(value: AppListThreadTurnsRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: value.thread_id,
+            cursor: value.cursor,
+            limit: value.limit,
+            sort_direction: value.sort_direction.map(Into::into),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(uniffi::Record)]
+pub struct AppListThreadTurnsResponse {
+    pub turns: Vec<crate::conversation_uniffi::HydratedConversationItem>,
+    pub next_cursor: Option<String>,
+    pub backwards_cursor: Option<String>,
+}
+
+/// Outcome of a `load_thread_turns_page` store action.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLoadThreadTurnsOutcome {
+    /// True when a page of turns was merged into the store. False when the
+    /// server does not support pagination (either known up front via
+    /// capability flag, or discovered at runtime via `-32601`).
+    pub loaded: bool,
+    /// True when `next_cursor` was non-null, i.e. more older turns remain.
+    pub has_more: bool,
+}
+
+impl From<upstream::ThreadTurnsListResponse> for AppListThreadTurnsResponse {
+    fn from(value: upstream::ThreadTurnsListResponse) -> Self {
+        let turns = crate::conversation::hydrate_turns(
+            &value.data,
+            &crate::conversation::HydrationOptions::default(),
+        );
+        Self {
+            turns,
+            next_cursor: value.next_cursor,
+            backwards_cursor: value.backwards_cursor,
+        }
     }
 }
 
@@ -1059,5 +1148,53 @@ mod tests {
         let json = serde_json::to_value(&approval).unwrap();
         assert_eq!(json["id"], "1");
         assert!(json["threadId"].is_null());
+    }
+
+    #[test]
+    fn resume_request_forwards_exclude_turns() {
+        let request = AppResumeThreadRequest {
+            thread_id: "t1".to_string(),
+            model: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            developer_instructions: None,
+            persist_extended_history: false,
+            exclude_turns: true,
+        };
+        let upstream_params: upstream::ThreadResumeParams = request.try_into().unwrap();
+        assert!(upstream_params.exclude_turns);
+    }
+
+    #[test]
+    fn resume_request_exclude_turns_default_false() {
+        let request = AppResumeThreadRequest {
+            thread_id: "t1".to_string(),
+            model: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            developer_instructions: None,
+            persist_extended_history: false,
+            exclude_turns: false,
+        };
+        let upstream_params: upstream::ThreadResumeParams = request.try_into().unwrap();
+        assert!(!upstream_params.exclude_turns);
+    }
+
+    #[test]
+    fn fork_request_forwards_exclude_turns() {
+        let request = AppForkThreadRequest {
+            thread_id: "t1".to_string(),
+            model: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            developer_instructions: None,
+            persist_extended_history: false,
+            exclude_turns: true,
+        };
+        let upstream_params: upstream::ThreadForkParams = request.try_into().unwrap();
+        assert!(upstream_params.exclude_turns);
     }
 }

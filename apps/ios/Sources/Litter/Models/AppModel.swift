@@ -44,6 +44,11 @@ final class AppModel {
     }
 
     private nonisolated static let _prewarmResult: RustBridges = {
+        // Boot the iSH kernel BEFORE any Rust bridge construction so the exec
+        // hook is wired up before the first command can be issued. Idempotent
+        // — the AppDelegate call site is a no-op on second invocation.
+        LitterPlatform.bootstrapLocalRuntimeIfNeeded()
+
         let rc = ReconnectController()
         rc.setCredentialProvider(provider: SwiftSshCredentialProvider())
         rc.setIpcSocketPathOverride(path: ExperimentalFeatures.shared.ipcSocketPathOverride())
@@ -97,6 +102,7 @@ final class AppModel {
     @ObservationIgnored private var pendingCommandRowMutations: [String: PendingCommandRowMutation] = [:]
     @ObservationIgnored private var pendingCommandRowMutationTask: Task<Void, Never>?
     @ObservationIgnored private var cachedThreadSnapshots: [ThreadKey: AppThreadSnapshot] = [:]
+    @ObservationIgnored private var loadingTurnPageThreadKeys: Set<ThreadKey> = []
 
     init(
         store: AppStore? = nil,
@@ -698,10 +704,13 @@ final class AppModel {
             // stream without waiting for a full snapshot rebuild.
             applySessionSummary(sessionSummary)
         case .threadStreamingDelta(let key, let itemId, let kind, let text):
-            if kind == .assistantText {
+            switch kind {
+            case .assistantText:
                 StreamingRendererCoordinator.shared.appendDelta(text, for: itemId)
-            } else {
-                scheduleThreadSnapshotRefresh(for: key)
+            default:
+                if !applyThreadStreamingDelta(key: key, itemId: itemId, kind: kind, text: text) {
+                    scheduleThreadSnapshotRefresh(for: key)
+                }
             }
         case .threadRemoved(let key, let agentDirectoryVersion):
             removeThreadSnapshot(for: key, agentDirectoryVersion: agentDirectoryVersion)
@@ -791,6 +800,76 @@ final class AppModel {
         snapshot.threads[threadIndex] = thread
         self.snapshot = snapshot
         cacheThreadSnapshot(thread)
+    }
+
+    private func applyThreadStreamingDelta(
+        key: ThreadKey,
+        itemId: String,
+        kind: ThreadStreamingDeltaKind,
+        text: String
+    ) -> Bool {
+        guard var snapshot else { return false }
+        guard let threadIndex = snapshot.threads.firstIndex(where: { $0.key == key }) else {
+            return false
+        }
+
+        var thread = snapshot.threads[threadIndex]
+        guard let itemIndex = thread.hydratedConversationItems.firstIndex(where: { $0.id == itemId }) else {
+            return false
+        }
+
+        var item = thread.hydratedConversationItems[itemIndex]
+        guard let updatedContent = applyingStreamingDelta(
+            kind: kind,
+            text: text,
+            to: item.content
+        ) else {
+            return false
+        }
+
+        item.content = updatedContent
+        guard thread.hydratedConversationItems[itemIndex] != item else {
+            return true
+        }
+
+        thread.hydratedConversationItems[itemIndex] = item
+        snapshot.threads[threadIndex] = thread
+        self.snapshot = snapshot
+        cacheThreadSnapshot(thread)
+        lastError = nil
+        return true
+    }
+
+    private func applyingStreamingDelta(
+        kind: ThreadStreamingDeltaKind,
+        text: String,
+        to content: HydratedConversationItemContent
+    ) -> HydratedConversationItemContent? {
+        switch (kind, content) {
+        case (.assistantText, .assistant(var data)):
+            data.text += text
+            return .assistant(data)
+        case (.reasoningText, .reasoning(var data)):
+            if data.content.isEmpty {
+                data.content.append(text)
+            } else {
+                data.content[data.content.index(before: data.content.endIndex)] += text
+            }
+            return .reasoning(data)
+        case (.planText, .proposedPlan(var data)):
+            data.content += text
+            return .proposedPlan(data)
+        case (.commandOutput, .commandExecution(var data)):
+            data.output = (data.output ?? "") + text
+            return .commandExecution(data)
+        case (.mcpProgress, .mcpToolCall(var data)):
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                data.progressMessages.append(text)
+            }
+            return .mcpToolCall(data)
+        default:
+            return nil
+        }
     }
 
     func refreshThreadSnapshot(key: ThreadKey) async {
@@ -1748,6 +1827,42 @@ final class AppModel {
         }
 
         return nil
+    }
+
+    private static let paginatedTurnPageSize: UInt32 = 20
+
+    /// Fetch the first page of turns for a thread whose `initialTurnsLoaded`
+    /// is still false. Called after a resume that sent `exclude_turns: true`
+    /// against a v0.125+ server.
+    func loadInitialTurns(threadId key: ThreadKey) async {
+        await loadTurnPage(key: key, cursor: nil)
+    }
+
+    /// Fetch the next older page of turns using the thread's current cursor.
+    /// No-op when no cursor is available (older-turns button should be hidden
+    /// in that case).
+    func loadOlderTurns(threadId key: ThreadKey) async {
+        guard let cursor = threadSnapshot(for: key)?.olderTurnsCursor,
+              !cursor.isEmpty else {
+            return
+        }
+        await loadTurnPage(key: key, cursor: cursor)
+    }
+
+    private func loadTurnPage(key: ThreadKey, cursor: String?) async {
+        if loadingTurnPageThreadKeys.contains(key) { return }
+        loadingTurnPageThreadKeys.insert(key)
+        defer { loadingTurnPageThreadKeys.remove(key) }
+
+        do {
+            _ = try await store.loadThreadTurnsPage(
+                key: key,
+                cursor: cursor,
+                limit: Self.paginatedTurnPageSize
+            )
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     private func refreshLoadedThreadSnapshot(key: ThreadKey) async {

@@ -4,7 +4,14 @@
 //! business logic here so Swift/Kotlin only compile one binding set.
 
 #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
-mod ios_exec;
+pub mod ish_exec;
+
+#[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
+#[unsafe(no_mangle)]
+pub extern "C" fn litter_install_ish_hook() {
+    ish_exec::install();
+}
+
 #[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]
 mod mobile_exec_command;
 
@@ -19,6 +26,7 @@ pub mod android_exec;
 pub mod shell_preflight;
 
 pub mod ambient_suggestions;
+pub mod capability;
 pub mod cloud_sync;
 pub mod conversation;
 pub mod conversation_uniffi;
@@ -27,6 +35,7 @@ pub mod discovery_uniffi;
 pub mod ffi;
 pub mod hydration;
 pub mod immer_patch;
+mod local_runtime_instructions;
 pub mod local_server;
 pub mod logging;
 pub mod markdown_blocks;

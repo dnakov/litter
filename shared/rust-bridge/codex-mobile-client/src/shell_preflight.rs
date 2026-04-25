@@ -31,8 +31,8 @@ fn normalize_shell_invocation(argv: &mut Vec<String>) {
         return;
     };
     // Reuse the same shell-wrapper parser used for command display, then run
-    // the extracted script through the bundled mobile `sh`. ios_system's
-    // sh_main supports `-c`, but not login-shell `-l`.
+    // the extracted script through the bundled mobile `sh -c`. iSH's
+    // /bin/sh supports `-c` like any POSIX shell.
     *argv = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
 }
 

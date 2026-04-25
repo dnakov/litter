@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -1087,8 +1088,21 @@ internal fun CollaborationModeChip(
 private fun PlanProgressPanel(
     progress: uniffi.codex_mobile_client.AppPlanProgressSnapshot,
 ) {
+    var expanded by remember(progress.turnId) { mutableStateOf(true) }
     val completed = remember(progress.plan) {
         progress.plan.count { it.status == uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED }
+    }
+    val currentStepLabel = remember(progress.plan) {
+        val currentStep = progress.plan.firstOrNull {
+            it.status == uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS
+        } ?: progress.plan.firstOrNull {
+            it.status == uniffi.codex_mobile_client.AppPlanStepStatus.PENDING
+        } ?: progress.plan.lastOrNull {
+            it.status == uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED
+        }
+
+        currentStep?.step?.trim()?.takeIf { it.isNotEmpty() }
+            ?: if (progress.plan.isEmpty()) "No plan task" else "Plan complete"
     }
     Column(
         modifier = Modifier
@@ -1102,9 +1116,12 @@ private fun PlanProgressPanel(
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
         ) {
             Text(
-                text = "Plan Progress",
+                text = if (expanded) "Plan Progress" else "Plan",
                 color = LitterTheme.textPrimary,
                 fontSize = LitterTextStyle.caption.scaled,
                 fontWeight = FontWeight.SemiBold,
@@ -1116,47 +1133,67 @@ private fun PlanProgressPanel(
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = BerkeleyMono,
             )
-        }
-        progress.explanation?.takeIf { it.isNotBlank() }?.let { explanation ->
-            Text(
-                text = explanation,
-                color = LitterTheme.textSecondary,
-                fontSize = LitterTextStyle.caption.scaled,
-            )
-        }
-        progress.plan.forEachIndexed { index, step ->
-            val icon = when (step.status) {
-                uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> "✓"
-                uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> "●"
-                uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> "○"
-            }
-            val tint = when (step.status) {
-                uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> LitterTheme.success
-                uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> LitterTheme.warning
-                uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> LitterTheme.textMuted
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
+            if (!expanded) {
                 Text(
-                    text = icon,
-                    color = tint,
-                    fontSize = LitterTextStyle.caption.scaled,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "${index + 1}.",
-                    color = LitterTheme.textMuted,
-                    fontSize = LitterTextStyle.caption.scaled,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = BerkeleyMono,
-                )
-                Text(
-                    text = step.step,
+                    text = currentStepLabel,
                     color = LitterTheme.textPrimary,
                     fontSize = LitterTextStyle.caption.scaled,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = if (expanded) "Collapse plan progress" else "Expand plan progress",
+                tint = LitterTheme.textMuted,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (expanded) {
+            progress.explanation?.takeIf { it.isNotBlank() }?.let { explanation ->
+                Text(
+                    text = explanation,
+                    color = LitterTheme.textSecondary,
+                    fontSize = LitterTextStyle.caption.scaled,
+                )
+            }
+            progress.plan.forEachIndexed { index, step ->
+                val icon = when (step.status) {
+                    uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> "✓"
+                    uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> "●"
+                    uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> "○"
+                }
+                val tint = when (step.status) {
+                    uniffi.codex_mobile_client.AppPlanStepStatus.COMPLETED -> LitterTheme.success
+                    uniffi.codex_mobile_client.AppPlanStepStatus.IN_PROGRESS -> LitterTheme.warning
+                    uniffi.codex_mobile_client.AppPlanStepStatus.PENDING -> LitterTheme.textMuted
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        text = icon,
+                        color = tint,
+                        fontSize = LitterTextStyle.caption.scaled,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "${index + 1}.",
+                        color = LitterTheme.textMuted,
+                        fontSize = LitterTextStyle.caption.scaled,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = BerkeleyMono,
+                    )
+                    Text(
+                        text = step.step,
+                        color = LitterTheme.textPrimary,
+                        fontSize = LitterTextStyle.caption.scaled,
+                    )
+                }
             }
         }
     }

@@ -67,6 +67,12 @@ class AppModel private constructor(context: android.content.Context) {
             }
             return _instance!!
         }
+
+        /**
+         * Matches the iOS `turnPageSize`. Server clamps this at 100.
+         */
+        const val INITIAL_TURN_PAGE_LIMIT: UInt = 20u
+        const val OLDER_TURN_PAGE_LIMIT: UInt = 20u
     }
 
     // --- Rust bridges (singletons behind the scenes) -------------------------
@@ -569,6 +575,37 @@ class AppModel private constructor(context: android.content.Context) {
         } catch (e: Exception) {
             _lastError.value = e.message
             throw e
+        }
+    }
+
+    /**
+     * Load the first page of turns for a thread. Intended to be called when
+     * the conversation view appears for a thread whose
+     * `initialTurnsLoaded == false` on a server that advertises
+     * `supportsTurnPagination`. Rust reconciles the page into the store;
+     * on legacy servers the call short-circuits (no-op) and resume/read
+     * populates the full turn list instead.
+     */
+    suspend fun loadInitialTurns(key: ThreadKey, limit: UInt = INITIAL_TURN_PAGE_LIMIT) {
+        try {
+            store.loadThreadTurnsPage(key, null, limit)
+            _lastError.value = null
+        } catch (e: Exception) {
+            _lastError.value = e.message
+        }
+    }
+
+    /**
+     * Fetch the next older page using the thread's stored
+     * `older_turns_cursor`. No-op when the cursor is null.
+     */
+    suspend fun loadOlderTurns(key: ThreadKey, limit: UInt = OLDER_TURN_PAGE_LIMIT) {
+        val cursor = threadSnapshot(key)?.olderTurnsCursor ?: return
+        try {
+            store.loadThreadTurnsPage(key, cursor, limit)
+            _lastError.value = null
+        } catch (e: Exception) {
+            _lastError.value = e.message
         }
     }
 

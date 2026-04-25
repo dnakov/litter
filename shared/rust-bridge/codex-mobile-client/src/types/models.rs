@@ -1059,6 +1059,7 @@ impl From<upstream::Account> for Account {
     fn from(value: upstream::Account) -> Self {
         match value {
             upstream::Account::ApiKey {} => Self::ApiKey,
+            upstream::Account::AmazonBedrock {} => Self::ApiKey,
             upstream::Account::Chatgpt { email, plan_type } => Self::Chatgpt {
                 email,
                 plan_type: plan_type.into(),

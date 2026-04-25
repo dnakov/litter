@@ -335,7 +335,9 @@ enum LitterPreviewData {
             rateLimits: nil,
             realtimeSessionId: nil,
             stats: nil,
-            tokenUsage: nil
+            tokenUsage: nil,
+            olderTurnsCursor: nil,
+            initialTurnsLoaded: true
         )
     }
 
@@ -362,14 +364,16 @@ enum LitterPreviewData {
                 canStartThreads: true,
                 canResumeThreads: true,
                 canUseIpc: true,
-                canResumeViaIpc: true
+                canResumeViaIpc: true,
+                supportsTurnPagination: true
             ),
             account: .chatgpt(email: "builder@example.com", planType: .plus),
             requiresOpenaiAuth: false,
             rateLimits: nil,
             availableModels: sampleModels,
             connectionProgress: nil,
-            usageStats: nil
+            usageStats: nil,
+            codexVersion: "0.125.0"
         )
 
         let sessionSummaries = threads.map { thread in

@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 
 use crate::mobile_exec_command::mobile_system_command;
 
-// Defined in apps/ios/Sources/Litter/Bridge/IosSystemBridge.m and linked by Xcode.
+// Defined in apps/ios/Sources/Litter/Bridge/IshBridge.m and linked by Xcode.
 unsafe extern "C" {
-    fn codex_ios_system_run(
+    fn codex_ish_run(
         cmd: *const c_char,
         cwd: *const c_char,
         output: *mut *mut c_char,
@@ -19,10 +19,10 @@ unsafe extern "C" {
     fn free(ptr: *mut c_void);
 }
 
-static IOS_EXEC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+static ISH_EXEC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
 pub(crate) fn install() {
-    IOS_EXEC_HOOK_INSTALLED.get_or_init(|| {
+    ISH_EXEC_HOOK_INSTALLED.get_or_init(|| {
         codex_core::exec::set_ios_exec_hook(run_command);
         crate::shell_preflight::install();
     });
@@ -33,7 +33,7 @@ pub(crate) fn run_command(
     cwd: &Path,
     _env: &HashMap<String, String>,
 ) -> (i32, Vec<u8>) {
-    // Run apply_patch in-process since ios_system cannot exec the app binary.
+    // Run apply_patch in-process since iSH cannot exec the app binary.
     if argv
         .iter()
         .any(|arg| arg == codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1)
@@ -43,13 +43,13 @@ pub(crate) fn run_command(
             .skip_while(|arg| *arg != codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1)
             .nth(1);
         if let Some(patch) = patch_arg {
-            eprintln!("[ios-exec] apply_patch in-process (cwd={})", cwd.display());
+            eprintln!("[ish-exec] apply_patch in-process (cwd={})", cwd.display());
             let cwd_abs = match codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(cwd)
             {
                 Ok(abs) => abs,
                 Err(err) => {
                     let msg = format!("invalid cwd for apply_patch: {err}\n");
-                    eprintln!("[ios-exec] apply_patch setup error: {err}");
+                    eprintln!("[ish-exec] apply_patch setup error: {err}");
                     return (1, msg.into_bytes());
                 }
             };
@@ -63,7 +63,7 @@ pub(crate) fn run_command(
                 Ok(rt) => rt,
                 Err(err) => {
                     let msg = format!("build tokio runtime for apply_patch: {err}\n");
-                    eprintln!("[ios-exec] apply_patch runtime error: {err}");
+                    eprintln!("[ish-exec] apply_patch runtime error: {err}");
                     return (1, msg.into_bytes());
                 }
             };
@@ -78,7 +78,7 @@ pub(crate) fn run_command(
             let code = match result {
                 Ok(()) => 0,
                 Err(err) => {
-                    eprintln!("[ios-exec] apply_patch error: {err}");
+                    eprintln!("[ish-exec] apply_patch error: {err}");
                     if stderr_buf.is_empty() {
                         stderr_buf = format!("{err}\n").into_bytes();
                     }
@@ -88,7 +88,7 @@ pub(crate) fn run_command(
             let mut output = stdout_buf;
             output.extend_from_slice(&stderr_buf);
             eprintln!(
-                "[ios-exec] apply_patch exit={code} output_len={}",
+                "[ish-exec] apply_patch exit={code} output_len={}",
                 output.len()
             );
             return (code, output);
@@ -96,14 +96,14 @@ pub(crate) fn run_command(
     }
 
     let cmd = mobile_system_command(argv);
-    eprintln!("[ios-exec] run: {cmd} (cwd={})", cwd.display());
+    eprintln!("[ish-exec] run: {cmd} (cwd={})", cwd.display());
 
     let Ok(cmd_cstr) = CString::new(cmd.clone()) else {
-        eprintln!("[ios-exec] invalid command string");
+        eprintln!("[ish-exec] invalid command string");
         return (-1, b"invalid command string\n".to_vec());
     };
     let Ok(cwd_cstr) = CString::new(cwd.to_string_lossy().as_ref()) else {
-        eprintln!("[ios-exec] invalid cwd string");
+        eprintln!("[ish-exec] invalid cwd string");
         return (-1, b"invalid cwd string\n".to_vec());
     };
 
@@ -111,7 +111,7 @@ pub(crate) fn run_command(
     let mut output_len: usize = 0;
 
     let code = unsafe {
-        codex_ios_system_run(
+        codex_ish_run(
             cmd_cstr.as_ptr(),
             cwd_cstr.as_ptr(),
             &mut output_ptr,
@@ -134,7 +134,7 @@ pub(crate) fn run_command(
     } else {
         &preview
     };
-    eprintln!("[ios-exec] exit={code} output_len={output_len} preview={preview}");
+    eprintln!("[ish-exec] exit={code} output_len={output_len} preview={preview}");
 
     (code, output)
 }

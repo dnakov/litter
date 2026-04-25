@@ -26,7 +26,7 @@ settings:
     MARKETING_VERSION: "1.0.4"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_OBJC_BRIDGING_HEADER: Sources/Litter/Bridge/codex_bridge_objc.h
-    OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lcodex_mobile_client"
+    OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lresolv -lcodex_mobile_client"
     HEADER_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/GeneratedRust/Headers"
     SWIFT_INCLUDE_PATHS: "$(inherited) $(PROJECT_DIR)/GeneratedRust/Headers"
     "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/GeneratedRust/ios-device"
@@ -72,11 +72,12 @@ targets:
       - path: Sources/Litter
         excludes:
           - "**/*.h"
+      - path: Resources/fs
+        type: folder
+        buildPhase: resources
       - path: Sources/LitterLiveActivity/CodexTurnLiveActivity.swift
       - path: Sources/LitterWatch/Models/WatchModels.swift
     resources:
-      - path: Sources/Litter/Resources/ios_system/commandDictionary.plist
-      - path: Sources/Litter/Resources/ios_system/extraCommandsDictionary.plist
       - path: Sources/Litter/Resources/Fonts
       - path: Sources/Litter/Resources/Themes
       - path: Sources/Litter/Resources/TipJarProducts.storekit
@@ -89,27 +90,7 @@ targets:
         product: HairballUI
       - package: WebRTC
         product: WebRTC
-      - framework: Frameworks/ios_system/ios_system.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/shell.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/text.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/files.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/awk.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/tar.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/curl_ios.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/ssh_cmd.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/lg2.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/openssl.xcframework
-        embed: true
-      - framework: Frameworks/ios_system/libssh2.xcframework
+      - framework: Frameworks/litter_ish.xcframework
         embed: true
       - target: LitterLiveActivity
         embed: true
@@ -131,7 +112,7 @@ targets:
           APP_CODE_SIGN_STYLE: Automatic
           PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
           APP_PROVISIONING_PROFILE_SPECIFIER: ""
-          OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lcodex_mobile_client"
+          OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lresolv -lcodex_mobile_client"
         Release:
           CODE_SIGN_STYLE: "$(APP_CODE_SIGN_STYLE)"
           APP_CODE_SIGN_STYLE: Automatic
@@ -163,7 +144,7 @@ targets:
     sources:
       - path: Sources/Litter
         excludes:
-          - Bridge/IosSystemBridge.m
+          - Bridge/IshBridge.m
           - CarPlay/**
           - Info.plist
           - Litter.entitlements
@@ -182,7 +163,6 @@ targets:
           - Models/VoiceSessionModels.swift
           - Models/WatchCompanionBridge.swift
           - Models/WatchProjection.swift
-          - Resources/ios_system/**
           - Views/HomeVoiceOrbButton.swift
           - Views/InlineVoiceButton.swift
           - Views/InlineVoiceStatusStrip.swift
@@ -219,7 +199,7 @@ targets:
           APP_CODE_SIGN_STYLE: Automatic
           PROVISIONING_PROFILE_SPECIFIER: "$(APP_PROVISIONING_PROFILE_SPECIFIER)"
           APP_PROVISIONING_PROFILE_SPECIFIER: ""
-          OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lcodex_mobile_client"
+          OTHER_LDFLAGS: "$(inherited) -lc++ -lz -lresolv -lcodex_mobile_client"
         Release:
           CODE_SIGN_STYLE: "$(APP_CODE_SIGN_STYLE)"
           APP_CODE_SIGN_STYLE: Automatic

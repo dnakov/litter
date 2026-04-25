@@ -139,6 +139,8 @@ impl AppStoreReducer {
                 existing_has_ipc,
                 existing_connection_progress,
                 existing_transport,
+                existing_codex_version,
+                existing_supports_turn_pagination,
             ) = if let Some(existing) = snapshot.servers.get(&config.server_id) {
                 (
                     existing.wake_mac.clone(),
@@ -150,6 +152,8 @@ impl AppStoreReducer {
                     existing.has_ipc,
                     existing.connection_progress.clone(),
                     existing.transport.clone(),
+                    existing.codex_version.clone(),
+                    existing.supports_turn_pagination,
                 )
             } else {
                 (
@@ -162,6 +166,8 @@ impl AppStoreReducer {
                     false,
                     None,
                     ServerTransportDiagnostics::default(),
+                    None,
+                    true,
                 )
             };
             snapshot.servers.insert(
@@ -182,6 +188,8 @@ impl AppStoreReducer {
                     available_models: existing_available_models,
                     connection_progress: existing_connection_progress,
                     transport: existing_transport,
+                    codex_version: existing_codex_version,
+                    supports_turn_pagination: existing_supports_turn_pagination,
                 },
             );
         }
@@ -1034,6 +1042,33 @@ impl AppStoreReducer {
         self.emit(AppStoreUpdateRecord::ServerChanged {
             server_id: server_id.to_string(),
         });
+    }
+
+    pub fn set_server_supports_turn_pagination(&self, server_id: &str, supports: bool) {
+        let changed = {
+            let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
+            match snapshot.servers.get_mut(server_id) {
+                Some(server) if server.supports_turn_pagination != supports => {
+                    server.supports_turn_pagination = supports;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.emit(AppStoreUpdateRecord::ServerChanged {
+                server_id: server_id.to_string(),
+            });
+        }
+    }
+
+    pub fn server_supports_turn_pagination(&self, server_id: &str) -> bool {
+        let snapshot = self.snapshot.read().expect("app store lock poisoned");
+        snapshot
+            .servers
+            .get(server_id)
+            .map(|server| server.supports_turn_pagination)
+            .unwrap_or(true)
     }
 
     pub fn note_app_lifecycle_phase(&self, phase: AppLifecyclePhaseSnapshot) {
