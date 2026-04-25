@@ -7,9 +7,78 @@
 pub mod ish_exec;
 
 #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
-#[unsafe(no_mangle)]
-pub extern "C" fn litter_install_ish_hook() {
-    ish_exec::install();
+pub mod ish_runtime;
+
+// Always-compiled UniFFI-visible types. The host cdylib that
+// `generate-bindings.sh` feeds to uniffi-bindgen must contain these so the
+// generated Swift/Kotlin has `IshRunResult` / `IshBootstrapError` /
+// `ishBootstrap` / `ishDefaultCwd` / `ishRun` symbols on every lane.
+pub mod ish_types;
+
+pub use ish_types::{IshBootstrapError, IshRunResult};
+
+/// One-time iSH bootstrap. Swift passes the bundle's `fs/` resource dir, the
+/// app's Application Support dir, and the Documents dir; Rust does the
+/// rootfs extraction, boot, and exec-hook registration. Replaces the old
+/// `codex_ish_init` + `litter_install_ish_hook` C entry points.
+///
+/// Non-iOS targets (Catalyst, Android, host bindgen) return
+/// `IshBootstrapError::Unsupported` — the kernel is iOS-only and not linked
+/// into those builds.
+#[uniffi::export]
+pub fn ish_bootstrap(
+    bundle_fs_path: String,
+    application_support_dir: String,
+    documents_dir: String,
+) -> Result<(), IshBootstrapError> {
+    #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
+    {
+        return ish_runtime::bootstrap(
+            std::path::Path::new(&bundle_fs_path),
+            std::path::Path::new(&application_support_dir),
+            std::path::Path::new(&documents_dir),
+        );
+    }
+    #[cfg(not(all(target_os = "ios", not(target_abi = "macabi"))))]
+    {
+        let _ = (bundle_fs_path, application_support_dir, documents_dir);
+        Err(IshBootstrapError::Unsupported {
+            message: "iSH is iOS-only".into(),
+        })
+    }
+}
+
+/// Default working directory for iSH-backed local sessions. Always `/root`
+/// (the standard Alpine home for the root user inside the fakefs). Safe to
+/// call on every platform — it's a pure constant.
+#[uniffi::export]
+pub fn ish_default_cwd() -> String {
+    "/root".to_string()
+}
+
+/// Run `cmd` through the persistent iSH `/bin/sh`. An empty `cwd` means "no
+/// cd wrapping" (run in the kernel's current dir). Output is merged
+/// stdout+stderr; `exit_code` is the process exit code, or a negative
+/// `ISH_E_*` value if dispatch failed.
+///
+/// Non-iOS targets return `exit_code = -1` and a stub "unsupported on this
+/// platform" message so Swift callers can uniformly handle the failure.
+#[uniffi::export]
+pub fn ish_run(cmd: String, cwd: String) -> IshRunResult {
+    #[cfg(all(target_os = "ios", not(target_abi = "macabi")))]
+    {
+        let cwd_opt = if cwd.is_empty() { None } else { Some(cwd.as_str()) };
+        let (exit_code, output) = ish_runtime::run(&cmd, cwd_opt);
+        return IshRunResult { exit_code, output };
+    }
+    #[cfg(not(all(target_os = "ios", not(target_abi = "macabi"))))]
+    {
+        let _ = (cmd, cwd);
+        IshRunResult {
+            exit_code: -1,
+            output: b"unsupported on this platform\n".to_vec(),
+        }
+    }
 }
 
 #[cfg(any(all(target_os = "ios", not(target_abi = "macabi")), test))]

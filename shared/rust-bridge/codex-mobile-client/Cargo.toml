@@ -60,6 +60,9 @@ uniffi = { version = "0.31.0", features = ["build"] }
 
 [target.'cfg(all(target_os = "ios", not(target_abi = "macabi")))'.dependencies]
 codex-apply-patch = { workspace = true }
+# iSH backend. Tracks the iSH repo's `main` branch — `cargo update -p
+# ish-embed-host` pulls the latest.
+ish-embed-host = { git = "https://github.com/dnakov/litter-ish.git", branch = "main" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }

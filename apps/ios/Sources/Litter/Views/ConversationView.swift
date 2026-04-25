@@ -541,6 +541,8 @@ private struct ConversationMessageList: View {
     @State private var pendingAnimatedTurns: [TranscriptTurn]?
     @State private var turnInsertionAnimationInFlight = false
     @AppStorage("collapseTurns") private var collapseTurns = false
+    private static let bottomAnchorClearance: CGFloat = 14
+
     private var expandedRecentTurnCount: Int {
         return collapseTurns ? 1 : .max
     }
@@ -664,6 +666,10 @@ private struct ConversationMessageList: View {
                         }
 
                         Color.clear
+                            .frame(height: Self.bottomAnchorClearance)
+                            .padding(.horizontal, 16)
+
+                        Color.clear
                             .frame(height: 1)
                             .id("bottom")
                             .padding(.horizontal, 16)
@@ -733,17 +739,12 @@ private struct ConversationMessageList: View {
                 }
                 .onChange(of: followScrollToken) {
                     guard isStreaming, autoFollowStreaming, !userIsDraggingScroll else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    scrollToBottom(proxy, corrective: true)
                 }
                 .onChange(of: sendScrollToken) {
                     autoFollowStreaming = true
                     isNearBottom = true
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
-                    }
+                    scrollToBottom(proxy, corrective: true)
                 }
                 .onChange(of: threadStatus) { oldStatus, _ in
                     syncTranscriptTurns()
@@ -754,33 +755,45 @@ private struct ConversationMessageList: View {
                         StreamingRendererCoordinator.shared.finishActive()
                     }
                     if wasStreaming && !isStreaming && autoFollowStreaming {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
-                        }
+                        scrollToBottom(proxy, corrective: true)
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                    guard autoFollowStreaming, !userIsDraggingScroll else { return }
+                    scrollToBottom(proxy, corrective: true)
                 }
 
                 if shouldShowScrollToBottom {
                     ScrollToBottomIndicator {
                         autoFollowStreaming = true
                         isNearBottom = true
-                        // Jump without animation first so LazyVStack realizes
-                        // content near the bottom, then do an animated corrective
-                        // scroll once layout has settled.  This avoids the
-                        // overshoot caused by stale estimated heights.
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
+                        scrollToBottom(proxy, corrective: true, animatedCorrection: true)
                     }
                     .padding(.trailing, 14)
                     .padding(.bottom, 10)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            }
+        }
+    }
+
+    private func scrollToBottom(
+        _ proxy: ScrollViewProxy,
+        corrective: Bool,
+        animatedCorrection: Bool = false
+    ) {
+        // First jump realizes lazy rows near the tail; the delayed pass corrects
+        // after streaming text, keyboard, or composer layout has settled.
+        proxy.scrollTo("bottom", anchor: .bottom)
+        guard corrective else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            if animatedCorrection {
+                withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.9)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }

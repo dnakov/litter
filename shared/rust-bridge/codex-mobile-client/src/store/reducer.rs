@@ -488,6 +488,51 @@ impl AppStoreReducer {
             let mut snapshot = self.snapshot.write().expect("app store lock poisoned");
             let existing = snapshot.threads.get(&key).cloned();
             if let Some(existing) = existing.as_ref() {
+                // Diagnostic for the duplicate-user-message bug (task #11):
+                // catch transient overlap where the incoming snapshot's
+                // hydrated User items match an overlay that's already in
+                // existing.local_overlay_items (sticking around past its
+                // dedupe). Logs once per upsert when the condition fires.
+                let user_overlay_count = existing
+                    .local_overlay_items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            &item.content,
+                            HydratedConversationItemContent::User(_)
+                        )
+                    })
+                    .count();
+                let incoming_user_count = thread
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            &item.content,
+                            HydratedConversationItemContent::User(_)
+                        )
+                    })
+                    .count();
+                if user_overlay_count > 0 && incoming_user_count > 0 {
+                    tracing::warn!(
+                        target: "store",
+                        server_id = key.server_id,
+                        thread_id = key.thread_id,
+                        existing_user_overlay_count = user_overlay_count,
+                        incoming_user_item_count = incoming_user_count,
+                        existing_user_item_count = existing
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                matches!(
+                                    &item.content,
+                                    HydratedConversationItemContent::User(_)
+                                )
+                            })
+                            .count(),
+                        "upsert_thread_snapshot: existing overlay + incoming user items overlap"
+                    );
+                }
                 preserve_thread_title(&existing.info, &mut thread.info);
                 preserve_thread_preview(&existing.info, &mut thread.info);
                 preserve_thread_created_at(&existing.info, &mut thread.info);
@@ -553,7 +598,22 @@ impl AppStoreReducer {
                 .retain(|existing| !is_duplicate_overlay_item(&item, existing));
             thread.local_overlay_items.push(item);
         });
-        updated?;
+        if updated.is_none() {
+            // Diagnostic for the duplicate-user-message bug (task #11): if
+            // the thread isn't in the store yet, the overlay silently drops
+            // and the iOS UI relies entirely on the upstream item arriving
+            // via events. If something else later inserts a second copy,
+            // we get two bubbles. Log so the next device run shows whether
+            // this is the path being hit.
+            tracing::warn!(
+                target: "store",
+                server_id = key.server_id,
+                thread_id = key.thread_id,
+                overlay_id = item_id,
+                "stage_local_user_message_overlay skipped: thread not in store"
+            );
+            return None;
+        }
         self.emit_thread_item_changed(key, emitted_item);
         Some(item_id)
     }
@@ -2246,6 +2306,9 @@ impl AppStoreReducer {
     }
 
     fn apply_item_update(&self, key: &ThreadKey, item: HydratedConversationItem) {
+        let is_user_message =
+            matches!(&item.content, HydratedConversationItemContent::User(_));
+        let incoming_item_id = item.id.clone();
         let result = self.mutate_thread_with_result(key, |thread| {
             let existing = thread
                 .items
@@ -2259,6 +2322,55 @@ impl AppStoreReducer {
                 .filter(|existing| is_superseded_overlay_item(existing, &item, active_turn_id))
                 .map(|existing| existing.id.clone())
                 .collect::<Vec<_>>();
+            // Diagnostic for the duplicate-user-message bug (task #11):
+            // when an upstream UserMessage arrives, log the surrounding
+            // store state so we can see whether the local overlay was
+            // present-and-deduped, present-and-NOT-deduped, or absent —
+            // and whether `thread.items` already contains a sibling User
+            // item with matching content.
+            if is_user_message {
+                let other_user_items: Vec<_> = thread
+                    .items
+                    .iter()
+                    .filter(|existing| {
+                        existing.id != item.id
+                            && matches!(
+                                &existing.content,
+                                HydratedConversationItemContent::User(_)
+                            )
+                    })
+                    .map(|existing| existing.id.clone())
+                    .collect();
+                let overlay_count = thread.local_overlay_items.len();
+                let user_overlay_ids: Vec<_> = thread
+                    .local_overlay_items
+                    .iter()
+                    .filter_map(|existing| {
+                        if matches!(
+                            &existing.content,
+                            HydratedConversationItemContent::User(_)
+                        ) {
+                            Some(existing.id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                tracing::warn!(
+                    target: "store",
+                    server_id = key.server_id,
+                    thread_id = key.thread_id,
+                    item_id = item.id,
+                    item_turn_id = item.source_turn_id.as_deref().unwrap_or(""),
+                    item_boundary = item.is_from_user_turn_boundary,
+                    existing_user_items = ?other_user_items,
+                    user_overlays = ?user_overlay_ids,
+                    overlay_count = overlay_count,
+                    will_remove_overlays = ?removed_overlay_ids,
+                    has_existing_with_id = existing.is_some(),
+                    "apply_item_update UserMessage diagnostic"
+                );
+            }
             thread
                 .local_overlay_items
                 .retain(|existing| !is_superseded_overlay_item(existing, &item, active_turn_id));
@@ -2276,6 +2388,15 @@ impl AppStoreReducer {
                 removed_overlay_ids,
             )
         });
+        if result.is_none() && is_user_message {
+            tracing::warn!(
+                target: "store",
+                server_id = key.server_id,
+                thread_id = key.thread_id,
+                item_id = incoming_item_id,
+                "apply_item_update UserMessage skipped: thread not in store"
+            );
+        }
 
         match result {
             Some((Some(ItemMutationUpdate::Upsert(item)), queued_changed, removed_overlay_ids)) => {
@@ -4142,6 +4263,191 @@ mod tests {
         assert!(thread.local_overlay_items.is_empty());
         assert_eq!(thread.items.len(), 1);
         assert_eq!(thread.items[0].id, "server-user-item");
+    }
+
+    /// Repro for the duplicate-first-user-message bug surfaced by user
+    /// testing on a v0.125 remote. iOS flow on a brand-new thread is:
+    ///   1. apply_thread_start_response (handled by MobileClient).
+    ///   2. stage_local_user_message_overlay + bind_local_user_message_overlay_to_turn.
+    ///   3. apply_item_update twice (ItemStarted + ItemCompleted, same content).
+    ///   4. apply_thread_read_response from refreshThreadSnapshot — embedded
+    ///      thread.turns carry the same UserMessage.
+    ///
+    /// After step 3 the overlay should be superseded; after step 4 the
+    /// authoritative thread.items must contain exactly one user item.
+    /// The merged view (boundary projection) must not duplicate.
+    #[test]
+    fn first_user_message_does_not_duplicate_after_thread_read() {
+        let reducer = AppStoreReducer::new();
+        let key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread-1".to_string(),
+        };
+        // Step 1: thread/start equivalent — populate empty thread snapshot.
+        reducer
+            .upsert_thread_snapshot(ThreadSnapshot::from_info("srv", make_thread_info("thread-1")));
+
+        // Step 2: stage overlay + bind via the TurnStarted-event path
+        // (`bind_first_pending_local_user_message_overlay_to_turn`), which
+        // is what the real device run does — `start_turn` itself binds via
+        // the RPC response, but typically the TurnStarted notification
+        // arrives first and the bind there is a no-op for the second call.
+        let inputs = vec![upstream::UserInput::Text {
+            text: "run some tools im testing".to_string(),
+            text_elements: Vec::new(),
+        }];
+        let overlay_id = reducer
+            .stage_local_user_message_overlay(&key, &inputs)
+            .expect("overlay id");
+        // First bind comes from the TurnStarted event handler (sets the
+        // active_turn_id on the thread before the bind, so let's simulate).
+        reducer
+            .mutate_thread_with_result(&key, |thread| {
+                thread.active_turn_id = Some("turn-1".to_string());
+            })
+            .expect("set active_turn_id");
+        reducer.bind_first_pending_local_user_message_overlay_to_turn(&key, "turn-1");
+        // Second bind comes from start_turn's RPC response — no-op since
+        // overlay is already bound to turn-1.
+        reducer.bind_local_user_message_overlay_to_turn(&key, &overlay_id, "turn-1");
+
+        // Step 3: ItemStarted/ItemCompleted with a UserMessage item built via
+        // the same `conversation_item_from_upstream` path the event loop uses.
+        // This sets `source_turn_id: None` (events don't carry the turn id)
+        // and exercises the real dedupe surface.
+        let mut update_receiver = reducer.subscribe();
+        // Drain any prior emits so we observe only the upcoming ones.
+        let _ = drain_updates(&mut update_receiver);
+
+        let upstream_item = upstream::ThreadItem::UserMessage {
+            id: "server-user-item".to_string(),
+            content: inputs.clone(),
+        };
+        let server_user_item =
+            crate::store::actions::conversation_item_from_upstream(upstream_item.clone())
+                .expect("hydrate user item");
+        reducer.apply_item_update(&key, server_user_item.clone());
+
+        // The first apply_item_update must fire `ThreadUpserted` because
+        // it removes the local overlay. If it fires only `ThreadItemChanged`
+        // (the bug shape from the device log), iOS will see both the overlay
+        // and the upstream item as separate bubbles.
+        let updates = drain_updates(&mut update_receiver);
+        let saw_upsert = updates
+            .iter()
+            .any(|u| matches!(u, AppStoreUpdateRecord::ThreadUpserted { .. }));
+        assert!(
+            saw_upsert,
+            "apply_item_update for the upstream UserMessage must emit \
+             ThreadUpserted to clear the local overlay; got updates={updates:?}"
+        );
+
+        // ItemCompleted re-applies the same item idempotently.
+        reducer.apply_item_update(&key, server_user_item.clone());
+
+        // After events the local overlay must be superseded and exactly
+        // one user item lives in `thread.items`.
+        {
+            let snap = reducer.snapshot();
+            let thread = snap.threads.get(&key).expect("thread");
+            assert!(
+                thread.local_overlay_items.is_empty(),
+                "overlay should be swept once upstream item arrives; got {:?}",
+                thread.local_overlay_items
+            );
+            assert_eq!(thread.items.len(), 1, "events should yield one item");
+        }
+
+        // Step 4: thread/read carrying the same UserMessage in
+        // thread.turns. Build the equivalent ThreadSnapshot via the same
+        // helper apply_thread_read_response uses, then upsert.
+        let upstream_thread = upstream::Thread {
+            id: "thread-1".to_string(),
+            forked_from_id: None,
+            preview: "run some tools im testing".to_string(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: upstream::ThreadStatus::Idle,
+            path: Some(std::path::PathBuf::from("/tmp/thread.jsonl")),
+            cwd: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked("/tmp")
+                .expect("absolute path"),
+            cli_version: "0.125.0".to_string(),
+            source: upstream::SessionSource::default(),
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: Some("Thread".to_string()),
+            turns: vec![upstream::Turn {
+                id: "turn-1".to_string(),
+                status: upstream::TurnStatus::Completed,
+                items: vec![upstream::ThreadItem::UserMessage {
+                    id: "server-user-item".to_string(),
+                    content: inputs.clone(),
+                }],
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+        };
+        let mut read_snapshot = crate::thread_snapshot_from_upstream_thread_with_overrides(
+            "srv",
+            upstream_thread,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("read snapshot");
+        read_snapshot.initial_turns_loaded = true;
+        read_snapshot.older_turns_cursor = None;
+        reducer.upsert_thread_snapshot(read_snapshot);
+
+        // Final state: store + overlay merged should yield exactly one
+        // User item with the submitted text.
+        let snap = reducer.snapshot();
+        let thread = snap.threads.get(&key).expect("thread");
+        let user_items_in_store: Vec<_> = thread
+            .items
+            .iter()
+            .filter(|item| matches!(item.content, HydratedConversationItemContent::User(_)))
+            .collect();
+        let user_overlays: Vec<_> = thread
+            .local_overlay_items
+            .iter()
+            .filter(|item| matches!(item.content, HydratedConversationItemContent::User(_)))
+            .collect();
+        assert_eq!(
+            user_items_in_store.len(),
+            1,
+            "exactly one user item expected in store after thread/read; \
+             store={user_items_in_store:?} overlays={user_overlays:?}"
+        );
+        assert!(
+            user_overlays.is_empty(),
+            "overlay should not survive thread/read; remaining: {user_overlays:?}"
+        );
+
+        // Final UI projection: AppThreadSnapshot.hydrated_conversation_items
+        // is what iOS renders. Confirm the merged view also yields exactly
+        // one user bubble.
+        let app_snapshot = reducer.snapshot();
+        let app_thread =
+            crate::store::boundary::project_thread_snapshot(&app_snapshot, &key)
+                .expect("project ok")
+                .expect("thread present");
+        let user_bubbles_in_view: Vec<_> = app_thread
+            .hydrated_conversation_items
+            .iter()
+            .filter(|item| matches!(item.content, HydratedConversationItemContent::User(_)))
+            .collect();
+        assert_eq!(
+            user_bubbles_in_view.len(),
+            1,
+            "merged hydrated view must show exactly one user bubble; got {user_bubbles_in_view:?}"
+        );
     }
 
     #[test]

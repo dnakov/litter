@@ -586,26 +586,87 @@ class AppModel private constructor(context: android.content.Context) {
      * on legacy servers the call short-circuits (no-op) and resume/read
      * populates the full turn list instead.
      */
-    suspend fun loadInitialTurns(key: ThreadKey, limit: UInt = INITIAL_TURN_PAGE_LIMIT) {
-        try {
-            store.loadThreadTurnsPage(key, null, limit)
-            _lastError.value = null
-        } catch (e: Exception) {
-            _lastError.value = e.message
+    private val initialTurnsLoadingKeys = mutableSetOf<ThreadKey>()
+    private val olderTurnsLoadingKeys = mutableSetOf<ThreadKey>()
+
+    /**
+     * Launch an initial-turn load on the AppModel-owned scope so it survives
+     * recomposition / LaunchedEffect key changes. The suspend body is not
+     * cancelled mid-flight when the caller goes out of scope — RPC result +
+     * store reconciliation always complete.
+     */
+    fun loadInitialTurns(key: ThreadKey, limit: UInt = INITIAL_TURN_PAGE_LIMIT) {
+        if (!initialTurnsLoadingKeys.add(key)) return
+        scope.launch {
+            try {
+                val outcome = store.loadThreadTurnsPage(key, null, limit)
+                LLog.i(
+                    "Pagination",
+                    "loadInitialTurns",
+                    fields = mapOf(
+                        "threadId" to key.threadId,
+                        "limit" to limit.toString(),
+                        "loaded" to outcome.loaded.toString(),
+                        "hasMore" to outcome.hasMore.toString(),
+                    ),
+                )
+                _lastError.value = null
+            } catch (e: Exception) {
+                LLog.w(
+                    "Pagination",
+                    "loadInitialTurns failed",
+                    fields = mapOf(
+                        "threadId" to key.threadId,
+                        "error" to (e.message ?: e.toString()),
+                    ),
+                )
+                _lastError.value = e.message
+            } finally {
+                initialTurnsLoadingKeys.remove(key)
+            }
         }
     }
 
     /**
      * Fetch the next older page using the thread's stored
      * `older_turns_cursor`. No-op when the cursor is null.
+     *
+     * Returns a [Job] so the caller can `join()` to drive UI state (e.g.
+     * spinner on the "Load earlier messages" button).
      */
-    suspend fun loadOlderTurns(key: ThreadKey, limit: UInt = OLDER_TURN_PAGE_LIMIT) {
-        val cursor = threadSnapshot(key)?.olderTurnsCursor ?: return
-        try {
-            store.loadThreadTurnsPage(key, cursor, limit)
-            _lastError.value = null
-        } catch (e: Exception) {
-            _lastError.value = e.message
+    fun loadOlderTurns(key: ThreadKey, limit: UInt = OLDER_TURN_PAGE_LIMIT): Job {
+        val cursor = threadSnapshot(key)?.olderTurnsCursor
+        if (cursor == null || !olderTurnsLoadingKeys.add(key)) {
+            return scope.launch { /* no-op */ }
+        }
+        return scope.launch {
+            try {
+                val outcome = store.loadThreadTurnsPage(key, cursor, limit)
+                LLog.i(
+                    "Pagination",
+                    "loadOlderTurns",
+                    fields = mapOf(
+                        "threadId" to key.threadId,
+                        "cursor" to cursor,
+                        "limit" to limit.toString(),
+                        "loaded" to outcome.loaded.toString(),
+                        "hasMore" to outcome.hasMore.toString(),
+                    ),
+                )
+                _lastError.value = null
+            } catch (e: Exception) {
+                LLog.w(
+                    "Pagination",
+                    "loadOlderTurns failed",
+                    fields = mapOf(
+                        "threadId" to key.threadId,
+                        "error" to (e.message ?: e.toString()),
+                    ),
+                )
+                _lastError.value = e.message
+            } finally {
+                olderTurnsLoadingKeys.remove(key)
+            }
         }
     }
 
@@ -1058,6 +1119,8 @@ class AppModel private constructor(context: android.content.Context) {
             modelContextWindow = state.modelContextWindow,
             rateLimits = state.rateLimits,
             realtimeSessionId = state.realtimeSessionId,
+            olderTurnsCursor = state.olderTurnsCursor,
+            initialTurnsLoaded = state.initialTurnsLoaded,
         )
         val updatedThreads = current.threads.toMutableList().apply {
             this[existingThreadIndex] = updatedThread

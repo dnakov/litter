@@ -246,13 +246,22 @@ impl MobileClient {
             response.sandbox.clone().map(Into::into),
         )
         .map_err(|e| e.to_string())?;
-        // `thread/read` responses always carry the embedded turn history;
-        // treat as authoritative and clear the older-turns cursor (the
-        // legacy/embedded path doesn't paginate).
-        snapshot.initial_turns_loaded = true;
-        snapshot.older_turns_cursor = None;
         let key = snapshot.key.clone();
         let existing = self.app_store.thread_snapshot(&key);
+        // Share the preserve-on-empty merge with resume/fork. A paginated
+        // v0.125+ server returns `thread.turns: []` on thread/read — we
+        // must keep any items + `older_turns_cursor` the prior
+        // `load_thread_turns_page` stored. A legacy (or authoritative)
+        // response with embedded turns clears the cursor because the
+        // embedded list is the full history.
+        apply_pagination_merge(existing.as_ref(), &mut snapshot, &response.thread.turns);
+        // thread/read is authoritative for `initial_turns_loaded`: if the
+        // server returned no turns AND no prior state exists, treat the
+        // thread as having no history rather than a pending page load, so
+        // the iOS spinner doesn't stick (task #10 invariant).
+        if existing.is_none() && response.thread.turns.is_empty() {
+            snapshot.initial_turns_loaded = true;
+        }
         crate::reconcile_active_turn(existing.as_ref(), &mut snapshot, &response.thread.turns);
         self.app_store.upsert_thread_snapshot(snapshot);
         Ok(key)
@@ -332,6 +341,18 @@ impl MobileClient {
             None => return Err(format!("thread {thread_id} not in store")),
         };
         merge_paged_turns(&mut thread, page, direction);
+        // Diagnostic for the pagination-cursor-lost bug (task #13): log
+        // the post-merge state so platform teams can correlate a logcat
+        // entry here with the `AppLoadThreadTurnsOutcome` they received.
+        tracing::info!(
+            target: "store",
+            server_id,
+            thread_id,
+            item_count = thread.items.len(),
+            older_turns_cursor = thread.older_turns_cursor.as_deref().unwrap_or(""),
+            initial_turns_loaded = thread.initial_turns_loaded,
+            "apply_thread_turns_page merged"
+        );
         self.app_store.upsert_thread_snapshot(thread);
         Ok(())
     }
@@ -994,5 +1015,153 @@ mod tests {
             "thread/read response must mark initial_turns_loaded"
         );
         assert!(snapshot.older_turns_cursor.is_none());
+    }
+
+    /// Regression for task #12. A `thread/read` response with embedded
+    /// turns is authoritative: it should clear `older_turns_cursor` and
+    /// mark `initial_turns_loaded`.
+    #[tokio::test]
+    async fn apply_thread_read_with_embedded_turns_clears_cursor() {
+        let client = MobileClient::new();
+        client.app_store.upsert_server(
+            &ServerConfig {
+                server_id: "srv".to_string(),
+                display_name: "Server".to_string(),
+                host: "localhost".to_string(),
+                port: 8390,
+                websocket_url: None,
+                is_local: true,
+                tls: false,
+            },
+            ServerHealthSnapshot::Connected,
+            false,
+        );
+        // Prime the snapshot with a stale cursor to confirm the embedded
+        // path clears it.
+        let info = crate::types::ThreadInfo {
+            id: "thread-1".to_string(),
+            title: None,
+            model: None,
+            status: crate::types::ThreadSummaryStatus::Idle,
+            preview: None,
+            cwd: None,
+            path: None,
+            model_provider: None,
+            agent_nickname: None,
+            agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let mut primed = ThreadSnapshot::from_info("srv", info);
+        primed.older_turns_cursor = Some("stale-cursor".to_string());
+        primed.initial_turns_loaded = false;
+        client.app_store.upsert_thread_snapshot(primed);
+
+        let mut embedded_thread = test_upstream_thread("thread-1");
+        embedded_thread.turns = vec![upstream::Turn {
+            id: "turn-1".to_string(),
+            status: upstream::TurnStatus::Completed,
+            items: vec![upstream::ThreadItem::UserMessage {
+                id: "server-user-item".to_string(),
+                content: vec![upstream::UserInput::Text {
+                    text: "hi".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            }],
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        }];
+        let response = upstream::ThreadReadResponse {
+            thread: embedded_thread,
+            approval_policy: None,
+            sandbox: None,
+        };
+        let key = client
+            .apply_thread_read_response("srv", &response)
+            .expect("thread/read");
+        let snapshot = client.app_store.thread_snapshot(&key).expect("snapshot");
+        assert!(snapshot.initial_turns_loaded);
+        assert!(
+            snapshot.older_turns_cursor.is_none(),
+            "embedded-turns path must clear cursor"
+        );
+    }
+
+    /// Regression for task #12. A `thread/read` response with NO embedded
+    /// turns (paginated server reply) must preserve the existing
+    /// `older_turns_cursor` so the cursor stored by
+    /// `apply_thread_turns_page` survives subsequent refreshes. Without
+    /// this preservation, "Load earlier messages" never shows up on
+    /// Android after `load_thread_turns_page` returned `has_more=true`.
+    #[tokio::test]
+    async fn apply_thread_read_with_empty_turns_preserves_pagination_state() {
+        let client = MobileClient::new();
+        client.app_store.upsert_server(
+            &ServerConfig {
+                server_id: "srv".to_string(),
+                display_name: "Server".to_string(),
+                host: "localhost".to_string(),
+                port: 8390,
+                websocket_url: None,
+                is_local: true,
+                tls: false,
+            },
+            ServerHealthSnapshot::Connected,
+            false,
+        );
+        // Prime the snapshot as if load_thread_turns_page had just
+        // applied a page: items populated, cursor stored, flag set.
+        let info = crate::types::ThreadInfo {
+            id: "thread-1".to_string(),
+            title: None,
+            model: None,
+            status: crate::types::ThreadSummaryStatus::Idle,
+            preview: None,
+            cwd: None,
+            path: None,
+            model_provider: None,
+            agent_nickname: None,
+            agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let mut primed = ThreadSnapshot::from_info("srv", info);
+        primed.items = vec![item_with_turn("turn-5", "i5")];
+        primed.older_turns_cursor = Some("older-cursor".to_string());
+        primed.initial_turns_loaded = true;
+        client.app_store.upsert_thread_snapshot(primed);
+
+        // thread/read arrives with no embedded turns (paginated server).
+        let mut empty_thread = test_upstream_thread("thread-1");
+        empty_thread.turns = Vec::new();
+        let response = upstream::ThreadReadResponse {
+            thread: empty_thread,
+            approval_policy: None,
+            sandbox: None,
+        };
+        let key = client
+            .apply_thread_read_response("srv", &response)
+            .expect("thread/read");
+        let snapshot = client.app_store.thread_snapshot(&key).expect("snapshot");
+        assert!(
+            snapshot.initial_turns_loaded,
+            "initial_turns_loaded must remain true"
+        );
+        assert_eq!(
+            snapshot.older_turns_cursor.as_deref(),
+            Some("older-cursor"),
+            "empty-turns thread/read must preserve existing pagination cursor"
+        );
+        assert_eq!(
+            snapshot.items.len(),
+            1,
+            "existing paged items must be preserved when embedded turns are empty"
+        );
     }
 }

@@ -1122,6 +1122,26 @@ impl MobileClient {
         {
             Ok(response) => {
                 let existing = self.app_store.thread_snapshot(&key);
+                // Diagnostic for the pagination-cursor-lost bug (task #13):
+                // capture what we read as `existing` BEFORE overwriting, so
+                // logcat shows whether the cursor was present at the moment
+                // resume reconciles.
+                tracing::info!(
+                    target: "store",
+                    server_id,
+                    thread_id,
+                    existing_present = existing.is_some(),
+                    existing_items = existing.as_ref().map(|e| e.items.len()).unwrap_or(0),
+                    existing_older_turns_cursor = existing
+                        .as_ref()
+                        .and_then(|e| e.older_turns_cursor.clone())
+                        .unwrap_or_default(),
+                    existing_initial_turns_loaded = existing
+                        .as_ref()
+                        .map(|e| e.initial_turns_loaded)
+                        .unwrap_or(false),
+                    "external_resume_thread existing snapshot"
+                );
                 let turns = response.thread.turns.clone();
                 let server_honored_exclude_turns = turns.is_empty();
                 // Legacy v0.124 remotes ignore `exclude_turns` and return the

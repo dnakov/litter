@@ -2,7 +2,7 @@ import Foundation
 
 /// Single source of truth for the user-facing `~` on the local codex.
 /// Resolves to `/root` inside the iSH Alpine fakefs — what
-/// `codex_ish_default_cwd()` returns.
+/// `ishDefaultCwd()` returns.
 ///
 /// Used by `PathDisplay` to shorten `/root/foo` to `~/foo` in the UI, and
 /// by the local-server directory picker to scope navigation. Never used

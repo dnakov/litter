@@ -24,8 +24,26 @@ enum LitterPlatform {
     static func bootstrapLocalRuntimeIfNeeded() {
 #if !targetEnvironment(macCatalyst)
         migrateWorkDirIfHostPath()
-        codex_ish_init()
-        litter_install_ish_hook()
+        let fm = FileManager.default
+        guard let bundleFs = Bundle.main.url(forResource: "fs", withExtension: nil) else {
+            NSLog("[ish] bundled fs not found")
+            return
+        }
+        let appSupport = try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let docs = try? fm.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        guard let appSupport, let docs else {
+            NSLog("[ish] could not resolve sandbox dirs")
+            return
+        }
+        do {
+            try ishBootstrap(
+                bundleFsPath: bundleFs.path,
+                applicationSupportDir: appSupport.path,
+                documentsDir: docs.path
+            )
+        } catch {
+            NSLog("[ish] bootstrap failed: \(error)")
+        }
 #endif
     }
 
@@ -48,7 +66,7 @@ enum LitterPlatform {
 #if targetEnvironment(macCatalyst)
         return NSHomeDirectory()
 #else
-        return codex_ish_default_cwd() as String? ?? NSHomeDirectory()
+        return ishDefaultCwd()
 #endif
     }
 

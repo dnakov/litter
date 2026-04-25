@@ -36,6 +36,8 @@ Current automated checks:
 | Local transport drop | Reconnect and one-time reinitialize before next non-initialize RPC | N/A (local startup disabled) |
 | Remote transport drop | Reconnect behavior via Rust `AppStore` updates and resumed RPC notifications | Same |
 | Thread start/resume fallback sandbox | `workspace-write` with `danger-full-access` fallback when linux sandbox missing | Same |
+| Thread turn pagination (v0.125+ remote) | Conversation opens with last 20 turns; "Load earlier messages" button fetches older pages via `thread/turns/list` | Same |
+| Thread turn pagination fallback (v0.124 remote) | Capability flips off via response inspection; embedded turns load fully; "Load earlier" button hidden | Same |
 
 ## Suggested Smoke Steps
 

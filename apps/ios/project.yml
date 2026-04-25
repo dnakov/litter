@@ -90,8 +90,6 @@ targets:
         product: HairballUI
       - package: WebRTC
         product: WebRTC
-      - framework: Frameworks/litter_ish.xcframework
-        embed: true
       - target: LitterLiveActivity
         embed: true
       # Watch app is gated for now — enable by re-adding the LitterWatch
@@ -144,7 +142,6 @@ targets:
     sources:
       - path: Sources/Litter
         excludes:
-          - Bridge/IshBridge.m
           - CarPlay/**
           - Info.plist
           - Litter.entitlements

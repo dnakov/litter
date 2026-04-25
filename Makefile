@@ -142,10 +142,11 @@ STAMP_BINDINGS_S := $(STAMPS)/bindings-swift
 STAMP_BINDINGS_K := $(STAMPS)/bindings-kotlin
 STAMP_XCGEN := $(STAMPS)/xcgen
 
-# Pinned release tag of dnakov/litter-ish (fork of iSH adapted as an
-# embeddable iOS library). Bump and re-run `make litter-ish` to upgrade.
-LITTER_ISH_VERSION := v0.1.0
-STAMP_LITTER_ISH := $(STAMPS)/litter-ish-$(LITTER_ISH_VERSION)
+# Pinned release tag of the prebuilt Alpine rootfs tarball (still hosted
+# on the dnakov/litter-ish releases page). The iSH kernel itself is built
+# from the `ish` Rust crate. Bump and re-run `make alpine-fs` to upgrade.
+ALPINE_FS_VERSION := v0.1.0
+STAMP_ALPINE_FS := $(STAMPS)/alpine-fs-$(ALPINE_FS_VERSION)
 
 empty :=
 space := $(empty) $(empty)
@@ -163,7 +164,7 @@ $(shell mkdir -p $(STAMPS))
 	android android-fast android-tools android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
 	rust-ios rust-ios-package rust-ios-device-release rust-mac-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
-	sync patch unpatch xcgen litter-ish \
+	sync patch unpatch xcgen alpine-fs \
 	ios-build ios-build-sim ios-build-sim-fast ios-build-device ios-build-device-fast \
 	watch watch-sim watch-sim-run watch-device watch-typecheck \
 	test test-rust test-ios test-android \
@@ -174,13 +175,13 @@ $(shell mkdir -p $(STAMPS))
 all: ios android
 
 # ios-build-* targets declare their real prerequisites so that `make -j`
-# can run rust-ios-package, litter-ish download, and xcgen in parallel.
-ios-build-sim: rust-ios-package litter-ish xcgen
-ios-build-device: rust-ios-package litter-ish xcgen
+# can run rust-ios-package, alpine-fs download, and xcgen in parallel.
+ios-build-sim: rust-ios-package alpine-fs xcgen
+ios-build-device: rust-ios-package alpine-fs xcgen
 
 # Fast lanes use lightweight raw staticlib outputs instead of full packaging.
-ios-build-sim-fast: rust-ios-sim-fast litter-ish xcgen
-ios-build-device-fast: rust-ios-device-fast litter-ish xcgen
+ios-build-sim-fast: rust-ios-sim-fast alpine-fs xcgen
+ios-build-device-fast: rust-ios-device-fast alpine-fs xcgen
 
 ios: ios-build-sim
 ios-sim: ios-build-sim
@@ -193,7 +194,7 @@ ios-device-fast: ios-build-device-fast
 # separate DerivedData path so it doesn't collide with the iOS sim build
 # cache.
 CATALYST_DERIVED_DATA := $(IOS_DIR)/build/catalyst
-catalyst: rust-ios-package litter-ish xcgen
+catalyst: rust-ios-package alpine-fs xcgen
 	@echo "==> Building LitterMac for Mac Catalyst..."
 	@cd $(IOS_DIR) && xcodebuild \
 		-project Litter.xcodeproj \
@@ -216,7 +217,7 @@ catalyst-run: catalyst
 # export → hdiutil → notarize → staple cycle. Use `make mac-direct-dist`
 # for the signed + notarized DMG.
 MAC_DIRECT_DERIVED := $(IOS_DIR)/build/mac-direct
-mac-direct: rust-ios-package litter-ish xcgen
+mac-direct: rust-ios-package alpine-fs xcgen
 	@echo "==> Building LitterMac (DeveloperID — unsandboxed)..."
 	@cd $(IOS_DIR) && xcodebuild \
 		-project Litter.xcodeproj \
@@ -430,13 +431,14 @@ $(STAMP_XCGEN): $(IOS_DIR)/project.yml
 	@$(IOS_SCRIPTS)/regenerate-project.sh
 	@touch $@
 
-# Download the pinned litter-ish release (xcframework + Alpine fakefs) and
-# extract into apps/ios/Frameworks + apps/ios/Resources. The stamp is
-# version-keyed so bumping LITTER_ISH_VERSION re-runs the download.
-litter-ish: $(STAMP_LITTER_ISH)
-$(STAMP_LITTER_ISH):
-	@echo "==> Fetching litter-ish $(LITTER_ISH_VERSION)..."
-	@LITTER_ISH_VERSION=$(LITTER_ISH_VERSION) $(IOS_SCRIPTS)/download-litter-ish.sh
+# Download the pinned Alpine rootfs tarball and extract into
+# apps/ios/Resources/fs. The stamp is version-keyed so bumping
+# ALPINE_FS_VERSION re-runs the download. The iSH kernel itself is
+# compiled from the `ish` Rust crate via cargo.
+alpine-fs: $(STAMP_ALPINE_FS)
+$(STAMP_ALPINE_FS):
+	@echo "==> Fetching alpine-fs $(ALPINE_FS_VERSION)..."
+	@ALPINE_FS_VERSION=$(ALPINE_FS_VERSION) $(IOS_SCRIPTS)/download-alpine-fs.sh
 	@touch $@
 
 verify-ios-project:
@@ -585,7 +587,7 @@ test-android:
 	@echo "==> Running Android tests..."
 	@cd $(ANDROID_DIR) && ./gradlew :app:testDebugUnitTest
 
-ios-release-prep: rust-ios-device-release litter-ish xcgen
+ios-release-prep: rust-ios-device-release alpine-fs xcgen
 
 mac-release-prep: rust-mac-release xcgen
 
@@ -632,9 +634,9 @@ clean-rust:
 
 clean-ios:
 	@echo "==> Cleaning iOS artifacts..."
-	@rm -rf $(IOS_FW_DIR)/codex_mobile_client.xcframework $(IOS_FW_DIR)/litter_ish.xcframework $(IOS_GENERATED)
+	@rm -rf $(IOS_FW_DIR)/codex_mobile_client.xcframework $(IOS_GENERATED)
 	@rm -rf $(IOS_DIR)/Resources/fs
-	@rm -f $(STAMP_XCGEN) $(STAMP_BINDINGS_S) $(STAMPS)/litter-ish-*
+	@rm -f $(STAMP_XCGEN) $(STAMP_BINDINGS_S) $(STAMPS)/alpine-fs-*
 
 clean-android:
 	@echo "==> Cleaning Android artifacts..."

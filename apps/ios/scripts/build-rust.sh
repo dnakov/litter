@@ -132,6 +132,7 @@ $RUST_BRIDGE_DIR/codex-mobile-client/src/conversation_uniffi.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/src/discovery_uniffi.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/src/uniffi_shared.rs
 $RUST_BRIDGE_DIR/codex-mobile-client/Cargo.toml
+$RUST_BRIDGE_DIR/Cargo.lock
 $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/common.rs
 $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/v1.rs
 $RUST_BRIDGE_DIR/../third_party/codex/codex-rs/app-server-protocol/src/protocol/v2.rs

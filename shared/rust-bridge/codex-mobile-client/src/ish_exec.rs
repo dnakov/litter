@@ -1,23 +1,8 @@
 use std::collections::HashMap;
-use std::ffi::CString;
-use std::ffi::c_char;
-use std::ffi::c_int;
-use std::ffi::c_void;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::mobile_exec_command::mobile_system_command;
-
-// Defined in apps/ios/Sources/Litter/Bridge/IshBridge.m and linked by Xcode.
-unsafe extern "C" {
-    fn codex_ish_run(
-        cmd: *const c_char,
-        cwd: *const c_char,
-        output: *mut *mut c_char,
-        output_len: *mut usize,
-    ) -> c_int;
-    fn free(ptr: *mut c_void);
-}
 
 static ISH_EXEC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
@@ -98,35 +83,8 @@ pub(crate) fn run_command(
     let cmd = mobile_system_command(argv);
     eprintln!("[ish-exec] run: {cmd} (cwd={})", cwd.display());
 
-    let Ok(cmd_cstr) = CString::new(cmd.clone()) else {
-        eprintln!("[ish-exec] invalid command string");
-        return (-1, b"invalid command string\n".to_vec());
-    };
-    let Ok(cwd_cstr) = CString::new(cwd.to_string_lossy().as_ref()) else {
-        eprintln!("[ish-exec] invalid cwd string");
-        return (-1, b"invalid cwd string\n".to_vec());
-    };
-
-    let mut output_ptr: *mut c_char = std::ptr::null_mut();
-    let mut output_len: usize = 0;
-
-    let code = unsafe {
-        codex_ish_run(
-            cmd_cstr.as_ptr(),
-            cwd_cstr.as_ptr(),
-            &mut output_ptr,
-            &mut output_len,
-        )
-    };
-
-    let output = if !output_ptr.is_null() && output_len > 0 {
-        let slice = unsafe { std::slice::from_raw_parts(output_ptr as *const u8, output_len) };
-        let buffer = slice.to_vec();
-        unsafe { free(output_ptr as *mut c_void) };
-        buffer
-    } else {
-        Vec::new()
-    };
+    let cwd_str = cwd.to_string_lossy();
+    let (code, output) = crate::ish_runtime::run(&cmd, Some(cwd_str.as_ref()));
 
     let preview = String::from_utf8_lossy(&output);
     let preview = if preview.len() > 200 {
@@ -134,7 +92,10 @@ pub(crate) fn run_command(
     } else {
         &preview
     };
-    eprintln!("[ish-exec] exit={code} output_len={output_len} preview={preview}");
+    eprintln!(
+        "[ish-exec] exit={code} output_len={} preview={preview}",
+        output.len()
+    );
 
     (code, output)
 }

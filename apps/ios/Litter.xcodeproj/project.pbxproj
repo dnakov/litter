@@ -161,7 +161,6 @@
 		4DA3C30A27C7B36F36947F83 /* LitterPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1388480E7FFD4489CE617C6 /* LitterPlatform.swift */; };
 		4E40B2F977293312E3BB6049 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = ABFE016B445D1A4398CFE2A5 /* Localizable.strings */; };
 		4EE9B243F412CF5364E3FCA6 /* ConversationInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73215C881883BBD745011412 /* ConversationInfoView.swift */; };
-		4F5A6E57BCEDFBDE0D629581 /* IshBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = F209E37F3DBEF20B36887357 /* IshBridge.m */; };
 		4F63610A2DEF40AE02FF072B /* LitterComplicationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D5716D8E24645F6A7ACFF4 /* LitterComplicationProvider.swift */; };
 		4FE3963019E8A8C3DCC15764 /* VoiceTranscriptionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A57573910BEE96B3224934D2 /* VoiceTranscriptionManager.swift */; };
 		507D4BB4D23CC5F53CA477ED /* ContextBadgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E96C6677B2AA22A101A29C /* ContextBadgeView.swift */; };
@@ -261,7 +260,6 @@
 		7DE5819DC695EDC07801E1F4 /* AppRpcParams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1251509F0DDD4F5D494C9956 /* AppRpcParams.swift */; };
 		7E12D533FC1A4434D4A0E3E0 /* HomeComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A12222458304DD9CA8D4593 /* HomeComposerView.swift */; };
 		7E7B4AC85F18366192E98E8B /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CFDCB6C4655E3D2D76B41B /* AppState.swift */; };
-		7EBB994A696B6D04DF2183CC /* litter_ish.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 58C7F2B99A822F91661FCBAD /* litter_ish.xcframework */; };
 		7F7580E318B61556359A4EC1 /* LitterUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46D841AF0FFB0241834F88D0 /* LitterUITests.swift */; };
 		7F9E1F4E77278FA4C9D30B6A /* github-dark-dimmed.json in Resources */ = {isa = PBXBuildFile; fileRef = 69EC5386769902646C245936 /* github-dark-dimmed.json */; };
 		7FC6B4B80A1578461A29247B /* linear-dark.json in Resources */ = {isa = PBXBuildFile; fileRef = 1725F41F271A5EBF02FD4ECA /* linear-dark.json */; };
@@ -300,7 +298,6 @@
 		8D5985E9F39401CDA4D9722F /* AmbientSuggestionsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3759125C1ED21FC24EE5C644 /* AmbientSuggestionsList.swift */; };
 		8EC08D1416B9EC288AC17079 /* WallpaperManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB4A268C8D43CA2144617DE /* WallpaperManager.swift */; };
 		8ED7EC56C6814E0B40673ADD /* ChatGPTOAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77F28A803AA2BF325B0F88B9 /* ChatGPTOAuth.swift */; };
-		8EE91BCA81996424F0123204 /* litter_ish.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 58C7F2B99A822F91661FCBAD /* litter_ish.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		909A0CDCE6D9729A20D0DA43 /* OpenAIApiKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3374916FC10F81E9D1C0FCE5 /* OpenAIApiKeyStore.swift */; };
 		9106629F6ABA8F5D30DBA0F2 /* AppSnapshotRecord+Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7B233BBDF2CFAC604E4A1DD /* AppSnapshotRecord+Runtime.swift */; };
 		93979DE896F5A50F73AB4736 /* AppThreadSnapshot+Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC23186BC2EA0520D9532ED3 /* AppThreadSnapshot+Runtime.swift */; };
@@ -566,17 +563,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		867CA3999634D7B8E6BF660C /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				8EE91BCA81996424F0123204 /* litter_ish.xcframework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		D711EC2924CE758418892776 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -701,7 +687,6 @@
 		56597C90314B4DF5587C3949 /* ExperimentalFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExperimentalFeatures.swift; sourceTree = "<group>"; };
 		56CF8611EBE489C15696819A /* nord.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = nord.json; sourceTree = "<group>"; };
 		56EFBFE7DF8014B177A1F7B9 /* ConversationComposerAttachSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationComposerAttachSheet.swift; sourceTree = "<group>"; };
-		58C7F2B99A822F91661FCBAD /* litter_ish.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = litter_ish.xcframework; path = Frameworks/litter_ish.xcframework; sourceTree = "<group>"; };
 		592BE0CE703BB2B31738D8C2 /* HomeVoiceOrbButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeVoiceOrbButton.swift; sourceTree = "<group>"; };
 		59A9A0467A199733EAA725E4 /* WatchTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchTheme.swift; sourceTree = "<group>"; };
 		59B08FFA16CBFD1A93E32980 /* sentry-dark.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "sentry-dark.json"; sourceTree = "<group>"; };
@@ -898,7 +883,6 @@
 		EEDF2E1FEDF741D69062FDDD /* CodeBlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeBlockView.swift; sourceTree = "<group>"; };
 		EF1C08AB8EA89D69A67AA7B2 /* WidgetWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetWebView.swift; sourceTree = "<group>"; };
 		F05E1F150502D4C5682EBBFD /* LitterPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LitterPalette.swift; sourceTree = "<group>"; };
-		F209E37F3DBEF20B36887357 /* IshBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IshBridge.m; sourceTree = "<group>"; };
 		F503F51C28F35CF80376D9FD /* CloudKVSBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKVSBridge.swift; sourceTree = "<group>"; };
 		F5CAE8D1301B5643D9510273 /* HomeAnchor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeAnchor.swift; sourceTree = "<group>"; };
 		F8A12810E0889BDD245C2379 /* VoiceCallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCallView.swift; sourceTree = "<group>"; };
@@ -922,7 +906,6 @@
 				49EE86930AE61F174F3E0E97 /* Network.framework in Frameworks */,
 				72158718B1E67C9A80C407CC /* HairballUI in Frameworks */,
 				092994BBC35FD41C78FDBAF5 /* WebRTC in Frameworks */,
-				7EBB994A696B6D04DF2183CC /* litter_ish.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1023,7 +1006,6 @@
 			isa = PBXGroup;
 			children = (
 				991F612D39C0762BB7657452 /* CarPlay.framework */,
-				58C7F2B99A822F91661FCBAD /* litter_ish.xcframework */,
 				AA4A8B1B0E48B3DDC9F44D90 /* Network.framework */,
 				FE71A015A197F8B7F6AE82B8 /* Security.framework */,
 				1641427B3606638F140B4E9A /* SystemConfiguration.framework */,
@@ -1404,7 +1386,6 @@
 			children = (
 				AEFDEDEF73BC5E33C2F2E3B1 /* AppSpecificTypes.swift */,
 				C4874A6712A57F780064DB0E /* DynamicTools.swift */,
-				F209E37F3DBEF20B36887357 /* IshBridge.m */,
 				34E814DFE71DB7B6A64B7B3A /* MessageContentBridge.swift */,
 				8872A0620A38EB5307BC098C /* RustVoiceHandoff.swift */,
 				782D870FCEA68BB3752F965F /* SwiftSshCredentialProvider.swift */,
@@ -1499,7 +1480,6 @@
 				5367EEFD6422750AE9FEF343 /* Resources */,
 				AA7F329456F40E8DD44D56A9 /* Frameworks */,
 				D711EC2924CE758418892776 /* Embed Foundation Extensions */,
-				867CA3999634D7B8E6BF660C /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -1962,7 +1942,6 @@
 				E1EEBECB89F39C947D704B6F /* InlineHandoffView.swift in Sources */,
 				B7E7D6A9419675AA695B99EF /* InlineVoiceButton.swift in Sources */,
 				1845E6F83191374192633342 /* InlineVoiceStatusStrip.swift in Sources */,
-				4F5A6E57BCEDFBDE0D629581 /* IshBridge.m in Sources */,
 				B422F490347299F2A70CA407 /* IshFS.swift in Sources */,
 				03587EF282BCD78673E5C90C /* LLog.swift in Sources */,
 				0AC3B09D832DD47A0C781EE5 /* LitterApp.swift in Sources */,
@@ -2291,10 +2270,6 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Litter/Litter.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = "$(APP_CODE_SIGN_STYLE)";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\"Frameworks\"",
-				);
 				INFOPLIST_FILE = Sources/Litter/Info.plist;
 				INFOPLIST_KEY_UIBackgroundModes = "audio fetch remote-notification";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -2343,10 +2318,6 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Litter/Litter.entitlements;
 				CODE_SIGN_IDENTITY = "$(APP_CODE_SIGN_IDENTITY)";
 				CODE_SIGN_STYLE = "$(APP_CODE_SIGN_STYLE)";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\"Frameworks\"",
-				);
 				INFOPLIST_FILE = Sources/Litter/Info.plist;
 				INFOPLIST_KEY_UIBackgroundModes = "audio fetch remote-notification";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
@@ -2914,10 +2885,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/Litter/Litter.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"\"Frameworks\"",
-				);
 				INFOPLIST_FILE = Sources/Litter/Info.plist;
 				INFOPLIST_KEY_UIBackgroundModes = "audio fetch remote-notification";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;

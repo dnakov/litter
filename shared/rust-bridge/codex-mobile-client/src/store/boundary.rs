@@ -126,6 +126,15 @@ pub struct AppThreadStateRecord {
     pub model_context_window: Option<u64>,
     pub rate_limits: Option<crate::types::RateLimits>,
     pub realtime_session_id: Option<String>,
+    /// Mirrors `AppThreadSnapshot.older_turns_cursor`. Included so
+    /// `ThreadMetadataChanged` events carry pagination state through to
+    /// the platform mappers; without this the Kotlin/Swift projection
+    /// coerces it back to `None` on every metadata update and
+    /// `load_thread_turns_page` appears to lose its cursor.
+    pub older_turns_cursor: Option<String>,
+    /// Mirrors `AppThreadSnapshot.initial_turns_loaded` for the same
+    /// reason.
+    pub initial_turns_loaded: bool,
 }
 
 fn merged_hydrated_items(
@@ -560,6 +569,8 @@ fn app_thread_state_record_from_state(
         model_context_window: thread.model_context_window,
         rate_limits: thread.rate_limits.clone(),
         realtime_session_id: thread.realtime_session_id.clone(),
+        older_turns_cursor: thread.older_turns_cursor.clone(),
+        initial_turns_loaded: thread.initial_turns_loaded,
     })
 }
 
@@ -1412,7 +1423,8 @@ fn sanitized_label_field(raw: Option<&str>) -> Option<&str> {
 mod tests {
     use super::{
         agent_directory_version, app_session_summary, app_thread_snapshot_from_state,
-        current_agent_directory_version, session_summaries_from_snapshot,
+        app_thread_state_record_from_state, current_agent_directory_version,
+        session_summaries_from_snapshot,
     };
     use crate::store::{AppSnapshot, ThreadSnapshot};
     use crate::types::{
@@ -1801,5 +1813,47 @@ mod tests {
         assert_eq!(data.targets, vec!["Scout [explorer]".to_string()]);
         assert_eq!(data.receiver_thread_ids, vec!["child-thread".to_string()]);
         assert_eq!(data.agent_states[0].target_id, "child-thread");
+    }
+
+    /// Regression for task #13. `AppThreadStateRecord` flows with the
+    /// `ThreadMetadataChanged` event; if it drops `older_turns_cursor`
+    /// or `initial_turns_loaded` the platform mappers will coerce those
+    /// to defaults on every metadata update, wiping
+    /// `load_thread_turns_page`'s state.
+    #[test]
+    fn app_thread_state_record_carries_pagination_fields() {
+        let mut snapshot = AppSnapshot::default();
+        let thread_key = ThreadKey {
+            server_id: "srv".to_string(),
+            thread_id: "thread-1".to_string(),
+        };
+        let info = ThreadInfo {
+            id: "thread-1".to_string(),
+            title: None,
+            model: None,
+            status: ThreadSummaryStatus::Idle,
+            preview: None,
+            cwd: None,
+            path: None,
+            model_provider: None,
+            agent_nickname: None,
+            agent_role: None,
+            parent_thread_id: None,
+            agent_status: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let mut thread = ThreadSnapshot::from_info("srv", info);
+        thread.older_turns_cursor = Some("older-cursor".to_string());
+        thread.initial_turns_loaded = true;
+        snapshot.threads.insert(thread_key.clone(), thread);
+
+        let record = app_thread_state_record_from_state(
+            &snapshot,
+            snapshot.threads.get(&thread_key).unwrap(),
+        )
+        .expect("record");
+        assert_eq!(record.older_turns_cursor.as_deref(), Some("older-cursor"));
+        assert!(record.initial_turns_loaded);
     }
 }
