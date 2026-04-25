@@ -118,6 +118,7 @@ struct HomeBottomBar: View {
         )
         .glassMorphID(plusID, in: ns)
         .accessibilityLabel("New message")
+        .coachmarkAnchor(.newThread)
     }
 
     private var searchIconButton: some View {
@@ -140,6 +141,7 @@ struct HomeBottomBar: View {
         )
         .glassMorphID(searchID, in: ns)
         .accessibilityLabel("Search threads")
+        .coachmarkAnchor(.search)
     }
 
     // MARK: - Composer

@@ -4,11 +4,13 @@
 <dict>
 	<key>aps-environment</key>
 	<string>production</string>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.sigkitten.litter</string>
 	</array>
-	<key>com.apple.security.app-sandbox</key>
+	<key>com.apple.security.device.bluetooth</key>
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>

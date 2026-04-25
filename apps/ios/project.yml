@@ -136,6 +136,7 @@ targets:
         com.apple.security.application-groups:
           - group.com.sigkitten.litter
         com.apple.security.app-sandbox: true
+        com.apple.security.device.bluetooth: true
         com.apple.security.files.user-selected.read-write: true
         com.apple.security.network.client: true
         com.apple.security.network.server: true

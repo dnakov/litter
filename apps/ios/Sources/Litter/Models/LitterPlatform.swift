@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 enum LitterPlatform {
 #if targetEnvironment(macCatalyst)
@@ -69,6 +70,42 @@ enum LitterPlatform {
         return ishDefaultCwd()
 #endif
     }
+
+    static func localRuntimeDisplayName() -> String {
+#if targetEnvironment(macCatalyst)
+        for candidate in [
+            ProcessInfo.processInfo.hostName,
+            ProcessInfo.processInfo.environment["HOSTNAME"],
+            "Local Mac"
+        ] {
+            if let displayName = normalizedHostDisplayName(candidate) {
+                return displayName
+            }
+        }
+        return "Local Mac"
+#else
+        let device = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return device.isEmpty ? "This Device" : device
+#endif
+    }
+
+#if targetEnvironment(macCatalyst)
+    private static func normalizedHostDisplayName(_ raw: String?) -> String? {
+        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+
+        if value.hasSuffix(".local") {
+            value.removeLast(".local".count)
+        } else if let dotIndex = value.firstIndex(of: ".") {
+            value = String(value[..<dotIndex])
+        }
+
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+#endif
 
     static func isRegularSurface(horizontalSizeClass: UserInterfaceSizeClass?) -> Bool {
         isCatalyst || horizontalSizeClass == .regular

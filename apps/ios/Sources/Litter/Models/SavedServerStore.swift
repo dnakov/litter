@@ -19,7 +19,7 @@ enum SavedServerStore {
             if shouldReplaceLegacyLocalPlaceholder(restored) {
                 return SavedServer(
                     id: restored.id,
-                    name: UIDevice.current.name,
+                    name: LitterPlatform.localRuntimeDisplayName(),
                     hostname: restored.hostname,
                     port: restored.port,
                     codexPorts: restored.codexPorts,

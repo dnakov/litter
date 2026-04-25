@@ -15,6 +15,7 @@ import UIKit
 ///   * UIAlertController confirm dialog
 ///   * LAN IP resolution via getifaddrs (en0/en1 IPv4)
 @MainActor
+@Observable
 final class MacPairingHost: NSObject {
     static let shared = MacPairingHost()
 
@@ -24,6 +25,23 @@ final class MacPairingHost: NSObject {
     /// Persisted mac-id key; random UUID on first launch, stable across
     /// restarts so reconnecting iPhones can recognize the same Mac.
     private static let macIdUserDefaultsKey = "litter.mac_pair_id"
+    /// Unique 4-hex-digit suffix appended to the Bonjour service name on
+    /// every launch. mDNSResponder caches the previous registration for
+    /// ~2 minutes after a process exits; without a fresh suffix, the next
+    /// launch hits NSNetServicesCollisionError (-72008) and the relaunch
+    /// silently fails to publish on Wi-Fi.
+    private static let launchNonce: String = String(format: "%04X", UInt16.random(in: 0...UInt16.max))
+
+    /// Observable peer-state for the unified ProximityPairView. Updated as
+    /// pair events stream in from Rust. iPhone owns the actual proximity
+    /// readings (UWB or BLE) and relays them via `submitNiDistance`; the Mac
+    /// side just mirrors what the iPhone reports.
+    var isHostActive: Bool = false
+    var peerName: String?
+    var peerDistance: Float?
+    var lastUpdate: Date?
+    var awaitingConfirm: Bool = false
+    var isPaired: Bool = false
 
     private let appClient = AppClient()
     private var hostHandle: PairHostHandle?
@@ -32,6 +50,8 @@ final class MacPairingHost: NSObject {
     private var bonjourDelegate: BonjourServicePublishDelegate?
     private var niSession: NISession?
     private var niDelegateBox: NIDelegateBox?
+    private var bleAdvertiser: PairBLEAdvertiser?
+    private var ultrasonicEmitter: UltrasonicEmitter?
     private var isBroadcasting = false
     private var pendingAlert: UIAlertController?
 
@@ -39,14 +59,24 @@ final class MacPairingHost: NSObject {
         super.init()
     }
 
-    /// Stand up the pair host + publish Bonjour. Safe to call repeatedly;
-    /// subsequent calls are no-ops. Only runs on direct-dist Mac.
+    /// Stand up the pair host (WS listener + Bonjour publish + BLE beacon)
+    /// and prime an NI session for any iPhones that pair. Safe to call
+    /// repeatedly; subsequent calls are no-ops.
+    ///
+    /// Runs in **any** Catalyst build, including sandboxed Debug
+    /// (`catalyst-fast-run`). The follow-up `pair_accept` will only point
+    /// the iPhone at a working local Codex when `LitterPlatform.isDirectDistMac`
+    /// is also true (sandboxed Catalyst can't fork a codex child); in
+    /// sandboxed builds the pair flow completes the handshake but the
+    /// iPhone's subsequent connect to port 8390 will get nothing — that's
+    /// expected and useful for testing the BLE proximity path without the
+    /// slow DeveloperID build cycle.
     func startIfNeeded() {
-        guard LitterPlatform.isDirectDistMac else { return }
+        guard LitterPlatform.isCatalyst else { return }
         guard !isBroadcasting else { return }
         isBroadcasting = true
         let macId = Self.resolveMacId()
-        let deviceName = UIDevice.current.name
+        let deviceName = LitterPlatform.localRuntimeDisplayName()
         let codexPort = LocalCodexBootstrap.port
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -57,6 +87,7 @@ final class MacPairingHost: NSObject {
                     codexPort: codexPort
                 )
                 self.hostHandle = result.handle
+                self.isHostActive = true
                 LLog.info(
                     "pair",
                     "pair host started",
@@ -66,8 +97,12 @@ final class MacPairingHost: NSObject {
                     ]
                 )
                 // Prime NI discovery token now so the first hello has a
-                // valid token to echo back.
+                // valid token to echo back. No-ops on Macs without UWB
+                // (which is currently every Mac); BLE advertising below
+                // covers the proximity signal in that case.
                 self.prepareNISession()
+                self.startBLEAdvertiser(macId: macId)
+                self.startUltrasonicEmitter()
                 self.publishBonjour(info: result.info)
                 self.startEventPoll()
             } catch {
@@ -77,10 +112,15 @@ final class MacPairingHost: NSObject {
         }
     }
 
-    /// User toggled "Stop broadcasting" in Settings. Stops Bonjour and the
-    /// pair host; NI sessions are torn down with it.
+    /// User toggled "Stop broadcasting" in Settings. Stops Bonjour, the BLE
+    /// advertiser, and the pair host; NI sessions are torn down with it.
     func stop() {
         isBroadcasting = false
+        isHostActive = false
+        peerName = nil
+        peerDistance = nil
+        awaitingConfirm = false
+        isPaired = false
         bonjourService?.stop()
         bonjourService?.delegate = nil
         bonjourService = nil
@@ -92,19 +132,43 @@ final class MacPairingHost: NSObject {
             niSession = nil
         }
         niDelegateBox = nil
+        bleAdvertiser?.stop()
+        bleAdvertiser = nil
+        ultrasonicEmitter?.stop()
+        ultrasonicEmitter = nil
         if let handle = hostHandle {
             hostHandle = nil
             Task { await handle.stop() }
         }
     }
 
+    // MARK: - BLE proximity beacon
+
+    private func startBLEAdvertiser(macId: String) {
+        let advertiser = PairBLEAdvertiser()
+        // Bluetooth advertisements have ~31 bytes total; leave room for the
+        // service-UUID overhead by truncating mac_id to its first 8 chars.
+        let prefix = String(macId.prefix(8))
+        advertiser.start(localName: "litter:\(prefix)")
+        bleAdvertiser = advertiser
+    }
+
+    // MARK: - Ultrasonic Doppler beacon
+
+    private func startUltrasonicEmitter() {
+        let emitter = UltrasonicEmitter()
+        emitter.start()
+        ultrasonicEmitter = emitter
+    }
+
     // MARK: - Bonjour
 
     private func publishBonjour(info: PairServiceInfo) {
+        let uniqueName = "\(info.serviceName) #\(Self.launchNonce)"
         let service = NetService(
             domain: Self.bonjourDomain,
             type: Self.pairServiceType,
-            name: info.serviceName,
+            name: uniqueName,
             port: Int32(info.port)
         )
         // Convert `key=value` strings into a TXT dictionary.
@@ -173,13 +237,25 @@ final class MacPairingHost: NSObject {
     private func handle(event: PairEvent) {
         switch event {
         case let .hostPeerConnected(deviceName, niDiscoveryTokenB64):
+            peerName = deviceName
+            isPaired = false
+            awaitingConfirm = false
             handleIncomingHello(deviceName: deviceName, niTokenB64: niDiscoveryTokenB64)
         case let .hostPairRequest(distanceM):
+            awaitingConfirm = true
+            if let distanceM { peerDistance = distanceM; lastUpdate = Date() }
             showConfirmDialog(distanceM: distanceM)
-        case .distanceUpdate:
-            break
+        case let .distanceUpdate(distanceM):
+            // iPhone-side proximity stream (UWB or BLE-derived). Drives the
+            // Mac's ProximityPairView animation in real time.
+            peerDistance = distanceM
+            lastUpdate = Date()
+            LLog.debug("pair", "received distance", fields: ["distance_m": distanceM])
         case let .disconnected(reason):
             LLog.info("pair", "mac disconnected", fields: ["reason": reason])
+            peerName = nil
+            peerDistance = nil
+            awaitingConfirm = false
             // Refresh NI session for the next connection so discovery
             // tokens roll forward.
             if let session = niSession {
@@ -240,6 +316,8 @@ final class MacPairingHost: NSObject {
                         lanIp: lanIp,
                         codexPort: LocalCodexBootstrap.port
                     )
+                    self.isPaired = true
+                    self.awaitingConfirm = false
                     LLog.info("pair", "accepted pair", fields: ["lan_ip": lanIp])
                 } catch {
                     LLog.error("pair", "accept failed", error: error)

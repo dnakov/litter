@@ -4,7 +4,7 @@
 # Pipeline:
 #   1. Archive `LitterMac` for Mac Catalyst.
 #   2. Export with method=developer-id → produces a Developer ID-signed .app.
-#   3. Wrap the .app in a .dmg via hdiutil.
+#   3. Wrap the .app + /Applications shortcut in a styled .dmg via hdiutil.
 #   4. Sign the .dmg with the Developer ID Application cert so Gatekeeper
 #      trusts the container itself, not just the inner .app.
 #   5. Submit the .dmg to Apple's notary service via `xcrun notarytool`
@@ -57,11 +57,173 @@ BUILD_DIR="${BUILD_DIR:-$IOS_DIR/build/direct-dist-mac}"
 ARCHIVE_PATH="$BUILD_DIR/$SCHEME.xcarchive"
 EXPORT_OPTIONS_PLIST="$BUILD_DIR/ExportOptions.plist"
 EXPORT_DIR="$BUILD_DIR/export"
+DMG_STAGING_DIR="$BUILD_DIR/dmg-stage"
+DMG_MOUNT_DIR="$BUILD_DIR/dmg-mount"
+DMG_BACKGROUND_SOURCE="${DMG_BACKGROUND_SOURCE:-$ROOT_DIR/services/website/public/brand_logo.png}"
+DMG_SKIP_FINDER_LAYOUT="${DMG_SKIP_FINDER_LAYOUT:-0}"
 
 require_cmd jq
 require_cmd xcodebuild
 require_cmd xcodegen
 require_cmd hdiutil
+
+create_dmg_background() {
+    local output_path="$1"
+    local brand_path="$2"
+    local swift_file="$BUILD_DIR/create-dmg-background.swift"
+
+    if ! command -v swift >/dev/null 2>&1; then
+        echo "==> swift not found; skipping DMG background generation"
+        return 1
+    fi
+
+    cat >"$swift_file" <<'SWIFT'
+import AppKit
+
+let outputPath = CommandLine.arguments[1]
+let brandPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
+let size = NSSize(width: 620, height: 370)
+let image = NSImage(size: size)
+
+image.lockFocus()
+
+let bounds = NSRect(origin: .zero, size: size)
+NSColor(calibratedRed: 0.035, green: 0.034, blue: 0.030, alpha: 1).setFill()
+bounds.fill()
+
+let gridColor = NSColor(calibratedRed: 0.22, green: 0.24, blue: 0.22, alpha: 0.22)
+gridColor.setStroke()
+for x in stride(from: 28.0, through: Double(size.width), by: 28.0) {
+    let path = NSBezierPath()
+    path.move(to: NSPoint(x: x, y: 0))
+    path.line(to: NSPoint(x: x, y: Double(size.height)))
+    path.lineWidth = 0.5
+    path.stroke()
+}
+for y in stride(from: 28.0, through: Double(size.height), by: 28.0) {
+    let path = NSBezierPath()
+    path.move(to: NSPoint(x: 0, y: y))
+    path.line(to: NSPoint(x: Double(size.width), y: y))
+    path.lineWidth = 0.5
+    path.stroke()
+}
+
+let accent = NSColor(calibratedRed: 0.0, green: 1.0, blue: 0.612, alpha: 1)
+accent.setFill()
+NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: size.width, height: 5), xRadius: 0, yRadius: 0).fill()
+
+let titleStyle = NSMutableParagraphStyle()
+titleStyle.alignment = .center
+let titleAttributes: [NSAttributedString.Key: Any] = [
+    .font: NSFont.monospacedSystemFont(ofSize: 20, weight: .semibold),
+    .foregroundColor: NSColor.white,
+    .paragraphStyle: titleStyle
+]
+"Install Litter".draw(
+    in: NSRect(x: 0, y: 42, width: size.width, height: 28),
+    withAttributes: titleAttributes
+)
+
+let subtitleAttributes: [NSAttributedString.Key: Any] = [
+    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+    .foregroundColor: NSColor(calibratedRed: 0.78, green: 0.82, blue: 0.78, alpha: 1),
+    .paragraphStyle: titleStyle
+]
+"Drag Litter.app into Applications".draw(
+    in: NSRect(x: 0, y: 72, width: size.width, height: 22),
+    withAttributes: subtitleAttributes
+)
+
+let arrow = NSBezierPath()
+arrow.move(to: NSPoint(x: 245, y: 205))
+arrow.line(to: NSPoint(x: 375, y: 205))
+arrow.lineWidth = 5
+arrow.lineCapStyle = .round
+accent.setStroke()
+arrow.stroke()
+
+let head = NSBezierPath()
+head.move(to: NSPoint(x: 375, y: 205))
+head.line(to: NSPoint(x: 354, y: 191))
+head.line(to: NSPoint(x: 354, y: 219))
+head.close()
+accent.setFill()
+head.fill()
+
+if let brand = NSImage(contentsOfFile: brandPath) {
+    brand.draw(
+        in: NSRect(x: 265, y: 258, width: 90, height: 90),
+        from: .zero,
+        operation: .sourceOver,
+        fraction: 0.72
+    )
+}
+
+image.unlockFocus()
+
+guard
+    let tiff = image.tiffRepresentation,
+    let rep = NSBitmapImageRep(data: tiff),
+    let png = rep.representation(using: .png, properties: [:])
+else {
+    fputs("Unable to render DMG background\n", stderr)
+    exit(1)
+}
+
+try png.write(to: URL(fileURLWithPath: outputPath))
+SWIFT
+
+    swift "$swift_file" "$output_path" "$brand_path"
+    if command -v sips >/dev/null 2>&1; then
+        sips -z 370 620 "$output_path" >/dev/null
+    fi
+}
+
+apply_dmg_finder_layout() {
+    local volume_name="$1"
+    local mount_dir="$2"
+
+    if [[ "$DMG_SKIP_FINDER_LAYOUT" == "1" ]]; then
+        echo "==> Skipping Finder DMG layout (DMG_SKIP_FINDER_LAYOUT=1)"
+        return 0
+    fi
+    if ! command -v osascript >/dev/null 2>&1; then
+        echo "==> osascript not found; skipping Finder DMG layout"
+        return 0
+    fi
+
+    chflags hidden "$mount_dir/.background" 2>/dev/null || true
+    if command -v SetFile >/dev/null 2>&1; then
+        SetFile -a V "$mount_dir/.background" 2>/dev/null || true
+    fi
+
+    if ! osascript <<OSA
+tell application "Finder"
+    tell disk "$volume_name"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set bounds of container window to {120, 120, 740, 490}
+        set theViewOptions to the icon view options of container window
+        set arrangement of theViewOptions to not arranged
+        set icon size of theViewOptions to 112
+        set text size of theViewOptions to 13
+        if exists file ".background:background.png" then
+            set background picture of theViewOptions to file ".background:background.png"
+        end if
+        set position of item "$APP_DISPLAY_NAME.app" of container window to {170, 210}
+        set position of item "Applications" of container window to {450, 210}
+        update without registering applications
+        delay 1
+        close
+    end tell
+end tell
+OSA
+    then
+        echo "==> Finder DMG layout failed; continuing with app + Applications shortcut"
+    fi
+}
 
 if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
     if [[ -z "$AUTH_KEY_PATH" || -z "$AUTH_KEY_ID" || -z "$AUTH_ISSUER_ID" ]]; then
@@ -222,17 +384,54 @@ codesign -dv --verbose=4 "$APP_PATH" 2>&1 | sed -n '/Runtime Version/p;/flags=/p
 
 DMG_NAME="${APP_DISPLAY_NAME}-${MARKETING_VERSION}-mac.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
-rm -f "$DMG_PATH"
+DMG_RW_PATH="$BUILD_DIR/${APP_DISPLAY_NAME}-${MARKETING_VERSION}-mac-rw.dmg"
+rm -f "$DMG_PATH" "$DMG_RW_PATH"
+rm -rf "$DMG_STAGING_DIR" "$DMG_MOUNT_DIR"
+mkdir -p "$DMG_STAGING_DIR/.background" "$DMG_MOUNT_DIR"
 
 echo "==> Building $DMG_NAME"
-# UDZO = zlib-compressed read-only. Standard for distribution DMGs.
-# -srcfolder packs the entire .app at the root of the mounted volume.
+# Stage the app next to an /Applications symlink so the mounted image behaves
+# like the conventional drag-to-install Mac DMGs users expect.
+ditto "$APP_PATH" "$DMG_STAGING_DIR/$APP_DISPLAY_NAME.app"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+
+DMG_BACKGROUND_PATH="$DMG_STAGING_DIR/.background/background.png"
+if [[ -f "$DMG_BACKGROUND_SOURCE" ]]; then
+    create_dmg_background "$DMG_BACKGROUND_PATH" "$DMG_BACKGROUND_SOURCE" || true
+fi
+
+# Build a temporary read/write image first so Finder can write .DS_Store layout
+# metadata, then compress that exact volume into the final read-only image.
 hdiutil create \
     -volname "$APP_DISPLAY_NAME" \
-    -srcfolder "$APP_PATH" \
+    -srcfolder "$DMG_STAGING_DIR" \
+    -ov \
+    -format UDRW \
+    "$DMG_RW_PATH" >/dev/null
+
+hdiutil attach "$DMG_RW_PATH" -mountpoint "$DMG_MOUNT_DIR" -nobrowse -noverify -noautoopen >/dev/null
+detach_target="$DMG_MOUNT_DIR"
+cleanup_dmg_mount() {
+    if [[ -n "${detach_target:-}" ]]; then
+        hdiutil detach "$detach_target" -quiet >/dev/null 2>&1 || hdiutil detach "$detach_target" -force -quiet >/dev/null 2>&1 || true
+        detach_target=""
+    fi
+}
+trap cleanup_dmg_mount EXIT
+
+apply_dmg_finder_layout "$APP_DISPLAY_NAME" "$DMG_MOUNT_DIR"
+sync
+cleanup_dmg_mount
+trap - EXIT
+
+# UDZO = zlib-compressed read-only. Standard for distribution DMGs.
+hdiutil convert "$DMG_RW_PATH" \
     -ov \
     -format UDZO \
-    "$DMG_PATH" >/dev/null
+    -imagekey zlib-level=9 \
+    -o "$DMG_PATH" >/dev/null
+rm -f "$DMG_RW_PATH"
+rm -rf "$DMG_STAGING_DIR" "$DMG_MOUNT_DIR"
 
 echo "==> Signing .dmg with $APP_CODE_SIGN_IDENTITY"
 codesign \

@@ -197,15 +197,19 @@ struct HomeComposerView: View {
             return
         }
 
-        inputText = ""
-        attachedImage = nil
-        isComposerFocused = false
         isSubmitting = true
         errorMessage = nil
 
         Task {
             defer { isSubmitting = false }
             do {
+                guard try await appModel.ensureLocalAuthForThreadStart(serverId: project.serverId) else {
+                    return
+                }
+                inputText = ""
+                attachedImage = nil
+                isComposerFocused = false
+
                 let pendingModel = appState.preferredModel.trimmingCharacters(in: .whitespacesAndNewlines)
                 let modelOverride = pendingModel.isEmpty ? nil : pendingModel
                 let pendingEffort = appState.preferredReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)

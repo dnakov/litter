@@ -83,7 +83,8 @@ Pipeline:
 2. Export with `method=developer-id` → produces a Developer ID-signed `.app`.
 3. Verify the signature with `codesign` + `spctl` *before* spending minutes
    on notarization (catches missing-cert errors fast).
-4. Wrap the `.app` in a `.dmg` via `hdiutil`.
+4. Wrap the `.app` in a drag-to-install `.dmg` via `hdiutil`, with
+   `Litter.app`, an `Applications` shortcut, and Finder icon layout metadata.
 5. Sign the `.dmg` itself with the Developer ID Application cert.
 6. Submit the `.dmg` to Apple's notary service via `xcrun notarytool` (uses
    the same ASC API key as TestFlight — no separate Apple ID password needed).
@@ -139,6 +140,9 @@ make mac-direct-dist
 
 # Build but skip notarization (for testing the script itself)
 SKIP_NOTARIZATION=1 make mac-direct-dist
+
+# Skip Finder layout automation if running on a host where Finder is unavailable.
+DMG_SKIP_FINDER_LAYOUT=1 SKIP_NOTARIZATION=1 make mac-direct-dist
 ```
 
 ---

@@ -3,6 +3,7 @@ import Foundation
 import NearbyInteraction
 import Observation
 import UIKit
+import simd
 
 /// iOS-only first-launch onboarding: browse for a nearby `_litter-pair._tcp.`
 /// service, open a WebSocket pair session via Rust, run NISession against
@@ -24,8 +25,9 @@ final class NearbyMacPairing: NSObject {
     /// How long to browse for a pair service before showing a "couldn't
     /// find" fallback UI.
     private static let browseTimeout: TimeInterval = 20
-    /// Distance threshold at which we auto-send pair_request. Chosen for
-    /// BLE fallback (no U1/U2 on current Macs), not UWB precision.
+    /// Distance threshold (meters, NI-derived) at which we auto-send
+    /// pair_request. Only fires when both peers have UWB and `NISession`
+    /// produces real readings; otherwise BLE proximity is the trigger.
     private static let pairDistanceThreshold: Float = 1.0
     /// Upper bound on the entire onboarding flow before we treat it as a
     /// timeout and let the user fall back to manual discovery.
@@ -36,7 +38,32 @@ final class NearbyMacPairing: NSObject {
     var state: NearbyMacPairingState = .searching
     var discoveredMacName: String?
     var lastDistance: Float?
+    var lastDirection: simd_float3?
+    var lastHorizontalAngle: Float?
+    var lastUpdate: Date?
     var isRunning: Bool = false
+    /// When true, suppress the auto pair_request submission so we can stay
+    /// in the ranging state indefinitely for debugging UWB/BLE readings.
+    var debugMode: Bool = false
+
+    /// BLE-derived proximity state, exposed for the debug view. The scanner
+    /// runs whenever the flow is active, regardless of UWB capability — it's
+    /// the actual proximity signal on Macs (which all lack a U1/U2 chip).
+    var lastRssi: Int?
+    var smoothedRssi: Float?
+    var bleProximity: PairBLE.Bucket = .unknown
+    var bleEstimatedDistance: Double?
+
+    /// Ultrasonic Doppler velocity (m/s, positive = approaching the Mac).
+    /// Smoothed via EMA in `UltrasonicReader`. Updates ~12 Hz when the
+    /// 19 kHz carrier is detectable.
+    var dopplerVelocityMS: Float?
+    /// Detected ultrasonic peak frequency in Hz, or nil when below the
+    /// detection threshold (Mac out of acoustic range).
+    var ultrasonicPeakHz: Float?
+    /// Confidence proxy in [0, ~10ish]; >2 means the carrier is clearly
+    /// audible to the iPhone mic.
+    var ultrasonicConfidence: Float?
 
     /// Set when pair_accept arrives. Consumed by `LitterApp`/ContentView to
     /// open a connection and dismiss onboarding.
@@ -53,6 +80,11 @@ final class NearbyMacPairing: NSObject {
     private var niSession: NISession?
     private var niDelegateBox: NIDelegateBox?
     private var pendingMacDiscoveryToken: NIDiscoveryToken?
+    private var bleScanner: PairBLEScanner?
+    private var bleTrackers: [UUID: PairBLEPeerTracker] = [:]
+    private var bleStrongestPeer: UUID?
+    private var ultrasonicReader: UltrasonicReader?
+    private var lastDistanceRelayAt: Date = .distantPast
     private var didSendPairRequest = false
     private var deviceName: String = UIDevice.current.name
     private weak var appModel: AppModel?
@@ -62,26 +94,82 @@ final class NearbyMacPairing: NSObject {
     }
 
     /// Start the onboarding flow. Idempotent while running. No-op if the
-    /// user already has remembered servers.
+    /// user already has remembered servers. Runs on every iPhone — UWB is
+    /// optional now that BLE proximity covers Macs without a U1/U2 chip.
     func startIfNeeded(appModel: AppModel) {
         guard !isRunning else { return }
         guard SavedServerStore.rememberedServers().isEmpty else {
             LLog.info("pair", "skipping onboarding, user already has remembered servers")
             return
         }
-        guard NISession.isSupported else {
-            LLog.info("pair", "NISession unsupported on this device; skipping onboarding")
-            return
-        }
         self.appModel = appModel
         isRunning = true
+        debugMode = false
+        resetTransientState()
+        startFlowTimeout()
+        startBrowse()
+        startBLEScan()
+        startUltrasonicReader()
+    }
+
+    /// Debug-only entry point. Browses for the Mac pair host and runs the
+    /// same NISession + BLE proximity stack the onboarding flow uses, but
+    /// skips the auto pair_request submission so the iPhone keeps streaming
+    /// distance/RSSI updates indefinitely. Bypasses the saved-server gate.
+    func startForDebug() {
+        teardown()
+        isRunning = true
+        debugMode = true
+        resetTransientState()
+        startBrowse()
+        startBLEScan()
+        startUltrasonicReader()
+    }
+
+    /// Public entry point for the "Pair" feature surfaced in Settings →
+    /// Experimental. Same as `startIfNeeded` but skips the saved-server
+    /// gate so users can re-pair after they already have remembered
+    /// servers. Auto-pair trigger is enabled (debugMode=false).
+    func startPairing(appModel: AppModel) {
+        guard !isRunning else { return }
+        self.appModel = appModel
+        isRunning = true
+        debugMode = false
+        resetTransientState()
+        startFlowTimeout()
+        startBrowse()
+        startBLEScan()
+        startUltrasonicReader()
+    }
+
+    /// Stop the debug session and reset state.
+    func stopDebug() {
+        isRunning = false
+        debugMode = false
+        teardown()
+        state = .searching
+        resetTransientState()
+    }
+
+    private func resetTransientState() {
         state = .searching
         discoveredMacName = nil
         lastDistance = nil
+        lastDirection = nil
+        lastHorizontalAngle = nil
+        lastUpdate = nil
+        lastRssi = nil
+        smoothedRssi = nil
+        bleProximity = .unknown
+        bleEstimatedDistance = nil
+        dopplerVelocityMS = nil
+        ultrasonicPeakHz = nil
+        ultrasonicConfidence = nil
         completedServer = nil
         didSendPairRequest = false
-        startFlowTimeout()
-        startBrowse()
+        bleTrackers.removeAll()
+        bleStrongestPeer = nil
+        lastDistanceRelayAt = .distantPast
     }
 
     /// User tapped "Skip" / "Set up manually" — stop everything and let
@@ -96,14 +184,13 @@ final class NearbyMacPairing: NSObject {
     func retry() {
         guard appModel != nil else { return }
         teardown()
-        state = .searching
-        discoveredMacName = nil
-        lastDistance = nil
-        completedServer = nil
-        didSendPairRequest = false
+        debugMode = false
         isRunning = true
+        resetTransientState()
         startFlowTimeout()
         startBrowse()
+        startBLEScan()
+        startUltrasonicReader()
     }
 
     // MARK: - Browse
@@ -143,24 +230,11 @@ final class NearbyMacPairing: NSObject {
         Task { @MainActor [weak self] in
             guard let self, self.isRunning else { return }
             do {
-                // Start NISession on this side first so we have a discovery
-                // token to ship in the hello.
-                let session = NISession()
-                let delegate = NIDelegateBox { [weak self] distance in
-                    Task { @MainActor in self?.handleDistanceUpdate(distance) }
-                } invalidated: { [weak self] err in
-                    Task { @MainActor in self?.handleNIInvalidated(err) }
-                }
-                session.delegate = delegate
-                self.niDelegateBox = delegate
-                self.niSession = session
-
-                guard let token = session.discoveryToken else {
-                    LLog.warn("pair", "NISession produced no discovery token")
-                    self.state = .failed
-                    return
-                }
-                let tokenB64 = try encodeDiscoveryToken(token)
+                // Try to spin up NISession so we can ship a discovery token.
+                // If this device or the Mac lacks UWB, the token is empty
+                // and the Rust pair host knows to skip ranging — BLE is the
+                // proximity signal in that case.
+                let tokenB64 = self.prepareNISession()
 
                 let client = try await self.appClient.pairFromIphone(
                     host: host,
@@ -220,13 +294,46 @@ final class NearbyMacPairing: NSObject {
         }
     }
 
+    /// Spin up a local NISession so we can ship a discovery token in the
+    /// pair_hello. Returns the base64-encoded token, or an empty string when
+    /// this device has no UWB radio. The Rust pair host accepts empty tokens
+    /// and downgrades to "no NI ranging" — BLE proximity still gates pair.
+    private func prepareNISession() -> String {
+        guard NISession.isSupported else {
+            LLog.info("pair", "NISession unsupported on this iPhone — relying on BLE proximity")
+            return ""
+        }
+        let session = NISession()
+        let delegate = NIDelegateBox { [weak self] obj in
+            Task { @MainActor in self?.handleNIUpdate(obj) }
+        } invalidated: { [weak self] err in
+            Task { @MainActor in self?.handleNIInvalidated(err) }
+        }
+        session.delegate = delegate
+        niDelegateBox = delegate
+        niSession = session
+        guard let token = session.discoveryToken,
+              let encoded = try? encodeDiscoveryToken(token)
+        else {
+            LLog.warn("pair", "NISession produced no discovery token — relying on BLE proximity")
+            return ""
+        }
+        return encoded
+    }
+
     private func handleMacNIToken(b64: String) {
-        guard let session = niSession else { return }
+        // Empty/missing token is the expected case for current Macs (no
+        // U1/U2 on any shipping Mac); BLE proximity is the trigger then.
+        guard !b64.isEmpty, let session = niSession else {
+            if state == .handshaking {
+                LLog.info("pair", "no NI ranging — BLE proximity is the trigger")
+            }
+            return
+        }
         guard let tokenData = Data(base64Encoded: b64), !tokenData.isEmpty,
               let macToken = decodeDiscoveryToken(tokenData)
         else {
-            LLog.warn("pair", "mac NI discovery token was empty or undecodable")
-            state = .failed
+            LLog.warn("pair", "mac NI discovery token undecodable; falling back to BLE-only proximity")
             return
         }
         pendingMacDiscoveryToken = macToken
@@ -235,32 +342,142 @@ final class NearbyMacPairing: NSObject {
         LLog.info("pair", "NISession started against mac token")
     }
 
-    private func handleDistanceUpdate(_ distance: Float?) {
+    private func handleNIUpdate(_ object: NINearbyObject?) {
+        let distance = object?.distance
         lastDistance = distance
+        lastDirection = object?.direction
+        if #available(iOS 16.0, *) {
+            lastHorizontalAngle = object?.horizontalAngle
+        }
+        lastUpdate = Date()
         if let distance {
             // Fire-and-forget distance ping for the Mac UI affordance.
             try? pairClient?.submitNiDistance(distanceM: distance)
-            if !didSendPairRequest, distance <= Self.pairDistanceThreshold {
-                didSendPairRequest = true
-                state = .awaitingConfirm
-                LLog.info(
-                    "pair",
-                    "distance threshold reached",
-                    fields: ["distance_m": distance]
-                )
-                try? pairClient?.submitPairRequest(distanceM: distance)
+            if distance <= Self.pairDistanceThreshold {
+                triggerPairRequest(reason: "ni_distance", distance: distance)
             }
         }
     }
 
     private func handleNIInvalidated(_ error: Error) {
         LLog.warn("pair", "NISession invalidated", fields: ["error": String(describing: error)])
-        // Without NI ranging we can't get to the pair threshold
-        // automatically; surface a failure so the user can fall back to
-        // manual discovery.
-        if !didSendPairRequest {
-            state = .failed
+        // BLE proximity can still drive the pair trigger — only fail the
+        // flow if we have no fallback signal in flight.
+        niSession = nil
+        niDelegateBox = nil
+    }
+
+    // MARK: - BLE proximity scan
+
+    private func startBLEScan() {
+        guard bleScanner == nil else { return }
+        let scanner = PairBLEScanner()
+        bleScanner = scanner
+        scanner.start { [weak self] peripheralId, _, rssi in
+            self?.handleBLESample(peripheralId: peripheralId, rssi: rssi)
         }
+    }
+
+    private func handleBLESample(peripheralId: UUID, rssi: Int) {
+        guard isRunning else { return }
+        let tracker = bleTrackers[peripheralId] ?? PairBLEPeerTracker()
+        tracker.record(rssi: rssi)
+        bleTrackers[peripheralId] = tracker
+
+        // Track the strongest peer for the debug UI; assume the strongest
+        // BLE advertiser is the same Mac the user is trying to pair with.
+        let strongest = bleTrackers.max { lhs, rhs in
+            (lhs.value.lastRssi ?? Int.min) < (rhs.value.lastRssi ?? Int.min)
+        }
+        if let strongest {
+            bleStrongestPeer = strongest.key
+            lastRssi = strongest.value.lastRssi
+            smoothedRssi = strongest.value.smoothedRssi
+            bleProximity = PairBLE.Bucket.from(rssi: strongest.value.lastRssi)
+            bleEstimatedDistance = strongest.value.lastRssi.flatMap { PairBLE.estimateDistanceMeters(rssi: $0) }
+        }
+
+        // Relay BLE-derived distance to the Mac when NI ranging isn't
+        // producing readings (which is always, on current Macs). Throttled
+        // to 5 Hz so we don't spam the WS pair channel; that's plenty for
+        // the Mac's pulse animation.
+        if lastDistance == nil, let est = bleEstimatedDistance {
+            relayDistanceIfNeeded(distanceM: Float(est))
+        }
+
+        if tracker.hasTripped {
+            triggerPairRequest(reason: "ble_rssi", distance: nil)
+        }
+    }
+
+    private func relayDistanceIfNeeded(distanceM: Float) {
+        let now = Date()
+        guard now.timeIntervalSince(lastDistanceRelayAt) > 0.2 else { return }
+        lastDistanceRelayAt = now
+        guard let client = pairClient else {
+            // No WS yet — first BLE samples can fire before Bonjour
+            // discovery + WS connect complete. Quiet warning so we can
+            // distinguish "no client" from "send failed."
+            return
+        }
+        do {
+            try client.submitNiDistance(distanceM: distanceM)
+            LLog.debug("pair", "relayed distance", fields: ["distance_m": distanceM])
+        } catch {
+            LLog.warn("pair", "relay submit failed", fields: ["error": String(describing: error)])
+        }
+    }
+
+    // MARK: - Ultrasonic Doppler reader
+
+    private func startUltrasonicReader() {
+        guard ultrasonicReader == nil else { return }
+        let reader = UltrasonicReader()
+        reader.onSample = { [weak self] velocity, peakHz, confidence in
+            Task { @MainActor in self?.handleUltrasonicSample(velocity: velocity, peakHz: peakHz, confidence: confidence) }
+        }
+        ultrasonicReader = reader
+        Task { @MainActor in
+            do {
+                try await reader.start()
+            } catch {
+                LLog.warn("pair", "ultrasonic reader unavailable", fields: ["error": String(describing: error)])
+            }
+        }
+    }
+
+    private func handleUltrasonicSample(velocity: Float?, peakHz: Float?, confidence: Float?) {
+        guard isRunning else { return }
+        ultrasonicPeakHz = peakHz
+        ultrasonicConfidence = confidence
+        if let velocity {
+            // Read the smoothed value back out of the reader so the UI
+            // sees an EMA-stable velocity rather than per-frame jitter.
+            dopplerVelocityMS = ultrasonicReader?.smoothedVelocityMS ?? velocity
+        }
+    }
+
+    // MARK: - Pair-request trigger
+
+    private func triggerPairRequest(reason: String, distance: Float?) {
+        guard !debugMode, !didSendPairRequest else { return }
+        guard state == .handshaking else { return }
+        didSendPairRequest = true
+        state = .awaitingConfirm
+        LLog.info(
+            "pair",
+            "proximity threshold reached",
+            fields: [
+                "reason": reason,
+                "distance_m": distance.map { String(format: "%.2f", $0) } ?? "—",
+                "rssi": lastRssi.map(String.init) ?? "—"
+            ]
+        )
+        // Some Rust hosts expect a numeric distance; pass the NI reading
+        // when we have it, otherwise the BLE-derived estimate so the Mac UI
+        // still gets a "~Xm" hint.
+        let payload = distance ?? bleEstimatedDistance.map(Float.init) ?? 0
+        try? pairClient?.submitPairRequest(distanceM: payload)
     }
 
     private func handlePairAccepted(codexWsUrl: String, lanIp: String) {
@@ -338,6 +555,12 @@ final class NearbyMacPairing: NSObject {
         }
         niDelegateBox = nil
         pendingMacDiscoveryToken = nil
+        bleScanner?.stop()
+        bleScanner = nil
+        bleTrackers.removeAll()
+        bleStrongestPeer = nil
+        ultrasonicReader?.stop()
+        ultrasonicReader = nil
     }
 }
 
@@ -369,22 +592,21 @@ private func decodeDiscoveryToken(_ data: Data) -> NIDiscoveryToken? {
 /// about: `didUpdate nearbyObjects` → distance updates, and session
 /// invalidation → teardown hook.
 private final class NIDelegateBox: NSObject, NISessionDelegate, @unchecked Sendable {
-    private let onDistance: (Float?) -> Void
+    private let onUpdate: (NINearbyObject?) -> Void
     private let onInvalidated: (Error) -> Void
 
     init(
-        onDistance: @escaping (Float?) -> Void,
+        onUpdate: @escaping (NINearbyObject?) -> Void,
         invalidated: @escaping (Error) -> Void
     ) {
-        self.onDistance = onDistance
+        self.onUpdate = onUpdate
         self.onInvalidated = invalidated
     }
 
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         // We paired with exactly one peer (the Mac) so the first object is
         // ours.
-        let distance = nearbyObjects.first?.distance
-        onDistance(distance)
+        onUpdate(nearbyObjects.first)
     }
 
     func session(_ session: NISession, didInvalidateWith error: Error) {

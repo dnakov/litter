@@ -145,7 +145,7 @@ final class NetworkDiscovery {
         if LitterPlatform.supportsLocalRuntime {
             servers.append(DiscoveredServer(
                 id: "local",
-                name: UIDevice.current.name,
+                name: LitterPlatform.localRuntimeDisplayName(),
                 hostname: "127.0.0.1",
                 port: nil,
                 source: .local,
@@ -817,7 +817,13 @@ final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowse
     }
 
     private func finish() {
-        guard !isFinished else { return }
+        // Consume the continuation atomically: capture + nil-out before any
+        // delegate callbacks (browser.stop() can re-fire didStopSearch and
+        // re-enter finish before we'd otherwise clear the field). Any later
+        // re-entry sees `continuation == nil` and bails harmlessly, which
+        // dodges the `tried to resume more than once` crash.
+        guard let continuation = self.continuation else { return }
+        self.continuation = nil
         isFinished = true
         timeoutTask?.cancel()
         resolveDrainTask?.cancel()
@@ -838,8 +844,7 @@ final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowse
                 serviceType: serviceType
             )
         }
-        continuation?.resume(returning: discovered)
-        continuation = nil
+        continuation.resume(returning: discovered)
     }
 
     func netServiceBrowserWillSearch(_ browser: NetServiceBrowser) {}

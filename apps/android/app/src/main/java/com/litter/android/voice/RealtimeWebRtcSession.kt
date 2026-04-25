@@ -38,6 +38,7 @@ class RealtimeWebRtcSession(private val context: Context) {
     private var dataChannel: DataChannel? = null
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
+    private val isClosed = AtomicBoolean(false)
 
     private var previousAudioMode: Int = audioManager.mode
     private var previousSpeakerphoneOn: Boolean = audioManager.isSpeakerphoneOn
@@ -50,6 +51,7 @@ class RealtimeWebRtcSession(private val context: Context) {
         if (peerConnection != null) {
             throw RealtimeWebRtcSessionException("session already started")
         }
+        isClosed.set(false)
 
         Log.i(TAG, "start: configuring audio session")
         configureAudio()
@@ -108,6 +110,11 @@ class RealtimeWebRtcSession(private val context: Context) {
         Log.i(TAG, "start: awaiting ICE gathering complete")
         awaitIceGatheringComplete(connection)
 
+        if (isClosed.get() || peerConnection !== connection) {
+            Log.w(TAG, "start: session closed while awaiting ICE gathering")
+            throw RealtimeWebRtcSessionException("session stopped before local description was ready")
+        }
+
         val localSdp = connection.localDescription?.description
             ?: run {
                 Log.e(TAG, "start: local description unavailable after ICE gathering")
@@ -132,6 +139,7 @@ class RealtimeWebRtcSession(private val context: Context) {
     }
 
     private fun cleanup() {
+        isClosed.set(true)
         iceGatheringContinuation?.let {
             iceGatheringContinuation = null
             if (it.isActive) it.resume(Unit)

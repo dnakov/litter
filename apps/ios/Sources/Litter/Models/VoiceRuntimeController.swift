@@ -42,9 +42,12 @@ final class VoiceRuntimeController: VoiceActions {
     }
 
     func bind(appModel: AppModel) {
+        let shouldStartEventLoop = self.appModel !== appModel || eventTask == nil || updateSubscription == nil
         self.appModel = appModel
         syncHandoffServers()
-        startEventLoopIfNeeded()
+        if shouldStartEventLoop {
+            startEventLoopIfNeeded(appModel: appModel)
+        }
     }
 
     @discardableResult
@@ -116,9 +119,9 @@ final class VoiceRuntimeController: VoiceActions {
         try realtimeSession?.toggleSpeaker()
     }
 
-    private func startEventLoopIfNeeded() {
+    private func startEventLoopIfNeeded(appModel: AppModel) {
         guard eventTask == nil else { return }
-        updateSubscription = requireAppModel().store.subscribeUpdates()
+        updateSubscription = appModel.store.subscribeUpdates()
         eventTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, let subscription = self.updateSubscription {
@@ -787,9 +790,11 @@ final class VoiceRuntimeController: VoiceActions {
     }
 
     private func requireAppModel() -> AppModel {
-        guard let appModel else {
-            fatalError("VoiceRuntimeController used before binding AppModel")
+        if let appModel {
+            return appModel
         }
+        let appModel = AppModel.shared
+        bind(appModel: appModel)
         return appModel
     }
 

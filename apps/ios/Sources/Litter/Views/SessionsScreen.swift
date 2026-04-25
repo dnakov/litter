@@ -1143,10 +1143,13 @@ struct SessionsScreen: View {
         isStartingNewSession = true
         defer { isStartingNewSession = false }
         sessionActionErrorMessage = nil
-        await conversationWarmup.prewarmIfNeeded()
-        workDir = cwd
-        appState.currentCwd = cwd
         do {
+            guard try await appModel.ensureLocalAuthForThreadStart(serverId: serverId) else {
+                return
+            }
+            await conversationWarmup.prewarmIfNeeded()
+            workDir = cwd
+            appState.currentCwd = cwd
             let startedKey = try await appModel.client.startThread(
                 serverId: serverId,
                 params: launchConfig().threadStartRequest(

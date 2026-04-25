@@ -60,6 +60,8 @@
 	<string>Codex discovers coding agents and SSH servers on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Litter uses the microphone for voice-to-text input.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Litter advertises a short-range Bluetooth beacon so nearby iPhones can find this Mac to pair with.</string>
 	<key>NSNearbyInteractionUsageDescription</key>
 	<string>Litter uses Nearby Interaction to confirm your iPhone and Mac are close before pairing.</string>
 	<key>UIAppFonts</key>

@@ -258,16 +258,7 @@ private struct AccountConnectionView: View {
         }
         do {
             authError = nil
-            let tokens = try await ChatGPTOAuth.login()
-            _ = try await appModel.client.loginAccount(
-                serverId: server.serverId,
-                params: .chatgptAuthTokens(
-                    accessToken: tokens.accessToken,
-                    chatgptAccountId: tokens.accountID,
-                    chatgptPlanType: tokens.planType
-                )
-            )
-            await appModel.refreshSnapshot()
+            try await appModel.loginLocalChatGPTAccount(serverId: server.serverId)
         } catch ChatGPTOAuthError.cancelled {
             return
         } catch {

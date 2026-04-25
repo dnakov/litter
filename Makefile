@@ -160,9 +160,9 @@ ANDROID_RUST_SOURCES := $(shell find $(RUST_DIR) \
 
 $(shell mkdir -p $(STAMPS))
 
-.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project catalyst catalyst-run mac-direct mac-direct-run \
+.PHONY: all ios ios-sim ios-sim-fast ios-sim-run ios-device ios-device-fast ios-device-run ios-device-stop ios-run verify-ios-project catalyst catalyst-run catalyst-fast catalyst-fast-run mac-direct mac-direct-run mac-direct-fast mac-direct-fast-run \
 	android android-fast android-tools android-emulator-fast android-emulator-run android-device-run android-release android-debug android-install android-emulator-install \
-	rust-ios rust-ios-package rust-ios-device-release rust-mac-release rust-ios-device-fast rust-ios-sim-fast rust-android rust-check rust-test rust-host-dev \
+	rust-ios rust-ios-package rust-ios-device-release rust-mac-release rust-ios-device-fast rust-ios-sim-fast rust-ios-macabi-fast rust-android rust-check rust-test rust-host-dev \
 	bindings bindings-swift bindings-kotlin \
 	sync patch unpatch xcgen alpine-fs \
 	ios-build ios-build-sim ios-build-sim-fast ios-build-device ios-build-device-fast \
@@ -211,6 +211,28 @@ catalyst-run: catalyst
 	@pkill -9 -f "Debug-maccatalyst/Litter.app" 2>/dev/null; true
 	@open $(CATALYST_DERIVED_DATA)/Build/Products/Debug-maccatalyst/Litter.app
 
+# Fast Mac Catalyst dev lane. Mirrors `ios-sim-fast` for Catalyst:
+# host-arch-only macabi staticlib via the `ios-dev` Cargo profile (no
+# LTO, codegen-units=256, line-table debuginfo) instead of the full
+# release+LTO+xcframework `rust-ios-package` chain. Warm rebuilds drop
+# from minutes to seconds. Cold first build is still slow because cargo
+# has to compile the codex workspace once for macabi.
+catalyst-fast: rust-ios-macabi-fast alpine-fs xcgen
+	@echo "==> Building LitterMac for Mac Catalyst (fast)..."
+	@cd $(IOS_DIR) && xcodebuild \
+		-project Litter.xcodeproj \
+		-scheme LitterMac \
+		-configuration $(XCODE_CONFIG) \
+		-destination 'platform=macOS,variant=Mac Catalyst' \
+		-derivedDataPath $(CATALYST_DERIVED_DATA) \
+		build \
+		| tail -6
+
+catalyst-fast-run: catalyst-fast
+	@echo "==> Launching Catalyst app..."
+	@pkill -9 -f "Debug-maccatalyst/Litter.app" 2>/dev/null; true
+	@open $(CATALYST_DERIVED_DATA)/Build/Products/Debug-maccatalyst/Litter.app
+
 # Direct (unsandboxed) Mac Catalyst build — same binary the DMG
 # distribution lane ships, but built with `DeveloperID` configuration
 # and launched in-place so you can iterate without the archive →
@@ -231,6 +253,33 @@ mac-direct: rust-ios-package alpine-fs xcgen
 mac-direct-run: mac-direct
 	@echo "==> Launching unsandboxed Mac Catalyst app..."
 	@pkill -9 -f "DeveloperID-maccatalyst/Litter.app" 2>/dev/null; true
+	@open $(MAC_DIRECT_DERIVED)/Build/Products/DeveloperID-maccatalyst/Litter.app
+
+# Fast unsandboxed Catalyst lane. Same DeveloperID config as `mac-direct`
+# (so MacPairingHost / local Codex / BLE advertiser are all live), but uses
+# the fast macabi-only Rust path so warm rebuilds are seconds. Uses ad-hoc
+# code signing (`CODE_SIGN_IDENTITY=-`) to bypass the Developer ID cert
+# requirement during local iteration.
+mac-direct-fast: rust-ios-macabi-fast alpine-fs xcgen
+	@echo "==> Building LitterMac (DeveloperID — unsandboxed, fast)..."
+	@cd $(IOS_DIR) && xcodebuild \
+		-project Litter.xcodeproj \
+		-scheme LitterMac \
+		-configuration DeveloperID \
+		-destination 'platform=macOS,variant=Mac Catalyst' \
+		-derivedDataPath $(MAC_DIRECT_DERIVED) \
+		ARCHS=arm64 \
+		ONLY_ACTIVE_ARCH=YES \
+		CODE_SIGN_IDENTITY=- \
+		CODE_SIGNING_REQUIRED=NO \
+		CODE_SIGNING_ALLOWED=NO \
+		build \
+		| tail -6
+
+mac-direct-fast-run: mac-direct-fast
+	@echo "==> Launching unsandboxed Mac Catalyst app..."
+	@pkill -9 -f "DeveloperID-maccatalyst/Litter.app" 2>/dev/null; true
+	@/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister -f $(MAC_DIRECT_DERIVED)/Build/Products/DeveloperID-maccatalyst/Litter.app
 	@open $(MAC_DIRECT_DERIVED)/Build/Products/DeveloperID-maccatalyst/Litter.app
 ios-sim-run: ios-sim-fast
 	@echo "==> Installing and launching on booted simulator with saved logs/profile..."
@@ -352,6 +401,10 @@ rust-ios-sim-fast: $(STAMP_SYNC)
 	@echo "==> Building Rust for fast iOS simulator iteration (raw staticlib + headers)..."
 	@cd $(ROOT) && $(DEV_CARGO_ENV) $(IOS_SCRIPTS)/build-rust.sh --preserve-current --fast-sim $(CARGO_FEATURES)
 
+rust-ios-macabi-fast: $(STAMP_SYNC)
+	@echo "==> Building Rust for fast Mac Catalyst iteration (raw macabi staticlib + headers, host arch only)..."
+	@cd $(ROOT) && $(DEV_CARGO_ENV) $(IOS_SCRIPTS)/build-rust.sh --preserve-current --fast-macabi $(CARGO_FEATURES)
+
 rust-check:
 	@echo "==> cargo check (host, shared crates)..."
 	@cd $(ROOT) && $(DEV_CARGO_ENV) cargo check --manifest-path $(RUST_DIR)/Cargo.toml -p codex-mobile-client
@@ -379,6 +432,11 @@ help:
 		'make rust-ios-package   full Rust iOS package lane (bindings + xcframework)' \
 		'make rust-ios-sim-fast  fast Rust iOS simulator lane (raw staticlib only)' \
 		'make rust-ios-device-fast fast Rust iOS device lane (raw staticlib only)' \
+		'make rust-ios-macabi-fast fast Rust Mac Catalyst lane (host-arch macabi staticlib only)' \
+		'make catalyst           full Mac Catalyst build (release+LTO macabi staticlib + xcodebuild)' \
+		'make catalyst-run       full Mac Catalyst build + launch' \
+		'make catalyst-fast      fast Mac Catalyst dev build (ios-dev profile, host arch)' \
+		'make catalyst-fast-run  fast Mac Catalyst dev build + launch' \
 		'make android            fast Android dev build (default ABI/profile: arm64-v8a/android-dev)' \
 		'make android-emulator-fast fast Android dev build using emulator ABI ($(ANDROID_EMULATOR_ABIS))' \
 		'make android-emulator-run  fast emulator build + install + launch on emulator' \

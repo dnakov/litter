@@ -82,5 +82,6 @@ struct AddServerPill: View {
                 .stroke(LitterTheme.accent.opacity(0.45), lineWidth: 0.8)
                 .allowsHitTesting(false)
         )
+        .coachmarkAnchor(.addServer)
     }
 }

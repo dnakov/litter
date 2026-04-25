@@ -2,6 +2,23 @@ import Foundation
 import Observation
 import UIKit
 
+enum LocalAccountLoginFlowError: LocalizedError {
+    case localServerUnavailable
+    case remoteServer
+    case loginDidNotAttach
+
+    var errorDescription: String? {
+        switch self {
+        case .localServerUnavailable:
+            return "Local Codex isn't running. ChatGPT login requires the local bridge."
+        case .remoteServer:
+            return "ChatGPT login is only available for the local server."
+        case .loginDidNotAttach:
+            return "ChatGPT login completed, but the local account did not attach."
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -372,6 +389,55 @@ final class AppModel {
         isLocalServer(serverId: serverId) ? generativeUiDynamicToolSpecs() : nil
     }
 
+    func loginLocalChatGPTAccount(serverId: String) async throws {
+        guard let server = snapshot?.serverSnapshot(for: serverId) else {
+            throw LocalAccountLoginFlowError.localServerUnavailable
+        }
+        guard server.isLocal else {
+            throw LocalAccountLoginFlowError.remoteServer
+        }
+
+        let tokens = try await ChatGPTOAuth.login()
+        _ = try await client.loginAccount(
+            serverId: serverId,
+            params: .chatgptAuthTokens(
+                accessToken: tokens.accessToken,
+                chatgptAccountId: tokens.accountID,
+                chatgptPlanType: tokens.planType
+            )
+        )
+        await refreshSnapshot()
+    }
+
+    func ensureLocalAuthForThreadStart(serverId: String) async throws -> Bool {
+        guard let server = snapshot?.serverSnapshot(for: serverId) else {
+            return true
+        }
+        guard server.isLocal else {
+            return true
+        }
+        guard server.account == nil else {
+            return true
+        }
+
+        if let storedApiKey = await loadStoredLocalApiKey(),
+           !storedApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await restoreStoredLocalAuthState(serverId: serverId)
+            return true
+        }
+
+        do {
+            try await loginLocalChatGPTAccount(serverId: serverId)
+        } catch ChatGPTOAuthError.cancelled {
+            return false
+        }
+
+        guard snapshot?.serverSnapshot(for: serverId)?.account != nil else {
+            throw LocalAccountLoginFlowError.loginDidNotAttach
+        }
+        return true
+    }
+
     func resolvedLocalServerDisplayName() -> String {
         let connectedLocalName = snapshot?.servers
             .first(where: \.isLocal)
@@ -389,7 +455,7 @@ final class AppModel {
             return savedLocalName
         }
 
-        return UIDevice.current.name
+        return LitterPlatform.localRuntimeDisplayName()
     }
 
     func restartLocalServer() async throws {
@@ -679,7 +745,7 @@ final class AppModel {
 
     private func normalizingLocalServerDisplayNames(_ snapshot: AppSnapshotRecord) -> AppSnapshotRecord {
         var snapshot = snapshot
-        let fallbackName = UIDevice.current.name
+        let fallbackName = LitterPlatform.localRuntimeDisplayName()
         for index in snapshot.servers.indices {
             guard snapshot.servers[index].isLocal else { continue }
             let displayName = snapshot.servers[index].displayName.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -64,6 +64,8 @@
 	<string>Litter uses the camera to capture photos for conversations.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Litter uses the microphone for voice-to-text input.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Litter uses Bluetooth to detect when your iPhone is near your paired Mac.</string>
 	<key>NSNearbyInteractionUsageDescription</key>
 	<string>Litter uses Nearby Interaction to confirm your iPhone and Mac are close before pairing.</string>
 	<key>NSSupportsLiveActivities</key>

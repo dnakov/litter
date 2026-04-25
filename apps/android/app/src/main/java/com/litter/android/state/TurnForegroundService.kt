@@ -7,11 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.litter.android.MainActivity
 import com.litter.android.util.LLog
 import com.sigkitten.litter.android.R
@@ -42,12 +44,18 @@ class TurnForegroundService : Service() {
         private const val EXTRA_THREAD_ID = "thread_id"
         private const val EXTRA_TURN_ID = "turn_id"
 
-        fun start(context: Context) {
+        fun start(context: Context): Boolean {
             val intent = Intent(context, TurnForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            return runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                true
+            }.getOrElse { error ->
+                LLog.e("TurnForegroundService", "Failed to start foreground service", error)
+                false
             }
         }
 
@@ -75,7 +83,9 @@ class TurnForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildFallbackNotification("Codex is working\u2026"))
+        if (!enterForeground(startId)) {
+            return START_NOT_STICKY
+        }
 
         val appModel = runCatching {
             AppModel.init(applicationContext).also { it.start() }
@@ -124,12 +134,34 @@ class TurnForegroundService : Service() {
             }
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         monitorJob?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
+    }
+
+    private fun enterForeground(startId: Int): Boolean {
+        val notification = buildFallbackNotification("Codex is working\u2026")
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        }.getOrElse { error ->
+            LLog.e("TurnForegroundService", "Failed to enter foreground", error)
+            stopSelf(startId)
+            false
+        }
     }
 
     private fun handleCancelTurn(intent: Intent) {

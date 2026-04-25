@@ -127,11 +127,7 @@ final class LocalCodexBootstrap {
     }
 
     private static func displayName() -> String {
-        // UIDevice.current.name on Catalyst returns the Mac's user-facing
-        // computer name (e.g. "Daniel's MacBook Pro"). Mirrors the label
-        // used by AppModel.resolvedLocalServerDisplayName.
-        let device = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return device.isEmpty ? "Local Mac" : device
+        LitterPlatform.localRuntimeDisplayName()
     }
 }
 #endif

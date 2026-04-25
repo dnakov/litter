@@ -327,6 +327,24 @@ struct HomeDashboardView: View {
                 sidebarBottomChrome
             }
         }
+        .overlayPreferenceValue(CoachmarkAnchorKey.self) { anchors in
+            if showOnboardingCoachmarks {
+                OnboardingCoachmarksView(anchors: anchors)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: showOnboardingCoachmarks)
+    }
+
+    /// True whenever the visible session list is empty AND the user is in
+    /// the default (collapsed) input mode — so the overlay doesn't fight the
+    /// composer/search expansions, and disappears the moment a thread shows
+    /// up in the current scope.
+    private var showOnboardingCoachmarks: Bool {
+        guard chrome == .full,
+              inputMode == .collapsed,
+              !isSearchExpanded else { return false }
+        return visibleSessions.isEmpty
     }
 
     // Search results are rendered directly in `canvas` as an inline
@@ -464,20 +482,12 @@ struct HomeDashboardView: View {
         }
     }
 
+    /// The "no sessions yet" copy has been replaced by the coachmark
+    /// overlay (mounted on `canvas` via `.overlayPreferenceValue`), which
+    /// draws arrows from each label to the actual button positions. This
+    /// branch just reserves vertical space for the scroll view.
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Text("No sessions yet")
-                .litterFont(.subheadline, weight: .medium)
-                .foregroundStyle(LitterTheme.textSecondary)
-            Text(connectedServers.isEmpty
-                 ? "Connect a server to start your first session."
-                 : "Pick a project and send a message to start one.")
-                .litterFont(.caption)
-                .foregroundStyle(LitterTheme.textMuted)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 40)
+        Color.clear.frame(height: 1)
     }
 }
 

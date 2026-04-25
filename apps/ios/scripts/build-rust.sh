@@ -33,12 +33,20 @@ FAST_DEVICE=0
 SIM_ONLY=0
 FAST_SIM=0
 MACABI_ONLY=0
+FAST_MACABI=0
 FORCE_BINDINGS=0
 SKIP_BINDINGS=0
 CARGO_FEATURES=""
 PROFILE="release"
 CARGO_PROFILE_FLAG="--release"
 IOS_RUST_PROFILE="${IOS_RUST_PROFILE:-release}"
+
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  arm64|aarch64) MACABI_HOST_TARGET="aarch64-apple-ios-macabi" ;;
+  x86_64) MACABI_HOST_TARGET="x86_64-apple-ios-macabi" ;;
+  *) MACABI_HOST_TARGET="" ;;
+esac
 
 if [ "$IOS_RUST_PROFILE" != "release" ]; then
   PROFILE="$IOS_RUST_PROFILE"
@@ -71,6 +79,21 @@ for arg in "$@"; do
       # directly via LIBRARY_SEARCH_PATHS[sdk=macosx*].
       MACABI_ONLY=1
       ;;
+    --fast-macabi)
+      # Fast Catalyst dev lane: build only the host arch (arm64 on
+      # Apple Silicon, x86_64 on Intel) using the ios-dev profile (no
+      # LTO, codegen-units=256, line-table debuginfo). Xcode Debug
+      # Catalyst builds default to ONLY_ACTIVE_ARCH=YES, so a host-only
+      # staticlib is sufficient. Skips xcframework + lipo.
+      FAST_MACABI=1
+      MACABI_ONLY=1
+      PROFILE="ios-dev"
+      CARGO_PROFILE_FLAG="--profile ios-dev"
+      if [ -z "$MACABI_HOST_TARGET" ]; then
+        echo "ERROR: --fast-macabi unsupported on host arch $HOST_ARCH" >&2
+        exit 1
+      fi
+      ;;
     --force-bindings)
       FORCE_BINDINGS=1
       ;;
@@ -81,7 +104,7 @@ for arg in "$@"; do
       CARGO_FEATURES="--features rpc-trace"
       ;;
     *)
-      echo "usage: $(basename "$0") [--preserve-current|--recorded-gitlink] [--device-only] [--fast-device] [--fast-sim] [--macabi-only] [--force-bindings] [--skip-bindings] [--rpc-trace]" >&2
+      echo "usage: $(basename "$0") [--preserve-current|--recorded-gitlink] [--device-only] [--fast-device] [--fast-sim] [--macabi-only] [--fast-macabi] [--force-bindings] [--skip-bindings] [--rpc-trace]" >&2
       exit 1
       ;;
   esac
@@ -124,6 +147,16 @@ export CXX_aarch64_apple_ios_macabi="$IOS_CLANGXX_WRAPPER"
 export CXX_x86_64_apple_ios_macabi="$IOS_CLANGXX_WRAPPER"
 export IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET"
 export MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
+
+# bindgen 0.70 maps `aarch64-apple-ios-sim` -> `arm64-apple-ios-sim`, which
+# clang rejects ("version 'sim' in target triple ... is invalid"). The correct
+# clang triple uses the `-simulator` environment suffix. Override per-target so
+# bindgen-driven build scripts (e.g. ish-embed-host) point at the iPhoneSimulator
+# SDK when cross-compiling for the simulator.
+IPHONESIM_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
+if [ -n "$IPHONESIM_SDK" ]; then
+  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim="--target=arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator -isysroot ${IPHONESIM_SDK}"
+fi
 
 bindings_inputs() {
   cat <<EOF
@@ -220,15 +253,14 @@ if [ "$DEVICE_ONLY" -eq 1 ]; then
   rustup target add aarch64-apple-ios
 elif [ "$SIM_ONLY" -eq 1 ]; then
   rustup target add aarch64-apple-ios-sim
+elif [ "$MACABI_ONLY" -eq 1 ]; then
+  if [ "$FAST_MACABI" -eq 1 ]; then
+    rustup target add "$MACABI_HOST_TARGET"
+  else
+    rustup target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
+  fi
 else
   rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-ios-macabi x86_64-apple-ios-macabi
-fi
-
-# Only install macabi rustup targets when macabi is in scope (either
-# --macabi-only or the default "everything" path). SIM_ONLY / DEVICE_ONLY
-# skip the `else` branch above so those add their own targets.
-if [ "$MACABI_ONLY" -eq 1 ]; then
-  rustup target add aarch64-apple-ios-macabi x86_64-apple-ios-macabi
 fi
 
 if [ "$DEVICE_ONLY" -eq 1 ]; then
@@ -240,33 +272,40 @@ elif [ "$SIM_ONLY" -eq 1 ]; then
   cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-sim --crate-type staticlib $CARGO_FEATURES
   copy_sim_artifact "$CARGO_TARGET_DIR_EFFECTIVE/aarch64-apple-ios-sim/$PROFILE/libcodex_mobile_client.a"
 elif [ "$MACABI_ONLY" -eq 1 ]; then
-  echo "==> Building codex-mobile-client for Mac Catalyst macabi targets ($PROFILE) in parallel..."
+  if [ "$FAST_MACABI" -eq 1 ]; then
+    echo "==> Building codex-mobile-client for $MACABI_HOST_TARGET ($PROFILE)..."
+    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target "$MACABI_HOST_TARGET" --crate-type staticlib $CARGO_FEATURES
+    cp "$CARGO_TARGET_DIR_EFFECTIVE/$MACABI_HOST_TARGET/$PROFILE/libcodex_mobile_client.a" \
+      "$GENERATED_MACABI_DIR/libcodex_mobile_client.a"
+  else
+    echo "==> Building codex-mobile-client for Mac Catalyst macabi targets ($PROFILE) in parallel..."
 
-  build_macabi_arm64() {
-    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
-  }
+    build_macabi_arm64() {
+      cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target aarch64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+    }
 
-  build_macabi_x86_64() {
-    cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target x86_64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
-  }
+    build_macabi_x86_64() {
+      cargo rustc --manifest-path "$RUST_BRIDGE_DIR/Cargo.toml" -p codex-mobile-client $CARGO_PROFILE_FLAG --target x86_64-apple-ios-macabi --crate-type staticlib $CARGO_FEATURES
+    }
 
-  build_macabi_arm64 &
-  MACABI_ARM64_PID=$!
-  build_macabi_x86_64 &
-  MACABI_X86_64_PID=$!
+    build_macabi_arm64 &
+    MACABI_ARM64_PID=$!
+    build_macabi_x86_64 &
+    MACABI_X86_64_PID=$!
 
-  FAILED=0
-  if ! wait "$MACABI_ARM64_PID"; then
-    echo "ERROR: Catalyst build (aarch64-apple-ios-macabi) failed" >&2
-    FAILED=1
+    FAILED=0
+    if ! wait "$MACABI_ARM64_PID"; then
+      echo "ERROR: Catalyst build (aarch64-apple-ios-macabi) failed" >&2
+      FAILED=1
+    fi
+    if ! wait "$MACABI_X86_64_PID"; then
+      echo "ERROR: Catalyst build (x86_64-apple-ios-macabi) failed" >&2
+      FAILED=1
+    fi
+    [ "$FAILED" -eq 0 ] || exit 1
+
+    copy_macabi_artifact
   fi
-  if ! wait "$MACABI_X86_64_PID"; then
-    echo "ERROR: Catalyst build (x86_64-apple-ios-macabi) failed" >&2
-    FAILED=1
-  fi
-  [ "$FAILED" -eq 0 ] || exit 1
-
-  copy_macabi_artifact
 else
   # Build device and simulator targets in parallel
   echo "==> Building codex-mobile-client for device, simulator, and Catalyst macabi targets ($PROFILE) in parallel..."
@@ -339,7 +378,11 @@ fi
 if [ "$MACABI_ONLY" -eq 1 ]; then
   # LitterMac links the raw macabi staticlib via
   # LIBRARY_SEARCH_PATHS[sdk=macosx*] — no xcframework needed.
-  echo "==> Mac Catalyst (macabi) build complete"
+  if [ "$FAST_MACABI" -eq 1 ]; then
+    echo "==> Fast Mac Catalyst build complete ($MACABI_HOST_TARGET, $PROFILE)"
+  else
+    echo "==> Mac Catalyst (macabi) build complete"
+  fi
   echo "==> Macabi staticlib: $GENERATED_MACABI_DIR/libcodex_mobile_client.a"
   echo "==> Headers: $GENERATED_HEADERS_DIR"
   echo "==> Swift bindings: $UNIFFI_OUT"
