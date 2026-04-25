@@ -194,6 +194,25 @@ if [[ -z "$APP_PATH" ]]; then
 fi
 echo "==> Exported app: $APP_PATH"
 
+# Xcode's Catalyst developer-id export can preserve the Developer ID identity
+# while still omitting the hardened runtime flag. Re-sign the exported app
+# before DMG packaging so Apple's notary service sees runtime on every slice.
+echo "==> Re-signing exported app with hardened runtime"
+APP_ENTITLEMENTS_PLIST="$BUILD_DIR/exported-app-entitlements.plist"
+codesign -d --entitlements :- "$APP_PATH" >"$APP_ENTITLEMENTS_PLIST" 2>/dev/null || true
+resign_cmd=(
+    codesign
+    --force
+    --sign "$APP_CODE_SIGN_IDENTITY"
+    --timestamp
+    --options runtime
+)
+if [[ -s "$APP_ENTITLEMENTS_PLIST" ]]; then
+    resign_cmd+=(--entitlements "$APP_ENTITLEMENTS_PLIST")
+fi
+resign_cmd+=("$APP_PATH")
+"${resign_cmd[@]}"
+
 # Verify the .app signature before wrapping. Gatekeeper assessment must wait
 # until after notarization; otherwise spctl correctly rejects valid Developer ID
 # apps as "Unnotarized Developer ID" before notarytool has run.
