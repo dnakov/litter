@@ -48,11 +48,17 @@ struct ComputerUseToolCallView: View {
                     }
                 }
                 .padding(.top, 6)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.sectionReveal)
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 9)
+        .background(LitterTheme.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(LitterTheme.border, lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .animation(.spring(duration: 0.32, bounce: 0.12), value: resolvedExpanded)
         .onChange(of: data.status) { _, newStatus in
             if newStatus == .failed {
@@ -91,6 +97,16 @@ struct ComputerUseToolCallView: View {
                 Text(duration)
                     .litterFont(.caption2)
                     .foregroundColor(durationStatusColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(durationStatusColor.opacity(0.10))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(durationStatusColor.opacity(0.22), lineWidth: 0.5)
+                    )
             }
 
             Image(systemName: resolvedExpanded ? "chevron.up" : "chevron.down")

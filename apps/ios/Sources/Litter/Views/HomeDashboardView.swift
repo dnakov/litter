@@ -43,7 +43,7 @@ struct HomeDashboardView: View {
     /// Resume a single thread so the connection has a live listener. Dashboard
     /// orchestrates the parallel calls and tracks per-row state so the left
     /// indicator can reflect it.
-    var onHydrateThread: ((ThreadKey) async -> Void)? = nil
+    var onHydrateThread: ((ThreadKey, Bool) async -> Void)? = nil
     var onDeleteThread: ((ThreadKey) async -> Void)? = nil
     var onReconnectServer: ((HomeDashboardServer) -> Void)? = nil
     var onRestartAppServer: ((HomeDashboardServer) -> Void)? = nil
@@ -95,12 +95,17 @@ struct HomeDashboardView: View {
         // Gate on the explicit resumed bit rather than hydrated stats. With
         // paginated threads, loaded items and attached live listeners are now
         // separate states.
-        for session in visibleSessions where !session.isResumed {
+        let visible = visibleSessions
+        let byPinnedKey = Dictionary(uniqueKeysWithValues: visible.map {
+            (SavedThreadsStore.PinnedKey(threadKey: $0.key), $0)
+        })
+        let pinnedFirst = pinnedThreadKeys.compactMap { byPinnedKey[$0] }
+        for session in pinnedFirst where !session.isResumed {
             let id = hydrationId(session.key)
             guard !hydratingKeys.contains(id) else { continue }
             hydratingKeys.insert(id)
             Task {
-                await onHydrateThread(session.key)
+                await onHydrateThread(session.key, true)
                 await MainActor.run {
                     _ = hydratingKeys.remove(id)
                 }
@@ -131,6 +136,9 @@ struct HomeDashboardView: View {
             .task { await TipJarStore.shared.loadProducts() }
             .onAppear { autoHydrateIfNeeded() }
             .onChange(of: visibleSessions.map { hydrationId($0.key) }) { _, _ in
+                autoHydrateIfNeeded()
+            }
+            .onChange(of: pinnedThreadKeys) { _, _ in
                 autoHydrateIfNeeded()
             }
             // Clear a cancelled key once the snapshot says the turn is

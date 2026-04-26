@@ -722,36 +722,6 @@ pub(super) async fn refresh_account_from_app_server(
     Ok(())
 }
 
-pub(super) async fn refresh_thread_list_from_app_server_if_current(
-    session: Arc<ServerSession>,
-    app_store: Arc<AppStoreReducer>,
-    sessions: Arc<RwLock<HashMap<String, Arc<ServerSession>>>>,
-    server_id: &str,
-) -> Result<(), RpcError> {
-    if !session_is_current(&sessions, server_id, &session) {
-        return Ok(());
-    }
-
-    let mut cursor = None;
-    let mut incoming_ids = HashSet::new();
-    loop {
-        let response = request_thread_list_page(&session, cursor).await?;
-        if !session_is_current(&sessions, server_id, &session) {
-            return Ok(());
-        }
-
-        let page = thread_list_page_to_thread_infos(response.data, &mut incoming_ids);
-        app_store.upsert_thread_list_page(server_id, &page);
-        let Some(next_cursor) = response.next_cursor else {
-            break;
-        };
-        cursor = Some(next_cursor);
-    }
-
-    app_store.finalize_thread_list_sync(server_id, &incoming_ids);
-    Ok(())
-}
-
 async fn request_thread_list_page(
     session: &ServerSession,
     cursor: Option<String>,

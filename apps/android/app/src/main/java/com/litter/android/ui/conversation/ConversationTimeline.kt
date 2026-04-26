@@ -13,6 +13,7 @@ import android.webkit.WebViewClient
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -269,7 +270,9 @@ private fun UserMessageRow(
     // consume the long-press gesture before our handler sees it; copy is
     // exposed via the menu instead.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp),
         horizontalArrangement = Arrangement.End,
     ) {
         Box {
@@ -279,13 +282,13 @@ private fun UserMessageRow(
                     .padding(start = 60.dp)
                     .background(
                         LitterTheme.accent.copy(alpha = 0.3f),
-                        RoundedCornerShape(14.dp),
+                        RoundedCornerShape(18.dp),
                     )
                     .combinedClickable(
                         onClick = {},
                         onLongClick = { showMenu = true },
                     )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
             ) {
                 LimitedUserMessageText(data.text)
                 // Inline images from data URIs
@@ -673,12 +676,13 @@ private fun CommandExecutionRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 1.dp),
+            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
+            .border(0.5.dp, LitterTheme.border, RoundedCornerShape(12.dp))
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -700,11 +704,7 @@ private fun CommandExecutionRow(
             )
             data.durationMs?.takeIf { it > 0 }?.let { ms ->
                 Spacer(Modifier.width(6.dp))
-                Text(
-                    text = formatDuration(ms),
-                    color = statusTint(data.status),
-                    fontSize = LitterTextStyle.caption2.scaled,
-                )
+                DurationChip(formatDuration(ms), statusTint(data.status))
             }
             Spacer(Modifier.width(8.dp))
             Text(
@@ -721,9 +721,9 @@ private fun CommandExecutionRow(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 56.dp, max = 116.dp)
+                        .heightIn(max = 116.dp)
                         .background(LitterTheme.codeBackground, RoundedCornerShape(10.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
                     SelectableConversationText {
                         Text(
@@ -2130,9 +2130,10 @@ private fun ToolCardShell(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(LitterTheme.surface, RoundedCornerShape(10.dp))
+            .background(LitterTheme.surface, RoundedCornerShape(12.dp))
+            .border(0.5.dp, LitterTheme.border, RoundedCornerShape(12.dp))
             .clickable { expanded = !expanded }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusIcon(status)
@@ -2147,11 +2148,7 @@ private fun ToolCardShell(
             )
             durationMs?.takeIf { it > 0 }?.let { ms ->
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    text = formatDuration(ms),
-                    color = statusTint(status),
-                    fontSize = LitterTextStyle.caption2.scaled,
-                )
+                DurationChip(formatDuration(ms), statusTint(status))
             }
             Spacer(Modifier.width(8.dp))
             Text(
@@ -2633,6 +2630,22 @@ private fun statusTint(status: AppOperationStatus): Color {
         AppOperationStatus.IN_PROGRESS -> LitterTheme.warning
         AppOperationStatus.FAILED -> LitterTheme.danger
         else -> LitterTheme.textMuted
+    }
+}
+
+@Composable
+private fun DurationChip(text: String, tint: Color) {
+    Box(
+        modifier = Modifier
+            .background(tint.copy(alpha = 0.10f), RoundedCornerShape(999.dp))
+            .border(0.5.dp, tint.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = text,
+            color = tint,
+            fontSize = LitterTextStyle.caption2.scaled,
+        )
     }
 }
 

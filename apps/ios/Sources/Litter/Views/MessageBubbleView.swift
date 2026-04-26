@@ -151,10 +151,11 @@ struct UserBubble: View {
                     }
                 }
             }
-            .padding(.horizontal, compact ? 10 : 14)
-            .padding(.vertical, compact ? 6 : 10)
-            .modifier(GlassRectModifier(cornerRadius: compact ? 10 : 14, tint: LitterTheme.accent.opacity(0.3)))
+            .padding(.horizontal, compact ? 12 : 18)
+            .padding(.vertical, compact ? 8 : 14)
+            .modifier(GlassRectModifier(cornerRadius: compact ? 14 : 18, tint: LitterTheme.accent.opacity(0.3)))
         }
+        .padding(.bottom, 14)
         .onChange(of: text) { _, _ in
             expandedLongText = false
         }
@@ -281,6 +282,7 @@ struct AssistantBubble: View, Equatable {
                 codeSize: contentFontSize
             )
             .fixedSize(horizontal: false, vertical: true)
+            .transaction { $0.animation = nil }
         }
     }
 }
@@ -308,6 +310,7 @@ struct AssistantBlocksBubble: View {
                         ))
                 }
             }
+            .transaction { $0.animation = nil }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: compact ? 8 : 20)
         }
@@ -433,6 +436,7 @@ struct StreamingAssistantBubble: View {
                             codeSize: contentFontSize,
                             selectionEnabled: !isStreaming
                         )
+                        .transaction { $0.animation = nil }
                 } else {
                     LitterMarkdownView(
                         markdown: text,
@@ -442,6 +446,7 @@ struct StreamingAssistantBubble: View {
                     )
                     .fixedSize(horizontal: false, vertical: true)
                     .tokenReveal(.disabled)
+                    .transaction { $0.animation = nil }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

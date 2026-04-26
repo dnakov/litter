@@ -163,8 +163,6 @@ impl ReconnectController {
                     server_id,
                 )
                 .await;
-                refresh_thread_lists_after_reconnect_results(&inner, std::slice::from_ref(&result))
-                    .await;
                 result
             })
             .await
@@ -360,30 +358,8 @@ async fn reconnect_saved_servers_inner(
         }
     }
 
-    refresh_thread_lists_after_reconnect_results(&inner, &results).await;
-
     drop(guard);
     results
-}
-
-async fn refresh_thread_lists_after_reconnect_results(
-    inner: &Arc<MobileClient>,
-    results: &[ReconnectResult],
-) {
-    for result in results {
-        if !result.success || result.needs_local_auth_restore {
-            continue;
-        }
-        if let Err(error) = inner
-            .refresh_thread_list_for_connected_server(&result.server_id)
-            .await
-        {
-            warn!(
-                "ReconnectController: post-reconnect thread refresh failed server_id={} error={}",
-                result.server_id, error
-            );
-        }
-    }
 }
 
 async fn reconnect_server_inner(

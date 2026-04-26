@@ -542,12 +542,14 @@ private struct ConversationMessageList: View {
     @State private var pendingAnimatedTurns: [TranscriptTurn]?
     @State private var turnInsertionAnimationInFlight = false
     @State private var followLayoutScrollScheduled = false
+    @State private var initialBottomScrollThreadScopeID: String?
     @State private var programmaticBottomScrollSettling = false
     @State private var programmaticBottomScrollGeneration = 0
     @AppStorage("collapseTurns") private var collapseTurns = false
     private static let latestButtonShowDistance: CGFloat = 48
     private static let nearBottomRestoreDistance: CGFloat = 12
     private static let bottomScrollSettleDuration: TimeInterval = 0.3
+    private static let bottomAnchorID = "conversation-message-list-bottom"
     private static let scrollCoordinateSpaceName = "conversation-message-list-scroll"
 
     private var expandedRecentTurnCount: Int {
@@ -586,6 +588,10 @@ private struct ConversationMessageList: View {
 
     private var shouldShowScrollToBottom: Bool {
         !items.isEmpty && distanceFromBottom > Self.latestButtonShowDistance
+    }
+
+    private var activeThreadScopeID: String {
+        "\(activeThreadKey.serverId)::\(activeThreadKey.threadId)"
     }
 
     private var isStreaming: Bool {
@@ -679,20 +685,20 @@ private struct ConversationMessageList: View {
 
                         Color.clear
                             .frame(height: 1)
-                            .id("bottom")
+                            .id(Self.bottomAnchorID)
                             .padding(.horizontal, 16)
-                            .onGeometryChange(for: CGFloat.self) { geometry in
-                                let markerMaxY = geometry.frame(in: .named(Self.scrollCoordinateSpaceName)).maxY
-                                return max(0, markerMaxY - viewport.size.height)
-                            } action: { _, distance in
-                                updateDistanceFromBottom(distance)
-                            }
                     }
                     .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                 }
+                .id(activeThreadScopeID)
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .coordinateSpace(name: Self.scrollCoordinateSpaceName)
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
+                } action: { _, distance in
+                    updateDistanceFromBottom(distance)
+                }
                 // Keep the chat initially bottom-aligned, but don't let keyboard-driven
                 // viewport size changes force a fresh bottom jump with stale lazy heights.
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -717,14 +723,17 @@ private struct ConversationMessageList: View {
                 .onAppear {
                     autoFollowStreaming = true
                     syncTranscriptTurns()
+                    requestInitialBottomScrollIfNeeded(proxy)
                 }
                 .onChange(of: activeThreadKey) {
                     autoFollowStreaming = true
                     isNearBottom = true
                     distanceFromBottom = 0
+                    initialBottomScrollThreadScopeID = nil
                     waitingForDataExpired = false
                     syncTranscriptTurns(resetExpansion: true)
                     StreamingRendererCoordinator.shared.reset()
+                    requestInitialBottomScrollIfNeeded(proxy)
                 }
                 .task(id: activeThreadKey) {
                     try? await Task.sleep(for: .seconds(1))
@@ -732,6 +741,7 @@ private struct ConversationMessageList: View {
                 }
                 .onChange(of: items) { _, _ in
                     syncTranscriptTurns()
+                    requestInitialBottomScrollIfNeeded(proxy)
                 }
                 .onChange(of: collapseTurns) {
                     syncTranscriptTurns(resetExpansion: true)
@@ -817,6 +827,21 @@ private struct ConversationMessageList: View {
         }
     }
 
+    private func requestInitialBottomScrollIfNeeded(_ proxy: ScrollViewProxy) {
+        guard !items.isEmpty else { return }
+        let threadScopeID = activeThreadScopeID
+        guard initialBottomScrollThreadScopeID != threadScopeID else { return }
+        initialBottomScrollThreadScopeID = threadScopeID
+        DispatchQueue.main.async {
+            guard activeThreadScopeID == threadScopeID else { return }
+            scrollToBottom(proxy)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                guard activeThreadScopeID == threadScopeID else { return }
+                scrollToBottom(proxy)
+            }
+        }
+    }
+
     private func updateDistanceFromBottom(_ distance: CGFloat) {
         let clampedDistance = max(0, distance)
         if programmaticBottomScrollSettling {
@@ -843,7 +868,7 @@ private struct ConversationMessageList: View {
         programmaticBottomScrollGeneration &+= 1
         let generation = programmaticBottomScrollGeneration
         programmaticBottomScrollSettling = true
-        proxy.scrollTo("bottom", anchor: .bottom)
+        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.bottomScrollSettleDuration) {
             guard programmaticBottomScrollGeneration == generation else { return }
             programmaticBottomScrollSettling = false

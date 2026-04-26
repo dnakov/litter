@@ -544,7 +544,7 @@ fun ConversationScreen(
                                         }
                                     }
                                 }
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     timelineEntries.forEachIndexed { index, entry ->
                                         when (entry) {
                                             is TimelineEntry.Single -> {

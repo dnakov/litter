@@ -50,7 +50,7 @@ struct ConversationTurnTimeline: View {
             return item.id
         }.first
 
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 rowView(
                     row,
@@ -301,11 +301,12 @@ private struct RowEntranceModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         if isAssistantRow {
-            // Block the ambient withAnimation transaction from leaking into
-            // the streaming markdown renderer, which would replay the token
-            // reveal animation on every snapshot update.
+            // The streaming markdown renderer scopes its own
+            // `transaction { $0.animation = nil }` internally so that token
+            // reveals don't replay on every snapshot. Leaving the row itself
+            // unscoped lets sibling layout changes (e.g. a tool card collapse)
+            // animate this row's position.
             content
-                .transaction { $0.animation = nil }
         } else {
             content
                 .transition(.asymmetric(
@@ -1253,8 +1254,14 @@ private struct ConversationCommandExecutionRow: View {
                 )
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(LitterTheme.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(LitterTheme.border, lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .animation(.spring(duration: 0.35, bounce: 0.15), value: expanded)
         .onChange(of: isPreferredExpanded) { _, newValue in
             expanded = newValue
@@ -1279,6 +1286,16 @@ private struct ConversationCommandExecutionRow: View {
                 Text(durationText)
                     .litterFont(.caption2)
                     .foregroundColor(statusColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(statusColor.opacity(0.10))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(statusColor.opacity(0.22), lineWidth: 0.5)
+                    )
                     .accessibilityLabel(durationAccessibilityLabel(durationText))
             }
 
@@ -1345,8 +1362,15 @@ private struct ConversationCommandOutputViewport: View {
         11 * textScale
     }
 
-    private var viewportHeight: CGFloat {
+    private var maxViewportHeight: CGFloat {
         (LitterFont.uiMonoFont(size: lineFontSize).lineHeight * 3) + 16
+    }
+
+    private var viewportHeight: CGFloat {
+        let lh = LitterFont.uiMonoFont(size: lineFontSize).lineHeight
+        let lines = max(1, visibleOutput.split(separator: "\n", omittingEmptySubsequences: false).count)
+        let natural = (lh * CGFloat(min(lines, 3))) + 16
+        return min(natural, maxViewportHeight)
     }
 
     var body: some View {

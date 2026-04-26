@@ -159,8 +159,8 @@ fun HomeDashboardScreen(
     // Home list = pinned first (preserving pin order). If nothing is pinned,
     // show the 10 most-recent sessions. Hidden threads are excluded from
     // both halves.
-    val homeSessions = remember(pinnedKeys, hiddenKeys, allSessions) {
-        mergeHomeSessions(pinnedKeys, hiddenKeys, allSessions)
+    val homeSessions = remember(pinnedKeys, hiddenKeys, servers, allSessions) {
+        mergeHomeSessions(pinnedKeys, hiddenKeys, servers, allSessions)
     }
 
     val scopedServerId = selectedProject?.serverId ?: selectedServerId
@@ -226,8 +226,11 @@ fun HomeDashboardScreen(
     // `LitterApp.swift:990-1006` after commit 52ff299d. The store short-
     // circuits when a listener is already attached, so warm paths stay cheap.
     val visibleIds = recentSessions.map { "${it.key.serverId}/${it.key.threadId}" }
-    LaunchedEffect(visibleIds) {
-        for (session in recentSessions) {
+    LaunchedEffect(visibleIds, pinnedKeys) {
+        val byPinnedKey = recentSessions.associateBy {
+            PinnedThreadKey(serverId = it.key.serverId, threadId = it.key.threadId)
+        }
+        for (session in pinnedKeys.mapNotNull { byPinnedKey[it] }) {
             if (session.isResumed) continue
             val id = "${session.key.serverId}/${session.key.threadId}"
             if (!requestedHydrationKeys.add(id)) continue
@@ -991,6 +994,7 @@ private const val HOME_CAT_ENTRANCE_DURATION_MS = 11_100L
 private fun mergeHomeSessions(
     pinned: List<PinnedThreadKey>,
     hidden: List<PinnedThreadKey>,
+    servers: List<AppServerSnapshot>,
     allSessions: List<AppSessionSummary>,
 ): List<AppSessionSummary> {
     val hiddenSet = hidden.toSet()
@@ -1001,10 +1005,52 @@ private fun mergeHomeSessions(
         val byKey = candidates.associateBy {
             PinnedThreadKey(serverId = it.key.serverId, threadId = it.key.threadId)
         }
-        return pinned.mapNotNull { byKey[it] }
+        val serversById = servers.associateBy { it.serverId }
+        return pinned.mapNotNull { key ->
+            if (key in hiddenSet) return@mapNotNull null
+            byKey[key] ?: serversById[key.serverId]?.let { server ->
+                placeholderPinnedSession(key, server)
+            }
+        }
     }
     return candidates.take(10)
 }
+
+private fun placeholderPinnedSession(
+    pinned: PinnedThreadKey,
+    server: AppServerSnapshot,
+): AppSessionSummary = AppSessionSummary(
+    key = uniffi.codex_mobile_client.ThreadKey(
+        serverId = pinned.serverId,
+        threadId = pinned.threadId,
+    ),
+    serverDisplayName = server.displayName,
+    serverHost = server.host,
+    title = "Loading thread",
+    preview = "",
+    cwd = "",
+    model = "",
+    modelProvider = "",
+    parentThreadId = null,
+    agentNickname = null,
+    agentRole = null,
+    agentDisplayLabel = null,
+    agentStatus = uniffi.codex_mobile_client.AppSubagentStatus.UNKNOWN,
+    updatedAt = null,
+    hasActiveTurn = false,
+    isResumed = false,
+    isSubagent = false,
+    isFork = false,
+    lastResponsePreview = null,
+    lastResponseTurnId = null,
+    lastUserMessage = null,
+    lastToolLabel = null,
+    recentToolLog = emptyList(),
+    lastTurnStartMs = null,
+    lastTurnEndMs = null,
+    stats = null,
+    tokenUsage = null,
+)
 
 private sealed class ConfirmAction {
     abstract val title: String

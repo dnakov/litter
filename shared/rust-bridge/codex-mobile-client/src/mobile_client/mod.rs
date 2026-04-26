@@ -973,20 +973,6 @@ impl MobileClient {
         );
     }
 
-    pub(crate) async fn refresh_thread_list_for_connected_server(
-        &self,
-        server_id: &str,
-    ) -> Result<(), RpcError> {
-        let session = self.get_session(server_id)?;
-        refresh_thread_list_from_app_server_if_current(
-            session,
-            Arc::clone(&self.app_store),
-            Arc::clone(&self.sessions),
-            server_id,
-        )
-        .await
-    }
-
     pub async fn start_remote_ssh_oauth_login(&self, server_id: &str) -> Result<String, RpcError> {
         let session = self.get_session(server_id)?;
         if session.config().is_local {
@@ -2416,33 +2402,17 @@ pub(super) fn run_connect_warmup(
     label: &'static str,
 ) {
     MobileClient::spawn_detached(async move {
-        let account_future = refresh_account_from_app_server(
-            Arc::clone(&session),
+        match refresh_account_from_app_server(
+            session,
             Arc::clone(&app_store),
             Arc::clone(&sessions),
             server_id.as_str(),
-        );
-        let threads_future = refresh_thread_list_from_app_server_if_current(
-            Arc::clone(&session),
-            Arc::clone(&app_store),
-            Arc::clone(&sessions),
-            server_id.as_str(),
-        );
-        let (account_result, thread_result) = tokio::join!(account_future, threads_future);
-
-        match account_result {
+        )
+        .await
+        {
             Ok(()) => trace!("MobileClient: {label} account sync completed server_id={server_id}"),
             Err(error) => {
                 warn!("MobileClient: {label} account sync failed server_id={server_id}: {error}")
-            }
-        }
-
-        match thread_result {
-            Ok(()) => {
-                trace!("MobileClient: {label} thread refresh completed server_id={server_id}")
-            }
-            Err(error) => {
-                warn!("MobileClient: {label} thread refresh failed server_id={server_id}: {error}")
             }
         }
     });

@@ -510,6 +510,7 @@ private struct HomeNavigationView: View {
     @State private var isStartingVoice = false
     @State private var actionErrorMessage: String?
     @State private var homeInputMode: HomeInputMode = .collapsed
+    @State private var hydratingPinnedHomeThreadIds: Set<String> = []
     @State private var hasSeededInitialConversationRoute = false
     @State private var pendingWallpaperConfig: WallpaperConfig?
     @State private var pendingWallpaperImage: UIImage?
@@ -551,6 +552,19 @@ private struct HomeNavigationView: View {
 
     private var isHomeRouteActive: Bool {
         navigationPath.isEmpty
+    }
+
+    private var pinnedHomeHydrationSignature: String {
+        let pins = homeDashboardModel.pinnedKeys
+            .map { "\($0.serverId)/\($0.threadId)" }
+            .joined(separator: "|")
+        let servers = homeDashboardModel.connectedServers
+            .map { "\($0.id)=\(String(describing: $0.health))" }
+            .joined(separator: "|")
+        let sessions = homeDashboardModel.recentSessions
+            .map { "\(homeHydrationId($0.key)):\($0.isResumed)" }
+            .joined(separator: "|")
+        return "\(isHomeRouteActive)|\(pins)|\(servers)|\(sessions)"
     }
 
     @ViewBuilder
@@ -750,6 +764,7 @@ private struct HomeNavigationView: View {
         .task {
             homeDashboardModel.bind(appModel: appModel)
             updateHomeDashboardActivity()
+            hydratePinnedHomeThreadsIfNeeded()
             seedInitialConversationIfNeeded(activeKey: appModel.snapshot?.activeThread)
         }
         .onChange(of: appModel.snapshot?.activeThread) { _, newKey in
@@ -757,6 +772,9 @@ private struct HomeNavigationView: View {
         }
         .onChange(of: navigationPath.count) { _, _ in
             updateHomeDashboardActivity()
+        }
+        .onChange(of: pinnedHomeHydrationSignature) { _, _ in
+            hydratePinnedHomeThreadsIfNeeded()
         }
         .onChange(of: appState.pendingThreadNavigation) { _, newKey in
             if let newKey {
@@ -1344,7 +1362,45 @@ private struct HomeNavigationView: View {
         }
     }
 
-    private func hydrateThread(_ key: ThreadKey) async {
+    private func homeHydrationId(_ key: ThreadKey) -> String {
+        "\(key.serverId)/\(key.threadId)"
+    }
+
+    private func hydratePinnedHomeThreadsIfNeeded() {
+        guard isHomeRouteActive else { return }
+        let connectedServerIds = Set(
+            homeDashboardModel.connectedServers
+                .filter { $0.health == .connected }
+                .map(\.id)
+        )
+        guard !connectedServerIds.isEmpty else { return }
+        let visibleById = Dictionary(uniqueKeysWithValues: homeDashboardModel.recentSessions.map {
+            (homeHydrationId($0.key), $0)
+        })
+
+        for pin in homeDashboardModel.pinnedKeys {
+            let key = pin.threadKey
+            guard connectedServerIds.contains(key.serverId) else { continue }
+            let id = homeHydrationId(key)
+            if visibleById[id]?.isResumed == true { continue }
+            guard !hydratingPinnedHomeThreadIds.contains(id) else { continue }
+            hydratingPinnedHomeThreadIds.insert(id)
+
+            Task {
+                LLog.info(
+                    "home",
+                    "hydrating pinned home thread",
+                    fields: ["serverId": key.serverId, "threadId": key.threadId]
+                )
+                await hydrateThread(key, loadInitialTurns: true)
+                await MainActor.run {
+                    _ = hydratingPinnedHomeThreadIds.remove(id)
+                }
+            }
+        }
+    }
+
+    private func hydrateThread(_ key: ThreadKey, loadInitialTurns: Bool) async {
         // Resume rather than just read: `external_resume_thread` loads the
         // thread's items AND attaches a server-side conversation listener
         // for this connection, so we get live `TurnStarted` / `ItemStarted`
@@ -1353,13 +1409,14 @@ private struct HomeNavigationView: View {
         // flip but the streaming bubble, tool log, and session-summary
         // updates would stay frozen until the user opened the thread.
         //
-        // For the home list the listener cost is still low enough, and
-        // resuming preemptively avoids the "first half-second of a stream
-        // is missed while we set up a subscription" latency window that an
-        // active-only subscription strategy would have. `externalResume`
+        // For pinned home rows, resuming preemptively avoids the "first
+        // half-second of a stream is missed while we set up a subscription"
+        // latency window that an active-only subscription strategy would
+        // have. `externalResume`
         // short-circuits to a no-op when IPC is live and the thread's
         // items are already populated, so warm/IPC paths are cheap.
-        if (try? await appModel.store.externalResumeThread(key: key, hostId: nil)) != nil {
+        if (try? await appModel.store.externalResumeThread(key: key, hostId: nil)) != nil,
+           loadInitialTurns {
             await appModel.loadInitialTurnsIfNeeded(threadId: key)
         }
         await appModel.refreshThreadSnapshot(key: key)
