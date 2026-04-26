@@ -552,6 +552,46 @@
     "foregroundHex": "#a9b1d6"
   },
   {
+    "slug": "usgc-epitaxy",
+    "name": "USGC Epitaxy",
+    "type": "dark",
+    "accentHex": "#FF00FF",
+    "backgroundHex": "#000000",
+    "foregroundHex": "#FF00FF"
+  },
+  {
+    "slug": "usgc-highk",
+    "name": "USGC High-K",
+    "type": "light",
+    "accentHex": "#0000FF",
+    "backgroundHex": "#FFFFFF",
+    "foregroundHex": "#000000"
+  },
+  {
+    "slug": "usgc-metalgate",
+    "name": "USGC Metalgate",
+    "type": "dark",
+    "accentHex": "#00FFFF",
+    "backgroundHex": "#000000",
+    "foregroundHex": "#00FFFF"
+  },
+  {
+    "slug": "usgc-polyimide",
+    "name": "USGC Polyimide",
+    "type": "dark",
+    "accentHex": "#FFBF00",
+    "backgroundHex": "#000000",
+    "foregroundHex": "#FFBF00"
+  },
+  {
+    "slug": "usgc-reticle",
+    "name": "USGC Reticle",
+    "type": "dark",
+    "accentHex": "#00A645",
+    "backgroundHex": "#000000",
+    "foregroundHex": "#00A645"
+  },
+  {
     "slug": "vesper",
     "name": "vesper",
     "type": "dark",
