@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -28,6 +29,7 @@ struct HomeSessionsScrollView: UIViewRepresentable {
     let cancellingKeys: Set<String>
     let openingKey: ThreadKey?
     @Binding var zoomLevel: Int
+    let showCatFooter: Bool
     let topInset: CGFloat
     let bottomInset: CGFloat
     let callbacks: Callbacks
@@ -58,6 +60,7 @@ struct HomeSessionsScrollView: UIViewRepresentable {
             cancellingKeys: cancellingKeys,
             openingKey: openingKey,
             zoomLevel: zoomLevel,
+            showCatFooter: showCatFooter,
             topInset: topInset,
             bottomInset: bottomInset,
             textScale: textScale,
@@ -125,6 +128,7 @@ final class HomeSessionsScrollUIView: UIView {
     private let scrollView = UIScrollView()
     private let contentView = UIView()
     private let pinchVignette = PinchVignetteView()
+    private let catFooterHostingController = UIHostingController(rootView: AnyView(EmptyView()))
     private var containers: [ThreadKey: HomeRowContainer] = [:]
     private var order: [ThreadKey] = []
 
@@ -148,6 +152,8 @@ final class HomeSessionsScrollUIView: UIView {
 
     private var topInsetValue: CGFloat = 0
     private var bottomInsetValue: CGFloat = 0
+    private var catFooterCountEligible = false
+    private var catFooterHostVisible = false
     private var widthUsed: CGFloat = 0
     private var lastCommittedInteger: Int = 2
     /// Last-seen text scale. A change here invalidates every row's
@@ -194,6 +200,9 @@ final class HomeSessionsScrollUIView: UIView {
         // under the dynamic island / status bar.
         scrollView.contentInsetAdjustmentBehavior = .always
         scrollView.addGestureRecognizer(pinchRecognizer)
+        catFooterHostingController.view.backgroundColor = .clear
+        catFooterHostingController.view.isHidden = true
+        contentView.addSubview(catFooterHostingController.view)
         // Let pinch and scroll pan arbitrate naturally. Pinch requires 2
         // touches to begin; `numberOfTouchesRequired = 2` on pinch + our
         // pinchActive check (which disables `scrollView.isScrollEnabled`
@@ -257,6 +266,7 @@ final class HomeSessionsScrollUIView: UIView {
         cancellingKeys: Set<String>,
         openingKey: ThreadKey?,
         zoomLevel: Int,
+        showCatFooter: Bool,
         topInset: CGFloat,
         bottomInset: CGFloat,
         textScale: CGFloat,
@@ -270,8 +280,10 @@ final class HomeSessionsScrollUIView: UIView {
         self.lastCommittedInteger = zoomLevel
         self.topInsetValue = topInset
         self.bottomInsetValue = bottomInset
+        self.catFooterCountEligible = showCatFooter && !sessions.isEmpty && sessions.count <= 10
         scrollView.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
         scrollView.verticalScrollIndicatorInsets = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
+        refreshCatFooterVisibility()
 
         // Text scale change → blow out every row's height cache and
         // propagate the new scale into each hosted SwiftUI tree.
@@ -338,19 +350,50 @@ final class HomeSessionsScrollUIView: UIView {
             frames.append((container, CGRect(x: 0, y: y, width: width, height: h)))
             y += h
         }
+        let footerFrame: CGRect
+        if shouldShowCatFooter {
+            let h = catFooterHeight(width: width)
+            footerFrame = CGRect(x: 0, y: y, width: width, height: h)
+            y += h
+        } else {
+            footerFrame = .zero
+        }
         let newContentSize = CGSize(width: width, height: y)
 
         if animated {
             UIView.animate(withDuration: zoomSnapDuration, delay: 0, options: [.curveEaseOut]) {
                 for (container, frame) in frames { container.frame = frame }
+                self.catFooterHostingController.view.frame = footerFrame
                 self.contentView.frame = CGRect(origin: .zero, size: newContentSize)
                 self.scrollView.contentSize = newContentSize
             }
         } else {
             for (container, frame) in frames { container.frame = frame }
+            catFooterHostingController.view.frame = footerFrame
             contentView.frame = CGRect(origin: .zero, size: newContentSize)
             scrollView.contentSize = newContentSize
         }
+    }
+
+    private var shouldShowCatFooter: Bool {
+        catFooterCountEligible && zoomLevel == 1 && !isPinching
+    }
+
+    private func catFooterHeight(width: CGFloat) -> CGFloat {
+        let videoWidth = min(max(0, width - 48), 340)
+        return videoWidth * 9.0 / 16.0 + 32
+    }
+
+    private func refreshCatFooterVisibility() {
+        let visible = shouldShowCatFooter
+        guard catFooterHostVisible != visible else { return }
+        catFooterHostVisible = visible
+        if visible {
+            catFooterHostingController.rootView = AnyView(HomeCatFooterView())
+        } else {
+            catFooterHostingController.rootView = AnyView(EmptyView())
+        }
+        catFooterHostingController.view.isHidden = !visible
     }
 
     private func rowHeight(
@@ -427,6 +470,7 @@ final class HomeSessionsScrollUIView: UIView {
         }
 
         isPinching = true
+        refreshCatFooterVisibility()
         updateScrollEnabled()
         pinchStartZoom = continuousZoom
         pinchStartScale = g.scale
@@ -573,6 +617,7 @@ final class HomeSessionsScrollUIView: UIView {
             }
         } completion: { _ in
             self.isPinching = false
+            self.refreshCatFooterVisibility()
             self.updateScrollEnabled()
             // Reset displayZoom to the committed integer so each row
             // goes back to its gated-content rendering.
@@ -660,6 +705,87 @@ extension HomeSessionsScrollUIView: UIGestureRecognizerDelegate {
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
         true
+    }
+}
+
+private struct HomeCatFooterView: View {
+    private let imageURL = Bundle.main.url(forResource: "home_cat", withExtension: "png")
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let imageURL {
+                let width = min(max(0, proxy.size.width - 48), 340)
+                VStack {
+                    AlphaAnimatedImageView(fileURL: imageURL)
+                        .frame(width: width, height: width * 9.0 / 16.0)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct AlphaAnimatedImageView: UIViewRepresentable {
+    let fileURL: URL
+
+    func makeUIView(context: Context) -> UIImageView {
+        let imageView = UIImageView()
+        imageView.backgroundColor = .clear
+        imageView.isOpaque = false
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = false
+        imageView.image = Self.animatedImage(from: fileURL)
+        imageView.startAnimating()
+        return imageView
+    }
+
+    func updateUIView(_ imageView: UIImageView, context: Context) {
+        imageView.image = Self.animatedImage(from: fileURL)
+        imageView.startAnimating()
+    }
+
+    private static func animatedImage(from url: URL) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return UIImage(contentsOfFile: url.path)
+        }
+        let count = CGImageSourceGetCount(source)
+        guard count > 1 else {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+            return UIImage(cgImage: cgImage)
+        }
+
+        var frames: [UIImage] = []
+        frames.reserveCapacity(count)
+        var duration: TimeInterval = 0
+        for index in 0..<count {
+            guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
+            frames.append(UIImage(cgImage: cgImage))
+            duration += frameDuration(source: source, index: index)
+        }
+        return UIImage.animatedImage(with: frames, duration: max(duration, 0.1))
+    }
+
+    private static func frameDuration(source: CGImageSource, index: Int) -> TimeInterval {
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+        let png = properties?[kCGImagePropertyPNGDictionary] as? [CFString: Any]
+        if let unclamped = png?[kCGImagePropertyAPNGUnclampedDelayTime] as? NSNumber {
+            return max(unclamped.doubleValue, 0.01)
+        }
+        if let delay = png?[kCGImagePropertyAPNGDelayTime] as? NSNumber {
+            return max(delay.doubleValue, 0.01)
+        }
+        let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+        if let unclamped = gif?[kCGImagePropertyGIFUnclampedDelayTime] as? NSNumber {
+            return max(unclamped.doubleValue, 0.01)
+        }
+        if let delay = gif?[kCGImagePropertyGIFDelayTime] as? NSNumber {
+            return max(delay.doubleValue, 0.01)
+        }
+        return 1.0 / 15.0
     }
 }
 

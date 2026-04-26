@@ -81,6 +81,7 @@ targets:
       - path: Sources/Litter/Resources/Fonts
       - path: Sources/Litter/Resources/Themes
       - path: Sources/Litter/Resources/TipJarProducts.storekit
+      - path: Sources/Litter/Resources/home_cat.png
     dependencies:
       - sdk: CarPlay.framework
       - sdk: Security.framework
@@ -173,6 +174,7 @@ targets:
       - path: Sources/Litter/Resources/Fonts
       - path: Sources/Litter/Resources/Themes
       - path: Sources/Litter/Resources/TipJarProducts.storekit
+      - path: Sources/Litter/Resources/home_cat.png
     dependencies:
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework

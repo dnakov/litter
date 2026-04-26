@@ -1,6 +1,11 @@
 package com.litter.android.ui.home
 
 import com.sigkitten.litter.android.BuildConfig
+import android.graphics.ImageDecoder
+import android.graphics.drawable.Animatable
+import android.os.Build
+import android.view.ViewGroup
+import android.widget.ImageView
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +23,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -76,6 +83,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import kotlin.math.roundToInt
 import com.litter.android.state.AppLifecycleController
 import com.litter.android.state.DebugSettings
@@ -93,6 +102,7 @@ import com.litter.android.ui.LitterTextStyle
 import com.litter.android.ui.LitterTheme
 import com.litter.android.ui.LocalAppModel
 import com.litter.android.ui.scaled
+import com.sigkitten.litter.android.R
 import kotlinx.coroutines.launch
 import uniffi.codex_mobile_client.AppProject
 import uniffi.codex_mobile_client.AppServerSnapshot
@@ -344,6 +354,11 @@ fun HomeDashboardScreen(
                                 confirmAction = ConfirmAction.ArchiveSession(session)
                             },
                         )
+                    }
+                }
+                if (zoomLevel == 1 && recentSessions.size <= 10) {
+                    item(key = "home-cat-footer") {
+                        HomeCatFooter()
                     }
                 }
             } else {
@@ -893,6 +908,56 @@ fun HomeDashboardScreen(
         ) {
             com.litter.android.ui.settings.TipJarScreen(onBack = { showTipJar = false })
         }
+    }
+}
+
+@Composable
+private fun HomeCatFooter() {
+    val context = LocalContext.current
+    val drawable = remember(context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            ImageDecoder.decodeDrawable(
+                ImageDecoder.createSource(context.resources, R.drawable.home_cat),
+            )
+        } else {
+            ContextCompat.getDrawable(context, R.drawable.home_cat)
+        }
+    }
+
+    DisposableEffect(drawable) {
+        (drawable as? Animatable)?.start()
+        onDispose {
+            (drawable as? Animatable)?.stop()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                ImageView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setImageDrawable(drawable)
+                    (drawable as? Animatable)?.start()
+                }
+            },
+            update = { view ->
+                view.setImageDrawable(drawable)
+                (drawable as? Animatable)?.start()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f),
+        )
     }
 }
 

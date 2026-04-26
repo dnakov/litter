@@ -456,7 +456,7 @@ final class NetworkDiscovery {
         serviceType: String,
         timeout: TimeInterval
     ) async -> [BonjourDiscoverySeed] {
-        let browser = BonjourServiceDiscoverer(serviceType: serviceType)
+        let browser = await BonjourServiceDiscoverer(serviceType: serviceType)
         return await browser.discover(timeout: timeout)
     }
 
@@ -766,6 +766,7 @@ struct BonjourResolvedService: Hashable {
     let serviceType: String
 }
 
+@MainActor
 final class BonjourServiceDiscoverer: NSObject, @preconcurrency NetServiceBrowserDelegate, @preconcurrency NetServiceDelegate {
     private struct ServiceRecord {
         let name: String

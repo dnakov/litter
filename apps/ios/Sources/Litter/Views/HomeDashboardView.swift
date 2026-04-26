@@ -455,6 +455,7 @@ struct HomeDashboardView: View {
                     cancellingKeys: cancellingKeys,
                     openingKey: openingRecentSessionKey,
                     zoomLevel: $zoomLevel,
+                    showCatFooter: chrome == .full,
                     topInset: 48,
                     bottomInset: chrome == .full ? 140 : 24,
                     callbacks: HomeSessionsScrollView.Callbacks(
