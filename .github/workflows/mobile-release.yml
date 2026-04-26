@@ -65,7 +65,7 @@ jobs:
               - 'apps/ios/Tests/**'
               - 'apps/ios/scripts/app-store-release.sh'
               - 'apps/ios/scripts/build-rust.sh'
-              - 'apps/ios/scripts/download-ios-system.sh'
+              - 'apps/ios/scripts/download-alpine-fs.sh'
               - 'apps/ios/scripts/regenerate-project.sh'
               - 'apps/ios/scripts/release-common.sh'
               - 'apps/ios/scripts/sanitize-ios-frameworks.sh'
