@@ -73,6 +73,7 @@ BUILD_METADATA_PATH="${BUILD_METADATA_PATH:-$BUILD_DIR/testflight-mac-build.env}
 
 require_cmd asc
 require_cmd jq
+require_cmd productbuild
 require_cmd xcodebuild
 require_cmd xcodegen
 
@@ -186,81 +187,8 @@ if [[ "$TESTFLIGHT_SKIP_BUILD" != "1" ]]; then
 
     "${archive_cmd[@]}"
 
-    cat >"$EXPORT_OPTIONS_PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>destination</key>
-    <string>export</string>
-    <key>method</key>
-    <string>app-store-connect</string>
-    <key>signingStyle</key>
-    <string>${EXPORT_SIGNING_STYLE}</string>
-    <key>manageAppVersionAndBuildNumber</key>
-    <false/>
-    <key>uploadSymbols</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-    if [[ -n "$TEAM_ID" ]]; then
-        /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS_PLIST"
-    fi
-    if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
-        /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
-        /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$APP_BUNDLE_ID string $APP_PROVISIONING_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
-        # Without an explicit signingCertificate, xcodebuild auto-picks from
-        # the keychain and frequently picks the installer cert for app signing
-        # — which the Mac App Store profile doesn't authorize, producing:
-        #   "Provisioning profile doesn't include signing certificate
-        #    '3rd Party Mac Developer Installer'".
-        # Force the app signing cert; set the installer cert explicitly too
-        # so xcodebuild doesn't enumerate keychain identities and produce the
-        # same error while looking for a pkg installer cert.
-        /usr/libexec/PlistBuddy -c "Add :signingCertificate string $APP_CODE_SIGN_IDENTITY" "$EXPORT_OPTIONS_PLIST"
-        /usr/libexec/PlistBuddy -c "Add :installerSigningCertificate string $INSTALLER_CODE_SIGN_IDENTITY" "$EXPORT_OPTIONS_PLIST"
-    fi
-
-    echo "==> Exporting PKG (signing: $EXPORT_SIGNING_STYLE)"
-    # Purge any .pkg from an earlier run. xcodebuild's .pkg output name is
-    # driven by PRODUCT_NAME (→ "Litter.pkg") not by SCHEME ("LitterMac"),
-    # so re-runs leave a stale file behind that `find` would otherwise
-    # happily pick up in non-deterministic order — we were uploading a
-    # pre-fix .pkg from a prior run for several iterations because of this.
-    find "$BUILD_DIR" -maxdepth 1 -name "*.pkg" -delete
-    export_cmd=(
-        xcodebuild
-        -exportArchive
-        -archivePath "$ARCHIVE_PATH"
-        -exportPath "$BUILD_DIR"
-        -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
-    )
-
-    if [[ "$EXPORT_SIGNING_STYLE" == "automatic" ]]; then
-        export_cmd+=(-allowProvisioningUpdates)
-    fi
-
-    if [[ "$EXPORT_SIGNING_STYLE" == "automatic" && "${#auth_args[@]}" -gt 0 ]]; then
-        export_cmd+=("${auth_args[@]}")
-    fi
-
-    "${export_cmd[@]}"
-
-    exported_pkg="$(find "$BUILD_DIR" -maxdepth 1 -name "*.pkg" | head -n 1)"
-    if [[ -z "$exported_pkg" ]]; then
-        echo "No PKG produced in $BUILD_DIR" >&2
-        exit 1
-    fi
-    if [[ "$exported_pkg" != "$PKG_PATH" ]]; then
-        cp "$exported_pkg" "$PKG_PATH"
-    fi
-
     # Sandbox-entitlement gate — catches ITMS-90296 before we waste a build
-    # slot on App Store Connect. The Mac App Store `.pkg` export wraps an
-    # already-signed .app, so inspect the .app inside the archive (that's
-    # where the code signature + entitlements were actually generated).
+    # slot on App Store Connect.
     archived_app="$ARCHIVE_PATH/Products/Applications/Litter.app"
     if [[ ! -d "$archived_app" ]]; then
         echo "No Litter.app found at $archived_app — cannot verify entitlements." >&2
@@ -278,6 +206,25 @@ EOF
         exit 1
     fi
     echo "==> Verified app-sandbox entitlement is present on signed binary"
+
+    echo "==> Packaging PKG with productbuild (installer signing: $INSTALLER_CODE_SIGN_IDENTITY)"
+    # Avoid `xcodebuild -exportArchive` for Mac App Store/TestFlight exports.
+    # On GitHub macos-26 runners it can hang inside its productbuild wrapper
+    # after the archive succeeds, leaving productbuild/xcodebuild orphaned
+    # until workflow cancellation. The archived app is already signed with the
+    # Mac App Store profile, so create the installer package directly.
+    rm -f "$PKG_PATH"
+    productbuild \
+        --component "$archived_app" \
+        /Applications \
+        --sign "$INSTALLER_CODE_SIGN_IDENTITY" \
+        "$PKG_PATH"
+
+    if [[ ! -f "$PKG_PATH" ]]; then
+        echo "No PKG produced at $PKG_PATH" >&2
+        exit 1
+    fi
+    pkgutil --check-signature "$PKG_PATH"
 fi
 
 if [[ ! -f "$PKG_PATH" ]]; then
