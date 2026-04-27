@@ -278,6 +278,7 @@ dependencies = [
 [[package]]
 name = "alleycat-client"
 version = "0.1.0"
+source = "git+https://github.com/dnakov/alleycat.git?branch=main#dc16fbdcd65367d98ac3a5b790d3d504f47f2c1f"
 dependencies = [
  "alleycat-protocol",
  "anyhow",
@@ -295,6 +296,7 @@ dependencies = [
 [[package]]
 name = "alleycat-protocol"
 version = "0.1.0"
+source = "git+https://github.com/dnakov/alleycat.git?branch=main#dc16fbdcd65367d98ac3a5b790d3d504f47f2c1f"
 dependencies = [
  "serde",
  "serde_json",
