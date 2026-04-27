@@ -272,7 +272,7 @@ private fun UserMessageRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 14.dp),
+            .padding(top = 10.dp, bottom = 14.dp),
         horizontalArrangement = Arrangement.End,
     ) {
         Box {

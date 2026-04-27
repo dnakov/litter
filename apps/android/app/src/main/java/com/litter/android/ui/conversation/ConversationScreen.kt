@@ -171,6 +171,7 @@ fun ConversationScreen(
     var expandedTurnIds by remember(threadKey, collapseTurns) { mutableStateOf(setOf<String>()) }
     var streamingRenderTick by remember(threadKey) { mutableStateOf(0) }
     var followScrollToken by remember(threadKey) { mutableStateOf(0) }
+    var hasPositionedInitialTail by remember(threadKey) { mutableStateOf(false) }
     var waitingForDataExpired by remember(threadKey) { mutableStateOf(false) }
     LaunchedEffect(threadKey) {
         waitingForDataExpired = false
@@ -376,15 +377,15 @@ fun ConversationScreen(
     }
 
     val displayedTurnCount = displayedTurns.size + (if (hasMoreTurnsAbove) 1 else 0)
-    LaunchedEffect(threadKey, displayedTurns.size) {
+    LaunchedEffect(threadKey, displayedTurnCount, transcriptTailSignature, followScrollToken, streamingRenderTick) {
         if (shouldFollowTail && displayedTurns.isNotEmpty()) {
-            listState.animateScrollToItem(conversationBottomAnchorIndex(displayedTurnCount))
-        }
-    }
-
-    LaunchedEffect(threadKey, transcriptTailSignature, followScrollToken, streamingRenderTick) {
-        if (shouldFollowTail && displayedTurns.isNotEmpty()) {
-            listState.animateScrollToItem(conversationBottomAnchorIndex(displayedTurnCount))
+            val bottomAnchorIndex = conversationBottomAnchorIndex(displayedTurnCount)
+            if (hasPositionedInitialTail) {
+                listState.animateScrollToItem(bottomAnchorIndex)
+            } else {
+                listState.scrollToItem(bottomAnchorIndex)
+                hasPositionedInitialTail = true
+            }
         }
     }
 
