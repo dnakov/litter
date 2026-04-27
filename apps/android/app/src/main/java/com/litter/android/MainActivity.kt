@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import com.litter.android.state.AppLifecycleController
 import com.litter.android.state.AppModel
@@ -172,6 +173,13 @@ class MainActivity : ComponentActivity() {
         if (cachedToken != null) {
             lifecycleController.setDevicePushToken(cachedToken)
         }
+        if (FirebaseApp.getApps(applicationContext).isEmpty() &&
+            FirebaseApp.initializeApp(applicationContext) == null
+        ) {
+            LLog.i("MainActivity", "Firebase is not configured; skipping FCM token fetch")
+            return
+        }
+
         FirebaseMessaging.getInstance().token
             .addOnSuccessListener { token ->
                 if (token.isNotBlank()) {

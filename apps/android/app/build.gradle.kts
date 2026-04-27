@@ -5,6 +5,11 @@ plugins {
     id("com.github.triplet.play")
 }
 
+val googleServicesFile = file("google-services.json")
+if (googleServicesFile.exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 fun projectPropOrEnv(name: String): String? =
     (findProperty(name) as? String)?.takeIf { it.isNotBlank() }
         ?: System.getenv(name)?.takeIf { it.isNotBlank() }

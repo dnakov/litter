@@ -93,6 +93,7 @@ import com.litter.android.state.SavedServerStore
 import com.litter.android.state.SavedThreadsStore
 import com.litter.android.state.connectionModeLabel
 import com.litter.android.state.displayTitle
+import com.litter.android.state.isConnected
 import com.litter.android.state.isIpcConnected
 import com.litter.android.state.statusColor
 import com.litter.android.state.statusLabel
@@ -196,7 +197,6 @@ fun HomeDashboardScreen(
     var isSearchExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var hasLoadedThreadListing by remember { mutableStateOf(false) }
-    val requestedHydrationKeys = remember { mutableSetOf<String>() }
     val resumingKeys = remember { mutableStateMapOf<String, Boolean>() }
 
     // Dashboard zoom state. `zoomLevel` observes DashboardZoomPrefs; the
@@ -226,18 +226,33 @@ fun HomeDashboardScreen(
     // `LitterApp.swift:990-1006` after commit 52ff299d. The store short-
     // circuits when a listener is already attached, so warm paths stay cheap.
     val visibleIds = recentSessions.map { "${it.key.serverId}/${it.key.threadId}" }
-    LaunchedEffect(visibleIds, pinnedKeys) {
+    val serverHydrationStates = servers
+        .sortedBy { it.serverId }
+        .joinToString(separator = "|") { server ->
+            "${server.serverId}:${server.transportState}:${server.port}"
+        }
+    LaunchedEffect(visibleIds, pinnedKeys, serverHydrationStates) {
         val byPinnedKey = recentSessions.associateBy {
             PinnedThreadKey(serverId = it.key.serverId, threadId = it.key.threadId)
         }
+        val serversById = servers.associateBy { it.serverId }
         for (session in pinnedKeys.mapNotNull { byPinnedKey[it] }) {
             if (session.isResumed) continue
             val id = "${session.key.serverId}/${session.key.threadId}"
-            if (!requestedHydrationKeys.add(id)) continue
+            if (resumingKeys[id] == true) continue
+            if (serversById[session.key.serverId]?.isConnected != true) continue
             resumingKeys[id] = true
             scope.launch {
                 try {
-                    val resumed = runCatching { appModel.externalResumeThread(session.key) }.isSuccess
+                    var resumed = runCatching {
+                        appModel.externalResumeThread(session.key)
+                    }.isSuccess
+                    if (!resumed) {
+                        runCatching { appModel.refreshSessions(listOf(session.key.serverId)) }
+                        resumed = runCatching {
+                            appModel.externalResumeThread(session.key)
+                        }.isSuccess
+                    }
                     if (resumed) {
                         appModel.loadInitialTurnsIfNeeded(session.key)
                     }

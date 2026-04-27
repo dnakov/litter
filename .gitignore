@@ -59,6 +59,7 @@ local.properties
 apps/android/.idea/
 apps/android/build/
 apps/android/app/build/
+apps/android/app/google-services.json
 apps/android/core/*/build/
 apps/android/feature/*/build/
 
